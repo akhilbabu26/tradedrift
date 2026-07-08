@@ -245,15 +245,17 @@ Wallet ReleaseFunds (gRPC, called by Order Service)
 - Wallets
 - Trades
 - Portfolio
+- Trading pairs / markets  (owned by Market Service — read by ME on startup as config)
+- ME Kafka checkpoint  (one row per partition: `{topic, partition, offset}` — updated by Matching Engine for recovery)
 
 ---
 
 ## Redis
 
-- Rate limiting
-- JWT blacklist
-- Order book cache
-- Sessions
+- Rate limiting  (Gateway — Redis token bucket)
+- JWT blacklist  (Auth Service — access token revocation on logout)
+- Sessions  (refresh token state lives in Postgres, not Redis)
+- Order book read replica  (Matching Engine pushes book snapshot to Redis after each match; Market Service and WebSocket read from here — Redis is NOT the source of truth for matching, the in-memory book is)
 
 ---
 

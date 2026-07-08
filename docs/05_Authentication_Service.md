@@ -210,6 +210,12 @@ Fails?
 
 *If `InitializeWallet` is retried with backoff first (recommended, e.g. 2–3 attempts) and still fails, only then is the user row deleted — so a single transient blip doesn't fail registration unnecessarily.*
 
+### Register: Double-Failure Recovery (Compensating Delete Fails)
+
+> If `InitializeWallet` fails **and** the compensating `DELETE FROM users` also fails (e.g., DB temporarily unavailable, process crash), an orphan user row remains — exists in `users` table with no wallet and no token ever issued. The next registration attempt with the same email would hit `409 Conflict`.
+>
+> **Recovery:** On startup, Authentication Service runs a reconciliation query: `SELECT u.id FROM users u WHERE NOT EXISTS (SELECT 1 FROM ...)` (checked via a lightweight `GetBalance` gRPC call to Wallet Service for each candidate). For each orphan, either retry `InitializeWallet` or delete the user row. Additionally, during registration's duplicate-email check: if a matching user exists but was created very recently (within a configurable window, e.g. 5 minutes) and has no active refresh tokens, treat it as a likely orphan — delete and proceed with fresh registration rather than returning `409`.
+
 ## 9. JWT Strategy
 
 | Token | Lifetime | Storage |
@@ -223,7 +229,7 @@ Short access-token lifetime limits the damage window if one leaks; the refresh t
 
 The JWT Validation Flow ([Section 3](#3-jwt-validation-flow)) and the API Gateway's JWT middleware step must be the same shared library/package, not two independent implementations. If they diverged, a token accepted by the gateway but rejected by Authentication Service (or vice versa) would be a real, hard-to-diagnose bug.
 
-> **Decision:** JWT verification (signature check, expiry check, Redis revocation check) lives in one internal shared package, imported by both the API Gateway and Authentication Service. Authentication Service is authoritative for issuing and revoking tokens; the shared package is just the verification logic, built once and reused.
+> **Decision (V1):** JWT verification (signature check, expiry check, Redis revocation check) lives in one internal shared package, imported by both the API Gateway and Authentication Service. Authentication Service is authoritative for issuing and revoking tokens; the shared package is just the verification logic, built once and reused. The API Gateway validates tokens **locally** using this shared package — no gRPC round-trip to Authentication Service on every authenticated request. This requires the Gateway to have access to (1) the JWT signing key / public key and (2) Redis for blacklist checks.
 
 ## 11. Security
 
@@ -232,6 +238,8 @@ The JWT Validation Flow ([Section 3](#3-jwt-validation-flow)) and the API Gatewa
 - Refresh tokens are stored hashed (not plaintext) in `refresh_tokens`, so a database read alone cannot be used to impersonate a session.
 - Every authentication-relevant event (login, logout, password change, refresh reuse detection) is written to an audit log with `user_id`, `ip`, `user_agent`, and timestamp, for security review.
 - Rate limiting on login and refresh endpoints is enforced at the API Gateway (Redis token bucket), not duplicated here.
+- **V1 deferral — Account lockout:** No per-account lockout after failed login attempts in V1. Gateway rate limiting (per-IP) provides baseline protection. A `failed_login_count` + `locked_until` mechanism on the `users` table is planned for V2.
+- **V1 deferral — Email verification:** No email verification on registration in V1. TradeDrift is a simulator with no real assets, so the risk of unverified emails is acceptable. Email verification deferred to V2.
 
 ## 12. Identifiers
 
@@ -273,14 +281,14 @@ refresh_tokens(
 
 ### gRPC (internal)
 
-- `ValidateToken(token)` — called by API Gateway's JWT middleware, backed by the shared verification package from [Section 10](#10-shared-jwt-validation-logic).
+> **Removed:** `ValidateToken(token)` was originally listed here. Per [Section 10](#10-shared-jwt-validation-logic), the API Gateway imports the shared JWT verification package directly and validates tokens locally — no per-request gRPC call. A network round-trip on every authenticated request adds unnecessary latency.
 
 ## 15. Service Interactions
 
 | Service | Interaction |
 |---|---|
 | Wallet Service | `InitializeWallet(user_id)` — synchronous gRPC, called once during registration; compensating delete on failure ([Section 8](#8-failure-handling)). |
-| API Gateway | Shares JWT verification logic ([Section 10](#10-shared-jwt-validation-logic)); Gateway calls `ValidateToken` or embeds the shared package directly. |
+| API Gateway | Imports the shared JWT verification package directly ([Section 10](#10-shared-jwt-validation-logic)); validates tokens locally without a gRPC call. |
 | Redis | Access-token blacklist (logout). Rate-limit state is owned by the Gateway, not Authentication Service. |
 
 ## 16. Scalability

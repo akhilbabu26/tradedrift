@@ -46,11 +46,12 @@ See `images/api_gateway_pipeline.png` for the full flow diagram.
 
 ## Middleware Order (fixed, always in this sequence)
 
-1. **Logging / metrics** — applied to every request, pass or fail, so failed requests are still observable.
-2. **Rate limit middleware** — Redis token bucket, checked before auth so unauthenticated flooding is rejected cheaply, without paying the cost of JWT verification.
-3. **Route resolution** — determines which downstream service owns this path, and whether the route is public or requires a valid token.
-4. **JWT middleware** (conditional) — only runs when route resolution flags the route as requiring auth.
-5. **gRPC client** — forwards to the resolved downstream service.
+1. **CORS middleware** — handles preflight (`OPTIONS`) requests and sets `Access-Control-Allow-Origin`, `Access-Control-Allow-Headers`, `Access-Control-Allow-Methods`. Applied first so preflight responses skip rate limiting and auth.
+2. **Logging / metrics** — applied to every request, pass or fail, so failed requests are still observable.
+3. **Rate limit middleware** — Redis token bucket, checked before auth so unauthenticated flooding is rejected cheaply, without paying the cost of JWT verification.
+4. **Route resolution** — determines which downstream service owns this path, and whether the route is public or requires a valid token.
+5. **JWT middleware** (conditional) — only runs when route resolution flags the route as requiring auth.
+6. **gRPC client** — forwards to the resolved downstream service with a **configurable timeout** (default 5s). A circuit breaker prevents cascading failures when a downstream service is consistently unresponsive.
 
 ## Shared JWT Validation Logic
 
@@ -73,9 +74,12 @@ See `images/api_gateway_pipeline.png` for the full flow diagram.
 
 | Failure point | Response |
 |---|---|
+| CORS preflight rejected | `403` |
 | Rate limit exceeded | `429` |
 | JWT invalid / expired / revoked | `401` |
-| Route not found | `404` (not shown in pipeline diagram, implicit) |
+| Route not found | `404` |
+| Downstream service timeout | `504` |
+| Downstream service unavailable (circuit open) | `503` |
 
 ## Scalability
 

@@ -100,26 +100,36 @@ Gateway
  │
  ├── Authentication
  ├── Order
- ├── Wallet
+ ├── Wallet (read-only: balances, transactions)
  ├── Market
  └── Notification
 
 Order
  │
- ├── Wallet (Reserve)
- └── Kafka
+ ├── Wallet (gRPC: ReserveFunds, ReleaseFunds)
+ └── Kafka (publish: OrderCreated, OrderCancelRequested)
 
 Matching Engine
  │
- └── Kafka
+ └── Kafka (consume: OrderCreated, OrderCancelRequested;
+          publish: TradeExecuted, OrderCancelled)
 
 Settlement
  │
- ├── Wallet
- ├── Trade
- ├── Portfolio
- ├── Market
- └── Notification
+ ├── Kafka (consume: TradeExecuted)
+ └── Wallet (gRPC: SettleTrade)
+
+Wallet
+ │
+ └── Kafka (publish via outbox: TradeSettled)
+
+Portfolio
+ │
+ └── Kafka (consume: TradeSettled; publish: PortfolioUpdated)
+
+Notification
+ │
+ └── Kafka (consume: TradeSettled, PortfolioUpdated, OrderCancelled)
 ```
 
 ---
@@ -169,31 +179,23 @@ Matching Engine
 
 ↓
 
-TradeExecuted
+Kafka (TradeExecuted)
 
 ↓
 
-Settlement
+Settlement Service
 
 ↓
 
-Trade Service
+Wallet (gRPC: SettleTrade)
 
 ↓
 
-Wallet
+Kafka (TradeSettled, published by Wallet via outbox)
 
 ↓
 
-Portfolio
-
-↓
-
-Market
-
-↓
-
-Notification
+Portfolio + Market + Notification (consume independently)
 ```
 
 ---
@@ -205,7 +207,7 @@ Client
 
 ↓
 
-Order Service
+Order Service (status → CANCELLING)
 
 ↓
 
@@ -213,7 +215,7 @@ Outbox
 
 ↓
 
-Kafka
+Kafka (OrderCancelRequested)
 
 ↓
 
@@ -221,15 +223,15 @@ Matching Engine
 
 ↓
 
-OrderCancelled
+Kafka (OrderCancelled)
 
 ↓
 
-Settlement
+Order Service (status → CANCELLED)
 
 ↓
 
-Wallet Release
+Wallet ReleaseFunds (gRPC, called by Order Service)
 ```
 
 ---
@@ -259,14 +261,13 @@ Wallet Release
 
 Core topics
 
-- OrderCreated
-- OrderCancelRequested
-- OrderCancelled
-- TradeExecuted
-- TradeRecorded
-- TradeSettled
-- PortfolioUpdated
-- NotificationCreated
+- `OrderCreated` — published by Order Service (via outbox), consumed by Matching Engine
+- `OrderCancelRequested` — published by Order Service (via outbox), consumed by Matching Engine
+- `OrderCancelled` — published by Matching Engine, consumed by Order Service (status update + fund release)
+- `TradeExecuted` — published by Matching Engine, consumed by Settlement Service
+- `TradeSettled` — published by Wallet Service (via outbox, after settlement commit), consumed by Portfolio Service, Notification Service
+- `PortfolioUpdated` — published by Portfolio Service, consumed by Notification Service
+- `NotificationCreated` — published by Notification Service, pushed via WebSocket Gateway
 
 ---
 

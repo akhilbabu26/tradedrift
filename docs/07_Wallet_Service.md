@@ -138,11 +138,12 @@ Matching Engine --TradeExecuted(Kafka)--> Settlement Service
 ```
 ACTIVE
   |
+  |-- Full fill -----> CONSUMED
   |-- Partial fill --> PARTIALLY_CONSUMED
   |                        |
   |                        |-- Further fills --> CONSUMED
   |                        `-- Cancel ---------> RELEASED
-  `-- Cancel -----------------------------------> RELEASED
+  `-- Cancel ---------------------------------> RELEASED
 ```
 
 `remaining_amount = reserved_amount − consumed_amount` at all times. Release always returns exactly `remaining_amount` to `available_balance`.

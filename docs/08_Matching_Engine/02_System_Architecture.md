@@ -320,6 +320,16 @@ Responsibilities
 - Update Order Book
 - Generate Matching Results
 
+**`trade_id` generation:**
+
+When a match occurs, the Matching Core generates a `trade_id` as a **UUIDv7 in application code, in memory, at match time**.
+
+The `trade_id` is embedded in the matching result before it is placed on the Output Queue.
+
+The Matching Engine has no database. No database round-trip occurs. This is consistent with the ID Correlation Standard — the owning service generates the ID before any persistence or publication.
+
+The `trade_id` is the idempotency key used by Settlement Service for `SettleTrade`. Settlement Service uses it to guarantee a trade is settled exactly once even if `TradeExecuted` is redelivered.
+
 The Matching Core does NOT
 
 - Publish Kafka
@@ -337,16 +347,24 @@ Responsibilities
 
 Publish
 
-- TradeExecuted
-- OrderFilled
-- OrderCancelled
-- OrderPartiallyFilled
+- `TradeExecuted` — consumed by Settlement Service
+- `OrderCancelled` — consumed by Order Service
+
+> **Note:** There are no `OrderFilled` or `OrderPartiallyFilled` events. Fill status updates are driven by `TradeExecuted` — the Order Service updates its own order status when it observes a `TradeExecuted` event carrying its `order_id`. The ME publishes exactly two event types.
 
 Update
 
-- Redis
+- Redis — order book read replica (snapshot pushed after each match)
 - Metrics
-- Recovery metadata
+- Recovery metadata (Kafka checkpoint row)
+
+**Checkpoint timing:**
+
+The checkpoint row (`{topic, partition, offset}` in Postgres) is updated **after** the Kafka publish is acknowledged — never before.
+
+If the checkpoint were written before Kafka confirms the publish, a crash between those two steps would advance the offset without the event having been delivered. On restart, the ME would skip replaying that match, causing Settlement Service to never receive the `TradeExecuted` event.
+
+Checkpoints are written **per successful match**, not per event consumed. Writing on every `OrderCreated` consumed would add a Postgres write to the hot path. Writing per match is acceptable overhead and avoids the forever-growing replay problem.
 
 The Matching Core never waits for these operations.
 
@@ -465,10 +483,17 @@ Finish Current Match
 ↓
 
 Flush Output Queue
+  (publish all pending TradeExecuted / OrderCancelled to Kafka)
+
+↓
+
+Wait for Kafka Acknowledgement
+  (checkpoint MUST NOT be written until all publishes are confirmed)
 
 ↓
 
 Persist Recovery Metadata
+  (write final checkpoint offset to Postgres)
 
 ↓
 

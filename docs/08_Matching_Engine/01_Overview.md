@@ -213,13 +213,13 @@ Whether ten services consume `TradeExecuted` or only one is irrelevant to the Ma
              │                   │
              └───────────────────┘
                 │            │
-                │            │
                 ▼            ▼
         TradeExecuted   OrderCancelled
-                │
-                ▼
-        Settlement Service
-                │
+                │            │
+                ▼            ▼
+        Settlement    Order Service
+        Service       (status → CANCELLED
+                │      ReleaseFunds)
                 ▼
          Wallet Service
                 │
@@ -351,13 +351,14 @@ Limit orders remain active until:
 
 # 9. Service Interactions
 
-| Service | Interaction |
-|----------|-------------|
-| Order Service | Consumes `OrderCreated` and `OrderCancelRequested` |
-| Settlement Service | Publishes `TradeExecuted` |
-| Redis | Publishes live order book snapshots |
-| Market Service | Reads trading pair configuration |
-| PostgreSQL | Stores recovery checkpoints only |
+| Direction | Service | Event / Action |
+|-----------|---------|----------------|
+| ME **consumes from** | Order Service | `OrderCreated`, `OrderCancelRequested` |
+| ME **publishes to** | Settlement Service | `TradeExecuted` |
+| ME **publishes to** | Order Service | `OrderCancelled` |
+| ME **writes to** | Redis | Live order book snapshot (read replica, after each match) |
+| ME **reads from** | Market Service | Trading pair configuration (startup only) |
+| ME **reads / writes** | PostgreSQL | Kafka checkpoint rows only (`{topic, partition, offset}`) |
 
 ---
 

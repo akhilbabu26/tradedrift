@@ -3,14 +3,13 @@
 **Document:** 04_Data_Structures / 02_Order_Book.md
 **Service:** Matching Engine
 **Version:** V1.0
-**Status:** Design Complete
 **Last Updated:** July 2026
 
 ---
 
 # 1. Purpose
 
-This document defines the `OrderBook` struct — the top-level container that holds the complete live state of one trading pair.
+This document defines the `OrderBook` struct — the top-level container for one trading pair's complete live state.
 
 ---
 
@@ -18,124 +17,118 @@ This document defines the `OrderBook` struct — the top-level container that ho
 
 ```go
 type OrderBook struct {
-    marketID string
-    bids     Side
-    asks     Side
+    marketID   string
+    bids       Side
+    asks       Side
+    orderIndex map[uuid.UUID]*OrderNode
 }
 ```
+
+> **Architectural decision:** `orderIndex` lives on `OrderBook`, not on `Side`. This gives a single lookup for any cancel regardless of which side the order rests on. See `06_Order_Index.md`.
 
 ---
 
 # 3. Fields
 
-## marketID
+### marketID
 
-The trading pair this book represents.
+The trading pair this book represents (e.g. `BTC-USDT`). Set at construction. Never changes.
 
-Example: `BTC-USDT`
-
-Set at construction time. Never changes during the lifetime of the book.
-
-Used in published events (`TradeExecuted`, `OrderCancelled`) and in depth snapshots pushed to Redis.
+Carried in all published events (`TradeExecuted`, `OrderCancelled`) and in Redis depth snapshots.
 
 ---
 
-## bids
+### bids
 
-The buy side of the book.
+The buy side. Type: `Side`.
 
-Type: `Side`
+Contains all resting BUY limit orders, sorted highest-price-first.
 
-Contains all resting BUY limit orders.
-
-Sorted in **descending** price order — the highest bid is always at index 0.
+`bids.sortedPrices[0]` is always the best (highest) bid.
 
 ---
 
-## asks
+### asks
 
-The sell side of the book.
+The sell side. Type: `Side`.
 
-Type: `Side`
+Contains all resting SELL limit orders, sorted lowest-price-first.
 
-Contains all resting SELL limit orders.
+`asks.sortedPrices[0]` is always the best (lowest) ask.
 
-Sorted in **ascending** price order — the lowest ask is always at index 0.
+---
+
+### orderIndex
+
+```go
+orderIndex map[uuid.UUID]*OrderNode
+```
+
+A single hash map covering **both sides** of the book.
+
+- Key: `orderID` (UUIDv7)
+- Value: pointer to the `OrderNode`
+
+Used by every cancel operation. The `node.side` field on the retrieved node tells the algorithm which side to use for subsequent PriceLevel operations.
+
+This replaces the previous design of one `orderIndex` per `Side`, which required checking both maps on every cancel.
 
 ---
 
 # 4. Responsibilities
 
-The OrderBook is responsible for:
-
+**OrderBook is responsible for:**
 - Maintaining all resting BUY limit orders (bids).
 - Maintaining all resting SELL limit orders (asks).
+- Providing a single O(1) order lookup by ID via `orderIndex`.
 - Providing the bid/ask spread at any moment.
 - Providing a depth snapshot on demand.
 
-The OrderBook is NOT responsible for:
-
-- Matching logic. That belongs to the Matching Core (`matcher/`).
-- Publishing events. That belongs to the Publisher Layer.
-- Storing filled or cancelled orders. Those are removed immediately.
+**OrderBook is NOT responsible for:**
+- Matching logic → belongs to the Matching Core.
+- Publishing events → belongs to the Publisher Layer.
+- Storing filled or cancelled orders → removed immediately.
 
 ---
 
 # 5. Ownership
 
 ```
-Market Engine
-      |
-      v
-   OrderBook        <-- one per trading pair
-      |
-      +-- bids (Side)
-      +-- asks (Side)
+Market Engine (goroutine)
+        │
+        ▼
+    OrderBook                ← one per trading pair
+        │
+        ├── bids (Side)
+        ├── asks (Side)
+        └── orderIndex       ← shared across both sides
 ```
 
-One Market Engine owns exactly one OrderBook.
-
-One OrderBook belongs to exactly one Market Engine.
-
-No two Market Engines share an OrderBook.
-
-No goroutine other than the owning Market Engine's Event Loop reads or writes the OrderBook.
+One Market Engine owns exactly one OrderBook. No two Market Engines share an OrderBook. No goroutine other than the owning Market Engine's Event Loop reads or writes the OrderBook.
 
 ---
 
 # 6. Market Isolation
 
-Each trading pair has its own independent OrderBook.
-
-State never crosses between books.
-
 ```
-BTC-USDT Engine  -->  BTC-USDT OrderBook
-ETH-USDT Engine  -->  ETH-USDT OrderBook
-SOL-USDT Engine  -->  SOL-USDT OrderBook
+BTC-USDT Engine  ──▶  BTC-USDT OrderBook
+ETH-USDT Engine  ──▶  ETH-USDT OrderBook
+SOL-USDT Engine  ──▶  SOL-USDT OrderBook
 ```
 
-This means:
-
-- An event for BTC-USDT never affects the ETH-USDT book.
-- Concurrent matching across markets requires no locks or coordination.
-- A crash in one market's engine does not corrupt another market's book.
+Events for one market never affect another market's book. Concurrent matching across markets requires no locks or coordination.
 
 ---
 
 # 7. Spread
 
-The current spread is derived from bids and asks at any moment:
-
 ```
-bestBid = bids.sortedPrices[0]
-bestAsk = asks.sortedPrices[0]
-spread  = bestAsk - bestBid
+bestBid  =  bids.sortedPrices[0]
+bestAsk  =  asks.sortedPrices[0]
+spread   =  bestAsk - bestBid
 ```
 
-A negative spread means the book is crossable — there is a match available.
-
-The Matching Core checks for a crossable book on every incoming order.
+When `spread <= 0`, the book is crossable — a match is available. The Matching Core checks this on every incoming order.
 
 ---
 
@@ -143,32 +136,33 @@ The Matching Core checks for a crossable book on every incoming order.
 
 ```
 Market Engine starts
-      |
-      v
-OrderBook created (empty bids, empty asks)
-      |
-      v
-Kafka replay (recovery) or live event processing
-      |
-      v
-Orders accumulate, matches occur
-      |
-      v
+        │
+        ▼
+OrderBook created  (empty bids, empty asks, empty orderIndex)
+        │
+        ▼
+Recovery replay  (OrderCreated and OrderCancelRequested events replayed
+                  through the matching algorithm in suppressed mode)
+        │
+        ▼
+Live event processing
+        │
+        ▼
 Market Engine stops
-      |
-      v
-OrderBook discarded (ephemeral state)
+        │
+        ▼
+OrderBook discarded  (ephemeral — rebuilt from Kafka on next start)
 ```
 
-The OrderBook is never persisted directly.
-
-Recovery rebuilds it from Kafka events. See `08_Recovery_Strategy.md`.
+The OrderBook is never persisted directly. See `08_Recovery_Strategy.md`.
 
 ---
 
 # 9. References
 
-- 01_Overview.md — hybrid architecture
-- 05_Side.md — Side struct detail
-- 07_Algorithms.md — Insert, Cancel, Match pseudocode
-- 08_Memory_Model.md — ownership and pointer graph
+- `01_Overview.md` — hybrid architecture overview
+- `05_Side.md` — Side struct
+- `06_Order_Index.md` — orderIndex detail
+- `07_Algorithms.md` — Insert, Cancel, Match pseudocode
+- `08_Memory_Model.md` — ownership and pointer graph
+

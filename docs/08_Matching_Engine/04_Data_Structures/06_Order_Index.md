@@ -3,7 +3,6 @@
 **Document:** 04_Data_Structures / 06_Order_Index.md
 **Service:** Matching Engine
 **Version:** V1.0
-**Status:** Design Complete
 **Last Updated:** July 2026
 
 ---
@@ -14,133 +13,105 @@ This document explains the `orderIndex` map — the structure that makes O(1) or
 
 ---
 
-# 2. Definition
+# 2. Definition and Location
 
 ```go
-orderIndex map[uuid.UUID]*OrderNode
+type OrderBook struct {
+    marketID   string
+    bids       Side
+    asks       Side
+    orderIndex map[uuid.UUID]*OrderNode   // book-level, not Side-level
+}
 ```
 
-One `orderIndex` exists per `Side`.
-
-The bid side has its own index; the ask side has its own index.
+> `orderIndex` was moved from `Side` to `OrderBook`. Previously each side had its own index, requiring two hash lookups on every cancel (check bids, then asks). With a book-level index, cancel is a **single hash lookup** regardless of which side the order rests on. `node.side` on the returned node tells the algorithm which side to use for PriceLevel operations.
 
 ---
 
-# 3. What It Solves
+# 3. The Problem It Solves
 
-Without `orderIndex`, cancelling an order requires:
-
-```
-For each price level in the book:
-    For each order in the level's queue:
-        If order.orderID == target:
-            remove it
-```
-
-This is O(p * q) where p = number of price levels, q = orders per level.
-
-With `orderIndex`:
+**Without `orderIndex`:**
 
 ```
-node = orderIndex[orderID]          O(1) map lookup
-list.Remove(node.element)           O(1) linked list remove
+for each price level in bids:
+    for each order in level.orders:
+        if order.orderID == target → remove it
 ```
 
-Cancel is O(1) regardless of book depth.
+Worst case: O(p × q) where p = price levels, q = orders per level.
+
+**With `orderIndex`:**
+
+```
+node = book.orderIndex[orderID]    O(1)
+list.Remove(node.element)          O(1)
+```
+
+O(1) regardless of book depth.
 
 ---
 
-# 4. Pointer Relationships
+# 4. Cancel Path
 
 ```
-Side.orderIndex
-        |
-        |  orderID  -->  *OrderNode
-        |
-        v
+book.orderIndex[orderID]
+        │  O(1)
+        ▼
+    node.side  ──▶  select bids or asks
+    node.price ──▶  side.priceLevels[node.price]  ──▶  *PriceLevel
+                                                              │
+                                                              ▼
+    level.totalQty -= node.remainingQty
+    level.orders.Remove(node.element)   O(1) via element pointer
+    delete(book.orderIndex, orderID)
+
+    if level empty:
+        delete(side.priceLevels, node.price)
+        binary search + remove node.price from side.sortedPrices
+```
+
+---
+
+# 5. Pointer Relationships
+
+```
+book.orderIndex[orderID]
+        │  *OrderNode
+        ▼
     OrderNode
-        |
-        +-- price      -->  used to find PriceLevel in priceLevels map
-        |
-        +-- element    -->  *list.Element  (position in PriceLevel.orders)
-                                |
-                                v
-                         list.Remove(element)   O(1)
+        ├── side    ──▶  select bids or asks
+        ├── price   ──▶  key in side.priceLevels
+        └── element ──▶  *list.Element
+                              │
+                              ▼
+                         list.Remove(element)  O(1)
 ```
-
-The full cancel path:
-
-```
-1. orderIndex[orderID]            --> get *OrderNode           O(1)
-2. priceLevels[node.price]        --> get *PriceLevel          O(1)
-3. level.totalQty -= node.remainingQty                         O(1)
-4. level.orders.Remove(node.element)                           O(1)
-5. delete orderIndex[orderID]                                  O(1)
-6. if level.orders.Len() == 0:
-       delete priceLevels[node.price]                          O(1)
-       remove node.price from sortedPrices     O(log n) search + O(n) shift
-```
-
-Steps 1–5 are all O(1). Step 6 only runs when the last order at a price is cancelled.
 
 ---
 
-# 5. Lifecycle
+# 6. Lifecycle
 
-**On Insert:**
-
-```go
-orderIndex[node.orderID] = node
-```
-
-The node is registered immediately after being placed in the linked list.
-
-**On Cancel:**
-
-```go
-delete(orderIndex, orderID)
-```
-
-The node is deregistered before (or as part of) being removed from the linked list.
-
-**On Full Fill:**
-
-```go
-delete(orderIndex, node.orderID)
-```
-
-Same as cancel — deregistered when removed from the book.
-
-**On Partial Fill:**
-
-The node stays in the book. `orderIndex` is not changed. The pointer remains valid.
-
----
-
-# 6. Ownership
-
-`orderIndex` is owned by `Side`.
-
-An order that rests on the bid side is registered in `bids.orderIndex`.
-
-An order that rests on the ask side is registered in `asks.orderIndex`.
-
-An order is never registered in both indices simultaneously — an order rests on exactly one side.
+| Event | orderIndex change |
+| --- | --- |
+| Order inserted | `orderIndex[node.orderID] = node` |
+| Partial fill | No change — node stays in book |
+| Order cancelled | `delete(orderIndex, orderID)` |
+| Order fully filled | `delete(orderIndex, orderID)` |
 
 ---
 
 # 7. Invariants
 
-- Every order currently resting in the book is present in its side's `orderIndex`.
-- Every entry in `orderIndex` corresponds to an order that is physically present in a PriceLevel's linked list.
-- No order is registered in `orderIndex` after it has been removed from the book.
-- `orderIndex` and the linked lists are always consistent — they are updated atomically within the same Event Loop.
+- Every resting order is present in `orderIndex`.
+- Every `orderIndex` entry corresponds to an order physically present in a PriceLevel linked list.
+- No order is registered in `orderIndex` after removal from the book.
+- `orderIndex` and linked lists are always consistent — updated together within the same Event Loop.
 
 ---
 
 # 8. References
 
-- 03_Order_Node.md — the `element` field that enables O(1) removal
-- 04_Price_Level.md — the linked list that holds the nodes
-- 05_Side.md — where orderIndex lives
-- 07_Algorithms.md — Cancel pseudocode
+- `02_Order_Book.md` — where `orderIndex` lives
+- `03_Order_Node.md` — the `element` field that enables O(1) removal
+- `04_Price_Level.md` — the linked list that holds the nodes
+- `07_Algorithms.md` — Cancel pseudocode

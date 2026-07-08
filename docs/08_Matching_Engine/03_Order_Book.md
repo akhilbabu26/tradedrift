@@ -457,18 +457,33 @@ This minimizes matching latency.
 
 # 14. Failure & Recovery
 
-The Order Book is considered ephemeral state.
+The Order Book is ephemeral state — it is never persisted directly. On restart it is rebuilt from Kafka.
 
-If the Matching Engine restarts:
+**Recovery sequence:**
 
-1. Read the checkpoint row from Postgres  (`{topic, partition, offset}`).
-2. Replay Kafka events from that offset.
-3. Reconstruct the in-memory Order Book by processing each replayed event.
-4. Resume live matching.
+1. Read the checkpoint row from Postgres (`{topic, partition, offset}`).
+2. Enter **RECOVERY mode** — Publisher output is suppressed (no events published, no Redis snapshots pushed).
+3. Replay `OrderCreated` and `OrderCancelRequested` events from the checkpoint offset through the full matching algorithm.
+4. The algorithm re-derives all trades naturally — `TradeExecuted` events are NOT replayed.
+5. When the checkpoint offset is reached, exit RECOVERY mode and resume live matching.
 
-V1 has no snapshot to load. The checkpoint row tells the ME exactly where to start replaying — avoiding a full replay from offset 0 on every restart.
+**Why not replay TradeExecuted?**
 
-Recovery procedures are documented in **08_Recovery_Strategy.md**.
+The matching algorithm is deterministic. The same ordered sequence of `OrderCreated` and `OrderCancelRequested` events always produces the same fills and the same final book state. Replaying input events through the algorithm:
+
+- Uses the same code path as live processing — no separate fill-replay logic to maintain.
+- Is consistent by construction — derived from the true source of truth (input events), not from the ME's own prior output.
+- Produces new `trade_id` values during replay, but those trades are already settled — the suppressed output is never published.
+
+| Replayed event | Operation |
+|---|---|
+| `OrderCreated` | `Match(order, RECOVERY)` — runs full algorithm, output suppressed |
+| `OrderCancelRequested` | `Cancel(orderID)` |
+| `TradeExecuted` | **Not replayed** — re-derived by the algorithm |
+
+V1 has no snapshot mechanism. The checkpoint row tells the ME exactly where to start replaying, avoiding a full replay from offset 0.
+
+Full recovery sequencing is documented in **08_Recovery_Strategy.md**.
 
 ---
 
@@ -514,12 +529,15 @@ Reason:
 
 Implementation details are described in:
 
-- 04_Data_Structures.md
-- 05_Matching_Algorithm.md
-- 07_Concurrency_Model.md
-- 08_Recovery_Strategy.md
-- 09_Redis_Projection.md
-- 10_Failure_Handling.md
-- 11_Monitoring.md
-- 12_Sequence_Diagrams.md
-- 13_Future_Enhancements.md
+- `04_Data_Structures/01_Overview.md` — hybrid architecture and struct definitions
+- `04_Data_Structures/07_Algorithms.md` — Insert, Cancel, Match pseudocode
+- `04_Data_Structures/09_Complexity_Analysis.md` — operation complexity table
+- `04_Data_Structures/10_Design_Decisions.md` — ADR for all design choices
+- `05_Matching_Algorithm.md`
+- `07_Concurrency_Model.md`
+- `08_Recovery_Strategy.md`
+- `09_Redis_Projection.md`
+- `10_Failure_Handling.md`
+- `11_Monitoring.md`
+- `12_Sequence_Diagrams.md`
+- `13_Future_Enhancements.md`

@@ -44,7 +44,7 @@ The O(n) shift is acceptable because active price levels are small (tens to low 
 
 ---
 
-# 3. ADR-002 — Doubly-Linked List for Order Queues
+# 3. ADR(Architecture Decision Record)-002 — Doubly-Linked List for Order Queues
 
 **Decision:** Use Go stdlib `container/list` as the FIFO queue at each price level.
 **Status:** Accepted

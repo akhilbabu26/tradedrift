@@ -13,17 +13,15 @@ This document set defines the in-memory data structures used by the Matching Eng
 
 ---
 
-# 2. Design Constraints
+## 2. Design Constraints
 
-| Constraint | Implication |
-| --- | --- |
-| All operations in-memory | No database access during matching |
-| `float64` not permitted | All prices and quantities use `decimal.Decimal` |
-| Cancel must be O(1) | Drives the linked-list + pointer design |
-| Best price lookup must be O(1) | Drives the sorted-slice design |
-| Lock-free within one goroutine | No mutexes needed — single Event Loop per market |
-
----
+| **Constraint** | **Why It Exists** | **Chosen Solution** |
+|----------------|-------------------|---------------------|
+| Low-latency matching | Database access is too slow for the matching path. | Execute all matching logic entirely in memory. |
+| Accurate monetary calculations | Floating-point arithmetic introduces precision errors. | Use `decimal.Decimal` for all prices and quantities. |
+| Fast order cancellation | Searching the order book is too expensive. | Store a direct pointer to each order's linked-list node. |
+| Instant best price access | Matching always starts from the best bid/ask. | Maintain sorted price-level indexes for O(1) access. |
+| High concurrency without locks | Mutexes increase latency and complexity. | Process events using a single goroutine per market. |
 
 # 3. Design Philosophy
 

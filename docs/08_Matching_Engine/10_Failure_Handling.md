@@ -27,7 +27,7 @@ This document catalogs every failure mode the Matching Engine must tolerate, and
 | Kafka broker unreachable (consume side) | Kafka Consumer | New events stop arriving | Consumer retries connection with backoff; Event Loops simply idle (empty Input Queue) — no corruption, matching resumes automatically once Kafka is reachable |
 | Kafka broker unreachable (publish side) | Publisher Layer | Trades already matched, but cannot be announced | Publisher retries publish with backoff; Output Queue backs up in memory; Event Loop backpressures if Output Queue is bounded and fills (Section 5) — matching **pauses** for that market rather than dropping a `TradeExecuted` |
 | Redis unreachable | Publisher Layer | Depth projection goes stale | Log + metric, drop this write, continue — never retried indefinitely, never blocks Kafka publish (`09_Redis_Projection.md §7`) |
-| Postgres unreachable (checkpoint write) | Publisher Layer | Checkpoint falls behind | Retry with backoff; on restart, ME simply replays a larger range from the last successfully-written checkpoint (`08_Recovery_Strategy.md §6`) — never a correctness issue, only a longer recovery replay |
+| Postgres unreachable (checkpoint write) | Publisher Layer | Checkpoint falls behind | Retry with backoff; on restart, ME replays a larger range from the last successfully-written checkpoint (`08_Recovery_Strategy.md §6`) — never a correctness issue, only a longer recovery replay. **Lag threshold:** `me_checkpoint_lag_events` (`11_Monitoring.md §2.4`) grows while Postgres is down; a sustained value above the configured P2 alert threshold (e.g. 50,000 events) warns operators to restore Postgres before any restart, avoiding a surprise-long recovery. No explicit circuit breaker is implemented in V1; the metric and alert serve as the manual intervention trigger. |
 | Malformed / schema-invalid event | Kafka Consumer | Cannot deserialize | Event is routed to a dead-letter topic (Section 4); consumer offset still advances so one bad message never blocks the partition |
 | Panic inside the Match Loop | Event Loop | Market matching halts; other markets are unaffected | `defer/recover` catches the panic; event is dead-lettered; market is marked FAILED and the Event Loop stops for that market; recovery-by-replay (`08_Recovery_Strategy.md §4`) rebuilds a clean, consistent book before the market resumes; a P1 alert is raised. **Never continues with potentially corrupted book state** — "matching correctness always wins" (Section 2) |
 | Tick/lot size violation on incoming order | Matching Core (`05_Matching_Algorithm.md §3`) | Order can't be matched | Reject silently at the ME level (should already have been caught by Order Service — this is a defensive check, not expected to fire); log + metric |
@@ -80,11 +80,12 @@ func (m *MarketEngine) processWithRecovery(event Event) (ok bool) {
             ok = false      // signal Run() to exit the Event Loop
         }
     }()
-    results := m.matchingCore.Process(m.book, event)
-    for _, r := range results {
-        m.outputQueue <- r
-    }
+    // processEvent (07_Concurrency_Model.md §5) handles the full event:
+    // Match, IOC-cancel detection, GetDepth, and sends ONE MatchResult to
+    // the Output Queue. Any panic inside those operations is caught above.
+    m.processEvent(event)
     return
+
 }
 ```
 

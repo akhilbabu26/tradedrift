@@ -65,50 +65,167 @@ type MarketEngine struct {
 
 **Backpressure:** The Input Queue is bounded (e.g. depth 1000, tunable). If an Event Loop falls behind and its queue fills, the Kafka Consumer's send blocks, which in turn stalls consumption of that partition — Kafka's own flow control takes over. This is intentional: a slow market never causes the ME to drop events; it causes consumer lag, which is visible in monitoring (`11_Monitoring.md`).
 
-> **V1.5 note:** V1 uses a single Kafka Consumer goroutine routing events to all market Input Queues. If BTC-USDT's queue saturates, that single goroutine blocks and SOL-USDT routing also stalls. V1.5 replaces this with **one consumer goroutine per Kafka partition** — a backed-up BTC-USDT consumer no longer affects other markets. See `13_Future_Enhancements.md §4.1`.
+> **V1.5 note:** V1 uses a single Kafka Consumer goroutine routing events to all market Input Queues. If BTC-USDT's queue saturates, that single goroutine blocks and SOL-USDT routing also stalls. V1.5 replaces this with **one consumer goroutine per Kafka partition** — a backed-up BTC-USDT consumer no longer affects other markets. See `16_Future_Enhancements.md §4.1`.
 
 ---
 
 # 5. Event Loop
 
 ```go
+// Run loops over the Input Queue until the channel is closed (graceful shutdown)
+// or a panic causes the market to halt (10_Failure_Handling.md §6).
 func (m *MarketEngine) Run() {
     for event := range m.inputQueue {
-        results := m.matchingCore.Process(m.book, event)
-        for _, r := range results {
-            m.outputQueue <- r
+        if !m.processWithRecovery(event) {
+            return  // panic — halt this market's Event Loop
         }
+    }
+}
+
+// processEvent processes ONE input event and sends exactly ONE MatchResult to
+// the Output Queue. This "one-in one-out" contract is the key architectural
+// invariant of the pipeline:
+//
+//   ONE input event → ONE Output Queue message → ONE checkpoint write
+//
+// Consequences:
+//   - Zero fills (resting order): sends MatchResult{fills:nil, snapshot, offset}
+//   - Sweep of N fills:           sends one MatchResult containing all N fills
+//   - Publisher writes exactly one checkpoint per MatchResult.sourceOffset
+//   - No "isLast" flag needed; the MatchResult IS the complete event outcome
+//
+func (m *MarketEngine) processEvent(event InputEvent) {
+    var fills        []Fill
+    var cancelResult *OrderCancelled
+
+    switch e := event.payload.(type) {
+
+    case OrderCreated:
+        node := buildOrderNode(e)    // heap-allocated *OrderNode (see §2 Insert note)
+
+        // Pre-match checks: Tick and lot size validation (05_Matching_Algorithm.md §3)
+        if !validTickAndLot(node, m.config) {
+            cancelResult = &OrderCancelled{
+                orderID:           node.orderID,
+                userID:            node.userID,
+                marketID:          node.marketID,
+                remainingQuantity: node.originalQty,
+                reason:            "invalid_order_parameters",
+                cancelledAt:       now(),
+            }
+        } else {
+            fills = m.matchingCore.Match(m.book, node, m.mode)
+
+            // MARKET order IOC: if any remainder exists after the match loop,
+            // the unfilled quantity must be signalled so Order Service can
+            // transition the order and Wallet Service can release reserved funds.
+            // (05_Matching_Algorithm.md §6, 06_Event_Contracts.md §4.2)
+            if e.orderType == MARKET && node.remainingQty > 0 {
+                cancelResult = &OrderCancelled{
+                    orderID:           node.orderID,
+                    userID:            node.userID,
+                    marketID:          node.marketID,
+                    remainingQuantity: node.remainingQty,
+                    reason:            "ioc_expired",
+                    cancelledAt:       now(),
+                }
+            }
+        }
+
+    case OrderCancelRequested:
+        // Cancel returns the removed node (or nil if already filled).
+        // The Event Loop — not the Match Loop — is responsible for
+        // building the OrderCancelled payload from the returned node.
+        cancelledNode := Cancel(m.book, e.orderID)   // O(1) — §3
+        if cancelledNode != nil {
+            cancelResult = &OrderCancelled{
+                orderID:           cancelledNode.orderID,
+                userID:            cancelledNode.userID,
+                marketID:          cancelledNode.marketID,
+                remainingQuantity: cancelledNode.remainingQty,
+                reason:            "user_requested",
+                cancelledAt:       now(),
+            }
+        }
+        // nil return → silent no-op (order already fully filled)
+    }
+
+    // GetDepth is ALWAYS called, even for zero-fill events.
+    // Inserts, fills, and cancels all change book depth. The snapshot
+    // is accurate only after the full event has been processed.
+    snapshot := GetDepth(m.book, defaultDepth)   // O(depth) — §7
+
+    // Exactly ONE item sent to the Output Queue per input event.
+    m.outputQueue <- MatchResult{
+        fills:         fills,
+        cancelResult:  cancelResult,
+        depthSnapshot: snapshot,
+        sourceOffset:  event.offset,   // Kafka offset carried by InputEvent wrapper
     }
 }
 ```
 
-This is the only place `m.book` is ever touched. The loop is single-threaded by construction — there is no concurrent invocation to reason about, no interleaving of two orders' matching logic, and therefore no possibility of two goroutines racing on `bids.sortedPrices` or `orderIndex`.
+`m.book` is the only place ever touched by this goroutine. The loop is
+single-threaded by construction — no concurrent invocation, no interleaving
+of two orders' matching logic, no possibility of two goroutines racing on
+`bids.sortedPrices` or `orderIndex`.
 
-**Sequential guarantee:** Because the loop processes one event fully (including all resulting fills and any resulting `Insert`) before pulling the next event off `inputQueue`, matching is fully deterministic per market — this is what `03_Order_Book.md §5 Book Invariants` and `05_Matching_Algorithm.md §12` (Determinism) rely on.
-
----
+**Sequential guarantee:** One event is processed fully (all fills, any
+`Insert`, the `GetDepth` call, and the Output Queue send) before the next
+event is dequeued from `inputQueue`. This is what makes matching deterministic
+per market — `03_Order_Book.md §5 Book Invariants` and `05_Matching_Algorithm.md §12`
+both rely on it.
 
 # 6. Output Queue and Publisher Layer
 
-The Publisher Layer is a separate goroutine responsible for all I/O that must never block matching: Kafka publish, Redis projection update, checkpoint write, and metrics. The Event Loop sends results to the Output Queue and immediately continues — it never waits for I/O to complete.
+The Publisher Layer is a separate goroutine responsible for all I/O that must
+never block matching: Kafka publish, Redis projection update, checkpoint write,
+and metrics. The Event Loop sends one `MatchResult` to the Output Queue and
+immediately continues — it never waits for I/O to complete.
 
 ```
-Event Loop ──► Output Queue (chan) ──► Publisher
-                                            │
-                           ┌────────────────┼────────────────────┐
-                           ▼                ▼                    ▼
-                     publishKafka    pushRedisProjection   writeCheckpoint
-                  (TradeExecuted /   (depth snapshot        (once per input
-                  OrderCancelled)    after Kafka ack)       event — not per fill)
+Event Loop ──► Output Queue (chan MatchResult) ──► Publisher
+                                                        │
+                               ┌────────────────┬──────────────────────┐
+                               │                │                      │
+                               ▼                ▼                      ▼
+                         publishKafka    pushRedisProjection   writeCheckpoint
+                      (fills → N ×       (snapshot after        (once per
+                      TradeExecuted,      Kafka ack)            MatchResult.sourceOffset)
+                       cancelResult →
+                       OrderCancelled)
 ```
 
-**Why a separate goroutine:** Kafka, Redis, and Postgres writes carry latency and failure modes. `02_System_Architecture.md §12`: *"The Matching Core never waits for these operations."* A slow Kafka broker delays publishing, not matching.
+**Why a separate goroutine:** Kafka, Redis, and Postgres writes carry latency
+and failure modes. `02_System_Architecture.md §12`: *"The Matching Core never
+waits for these operations."* A slow Kafka broker delays publishing, not matching.
 
-**Checkpoint rule:** One `OrderCreated` can produce N fills (a sweep). All N fills share the same source Kafka input offset. The checkpoint is written **once, after the last fill for that input event is published** — not once per fill. Writing per-fill would be idempotent but semantically wrong: the Kafka offset belongs to the input event, not to individual fill results.
+**Checkpoint rule — one per MatchResult:** Because the Event Loop sends exactly
+one `MatchResult` per input event, the Publisher writes exactly one checkpoint
+per `MatchResult.sourceOffset`. A zero-fill event (resting order) still produces
+a `MatchResult` — its `fills` slice is empty but `sourceOffset` is set — so
+its checkpoint is written just as reliably as a sweep that produces 10 fills.
+No per-fill counting, no "isLast" flag, no sentinel message required.
 
-**V1 Publisher topology:** One Publisher goroutine per node, fan-in from all markets' Output Queues. V2 upgrades to one Publisher per market — see `13_Future_Enhancements.md §5`.
+**V1 Publisher topology:** One Publisher goroutine per node, fan-in from all
+markets' Output Queues. V2 upgrades to one Publisher per market — see
+`16_Future_Enhancements.md §5`.
 
-**Ordering guarantee:** A single Publisher goroutine drains each market's Output Queue in match order — preserving the in-order publish guarantee in `06_Event_Contracts.md §7`.
+**Fan-in mechanics:** The single Publisher goroutine uses a Go `select`
+statement over all markets' `outputQueue` channels. Go's `select` is
+pseudo-random when multiple channels are simultaneously ready — this is
+intentional and correct: cross-market ordering carries no guarantee (different
+markets publish to different Kafka partitions). Within a single market, the
+Output Queue channel is FIFO, so fill order is always preserved. A market
+whose Output Queue is empty is simply not selected; a market whose Output Queue
+is backed up receives more `select` picks until it drains, which is the
+desired backpressure behaviour.
+
+**Ordering guarantee:** Within a market, the Publisher drains `outputQueue`
+in event-arrival order, preserving the in-order publish guarantee in
+`06_Event_Contracts.md §7`. For each `MatchResult`, the Publisher publishes
+fills to Kafka in fill order (slice index 0 first), then publishes any
+`cancelResult`, then pushes the `depthSnapshot` to Redis.
 
 ---
 
@@ -208,4 +325,4 @@ CI-1 through CI-4 are enforced at runtime by the Go race detector. CI-5 through 
 - `03_Order_Book.md §5 Book Invariants` — only one Event Loop may modify an Order Book
 - `08_Recovery_Strategy.md` — checkpoint write ordering relative to Kafka ack
 - `11_Monitoring.md` — Input Queue depth / consumer lag as an observability signal
-- `13_Future_Enhancements.md` — V1.5 per-partition consumer, V2 per-market Publisher
+- `16_Future_Enhancements.md` — V1.5 per-partition consumer, V2 per-market Publisher

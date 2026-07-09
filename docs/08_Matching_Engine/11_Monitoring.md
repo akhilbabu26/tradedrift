@@ -47,7 +47,7 @@ Metrics, structured logs, and health endpoints together allow operators to answe
 | `me_events_consumed_total` | Counter, labeled by `market_id`, `event_type` | Number of events consumed (`OrderCreated`, `OrderCancelRequested`). |
 | `me_trades_executed_total` | Counter, labeled by `market_id` | Number of `TradeExecuted` events successfully published. |
 | `me_orders_cancelled_total` | Counter, labeled by `market_id` | Number of `OrderCancelled` events successfully published. |
-| `me_orders_resting_total` | Gauge, labeled by `market_id`, `side` | Current number of resting BUY and SELL orders. Maintained incrementally during insert/remove operations to avoid O(n) scans of `orderIndex`. |
+| `me_orders_resting_total` | Gauge, labeled by `market_id`, `side` | Current number of resting BUY and SELL orders. Maintained incrementally during insert/remove operations to avoid O(n) scans of `orderIndex`. **Recovery note:** because this gauge tracks in-memory book state (not published events), it IS incremented during RECOVERY mode replay just like in LIVE mode. After RECOVERY exits, the gauge is re-initialized from a one-time O(|orderIndex|) scan to correct any drift accumulated during replay — acceptable since this scan runs only at startup. |
 
 ---
 
@@ -72,6 +72,7 @@ Metrics, structured logs, and health endpoints together allow operators to answe
 | `me_output_queue_depth` | Gauge, labeled by `market_id` | Number of MatchResults waiting for the Publisher Layer. |
 | `me_output_queue_utilization` | Gauge (%) | Percentage utilization of the Output Queue. Sustained high utilization indicates slow downstream publishing. |
 | `kafka_consumer_lag` | Gauge, labeled by `market_id`, `partition` | Standard Kafka consumer lag showing how far behind the latest offset the Matching Engine is. **Implementation note:** this metric is typically sourced from the Kafka broker's consumer group metrics or external tooling (e.g. Burrow, `kafka-consumer-groups.sh`). The ME can also re-expose it by querying the Kafka admin API on each scrape cycle, but this is not a zero-cost operation. Deployment teams should decide whether to pull from Kafka-side tooling or have the ME self-report. |
+| `me_checkpoint_lag_events` | Gauge, labeled by `market_id` | Number of processed events since the last successfully-written Postgres checkpoint for this market. Computed as `(latest_processed_offset - last_checkpointed_offset)`. Under normal operation this stays near zero. A growing value indicates Postgres is unavailable or slow; a sustained value above the configured threshold triggers a P2 alert because a crash now forces a longer recovery replay. See `10_Failure_Handling.md §3` for the Postgres failure policy. |
 
 ---
 

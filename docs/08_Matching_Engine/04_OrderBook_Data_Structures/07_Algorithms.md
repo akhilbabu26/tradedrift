@@ -1,4 +1,4 @@
-﻿# TradeDrift Matching Engine — Algorithms
+# TradeDrift Matching Engine — Algorithms
 
 **Document:** 04_Data_Structures / 07_Algorithms.md
 **Service:** Matching Engine
@@ -18,22 +18,35 @@ Pseudocode for every operation on the Order Book data structures. This is the im
 Adds a resting limit order to the correct side. Market orders are never inserted — they match immediately and any remainder is discarded (IOC).
 
 ```
-Insert(book *OrderBook, order OrderNode):
+Insert(book *OrderBook, node *OrderNode):
+    // IMPLEMENTATION NOTE: `node` MUST be heap-allocated by the caller.
+    // Insert stores `node` in the linked list and in `orderIndex` — both
+    // outlive this function call.  Do NOT pass the address of a local variable:
+    //
+    //   WRONG:  Insert(book, &localNode)   ← dangling pointer after caller returns
+    //   RIGHT:  node := new(OrderNode)
+    //           *node = incoming           ← copy fields to heap
+    //           Insert(book, node)
 
-    side = &book.bids  if order.side == BUY
-           &book.asks  if order.side == SELL
+    // Defensive check: prevent duplicate order ID insertion
+    if book.orderIndex[node.orderID] != nil:
+        log.Warn("duplicate order ID", "orderID", node.orderID)
+        return
 
-    level = side.priceLevels[order.price.String()]
+    side = &book.bids  if node.side == BUY
+           &book.asks  if node.side == SELL
+
+    level = side.priceLevels[node.price.String()]
 
     if level == nil:
-        level = &PriceLevel{price: order.price, orders: list.New(), totalQty: 0}
-        side.priceLevels[order.price.String()] = level
-        idx = binarySearchInsertIndex(side.sortedPrices, order.price)
-        side.sortedPrices = insertAt(side.sortedPrices, idx, order.price)
+        level = &PriceLevel{price: node.price, orders: list.New(), totalQty: 0}
+        side.priceLevels[node.price.String()] = level
+        idx = binarySearchInsertIndex(side.sortedPrices, node.price)
+        side.sortedPrices = insertAt(side.sortedPrices, idx, node.price)
 
-    order.element = level.orders.PushBack(&order)
-    level.totalQty += order.remainingQty
-    book.orderIndex[order.orderID] = &order
+    node.element = level.orders.PushBack(node)
+    level.totalQty += node.remainingQty
+    book.orderIndex[node.orderID] = node
 ```
 
 | Case | Complexity |
@@ -48,11 +61,14 @@ Insert(book *OrderBook, order OrderNode):
 Removes an order by ID. Called when `OrderCancelRequested` is received.
 
 ```
-Cancel(book *OrderBook, orderID uuid.UUID):
+Cancel(book *OrderBook, orderID uuid.UUID) -> *OrderNode:
+    // Returns the cancelled node so the caller can build an OrderCancelled payload.
+    // Returns nil if the order is not in the book (already fully filled, or ID
+    // was never seen). The nil return is the idempotent no-op path.
 
     node = book.orderIndex[orderID]    // single lookup — O(1)
     if node == nil:
-        return  // not in book — idempotent, safe to call twice
+        return nil  // not in book — idempotent, safe to call twice
 
     side = &book.bids  if node.side == BUY
            &book.asks  if node.side == SELL
@@ -66,6 +82,8 @@ Cancel(book *OrderBook, orderID uuid.UUID):
         delete(side.priceLevels, node.price.String())
         idx = binarySearch(side.sortedPrices, node.price)
         side.sortedPrices = removeAt(side.sortedPrices, idx)
+
+    return node   // caller reads node.remainingQty etc. to build OrderCancelled
 ```
 
 | Step | Complexity |
@@ -171,12 +189,86 @@ GetDepth(book *OrderBook, depth int) -> DepthSnapshot:
 
 # 8. Match Loop
 
-The full matching loop the Matching Core runs on every incoming order.
+Returns `[]Fill` — one element per individual trade. The Event Loop
+(`07_Concurrency_Model.md §5`) wraps this slice into a `MatchResult` bundle
+together with the `DepthSnapshot`, any IOC cancel, and the source Kafka offset.
+The Match Loop itself never publishes events — it only returns data.
+
+## Crossable Function
 
 ```
-Match(book *OrderBook, incoming OrderNode, mode Mode) -> []MatchResult:
+crossable(incoming *OrderNode, best *OrderNode) -> bool:
 
-    results = []MatchResult{}
+    if incoming.type == MARKET:
+        return true                        // MARKET crosses any available liquidity;
+                                           // `if best == nil: break` is the only stop
+    if incoming.side == BUY:
+        return incoming.price >= best.price
+    else:                                  // SELL
+        return incoming.price <= best.price
+```
+
+## Data Structures
+
+### Fill (per-trade)
+
+One `Fill` is produced for each individual trade within a sweep.
+
+```go
+type Fill struct {
+    tradeID      uuid.UUID        // UUIDv7 — generated at match time, in-memory
+    makerOrderID uuid.UUID        // resting order consumed by this fill
+    takerOrderID uuid.UUID        // incoming order that triggered this fill
+    buyOrderID   uuid.UUID        // order ID of the BUY-side party
+    sellOrderID  uuid.UUID        // order ID of the SELL-side party
+    buyerUserID  uuid.UUID        // user_id of the BUY-side party (from OrderNode.userID)
+    sellerUserID uuid.UUID        // user_id of the SELL-side party (from OrderNode.userID)
+    price        decimal.Decimal  // always the maker's price (05_Matching_Algorithm.md §9)
+    quantity     decimal.Decimal  // min(incoming.remainingQty, best.remainingQty)
+}
+```
+
+### MatchResult (per-event)
+
+One `MatchResult` is sent to the Output Queue per processed input event.
+Bundles all fills + depth snapshot + IOC cancel + source Kafka offset.
+
+```go
+type MatchResult struct {
+    fills         []Fill           // 0..N fills; empty for resting-only events
+    cancelResult  *OrderCancelled  // non-nil for cancels (user-requested, IOC expiry, or rejects)
+    depthSnapshot DepthSnapshot    // book state after all fills (set by Event Loop)
+    sourceOffset  int64            // Kafka input offset (set by Event Loop)
+}
+```
+
+The `sourceOffset` field is what allows the Publisher to write exactly one
+checkpoint per input event — no "isLast" flag needed, no per-fill counting.
+
+## Fill Helper Functions
+
+```
+// Order IDs — which order is on the buy/sell side?
+buyOrderOf(incoming, best *OrderNode) -> uuid.UUID:
+    return incoming.orderID  if incoming.side == BUY  else  best.orderID
+
+sellOrderOf(incoming, best *OrderNode) -> uuid.UUID:
+    return incoming.orderID  if incoming.side == SELL  else  best.orderID
+
+// User IDs — which user is on the buy/sell side?
+buyUserOf(incoming, best *OrderNode) -> uuid.UUID:
+    return incoming.userID   if incoming.side == BUY  else  best.userID
+
+sellUserOf(incoming, best *OrderNode) -> uuid.UUID:
+    return incoming.userID   if incoming.side == SELL  else  best.userID
+```
+
+## Match Loop Pseudocode
+
+```
+Match(book *OrderBook, incoming *OrderNode, mode Mode) -> []Fill:
+
+    fills   = []Fill{}
     oppSide = &book.asks  if incoming.side == BUY
               &book.bids  if incoming.side == SELL
 
@@ -184,7 +276,7 @@ Match(book *OrderBook, incoming OrderNode, mode Mode) -> []MatchResult:
 
         best = ExecuteBest(oppSide)
         if best == nil:
-            break  // no liquidity
+            break  // opposite side empty
 
         if not crossable(incoming, best):
             break  // prices do not overlap
@@ -192,14 +284,16 @@ Match(book *OrderBook, incoming OrderNode, mode Mode) -> []MatchResult:
         fillQty  = min(incoming.remainingQty, best.remainingQty)
         trade_id = newUUIDv7()    // generated in-memory — no DB round-trip
 
-        results = append(results, MatchResult{
-            tradeID:  trade_id,
-            makerID:  best.orderID,
-            takerID:  incoming.orderID,
-            buyerID:  buyerOf(incoming, best),
-            sellerID: sellerOf(incoming, best),
-            price:    best.price,
-            quantity: fillQty,
+        fills = append(fills, Fill{
+            tradeID:      trade_id,
+            makerOrderID: best.orderID,
+            takerOrderID: incoming.orderID,
+            buyOrderID:   buyOrderOf(incoming, best),
+            sellOrderID:  sellOrderOf(incoming, best),
+            buyerUserID:  buyUserOf(incoming, best),
+            sellerUserID: sellUserOf(incoming, best),
+            price:        best.price,
+            quantity:     fillQty,
         })
 
         if fillQty == best.remainingQty:
@@ -209,16 +303,26 @@ Match(book *OrderBook, incoming OrderNode, mode Mode) -> []MatchResult:
 
         incoming.remainingQty -= fillQty
 
+    // LIMIT: insert remainder as resting order.
+    // `incoming` must already be heap-allocated by the caller (see §2 Insert note).
     if incoming.remainingQty > 0 and incoming.type == LIMIT:
         Insert(book, incoming)
 
-    if mode == RECOVERY:
-        return nil    // output suppressed — trades already settled
+    // MARKET IOC: remainder is NOT inserted.
+    // The Event Loop detects incoming.remainingQty > 0 after Match returns
+    // and builds an OrderCancelled {reason: "ioc_expired"} for the Publisher.
+    // The Match Loop itself never publishes events.
 
-    return results
+    if mode == RECOVERY:
+        return nil   // suppress output — fills already settled pre-crash
+
+    return fills
 ```
 
-> **Recovery mode:** During Kafka replay on restart, the Match Loop runs in `RECOVERY` mode. All results are discarded — no `TradeExecuted` events published, no Redis snapshots pushed. The ME exits recovery mode when it reaches the checkpoint offset.
+> **Recovery mode:** During Kafka replay, the Match Loop runs identically but
+> returns nil. No `TradeExecuted` events published, no Redis snapshots, no
+> checkpoint writes. The market exits RECOVERY when it reaches the high-water
+> mark recorded at consumer-group-join time.
 
 ---
 

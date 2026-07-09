@@ -45,34 +45,49 @@ The Order Book is intentionally ephemeral (`01_Overview.md §5 Memory First`) �
         ├── Read checkpoint row from Postgres: {topic, partition, offset}
         │
         ├── If no checkpoint row exists (first-ever startup for this partition):
-        │       treat as offset 0 — full replay from the beginning of the topic
+        │       treat as checkpointOffset = -1
         │
         ├── Create the Market Engine (empty OrderBook: empty bids, empty
         │   asks, empty orderIndex — 04_Data_Structures/02_Order_Book.md §8)
         │
         ├── Enter RECOVERY mode for this market:
-        │       Publisher output is fully suppressed —
-        │       no Kafka publish, no Redis snapshot push, no metrics
-        │       (03_Order_Book.md §14 step 2)
+        │   All output to the Output Queue is fully suppressed by the Event
+        │   Loop. The Publisher goroutine is idle for this market (receives
+        │   nothing). No Kafka publish, no Redis snapshot push, no metrics.
         │
-        ├── Seek the Kafka partition to the checkpoint offset (inclusive —
-        │   the event at that offset is re-processed in RECOVERY mode,
-        │   which is idempotent since all output is suppressed).
+        ├── Seek the Kafka partition to offset 0 (the beginning of the topic).
+        │   Because V1 has no snapshotting mechanism, we must replay all historical
+        │   creates and cancels from offset 0 to correctly rebuild the in-memory
+        │   resting orders. Replaying from a recent checkpoint would drop all
+        │   resting orders placed prior to that checkpoint.
         │
-        ├── Replay events from that offset, in order, through the SAME
-        │   Event Loop and SAME Matching Core code path as live processing:
+        ├── Replay events from offset 0 up to the checkpoint offset (inclusive),
+        │   in order, through the SAME Event Loop and Matching Core:
         │
         │       OrderCreated          → Match(book, order, RECOVERY)
         │       OrderCancelRequested  → Cancel(book, orderID)
         │
         │   (TradeExecuted is never read back — see Section 5)
         │
-        ├── When the replay reaches the current end of the topic for that
-        │   partition (i.e. caught up to what Kafka reports as the latest
-        │   offset at consumer-group-join time), exit RECOVERY mode.
+        ├── When the replay reaches the checkpoint offset:
         │
-        └── Market Engine now processes live events normally — Publisher
-            output resumes (Kafka publish, Redis projection, checkpoints).
+        │       1. Transition to LIVE mode.
+        │       2. Send a single sentinel MatchResult to the Output Queue:
+        │          MatchResult {
+        │             fills:         nil,
+        │             cancelResult:  nil,
+        │             depthSnapshot: GetDepth(book, defaultDepth),
+        │             sourceOffset:  checkpointOffset,
+        │          }
+        │       3. The Publisher drains this sentinel, publishes nothing to
+        │          Kafka, but pushes the caught-up depth snapshot to Redis.
+        │
+        │   *Note on checkpointOffset:* Seeking to this offset "inclusive" on a
+        │   subsequent restart means the event at checkpointOffset is processed in
+        │   RECOVERY mode, which is idempotent since all output is suppressed.
+        │
+        └── Market Engine now processes live events (offsets > checkpointOffset)
+            normally — Publisher output is active (Kafka publish, Redis, metrics).
         │
         ▼
 4. Once every assigned market has exited RECOVERY mode, the node reports
@@ -105,15 +120,15 @@ Each Market Engine goroutine moves through four states on every start. States ar
                               │                         │
                               │  Read {topic, partition, │
                               │  offset} from Postgres   │
-                              │  (offset = 0 if none)   │
+                              │  (offset = -1 if none)   │
                               └────────────┬────────────┘
                                            │ checkpoint loaded
                                            ▼
                ┌───────────────────────────────────────────────┐
                │                  RECOVERY                      │◄──────────┐
                │                                               │           │
-               │  Seek to checkpoint offset (inclusive)         │  crash    │
-               │  Replay OrderCreated / OrderCancelRequested    │  during   │
+               │  Seek partition to offset 0                   │  crash    │
+               │  Replay events up to checkpoint offset        │  during   │
                │                                               │  replay   │
                │  Publisher:  ✗ suppressed                      │           │
                │  Kafka pub:  ✗ off                             │           │
@@ -121,16 +136,16 @@ Each Market Engine goroutine moves through four states on every start. States ar
                │  Checkpoint: ✗ off (no new checkpoint writes)  │           │
                └──────────────┬──────────────────┬─────────────┘           │
                               │                  │                           │
-                   caught up  │                  │ crash                     │
-                   to end of  │                  └───────────────────────────┘
-                   topic at   │                   restart from same offset
-                   join time  │
+                    replayed  │                  │ crash                     │
+                    up to     │                  └───────────────────────────┘
+                    checkpoint│                   restart from offset 0
+                    offset    │
                               ▼
                ┌───────────────────────────────────────────────┐
                │                    LIVE                        │
                │                                               │
                │  Process OrderCreated / OrderCancelRequested   │
-               │  in real-time as events arrive                 │
+               │  in real-time as events arrive (> checkpoint)  │
                │                                               │
                │  Publisher:  ✓ active                          │
                │  Kafka pub:  ✓ on (TradeExecuted/Cancelled)    │
@@ -161,10 +176,17 @@ The suppression during RECOVERY mode is precisely what prevents this: new `trade
 
 Per `02_System_Architecture.md §13`, checkpoints are written **after** Kafka publish is acknowledged, and **once per input event** — after all resulting fills for that event are published and acknowledged. This is not once per fill: a single `OrderCreated` that produces N fills (a sweep) writes exactly one checkpoint after the Nth fill is acked. See `07_Concurrency_Model.md §6` for the Publisher-level checkpoint rule. This matters for recovery correctness:
 
-- If the ME crashes after matching but *before* the checkpoint write, the checkpoint still points to the last-confirmed match. On restart, the crashed match's input event(s) are replayed — harmless, since replay is idempotent from the book's perspective (Section 5) and output is suppressed.
-- If the ME crashes after the checkpoint write but before some unrelated later event is processed, that later event simply hasn't been consumed yet — Kafka redelivers it normally, no special recovery handling needed since it was never "lost," just not yet reached.
+- If the ME crashes after matching but *before* the checkpoint write, the checkpoint still points to the last-confirmed match. On restart, the partition is replayed from offset 0, and the crashed match's input event is replayed in `RECOVERY` mode — harmless and idempotent since output is suppressed.
+- If the ME crashes after the checkpoint write but before some unrelated later event is processed, that later event simply hasn't been consumed yet — Kafka delivers it normally as a live event (`offset > checkpointOffset`).
 
 **No double-checkpoint risk:** because the checkpoint write happens only after Kafka ack, recovery never needs to "roll back" a checkpoint — it can always trust the stored offset as fully safe to resume from.
+
+**High-Water Mark (HWM) Checkpoint Semantics:**
+When the Kafka consumer joins the consumer group at startup, it queries the partition's current High-Water Mark (HWM) — the offset of the next message to be written. 
+- If the stored checkpoint offset `C` is equal to or greater than `HWM - 1` (or if `HWM == 0`), it means the matching engine is already fully caught up to the end of the topic.
+- In this case, the engine transitions to `LIVE` mode immediately after processing all available historical events up to `C`, and the consumer idles waiting for new events. Seeking to `C` (inclusive) on restart when no new events exist is a no-op that correctly blocks waiting.
+
+
 
 ---
 

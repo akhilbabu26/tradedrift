@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="380" viewBox="0 0 900 380">
+  <defs>
+    <!-- Drop Shadow Filter for Nodes -->
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="115%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+    <!-- Standard Marker/Arrowhead -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#64748B"/>
+    </marker>
+  </defs>
+
+  <!-- Background Layer -->
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+
+  <!-- TITLE -->
+  <text x="450" y="30" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="16" font-weight="700" fill="#0F172A" text-anchor="middle">Matching Engine — Component &amp; Pipeline Diagram</text>
+
+  <!-- ==================== COMPONENTS (NODES) ==================== -->
+
+  <!-- Kafka Consumer (Blue) -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="70" width="140" height="50" rx="6" fill="#2563EB"/>
+    <text x="110" y="95" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF" text-anchor="middle">Kafka Consumer</text>
+    <text x="110" y="108" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="9" fill="#BFDBFE" text-anchor="middle">(Deserializes input events)</text>
+  </g>
+
+  <!-- Event Loop (Blue) -->
+  <g filter="url(#shadow)">
+    <rect x="230" y="70" width="140" height="50" rx="6" fill="#2563EB"/>
+    <text x="300" y="95" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF" text-anchor="middle">Event Loop</text>
+    <text x="300" y="108" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="9" fill="#BFDBFE" text-anchor="middle">(Market-specific goroutine)</text>
+  </g>
+
+  <!-- Matching Core (Blue) -->
+  <g filter="url(#shadow)">
+    <rect x="420" y="70" width="140" height="50" rx="6" fill="#2563EB"/>
+    <text x="490" y="95" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF" text-anchor="middle">Matching Core</text>
+    <text x="490" y="108" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="9" fill="#BFDBFE" text-anchor="middle">(Pure in-memory match)</text>
+  </g>
+
+  <!-- Order Book (Blue) -->
+  <g filter="url(#shadow)">
+    <rect x="610" y="70" width="140" height="50" rx="6" fill="#2563EB"/>
+    <text x="680" y="95" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF" text-anchor="middle">Order Book State</text>
+    <text x="680" y="108" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="9" fill="#BFDBFE" text-anchor="middle">(Resting orders + index)</text>
+  </g>
+
+  <!-- Output Queue (Blue) -->
+  <g filter="url(#shadow)">
+    <rect x="230" y="200" width="140" height="50" rx="6" fill="#2563EB"/>
+    <text x="300" y="225" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF" text-anchor="middle">Output Queue</text>
+    <text x="300" y="238" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="9" fill="#BFDBFE" text-anchor="middle">(FIFO Go Channel)</text>
+  </g>
+
+  <!-- Publisher (Blue) -->
+  <g filter="url(#shadow)">
+    <rect x="420" y="200" width="140" height="50" rx="6" fill="#2563EB"/>
+    <text x="490" y="225" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF" text-anchor="middle">Publisher</text>
+    <text x="490" y="238" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="9" fill="#BFDBFE" text-anchor="middle">(Asynchronous I/O loop)</text>
+  </g>
+
+  <!-- Kafka (Execution Events) (Green) -->
+  <g filter="url(#shadow)">
+    <rect x="620" y="170" width="220" height="40" rx="6" fill="#16A34A"/>
+    <text x="730" y="195" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFFFFF" text-anchor="middle">Kafka (TradeExecuted / Cancelled)</text>
+  </g>
+
+  <!-- Redis (Depth Cache) (Green) -->
+  <g filter="url(#shadow)">
+    <rect x="620" y="225" width="220" height="40" rx="6" fill="#16A34A"/>
+    <text x="730" y="250" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFFFFF" text-anchor="middle">Redis (L2 Market Depth Projection)</text>
+  </g>
+
+  <!-- Postgres (Offset Store) (Green) -->
+  <g filter="url(#shadow)">
+    <rect x="620" y="280" width="220" height="40" rx="6" fill="#16A34A"/>
+    <text x="730" y="305" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="10" font-weight="600" fill="#FFFFFF" text-anchor="middle">PostgreSQL (Monotonic Checkpoints)</text>
+  </g>
+
+  <!-- ==================== ARROWS / CONNECTIONS ==================== -->
+
+  <!-- Kafka Consumer -> Event Loop -->
+  <path d="M 180 95 L 220 95" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  
+  <!-- Event Loop -> Matching Core -->
+  <path d="M 370 95 L 410 95" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  
+  <!-- Matching Core <-> Order Book (bidirectional logic flow) -->
+  <path d="M 560 95 L 600 95" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  
+  <!-- Event Loop -> Output Queue -->
+  <path d="M 300 120 L 300 190" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+  
+  <!-- Output Queue -> Publisher -->
+  <path d="M 370 225 L 410 225" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- Publisher -> Kafka -->
+  <path d="M 560 225 L 590 225 L 590 190 L 610 190" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- Publisher -> Redis -->
+  <path d="M 560 225 L 610 225" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- Publisher -> Postgres -->
+  <path d="M 560 225 L 590 225 L 590 300 L 610 300" stroke="#64748B" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
+
+</svg>

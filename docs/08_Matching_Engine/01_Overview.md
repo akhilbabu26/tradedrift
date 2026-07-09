@@ -452,4 +452,8 @@ Detailed implementation is described in the following documents:
 - 10_Failure_Handling.md
 - 11_Monitoring.md
 - 12_Sequence_Diagrams.md
-- 13_Future_Enhancements.md
+- 13_Flow_Diagrams.md
+- 14_State_Diagrams.md
+- 15_Design_Invariants.md
+- 16_Future_Enhancements.md
+- 17_Performance_Benchmarking.md

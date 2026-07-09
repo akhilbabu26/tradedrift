@@ -283,9 +283,9 @@ AI Intelligence
 
 ✅ Wallet Service Designed
 
-🚧 Matching Engine In Design
+✅ Matching Engine Designed
 
-🚧 Settlement Service In Design
+✅ Settlement Service Designed
 
 🚧 Trade Service
 

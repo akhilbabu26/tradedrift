@@ -1,6 +1,6 @@
 # TradeDrift Matching Engine — Future Enhancements
 
-**Document:** 13_Future_Enhancements.md
+**Document:** 16_Future_Enhancements.md
 **Service:** Matching Engine
 **Version:** V1.0
 **Last Updated:** July 2026
@@ -41,13 +41,11 @@ V3       Exchange-scale distributed systems
 
 ```go
 func (m *MarketEngine) Run() {
-    defer func() {
-        if r := recover(); r != nil {
-            log.Errorf("market %s panic: %v — halting market", m.marketID, r)
-            m.halt()    // stop consuming, publish alert
+    for event := range m.inputQueue {
+        if !m.processWithRecovery(event) {
+            return  // panic occurred — halt this market's Event Loop
         }
-    }()
-    for event := range m.inputQueue { ... }
+    }
 }
 ```
 
@@ -91,8 +89,8 @@ On restart:
 
 1. Read checkpoint `{topic, partition, offset}` from Postgres.
 2. Enter RECOVERY mode — Publisher output suppressed.
-3. Replay `OrderCreated` and `OrderCancelRequested` from checkpoint offset through the full matching algorithm.
-4. Exit RECOVERY mode at the checkpoint offset.
+3. Seek to offset 0 and replay `OrderCreated` and `OrderCancelRequested` through the full matching algorithm.
+4. Exit RECOVERY mode when replayed up to the checkpoint offset (and push the final transition snapshot to Redis).
 5. Resume live matching.
 
 See `08_Recovery_Strategy.md`.
@@ -187,7 +185,7 @@ All the following must be runtime-configurable (environment variable or config f
 
 > **No sweep limit is imposed.** A market order always fills against all available liquidity at the best prices, regardless of how many price levels that requires. Stopping a fill mid-sweep because an internal level counter was reached would change market behavior — an order that should fully fill would be partially filled or silently truncated. This violates Price-Time Priority correctness and is not acceptable exchange behavior.
 >
-> Large market orders may temporarily increase Event Loop latency during a deep sweep. This latency is monitored via `me_event_loop_latency_p99`. If sweep latency becomes a measured problem at scale, future versions optimize the matching algorithm — not the trading semantics. See `13_Future_Enhancements.md §5` (V2 performance) and `§6` (V3 ring buffer).
+> Large market orders may temporarily increase Event Loop latency during a deep sweep. This latency is monitored via `me_event_loop_latency_p99`. If sweep latency becomes a measured problem at scale, future versions optimize the matching algorithm — not the trading semantics. See `16_Future_Enhancements.md §5` (V2 performance) and `§6` (V3 ring buffer).
 
 ---
 

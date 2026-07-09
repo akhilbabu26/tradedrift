@@ -1,4 +1,4 @@
-﻿# TradeDrift Matching Engine — Event Contracts
+# TradeDrift Matching Engine — Event Contracts
 
 **Document:** 06_Event_Contracts.md
 **Service:** Matching Engine
@@ -56,11 +56,15 @@ Pre-match checks pass?
                 ▼
           Match Loop runs against opposite side
                 │
-                ├── Fills produced ──────────────► TradeExecuted × N  (one per fill)
+                ├── Fills produced ────────────► TradeExecuted × N  (one per fill)
                 │
-                ├── LIMIT, remaining qty > 0 ───► Insert as resting order  (no event)
+                ├── LIMIT, remaining qty > 0 ──► Insert as resting order  (no event)
                 │
-                └── MARKET, remaining qty > 0 ──► Remainder discarded IOC  (no event)
+                ├── MARKET, remaining qty > 0 ─► OrderCancelled {reason: "ioc_expired"}
+                │                                   (partial fill: after TradeExecuted(s))
+                │                                   (no fill: only this OrderCancelled)
+                │
+                └── MARKET, fully filled ──────► only TradeExecuted(s), done
 ```
 
 ---
@@ -164,8 +168,16 @@ Consumed by Order Service, which transitions the order to `CANCELLED` and calls 
 | `user_id` | UUID (v7) | The order owner — used by Order Service to route and by Wallet Service to release the correct user's reserved funds |
 | `market_id` | string | Denormalized |
 | `remaining_quantity` | decimal string | Quantity resting at time of cancellation — Wallet Service releases exactly this amount (`07_Order_Service.md §Failure Handling`) |
-| `reason` | string | `"user_requested"` or `"invalid_order_parameters"` — lets Order Service distinguish a user cancel from a system rejection for UX and audit |
+| `reason` | string | `"user_requested"` — explicit user cancel via DELETE /orders/{id} |
+| | | `"invalid_order_parameters"` — ME rejected order due to tick/lot size violation |
+| | | `"ioc_expired"` — MARKET order IOC: matched as much as possible; `remaining_quantity` is the unfilled portion whose reserved funds must be released |
 | `cancelled_at` | RFC3339 timestamp | ME wall-clock time cancel was applied |
+
+The `reason` field lets Order Service distinguish three distinct cases for UX
+and audit: a user action, a system rejection, and an IOC expiry. Wallet Service
+uses `remaining_quantity` in all three cases to determine the exact amount
+to release.
+
 
 ---
 

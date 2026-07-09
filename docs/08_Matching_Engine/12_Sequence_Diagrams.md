@@ -75,26 +75,29 @@ References: `05_Matching_Algorithm.md §6, §8`, `06_Event_Contracts.md §3`, `0
 Scenario from `05_Matching_Algorithm.md §5`: incoming `BUY 3.0 @ 101.00` against asks `[100.50: 1.0], [100.80: 1.5], [101.20: 2.0]`.
 
 ```
-Matching Core                              Output Queue                Publisher
-     │                                            │                        │
-     │ Step 1: best=100.50 (Order X, qty 1.0)     │                        │
-     │  crosses → fill 1.0 @ 100.50               │                        │
-     │  FullFill(X)                                │                        │
-     │  emit TradeExecuted #1 ────────────────────►│                        │
-     │                                            │                        │
-     │ Step 2: best=100.80 (Order Y, qty 1.5)     │                        │
-     │  crosses → fill 1.5 @ 100.80               │                        │
-     │  FullFill(Y)                                │                        │
-     │  emit TradeExecuted #2 ────────────────────►│                        │
-     │                                            │                        │
-     │ Step 3: best=101.20, does NOT cross         │                        │
-     │  loop stops. incoming.remaining = 0.5       │                        │
-     │  Insert(incoming) as new resting BUY @101.00│                        │
-     │                                            │                        │
-     │                                            ├───────────────────────►│ publish #1, #2
-     │                                            │                        │ to Kafka in order
-     │                                            │                        │ push single GetDepth()
-     │                                            │                        │ snapshot (post-sweep)
+Matching Core                          Event Loop                    Output Queue                 Publisher
+     │                                     │                              │                           │
+     │ Step 1: best=100.50 (X, qty 1.0)    │                              │                           │
+     │  crosses → Fill{X, 1.0 @ 100.50}    │                              │                           │
+     │  FullFill(X)                        │                              │                           │
+     │                                     │                              │                           │
+     │ Step 2: best=100.80 (Y, qty 1.5)    │                              │                           │
+     │  crosses → Fill{Y, 1.5 @ 100.80}    │                              │                           │
+     │  FullFill(Y)                        │                              │                           │
+     │                                     │                              │                           │
+     │ Step 3: best=101.20, does NOT cross │                              │                           │
+     │  loop stops. incoming.remaining=0.5 │                              │                           │
+     │  Insert(incoming)                   │                              │                           │
+     │                                     │                              │                           │
+     │ returns fills [Fill #1, Fill #2] ──►│                              │                           │
+     │                                     │ GetDepth() → snapshot        │                           │
+     │                                     │                              │                           │
+     │                                     │ send MatchResult ------------►│                           │
+     │                                     │                              │                           │
+     │                                     │                              ├──────────────────────────►│ drains MatchResult:
+     │                                     │                              │                           │  1. publish TradeExecuted #1 & #2
+     │                                     │                              │                           │  2. push single depth snapshot
+     │                                     │                              │                           │  3. write checkpoint
 ```
 
 Note per `09_Redis_Projection.md §5`: even though two trades were produced, only **one** Redis depth push happens — after the whole event (the incoming order) finishes processing, not after each individual fill.
@@ -149,12 +152,13 @@ Order Service                    Kafka (same partition key: market_id)      Matc
      │                                        │                                    │ consumes A
      │                                        │                                    │ FullFill(A)
      │                                        │                                    │ delete(orderIndex, A)
-     │                                        ├───────────────────────────────────►│ emit TradeExecuted(A,B)
+     │                                        ├───────────────────────────────────►│ sends MatchResult{fills: [A+B]}
+     │                                        │                                    │ to Output Queue -> Publisher
      │                                        │                                    │
      │                                        ├───────────────────────────────────►│ NOW process
      │                                        │                                    │ OrderCancelRequested(A)
      │                                        │                                    │ orderIndex[A] = nil
-     │                                        │                                    │ Cancel() no-op — return
+     │                                        │                                    │ Cancel() no-op — returns nil
      │                                        │                                    │ (no OrderCancelled published)
      │◄───────────────────────────────────────┼────────────────────────────────────┤ TradeExecuted only
      │  Order Service: order A already FILLED via TradeExecuted; no OrderCancelled  │

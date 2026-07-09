@@ -109,17 +109,23 @@ Run Match Loop against opposite side, no price ceiling/floor
         │
         ├── Fully filled ─────────────► emit TradeExecuted(s), done
         │
-        ├── Partially filled ─────────► emit TradeExecuted(s),
-        │                                remainder discarded (IOC) — NOT inserted
+        ├── Partially filled ────────► emit TradeExecuted(s),
+        │                           then emit OrderCancelled {
+        │                               reason: "ioc_expired",
+        │                               remaining_quantity: node.remainingQty
+        │                           }
         │
-        └── No liquidity at all ──────► nothing to fill, order discarded entirely
+        └── No liquidity at all ─────► emit OrderCancelled {
+                                        reason: "ioc_expired",
+                                        remaining_quantity: incoming.originalQty
+                                    }
 ```
 
-Market orders **never call `Insert`**. This is enforced in `04_Data_Structures/07_Algorithms.md §8`: `if incoming.remainingQty > 0 and incoming.type == LIMIT: Insert(...)` — the condition is `LIMIT` only, so a market order's unfilled remainder simply falls out of scope and is garbage collected.
+Market orders **never call `Insert`**. This is enforced in `04_Data_Structures/07_Algorithms.md §8`: the MARKET IOC comment inside the Match Loop explicitly notes that the Event Loop detects `incoming.remainingQty > 0` after `Match` returns and builds the `OrderCancelled` payload — the Match Loop itself never publishes.
 
-**No liquidity at all** (opposite side empty) is not an error — it is a valid IOC outcome. The Matching Core does not publish any event in this case; there is nothing to report, since the Order Service already knows the order was accepted and will never receive a fill confirmation for it. From the Order Service's perspective, an order that receives zero `TradeExecuted` events and no `OrderCancelled` simply stays `OPEN` — this is an accepted gap for V1, since market orders are expected to have liquidity in practice. Future versions may introduce an explicit "unfilled IOC" event if this proves confusing downstream (see `13_Future_Enhancements.md`).
+**Why `OrderCancelled` is required for IOC remainder:** When a MARKET order is placed, the Wallet Service already called `ReserveFunds(order_id, qty)` and the Order Service set status = `OPEN`. Without an `OrderCancelled` event, Order Service never learns the IOC result — the order stays `OPEN` or `PARTIALLY_FILLED` forever and the reserved funds are permanently locked. Silence is *not* safe here. `"ioc_expired"` lets Order Service distinguish a user cancel from an IOC expiry for UX and audit purposes (`06_Event_Contracts.md §4.2`).
 
-**Slippage:** V1 market orders have no price protection — they will walk the book as deep as needed to fill, at whatever prices are resting. There is no maximum-slippage parameter in V1. This is a known simplification; see `13_Future_Enhancements.md`.
+**Slippage:** V1 market orders have no price protection — they will walk the book as deep as needed to fill, at whatever prices are resting. There is no maximum-slippage parameter in V1. This is a known simplification; see `16_Future_Enhancements.md`.
 
 ---
 
@@ -170,12 +176,23 @@ Every trade has exactly one maker (the resting order that was already in the boo
 Since the incoming order and the resting order are always on opposite sides (that's what makes them crossable), exactly one of {maker, taker} is the buyer and the other is the seller — never ambiguous.
 
 ```
-buyerOf(incoming, best):
-    return incoming.orderID if incoming.side == BUY else best.orderID
+// Order IDs — which order is on the buy/sell side?
+buyOrderOf(incoming, best):
+    return incoming.orderID  if incoming.side == BUY  else  best.orderID
 
-sellerOf(incoming, best):
-    return incoming.orderID if incoming.side == SELL else best.orderID
+sellOrderOf(incoming, best):
+    return incoming.orderID  if incoming.side == SELL  else  best.orderID
+
+// User IDs — which user is on the buy/sell side?
+buyUserOf(incoming, best):
+    return incoming.userID   if incoming.side == BUY  else  best.userID
+
+sellUserOf(incoming, best):
+    return incoming.userID   if incoming.side == SELL  else  best.userID
 ```
+
+Both pairs are included in `Fill` (see `04_Data_Structures/07_Algorithms.md §8`): `buyOrderID`/`sellOrderID` carry the order IDs; `buyerUserID`/`sellerUserID` carry the user IDs. The Publisher needs both to construct a valid `TradeExecuted` event — which has separate `buy_order_id`/`buyer_id` fields (`06_Event_Contracts.md §4.1`).
+
 
 ---
 
@@ -205,7 +222,7 @@ This is symmetric — whichever side has less remaining quantity is fully consum
 
 # 11. Self-Trade
 
-**V1 does not implement Self-Trade Prevention (STP).** If the same `user_id` happens to be both the maker and the taker of a match (their own resting order matches their own incoming order), the trade executes normally — same as any other counterparty pair. This is a conscious V1 simplification, not an oversight; STP is scoped for a future version (`01_Overview.md §12`, `13_Future_Enhancements.md`).
+**V1 does not implement Self-Trade Prevention (STP).** If the same `user_id` happens to be both the maker and the taker of a match (their own resting order matches their own incoming order), the trade executes normally — same as any other counterparty pair. This is a conscious V1 simplification, not an oversight; STP is scoped for a future version (`01_Overview.md §12`, `16_Future_Enhancements.md`).
 
 ---
 
@@ -237,4 +254,4 @@ There is no randomness in trade selection, no wall-clock branching, and no exter
 - `03_Order_Book.md` — Price-Time Priority rules and invariants
 - `06_Event_Contracts.md` — exact `OrderCreated` / `TradeExecuted` payload shapes
 - `07_Concurrency_Model.md` — how the match loop is invoked from the Event Loop
-- `13_Future_Enhancements.md` — STP, slippage protection, and other deferred behavior
+- `16_Future_Enhancements.md` — STP, slippage protection, and other deferred behavior

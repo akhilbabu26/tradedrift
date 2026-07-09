@@ -1,0 +1,204 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="1000" viewBox="0 0 980 1000">
+  <defs>
+    <!-- Drop Shadow Filter for Nodes -->
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#0F172A" flood-opacity="0.08"/>
+    </filter>
+    <!-- Standard Marker/Arrowhead -->
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 10 5 L 0 8.5 z" fill="#64748B"/>
+    </marker>
+  </defs>
+
+  <!-- Background Layer -->
+  <rect width="100%" height="100%" fill="#FFFFFF"/>
+
+  <!-- TITLE -->
+  <text x="490" y="30" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="18" font-weight="700" fill="#0F172A" text-anchor="middle">Market Order (IOC) Matching Flow</text>
+
+  <!-- ==================== NODES ==================== -->
+
+  <!-- A: Receive InputEvent (Start / Process) -->
+  <g filter="url(#shadow)">
+    <rect x="170" y="60" width="260" height="50" rx="8" fill="#2563EB"/>
+    <text x="300" y="90" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF" text-anchor="middle">Receive InputEvent: OrderCreated MARKET</text>
+  </g>
+
+  <!-- B: Pre-match checks: validTickAndLot? (Decision) -->
+  <g filter="url(#shadow)">
+    <polygon points="300,145 390,185 300,225 210,185" fill="#EA580C"/>
+    <text x="300" y="181" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#FFFFFF" text-anchor="middle">validTickAndLot?</text>
+    <text x="300" y="196" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="10" fill="#FFE5D9" text-anchor="middle">(Checks tick &amp; lot size)</text>
+  </g>
+
+  <!-- C: Build cancelResult: invalid_order_parameters (Reject) -->
+  <g filter="url(#shadow)">
+    <rect x="20" y="160" width="150" height="50" rx="8" fill="#DC2626"/>
+    <text x="95" y="185" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF" text-anchor="middle">Reject Order:</text>
+    <text x="95" y="198" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="10" fill="#FFD8D8" text-anchor="middle">invalid_order_parameters</text>
+  </g>
+
+  <!-- D: Enter Matching Core: Match Loop (Process) -->
+  <g filter="url(#shadow)">
+    <rect x="200" y="260" width="200" height="50" rx="8" fill="#2563EB"/>
+    <text x="300" y="285" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF" text-anchor="middle">Enter Matching Core: Match Loop</text>
+    <text x="300" y="298" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="10" fill="#BFDBFE" text-anchor="middle">(Runs sequential matching)</text>
+  </g>
+
+  <!-- E: incoming.remainingQty > 0? (Decision) -->
+  <g filter="url(#shadow)">
+    <polygon points="300,345 400,385 300,425 200,385" fill="#EA580C"/>
+    <text x="300" y="381" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#FFFFFF" text-anchor="middle">remainingQty &gt; 0?</text>
+    <text x="300" y="394" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="9" fill="#FFE5D9" text-anchor="middle">(Taker quantity check)</text>
+  </g>
+
+  <!-- F: ExecuteBest opposite Side (Process) -->
+  <g filter="url(#shadow)">
+    <rect x="190" y="460" width="220" height="50" rx="8" fill="#2563EB"/>
+    <text x="300" y="490" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF" text-anchor="middle">ExecuteBest opposite Side</text>
+  </g>
+
+  <!-- G: best == nil? (Decision) -->
+  <g filter="url(#shadow)">
+    <polygon points="300,545 380,585 300,625 220,585" fill="#EA580C"/>
+    <text x="300" y="581" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#FFFFFF" text-anchor="middle">best == nil?</text>
+    <text x="300" y="594" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="9" fill="#FFE5D9" text-anchor="middle">(Book side empty?)</text>
+  </g>
+
+  <!-- J: Calculate fillQty & Execute Trade (Process) -->
+  <!-- Note: Market orders skip "crossable" check since they always cross rest of book -->
+  <g filter="url(#shadow)">
+    <rect x="160" y="665" width="280" height="60" rx="8" fill="#2563EB"/>
+    <text x="300" y="688" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF" text-anchor="middle">Calculate fillQty = min(rem, best.rem)</text>
+    <text x="300" y="703" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF" text-anchor="middle">Generate tradeID UUIDv7 &amp; Append Fill</text>
+    <text x="300" y="716" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="9" fill="#BFDBFE" text-anchor="middle">Update incoming.remainingQty</text>
+  </g>
+
+  <!-- N: fillQty == best.remainingQty? (Decision) -->
+  <g filter="url(#shadow)">
+    <polygon points="300,760 410,800 300,840 190,800" fill="#EA580C"/>
+    <text x="300" y="796" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#FFFFFF" text-anchor="middle">fillQty == best.rem?</text>
+    <text x="300" y="809" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="9" fill="#FFE5D9" text-anchor="middle">(Maker fully consumed?)</text>
+  </g>
+
+  <!-- O: FullFill maker: Remove from Book & index (Process) -->
+  <g filter="url(#shadow)">
+    <rect x="80" y="880" width="180" height="50" rx="8" fill="#2563EB"/>
+    <text x="170" y="903" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF" text-anchor="middle">FullFill maker:</text>
+    <text x="170" y="916" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="10" fill="#BFDBFE" text-anchor="middle">Remove from Book &amp; index</text>
+  </g>
+
+  <!-- P: PartialFill maker: Reduce remainingQty (Process) -->
+  <g filter="url(#shadow)">
+    <rect x="340" y="880" width="180" height="50" rx="8" fill="#2563EB"/>
+    <text x="430" y="903" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF" text-anchor="middle">PartialFill maker:</text>
+    <text x="430" y="916" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="10" fill="#BFDBFE" text-anchor="middle">Reduce remainingQty in-place</text>
+  </g>
+
+  <!-- H: Exit Match Loop (Process) -->
+  <g filter="url(#shadow)">
+    <rect x="490" y="360" width="160" height="50" rx="8" fill="#2563EB"/>
+    <text x="570" y="390" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF" text-anchor="middle">Exit Match Loop</text>
+  </g>
+
+  <!-- Q: incoming.remainingQty > 0? (Decision) -->
+  <g filter="url(#shadow)">
+    <polygon points="740,345 830,385 740,425 650,385" fill="#EA580C"/>
+    <text x="740" y="381" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="700" fill="#FFFFFF" text-anchor="middle">remainingQty &gt; 0?</text>
+    <text x="740" y="394" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="9" fill="#FFE5D9" text-anchor="middle">(Unfilled IOC remainder?)</text>
+  </g>
+
+  <!-- R: Build cancelResult: ioc_expired (Reject remainder) -->
+  <g filter="url(#shadow)">
+    <rect x="640" y="470" width="200" height="50" rx="8" fill="#DC2626"/>
+    <text x="740" y="493" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#FFFFFF" text-anchor="middle">Build cancelResult:</text>
+    <text x="740" y="506" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="10" fill="#FFD8D8" text-anchor="middle">ioc_expired (Release remainder)</text>
+  </g>
+
+  <!-- S: GetDepth snapshot (Process) -->
+  <g filter="url(#shadow)">
+    <rect x="650" y="575" width="180" height="50" rx="8" fill="#2563EB"/>
+    <text x="740" y="605" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF" text-anchor="middle">GetDepth snapshot</text>
+  </g>
+
+  <!-- T: Send MatchResult to Output Queue (Success/End State) -->
+  <g filter="url(#shadow)">
+    <rect x="610" y="680" width="260" height="50" rx="8" fill="#16A34A"/>
+    <text x="740" y="705" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="12" font-weight="600" fill="#FFFFFF" text-anchor="middle">Send MatchResult to Output Queue</text>
+    <text x="740" y="718" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="9" fill="#D1FAE5" text-anchor="middle">(Triggers downstream publish &amp; checkpoint)</text>
+  </g>
+
+  <!-- ==================== PATHS / ARROWS ==================== -->
+
+  <!-- A -> B -->
+  <path d="M 300 110 L 300 145" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- B -> C (No) -->
+  <path d="M 210 185 L 170 185" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="190" y="177" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#64748B" text-anchor="middle">No</text>
+
+  <!-- B -> D (Yes) -->
+  <path d="M 300 225 L 300 260" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="315" y="243" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#64748B">Yes</text>
+
+  <!-- D -> E -->
+  <path d="M 300 310 L 300 345" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- E -> F (Yes) -->
+  <path d="M 300 425 L 300 460" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="315" y="443" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#64748B">Yes</text>
+
+  <!-- F -> G -->
+  <path d="M 300 510 L 300 545" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- G -> J (No) -->
+  <path d="M 300 625 L 300 665" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="315" y="643" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#64748B">No</text>
+
+  <!-- J -> N -->
+  <path d="M 300 725 L 300 760" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- N -> O (Yes) -->
+  <path d="M 190 800 L 170 800 L 170 880" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="155" y="792" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#64748B">Yes</text>
+
+  <!-- N -> P (No) -->
+  <path d="M 410 800 L 430 800 L 430 880" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="445" y="792" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#64748B">No</text>
+
+  <!-- Exit loop arrows to H -->
+  
+  <!-- E -> H (No) -->
+  <path d="M 400 385 L 490 385" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="445" y="375" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#64748B" text-anchor="middle">No</text>
+
+  <!-- G -> H (Yes) -->
+  <path d="M 380 585 L 570 585 L 570 410" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="475" y="575" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#64748B" text-anchor="middle">Yes</text>
+
+  <!-- H -> Q -->
+  <path d="M 650 385 L 650 385" stroke="#64748B" stroke-width="2" fill="none"/>
+
+  <!-- Q -> R (Yes) -->
+  <path d="M 740 425 L 740 470" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="755" y="445" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#64748B">Yes</text>
+
+  <!-- R -> S -->
+  <path d="M 740 520 L 740 575" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- Q -> S (No) -->
+  <path d="M 830 385 L 870 385 L 870 600 L 830 600" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+  <text x="850" y="375" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="11" font-weight="600" fill="#64748B" text-anchor="middle">No</text>
+
+  <!-- S -> T -->
+  <path d="M 740 625 L 740 680" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- C -> T (Reject line going around left and bottom) -->
+  <path d="M 20 185 L 10 185 L 10 960 L 740 960 L 740 730" stroke="#64748B" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- Return Loops from O and P back to E -->
+  <path d="M 80 905 L 50 905 L 50 860" stroke="#64748B" stroke-width="2" fill="none" stroke-dasharray="4,4"/>
+  <path d="M 520 905 L 535 905 L 535 860 L 50 860" stroke="#64748B" stroke-width="2" fill="none" stroke-dasharray="4,4"/>
+  <path d="M 50 860 L 50 385 L 200 385" stroke="#64748B" stroke-width="2" fill="none" stroke-dasharray="4,4" marker-end="url(#arrow)"/>
+
+</svg>

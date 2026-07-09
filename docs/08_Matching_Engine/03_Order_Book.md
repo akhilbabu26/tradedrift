@@ -463,9 +463,9 @@ The Order Book is ephemeral state — it is never persisted directly. On restart
 
 1. Read the checkpoint row from Postgres (`{topic, partition, offset}`).
 2. Enter **RECOVERY mode** — Publisher output is suppressed (no events published, no Redis snapshots pushed).
-3. Replay `OrderCreated` and `OrderCancelRequested` events from the checkpoint offset through the full matching algorithm.
+3. Seek the partition to offset 0 and replay `OrderCreated` and `OrderCancelRequested` events.
 4. The algorithm re-derives all trades naturally — `TradeExecuted` events are NOT replayed.
-5. When the checkpoint offset is reached, exit RECOVERY mode and resume live matching.
+5. When the checkpoint offset is reached, exit RECOVERY mode and transition to live matching (processing offsets > checkpointOffset in LIVE mode).
 
 **Why not replay TradeExecuted?**
 
@@ -481,7 +481,7 @@ The matching algorithm is deterministic. The same ordered sequence of `OrderCrea
 | `OrderCancelRequested` | `Cancel(orderID)` |
 | `TradeExecuted` | **Not replayed** — re-derived by the algorithm |
 
-V1 has no snapshot mechanism. The checkpoint row tells the ME exactly where to start replaying, avoiding a full replay from offset 0.
+V1 has no snapshot mechanism. Recovery always replays from offset 0 to correctly rebuild in-memory resting orders. The checkpoint row tells the ME where to transition from suppressed RECOVERY mode to LIVE mode.
 
 Full recovery sequencing is documented in **08_Recovery_Strategy.md**.
 
@@ -540,4 +540,8 @@ Implementation details are described in:
 - `10_Failure_Handling.md`
 - `11_Monitoring.md`
 - `12_Sequence_Diagrams.md`
-- `13_Future_Enhancements.md`
+- `13_Flow_Diagrams.md`
+- `14_State_Diagrams.md`
+- `15_Design_Invariants.md`
+- `16_Future_Enhancements.md`
+- `17_Performance_Benchmarking.md`

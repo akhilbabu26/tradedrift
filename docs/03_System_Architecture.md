@@ -125,7 +125,9 @@ Wallet
 
 Portfolio
  │
- └── Kafka (consume: TradeSettled; publish: PortfolioUpdated)
+ ├── Wallet (gRPC: GetBalances)
+ ├── Trade (gRPC: ListUserTrades)
+ └── Kafka (consume: TradeSettled; publish: PortfolioUpdated via outbox)
 
 Trade
  │
@@ -272,7 +274,7 @@ Core topics
 - `OrderCancelled` — published by Matching Engine, consumed by Order Service (status update + fund release)
 - `TradeExecuted` — published by Matching Engine, consumed by Settlement Service
 - `TradeSettled` — published by Wallet Service (via outbox, after settlement commit), consumed by **Trade Service**, Portfolio Service, Notification Service
-- `PortfolioUpdated` — published by Portfolio Service, consumed by Notification Service
+- `PortfolioUpdated` — published by Portfolio Service (via outbox), consumed by Notification Service
 - `NotificationCreated` — published by Notification Service, pushed via WebSocket Gateway
 
 ---

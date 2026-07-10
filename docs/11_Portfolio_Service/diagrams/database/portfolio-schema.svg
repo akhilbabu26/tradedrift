@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 620" width="860" height="620">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+    <linearGradient id="tableGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#5b21b6"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="860" height="620" fill="url(#bg)" rx="12"/>
+
+  <text x="430" y="36" text-anchor="middle" fill="#f1f5f9" font-family="monospace" font-size="16" font-weight="bold">Portfolio Service — Database Schema</text>
+  <text x="430" y="54" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="10">PostgreSQL Schema · strict precision · transactional outbox · deduplication guard</text>
+
+  <!-- holdings table -->
+  <rect x="50" y="85" width="360" height="36" rx="6 6 0 0" fill="url(#tableGrad)" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="230" y="103" text-anchor="middle" fill="#d8b4fe" font-family="monospace" font-size="11" font-weight="bold">holdings</text>
+  <text x="230" y="115" text-anchor="middle" fill="#5b21b6" font-family="monospace" font-size="8">active user crypto balances + cost basis</text>
+
+  <rect x="50" y="121" width="360" height="130" fill="#0f172a" stroke="#7c3aed" stroke-width="1"/>
+  <text x="60" y="137" fill="#cbd5e1" font-family="monospace" font-size="9"><tspan fill="#f59e0b" font-weight="bold">user_id</tspan> UUID NOT NULL</text>
+  <text x="60" y="153" fill="#cbd5e1" font-family="monospace" font-size="9"><tspan fill="#f59e0b" font-weight="bold">asset_code</tspan> VARCHAR(10) NOT NULL</text>
+  <text x="60" y="169" fill="#cbd5e1" font-family="monospace" font-size="9">quantity DECIMAL(30,10) NOT NULL DEFAULT 0</text>
+  <text x="60" y="185" fill="#cbd5e1" font-family="monospace" font-size="9">total_cost DECIMAL(30,10) NOT NULL DEFAULT 0</text>
+  <text x="60" y="201" fill="#cbd5e1" font-family="monospace" font-size="9">realized_pnl DECIMAL(30,10) NOT NULL DEFAULT 0</text>
+  <text x="60" y="217" fill="#cbd5e1" font-family="monospace" font-size="9">updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()</text>
+  <text x="60" y="238" fill="#64748b" font-family="monospace" font-size="8">PK (user_id, asset_code)</text>
+
+  <!-- processed_trades table -->
+  <rect x="50" y="275" width="360" height="36" rx="6 6 0 0" fill="url(#tableGrad)" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="230" y="293" text-anchor="middle" fill="#d8b4fe" font-family="monospace" font-size="11" font-weight="bold">processed_trades</text>
+  <text x="230" y="305" text-anchor="middle" fill="#5b21b6" font-family="monospace" font-size="8">deduplication checker table</text>
+
+  <rect x="50" y="311" width="360" height="60" fill="#0f172a" stroke="#7c3aed" stroke-width="1"/>
+  <text x="60" y="327" fill="#cbd5e1" font-family="monospace" font-size="9"><tspan fill="#f59e0b" font-weight="bold">trade_id</tspan> UUID PRIMARY KEY</text>
+  <text x="60" y="343" fill="#cbd5e1" font-family="monospace" font-size="9">processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()</text>
+
+  <!-- portfolio_outbox table -->
+  <rect x="450" y="85" width="360" height="36" rx="6 6 0 0" fill="url(#tableGrad)" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="630" y="103" text-anchor="middle" fill="#d8b4fe" font-family="monospace" font-size="11" font-weight="bold">portfolio_outbox</text>
+  <text x="630" y="115" text-anchor="middle" fill="#5b21b6" font-family="monospace" font-size="8">transactional outbox events awaiting publish</text>
+
+  <rect x="450" y="121" width="360" height="150" fill="#0f172a" stroke="#7c3aed" stroke-width="1"/>
+  <text x="460" y="137" fill="#cbd5e1" font-family="monospace" font-size="9"><tspan fill="#f59e0b" font-weight="bold">id</tspan> UUID PRIMARY KEY</text>
+  <text x="460" y="153" fill="#cbd5e1" font-family="monospace" font-size="9">aggregate_id UUID NOT NULL</text>
+  <text x="460" y="169" fill="#cbd5e1" font-family="monospace" font-size="9">event_type VARCHAR(50) NOT NULL</text>
+  <text x="460" y="185" fill="#cbd5e1" font-family="monospace" font-size="9">payload JSONB NOT NULL</text>
+  <text x="460" y="201" fill="#cbd5e1" font-family="monospace" font-size="9">partition_key VARCHAR(50) NOT NULL</text>
+  <text x="460" y="217" fill="#cbd5e1" font-family="monospace" font-size="9">status VARCHAR(20) NOT NULL DEFAULT 'PENDING'</text>
+  <text x="460" y="233" fill="#cbd5e1" font-family="monospace" font-size="9">created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()</text>
+  <text x="460" y="249" fill="#cbd5e1" font-family="monospace" font-size="9">published_at TIMESTAMPTZ</text>
+
+  <!-- Indexes list -->
+  <rect x="50" y="390" width="760" height="100" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>
+  <text x="430" y="410" text-anchor="middle" fill="#a78bfa" font-family="monospace" font-size="11" font-weight="bold">Indexes</text>
+  <text x="70" y="435" fill="#cbd5e1" font-family="monospace" font-size="9"><tspan fill="#fbbf24" font-weight="bold">idx_holdings_user</tspan> on holdings(user_id)</text>
+  <text x="70" y="450" fill="#64748b" font-family="monospace" font-size="8">Backed for fast loading of a user's holdings list</text>
+  <text x="70" y="470" fill="#cbd5e1" font-family="monospace" font-size="9"><tspan fill="#fbbf24" font-weight="bold">idx_portfolio_outbox_pending</tspan> on portfolio_outbox(created_at) WHERE status = 'PENDING'</text>
+  <text x="70" y="480" fill="#64748b" font-family="monospace" font-size="8">Backed for outbox publisher goroutine scanning pending events</text>
+
+  <!-- Key design details -->
+  <rect x="50" y="505" width="760" height="50" rx="6" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+  <text x="430" y="525" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9" font-weight="bold">Why no USDT row in holdings table?</tspan></text>
+  <text x="430" y="541" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">USDT cash balance is queried dynamically on the fly from the Wallet Service (gRPC) to avoid double-accounting cash changes.</text>
+
+  <!-- Footer -->
+  <text x="430" y="590" text-anchor="middle" fill="#334155" font-family="monospace" font-size="9">TradeDrift Portfolio Service V1 · DECIMAL(30,10) for all monetary fields · strict decimal rounding rules</text>
+</svg>

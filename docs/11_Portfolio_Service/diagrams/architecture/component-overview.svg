@@ -1,0 +1,118 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 620" width="900" height="620">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+    <linearGradient id="psGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#a78bfa"/>
+      <stop offset="100%" style="stop-color:#7c3aed"/>
+    </linearGradient>
+    <linearGradient id="kafkaGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f59e0b"/>
+      <stop offset="100%" style="stop-color:#d97706"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="620" fill="url(#bg)" rx="12"/>
+
+  <!-- Title -->
+  <text x="450" y="38" text-anchor="middle" fill="#f1f5f9" font-family="monospace" font-size="17" font-weight="bold">Portfolio Service — Component Overview</text>
+  <text x="450" y="56" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">V1 · Keeper of holdings, cost basis, realized PnL · gRPC client for cash &amp; bootstrap</text>
+
+  <!-- Kafka TradeSettled (Input) -->
+  <rect x="50" y="90" width="220" height="52" rx="8" fill="url(#kafkaGrad)" opacity="0.15" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="160" y="112" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="11" font-weight="bold">Kafka: TradeSettled</text>
+  <text x="160" y="128" text-anchor="middle" fill="#92400e" font-family="monospace" font-size="8">partition key: market_id</text>
+
+  <!-- arrow Kafka → Portfolio Svc -->
+  <line x1="160" y1="142" x2="160" y2="200" stroke="#a78bfa" stroke-width="2" marker-end="url(#arrPurple)"/>
+  <text x="175" y="175" text-anchor="start" fill="#a78bfa" font-family="monospace" font-size="8">Consumer</text>
+
+  <!-- Portfolio Service Core -->
+  <rect x="60" y="200" width="360" height="150" rx="10" fill="url(#psGrad)" opacity="0.18" stroke="#a78bfa" stroke-width="2"/>
+  <text x="240" y="225" text-anchor="middle" fill="#c084fc" font-family="monospace" font-size="13" font-weight="bold">Portfolio Service Core</text>
+  <text x="240" y="245" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9">- Consume TradeSettled to update holdings</text>
+  <text x="240" y="260" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9">- Write update to transactional outbox</text>
+  <text x="240" y="275" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9">- Perform real-time valuation on read API</text>
+  <text x="240" y="295" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">USDT cash balance → gRPC check (Wallet)</text>
+  <text x="240" y="310" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Bootstrap trade list → gRPC pull (Trade)</text>
+  <text x="240" y="330" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Market price ticker → Redis check</text>
+
+  <!-- PostgreSQL (Database) -->
+  <rect x="60" y="420" width="220" height="90" rx="8" fill="#1e293b" stroke="#1e40af" stroke-width="1.5"/>
+  <text x="170" y="443" text-anchor="middle" fill="#60a5fa" font-family="monospace" font-size="10" font-weight="bold">PostgreSQL Database</text>
+  <text x="170" y="462" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">holdings (user, asset, qty, cost, pnl)</text>
+  <text x="170" y="478" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">processed_trades (dedup table)</text>
+  <text x="170" y="494" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">portfolio_outbox (atomic publisher)</text>
+
+  <!-- arrow Svc ↔ DB -->
+  <line x1="170" y1="350" x2="170" y2="420" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrPurple)"/>
+  <text x="180" y="390" text-anchor="start" fill="#a78bfa" font-family="monospace" font-size="8">read/write</text>
+
+  <!-- Outbox publisher arrow from DB to Kafka -->
+  <line x1="280" y1="465" x2="600" y2="465" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="3,2" marker-end="url(#arrYellow)"/>
+  <text x="440" y="455" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="8">Background Publisher Goroutine</text>
+
+  <!-- Kafka PortfolioUpdated (Output) -->
+  <rect x="600" y="440" width="240" height="52" rx="8" fill="url(#kafkaGrad)" opacity="0.15" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="720" y="462" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="11" font-weight="bold" filter="url(#glow)">Kafka: portfolio-updates</text>
+  <text x="720" y="478" text-anchor="middle" fill="#92400e" font-family="monospace" font-size="8">partition key: user_id</text>
+
+  <!-- Redis (Market prices) -->
+  <rect x="520" y="200" width="160" height="52" rx="8" fill="#1e293b" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="600" y="222" text-anchor="middle" fill="#f87171" font-family="monospace" font-size="10" font-weight="bold">Redis Ticker</text>
+  <text x="600" y="238" text-anchor="middle" fill="#7f1d1d" font-family="monospace" font-size="9">ticker:prices (current_price)</text>
+
+  <!-- arrow Svc → Redis -->
+  <line x1="420" y1="226" x2="520" y2="226" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="470" y="220" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">read price</text>
+
+  <!-- Wallet Service (USDT Cash) -->
+  <rect x="520" y="280" width="160" height="52" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
+  <text x="600" y="302" text-anchor="middle" fill="#34d399" font-family="monospace" font-size="10" font-weight="bold">Wallet Service</text>
+  <text x="600" y="318" text-anchor="middle" fill="#064e3b" font-family="monospace" font-size="9">gRPC GetBalances(user_id)</text>
+
+  <!-- arrow Svc → Wallet -->
+  <line x1="420" y1="306" x2="520" y2="306" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="470" y="300" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">gRPC read</text>
+
+  <!-- Trade Service (Bootstrap) -->
+  <rect x="520" y="120" width="160" height="52" rx="8" fill="#1e293b" stroke="#0ea5e9" stroke-width="1.5"/>
+  <text x="600" y="142" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="10" font-weight="bold">Trade Service</text>
+  <text x="600" y="158" text-anchor="middle" fill="#0369a1" font-family="monospace" font-size="9">gRPC ListUserTrades</text>
+
+  <!-- arrow Svc → Trade -->
+  <line x1="380" y1="200" x2="520" y2="146" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="460" y="160" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8" transform="rotate(-21 460 160)">gRPC pull</text>
+
+  <!-- REST Gateway -->
+  <rect x="310" y="420" width="220" height="70" rx="8" fill="#1e293b" stroke="#0d9488" stroke-width="1.5"/>
+  <text x="420" y="443" text-anchor="middle" fill="#2dd4bf" font-family="monospace" font-size="10" font-weight="bold">REST Gateway API</text>
+  <text x="420" y="462" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">GET /portfolio/summary  (auth)</text>
+  <text x="420" y="478" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">GET /portfolio/holdings  (auth)</text>
+
+  <!-- arrow Svc → REST -->
+  <line x1="370" y1="350" x2="370" y2="420" stroke="#a78bfa" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#arrPurple)"/>
+
+  <!-- Footer -->
+  <text x="450" y="590" text-anchor="middle" fill="#334155" font-family="monospace" font-size="9">TradeDrift Portfolio Service V1 · Transactional Outbox Pattern · Hybrid Real-time Valuation (Cash via gRPC, Price via Redis)</text>
+
+  <!-- Arrow definitions -->
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#475569"/>
+    </marker>
+    <marker id="arrPurple" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#a78bfa"/>
+    </marker>
+    <marker id="arrYellow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#f59e0b"/>
+    </marker>
+  </defs>
+</svg>

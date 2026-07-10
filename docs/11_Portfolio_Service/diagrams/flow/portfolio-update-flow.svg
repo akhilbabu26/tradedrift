@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 620" width="720" height="620">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrRed" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#ef4444"/>
+    </marker>
+    <marker id="arrPurple" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#a78bfa"/>
+    </marker>
+  </defs>
+
+  <rect width="720" height="620" fill="url(#bg)" rx="12"/>
+
+  <text x="360" y="36" text-anchor="middle" fill="#f1f5f9" font-family="monospace" font-size="16" font-weight="bold">Portfolio Service — Update Flow</text>
+  <text x="360" y="54" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="10">Kafka consumer · at-least-once Deduplication · transactional outbox commit</text>
+
+  <!-- Step 1: Consume -->
+  <rect x="210" y="80" width="300" height="52" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="360" y="101" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="11" font-weight="bold">1. Consume TradeSettled Event</text>
+  <text x="360" y="119" text-anchor="middle" fill="#92400e" font-family="monospace" font-size="9">sequential order guaranteed per partition</text>
+
+  <line x1="360" y1="132" x2="360" y2="160" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 2: Deduplicate -->
+  <rect x="210" y="160" width="300" height="52" rx="8" fill="#1e293b" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="360" y="181" text-anchor="middle" fill="#a78bfa" font-family="monospace" font-size="11" font-weight="bold">2. Deduplication Check</text>
+  <text x="360" y="197" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">Query trade_id in processed_trades table</text>
+
+  <!-- Duplicate branch -->
+  <line x1="510" y1="186" x2="590" y2="186" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrRed)"/>
+  <text x="550" y="180" text-anchor="middle" fill="#ef4444" font-family="monospace" font-size="8">exists</text>
+  <rect x="590" y="165" width="115" height="40" rx="6" fill="#1e293b" stroke="#7f1d1d" stroke-width="1.2"/>
+  <text x="647" y="184" text-anchor="middle" fill="#fca5a5" font-family="monospace" font-size="9" font-weight="bold">No-op</text>
+  <text x="647" y="196" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">ACK offset</text>
+
+  <line x1="360" y1="212" x2="360" y2="240" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="380" y="226" fill="#22c55e" font-family="monospace" font-size="8">new trade</text>
+
+  <!-- Step 3: Transaction -->
+  <rect x="160" y="240" width="400" height="150" rx="8" fill="#1e293b" stroke="#1e40af" stroke-width="1.5"/>
+  <text x="360" y="260" text-anchor="middle" fill="#60a5fa" font-family="monospace" font-size="11" font-weight="bold">3. Atomic Database Transaction</text>
+  <text x="180" y="285" fill="#94a3b8" font-family="monospace" font-size="9">a. Mutate holdings table (row lock FOR UPDATE):</text>
+  <text x="200" y="300" fill="#64748b" font-family="monospace" font-size="8">- Buyer: Increase base asset qty &amp; cost basis</text>
+  <text x="200" y="315" fill="#64748b" font-family="monospace" font-size="8">- Seller: Decrease base asset qty &amp; calculate realized PnL</text>
+  <text x="180" y="335" fill="#94a3b8" font-family="monospace" font-size="9">b. INSERT processed_trades (trade_id)</text>
+  <text x="180" y="355" fill="#94a3b8" font-family="monospace" font-size="9">c. INSERT portfolio_outbox (PortfolioUpdated payload)</text>
+  <text x="180" y="375" fill="#a78bfa" font-family="monospace" font-size="9" font-weight="bold">d. COMMIT transaction (release locks)</text>
+
+  <line x1="360" y1="390" x2="360" y2="420" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 4: ACK -->
+  <rect x="210" y="420" width="300" height="52" rx="8" fill="#1e293b" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="360" y="441" text-anchor="middle" fill="#4ade80" font-family="monospace" font-size="11" font-weight="bold">4. ACK Kafka Offset</text>
+  <text x="360" y="457" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">commited inside consumer loop</text>
+
+  <line x1="360" y1="472" x2="360" y2="500" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrPurple)"/>
+
+  <!-- Step 5: Outbox publish -->
+  <rect x="210" y="500" width="300" height="52" rx="8" fill="#1e293b" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="360" y="521" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="11" font-weight="bold">5. Outbox publisher publishes</text>
+  <text x="360" y="537" text-anchor="middle" fill="#92400e" font-family="monospace" font-size="9">portfolio-updates topic (partition by user_id)</text>
+
+  <!-- Footer info -->
+  <rect x="30" y="570" width="660" height="36" rx="6" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
+  <text x="360" y="591" text-anchor="middle" fill="#475569" font-family="monospace" font-size="8">Deduplication avoids double-counting under message replay · Clamping prevents float remainder drift</text>
+</svg>

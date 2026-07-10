@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 640" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr"  markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f59e0b"/></marker>
+    <marker id="arrB" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#3b82f6"/></marker>
+  </defs>
+  <rect width="860" height="640" fill="url(#bg)"/>
+  <rect width="860" height="640" fill="none" stroke="#1e293b" stroke-width="2"/>
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Recovery Flow</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">Settlement Service · Crash recovery · PENDING row handling · Background goroutine</text>
+  <line x1="80" y1="66" x2="780" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Crash scenario -->
+  <rect x="240" y="82" width="380" height="60" rx="8" fill="#1a0000" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="430" y="104" text-anchor="middle" fill="#fca5a5" font-size="13" font-weight="600">Crash Scenario</text>
+  <text x="430" y="122" text-anchor="middle" fill="#7f1d1d" font-size="10">Service crashed between Phase 1 and Phase 3</text>
+  <text x="430" y="136" text-anchor="middle" fill="#7f1d1d" font-size="9">→ PENDING row in settled_trades · Kafka offset uncommitted</text>
+
+  <line x1="430" y1="142" x2="430" y2="168" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+
+  <!-- Two recovery paths -->
+  <rect x="140" y="168" width="580" height="22" rx="6" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+  <text x="430" y="183" text-anchor="middle" fill="#64748b" font-size="10">Two independent resolution mechanisms — whichever fires first wins</text>
+
+  <!-- Kafka redelivery path -->
+  <line x1="300" y1="190" x2="200" y2="228" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrY)"/>
+  <rect x="60" y="228" width="260" height="130" rx="8" fill="#1a1000" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="190" y="248" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">A: Kafka Redelivery</text>
+  <text x="190" y="264" text-anchor="middle" fill="#78350f" font-size="10">(primary path)</text>
+  <line x1="80" y1="270" x2="300" y2="270" stroke="#3d2000" stroke-width="0.5"/>
+  <text x="190" y="286" text-anchor="middle" fill="#475569" font-size="10">On restart: consumer replays</text>
+  <text x="190" y="302" text-anchor="middle" fill="#475569" font-size="10">from last uncommitted offset</text>
+  <text x="190" y="318" text-anchor="middle" fill="#f59e0b" font-size="9">Idempotency check:</text>
+  <text x="190" y="332" text-anchor="middle" fill="#f59e0b" font-size="9">finds PENDING → skip Phase 1</text>
+  <text x="190" y="346" text-anchor="middle" fill="#22c55e" font-size="9">→ retry Phase 2 directly</text>
+
+  <!-- Recovery goroutine path -->
+  <line x1="560" y1="190" x2="660" y2="228" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrB)"/>
+  <rect x="540" y="228" width="280" height="160" rx="8" fill="#0f1f38" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="680" y="248" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="600">B: Recovery Goroutine</text>
+  <text x="680" y="264" text-anchor="middle" fill="#475569" font-size="10">(safety net — runs always)</text>
+  <line x1="560" y1="270" x2="800" y2="270" stroke="#1e3a5f" stroke-width="0.5"/>
+  <text x="680" y="286" text-anchor="middle" fill="#3b82f6" font-size="9">Poll every N seconds:</text>
+  <text x="680" y="302" text-anchor="middle" fill="#475569" font-size="9">SELECT * FROM settled_trades</text>
+  <text x="680" y="316" text-anchor="middle" fill="#475569" font-size="9">WHERE status='PENDING'</text>
+  <text x="680" y="330" text-anchor="middle" fill="#475569" font-size="9">AND executed_at &lt; NOW()-60s</text>
+  <text x="680" y="344" text-anchor="middle" fill="#475569" font-size="9">ORDER BY executed_at ASC LIMIT 50</text>
+  <text x="680" y="358" text-anchor="middle" fill="#3b82f6" font-size="9">FOR UPDATE SKIP LOCKED</text>
+  <text x="680" y="374" text-anchor="middle" fill="#22c55e" font-size="9">→ retry Phase 2 for each row</text>
+  <text x="680" y="386" text-anchor="middle" fill="#334155" font-size="8">SKIP LOCKED prevents race with Kafka consumer</text>
+
+  <!-- Both converge to Phase 2 retry -->
+  <line x1="190" y1="358" x2="190" y2="420" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <line x1="680" y1="388" x2="680" y2="420" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <line x1="190" y1="420" x2="680" y2="420" stroke="#22c55e" stroke-width="1.5"/>
+  <line x1="430" y1="420" x2="430" y2="450" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+  <!-- Phase 2 retry -->
+  <rect x="250" y="450" width="360" height="60" rx="8" fill="#0d1f0d" stroke="#22c55e" stroke-width="2"/>
+  <text x="430" y="470" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">Phase 2: Wallet.SettleTrade() retry</text>
+  <text x="430" y="488" text-anchor="middle" fill="#475569" font-size="10">Wallet is idempotent on trade_id · absorbs duplicates silently</text>
+  <text x="430" y="504" text-anchor="middle" fill="#166534" font-size="9">Success → Phase 3 UPDATE status=SETTLED · settled_at=NOW()</text>
+
+  <!-- Why safe -->
+  <rect x="60" y="540" width="740" height="74" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.3"/>
+  <text x="430" y="560" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">Why Recovery is Always Safe — Three Guarantees</text>
+  <text x="90" y="578" fill="#22c55e" font-size="10">①</text><text x="108" y="578" fill="#475569" font-size="10">Kafka offset uncommitted → redeliver guaranteed after restart (at-least-once)</text>
+  <text x="90" y="594" fill="#22c55e" font-size="10">②</text><text x="108" y="594" fill="#475569" font-size="10">UNIQUE(trade_id) in settled_trades → Phase 1 INSERT is idempotent at DB level</text>
+  <text x="90" y="610" fill="#22c55e" font-size="10">③</text><text x="108" y="610" fill="#475569" font-size="10">Wallet.SettleTrade idempotency (§8.1) → Phase 2 retry never double-settles regardless of caller</text>
+</svg>

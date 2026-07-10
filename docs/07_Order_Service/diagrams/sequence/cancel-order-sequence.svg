@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 920 700" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a1a"/><stop offset="100%" style="stop-color:#141428"/>
+    </linearGradient>
+    <marker id="arrB" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#3b82f6"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrO" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f97316"/></marker>
+    <marker id="arrP" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#a855f7"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f59e0b"/></marker>
+  </defs>
+  <rect width="920" height="700" fill="url(#bg)"/>
+  <rect width="920" height="700" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="460" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Cancel Order — Full Sequence</text>
+  <text x="460" y="55" text-anchor="middle" fill="#64748b" font-size="12">DELETE /orders/{id} → CANCELLING → ME → OrderCancelled → CANCELLED + ReleaseFunds</text>
+  <line x1="60" y1="66" x2="860" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Participants: Client=80, APIGW=220, OrderSvc=390, Wallet=550, Kafka=700, ME=850 -->
+  <text x="80"  y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Client</text>
+  <text x="220" y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">API Gateway</text>
+  <text x="390" y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Order Service</text>
+  <text x="550" y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Wallet Service</text>
+  <text x="700" y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Kafka</text>
+  <text x="850" y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Matching Engine</text>
+
+  <!-- Lifelines -->
+  <line x1="80"  y1="100" x2="80"  y2="670" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="220" y1="100" x2="220" y2="670" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="390" y1="100" x2="390" y2="670" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="550" y1="100" x2="550" y2="670" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="700" y1="100" x2="700" y2="670" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="850" y1="100" x2="850" y2="670" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+
+  <!-- Activation bars -->
+  <rect x="75"  y="100" width="10" height="550" rx="2" fill="#1e3a5f"/>
+  <rect x="215" y="116" width="10" height="60"  rx="2" fill="#1e3a5f"/>
+  <rect x="385" y="148" width="10" height="400" rx="2" fill="#1e3a5f"/>
+  <rect x="545" y="490" width="10" height="36"  rx="2" fill="#1e3a5f"/>
+  <rect x="695" y="270" width="10" height="60"  rx="2" fill="#1e3a5f"/>
+  <rect x="845" y="310" width="10" height="100" rx="2" fill="#1e3a5f"/>
+
+  <!-- M1: DELETE /orders/{id} -->
+  <line x1="90" y1="116" x2="210" y2="116" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrB)"/>
+  <text x="150" y="110" text-anchor="middle" fill="#60a5fa" font-size="10">DELETE /orders/{id}</text>
+
+  <!-- M2: Auth + Route -->
+  <rect x="215" y="126" width="130" height="16" rx="3" fill="#0f172a"/>
+  <text x="280" y="138" text-anchor="middle" fill="#475569" font-size="9">Auth · route → CancelOrder gRPC</text>
+
+  <!-- M3: CancelOrder gRPC -->
+  <line x1="225" y1="148" x2="380" y2="148" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrB)"/>
+  <text x="302" y="142" text-anchor="middle" fill="#60a5fa" font-size="10">gRPC: CancelOrder</text>
+
+  <!-- M4: Check ownership + status -->
+  <rect x="385" y="158" width="140" height="16" rx="3" fill="#0f172a"/>
+  <text x="455" y="170" text-anchor="middle" fill="#475569" font-size="9">Check ownership · status = OPEN or PARTIALLY_FILLED</text>
+
+  <!-- M5: DB Transaction CANCELLING + outbox -->
+  <rect x="385" y="178" width="140" height="26" rx="3" fill="#0c1a0c"/>
+  <text x="455" y="191" text-anchor="middle" fill="#4ade80" font-size="9">BEGIN TX: UPDATE CANCELLING</text>
+  <text x="455" y="204" text-anchor="middle" fill="#4ade80" font-size="9">INSERT outbox (OrderCancelRequested)</text>
+
+  <!-- M6: Commit -->
+  <rect x="385" y="208" width="140" height="16" rx="3" fill="#0c1a0c"/>
+  <text x="455" y="220" text-anchor="middle" fill="#4ade80" font-size="9">COMMIT · order = CANCELLING</text>
+
+  <!-- M7: 202 Accepted -->
+  <line x1="385" y1="234" x2="225" y2="234" stroke="#3b82f6" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrB)"/>
+  <text x="305" y="228" text-anchor="middle" fill="#3b82f6" font-size="10">202 Accepted (async cancel)</text>
+  <line x1="215" y1="246" x2="90" y2="246" stroke="#3b82f6" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrB)"/>
+  <text x="152" y="240" text-anchor="middle" fill="#3b82f6" font-size="10">202 Accepted</text>
+
+  <!-- Async separator -->
+  <line x1="60" y1="268" x2="860" y2="268" stroke="#1e293b" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="460" y="283" text-anchor="middle" fill="#334155" font-size="10" font-style="italic">async — outbox publisher</text>
+
+  <!-- M8: Outbox → Kafka OrderCancelRequested -->
+  <line x1="395" y1="298" x2="690" y2="298" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+  <text x="542" y="291" text-anchor="middle" fill="#f97316" font-size="10">Kafka: OrderCancelRequested (outbox)</text>
+
+  <!-- M9: ME consumes -->
+  <line x1="695" y1="318" x2="840" y2="318" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="767" y="311" text-anchor="middle" fill="#22c55e" font-size="10">consume OrderCancelRequested</text>
+
+  <!-- Race condition note box -->
+  <rect x="60" y="340" width="280" height="75" rx="7" fill="#1a1000" stroke="#f59e0b" stroke-width="1.3"/>
+  <text x="200" y="358" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">Cancel vs Fill Race</text>
+  <text x="200" y="374" text-anchor="middle" fill="#78350f" font-size="9">If order already FULLY FILLED:</text>
+  <text x="200" y="388" text-anchor="middle" fill="#78350f" font-size="9">ME ignores cancel · no OrderCancelled published</text>
+  <text x="200" y="402" text-anchor="middle" fill="#78350f" font-size="9">OrderSvc receives TradeExecuted → FILLED</text>
+  <text x="200" y="416" text-anchor="middle" fill="#78350f" font-size="9">CANCELLING → FILLED (valid transition)</text>
+
+  <!-- M10: ME confirms cancel → OrderCancelled -->
+  <rect x="845" y="338" width="130" height="20" rx="3" fill="#0f1f38"/>
+  <text x="910" y="352" text-anchor="middle" fill="#93c5fd" font-size="9">Remove from order book</text>
+
+  <line x1="850" y1="368" x2="705" y2="368" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+  <text x="777" y="361" text-anchor="middle" fill="#ef4444" font-size="10">Kafka: OrderCancelled</text>
+
+  <!-- M11: OrderSvc consumes OrderCancelled -->
+  <line x1="700" y1="388" x2="400" y2="388" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+  <text x="550" y="381" text-anchor="middle" fill="#ef4444" font-size="10">OrderSvc consumes OrderCancelled</text>
+
+  <!-- M12: Update CANCELLED -->
+  <rect x="385" y="398" width="140" height="16" rx="3" fill="#1a0000"/>
+  <text x="455" y="410" text-anchor="middle" fill="#fca5a5" font-size="9">UPDATE orders: status = CANCELLED</text>
+
+  <!-- M13: ReleaseFunds gRPC -->
+  <line x1="395" y1="424" x2="540" y2="424" stroke="#a855f7" stroke-width="1.5" marker-end="url(#arrP)"/>
+  <text x="467" y="417" text-anchor="middle" fill="#a855f7" font-size="10">ReleaseFunds(order_id)</text>
+  <text x="467" y="431" text-anchor="middle" fill="#6b21a8" font-size="9">releases remaining_quantity only</text>
+
+  <!-- M14: Wallet response -->
+  <line x1="545" y1="448" x2="400" y2="448" stroke="#a855f7" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrP)"/>
+  <text x="467" y="442" text-anchor="middle" fill="#6b21a8" font-size="10">released ✓</text>
+
+  <!-- Idempotency note -->
+  <rect x="60" y="490" width="280" height="58" rx="7" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+  <text x="200" y="510" text-anchor="middle" fill="#64748b" font-size="10" font-weight="600">Idempotency</text>
+  <text x="200" y="526" text-anchor="middle" fill="#334155" font-size="9">ReleaseFunds is idempotent on order_id</text>
+  <text x="200" y="540" text-anchor="middle" fill="#334155" font-size="9">Safe to retry on transient gRPC failure</text>
+  <text x="200" y="554" text-anchor="middle" fill="#334155" font-size="9">OrderCancelled consumer is also idempotent</text>
+
+  <line x1="60" y1="620" x2="860" y2="620" stroke="#1e293b" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="460" y="642" text-anchor="middle" fill="#334155" font-size="10">Solid = synchronous · Dashed = async / response · Settlement Service is NOT involved in cancellations</text>
+  <text x="460" y="658" text-anchor="middle" fill="#334155" font-size="10">Order stays in CANCELLING until ME confirms — durable across Order Service restarts</text>
+</svg>

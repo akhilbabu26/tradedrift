@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 700" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrO" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f97316"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f59e0b"/></marker>
+  </defs>
+  <rect width="860" height="700" fill="url(#bg)"/>
+  <rect width="860" height="700" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Publish OrderCreated Flow</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">Outbox Pattern — DB write decoupled from Kafka publish</text>
+  <line x1="80" y1="66" x2="780" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Phase 1: Synchronous (request handler) -->
+  <text x="430" y="95" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600" letter-spacing="2">PHASE 1 — REQUEST HANDLER  (synchronous)</text>
+
+  <!-- DB Transaction box -->
+  <rect x="200" y="108" width="460" height="130" rx="10" fill="#0c1a0c" stroke="#22c55e" stroke-width="2"/>
+  <text x="430" y="130" text-anchor="middle" fill="#86efac" font-size="13" font-weight="700">Single Atomic DB Transaction</text>
+  <line x1="220" y1="140" x2="640" y2="140" stroke="#166534" stroke-width="0.5"/>
+
+  <!-- orders INSERT -->
+  <rect x="220" y="148" width="190" height="76" rx="7" fill="#0f172a" stroke="#22c55e" stroke-width="1.2"/>
+  <text x="315" y="166" text-anchor="middle" fill="#4ade80" font-size="11" font-weight="600">INSERT orders</text>
+  <text x="315" y="182" text-anchor="middle" fill="#475569" font-size="9">id        = order_id (UUIDv7)</text>
+  <text x="315" y="196" text-anchor="middle" fill="#475569" font-size="9">status    = OPEN</text>
+  <text x="315" y="210" text-anchor="middle" fill="#475569" font-size="9">quantity / price / market_id ...</text>
+  <text x="315" y="221" text-anchor="middle" fill="#334155" font-size="8">created_at = updated_at = now()</text>
+
+  <!-- outbox INSERT -->
+  <rect x="420" y="148" width="220" height="76" rx="7" fill="#0f172a" stroke="#f97316" stroke-width="1.2"/>
+  <text x="530" y="166" text-anchor="middle" fill="#fdba74" font-size="11" font-weight="600">INSERT outbox</text>
+  <text x="530" y="182" text-anchor="middle" fill="#475569" font-size="9">aggregate_id  = order_id</text>
+  <text x="530" y="196" text-anchor="middle" fill="#475569" font-size="9">event_type    = OrderCreated</text>
+  <text x="530" y="210" text-anchor="middle" fill="#475569" font-size="9">partition_key = market_id</text>
+  <text x="530" y="221" text-anchor="middle" fill="#475569" font-size="9">published_at  = NULL</text>
+
+  <line x1="430" y1="238" x2="430" y2="264" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="444" y="254" fill="#22c55e" font-size="10">Commit</text>
+
+  <!-- Return 202 -->
+  <rect x="280" y="264" width="300" height="40" rx="7" fill="#1e293b" stroke="#475569" stroke-width="1.3"/>
+  <text x="430" y="283" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">Return 202 Accepted to client</text>
+  <text x="430" y="299" text-anchor="middle" fill="#334155" font-size="9">order_id echoed back · order is OPEN</text>
+
+  <!-- Phase separator -->
+  <line x1="80" y1="322" x2="780" y2="322" stroke="#1e293b" stroke-width="1" stroke-dasharray="6,4"/>
+  <text x="430" y="338" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600" letter-spacing="2">PHASE 2 — OUTBOX PUBLISHER  (background goroutine)</text>
+
+  <!-- Poll loop -->
+  <rect x="260" y="350" width="340" height="56" rx="8" fill="#0f172a" stroke="#f97316" stroke-width="1.5"/>
+  <text x="430" y="370" text-anchor="middle" fill="#fdba74" font-size="12" font-weight="600">Poll: SELECT * FROM outbox</text>
+  <text x="430" y="387" text-anchor="middle" fill="#78350f" font-size="10">WHERE published_at IS NULL ORDER BY created_at ASC</text>
+  <text x="430" y="400" text-anchor="middle" fill="#78350f" font-size="9">Interval: 100–250ms · processes in batch</text>
+
+  <!-- Self-poll loop arrow -->
+  <path d="M 600,376 Q 680,376 680,406 Q 680,406 600,406" stroke="#f97316" stroke-width="1.3" fill="none" stroke-dasharray="3,2" marker-end="url(#arrO)"/>
+  <text x="700" y="393" text-anchor="middle" fill="#f97316" font-size="9">no rows</text>
+
+  <line x1="430" y1="406" x2="430" y2="432" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+  <text x="444" y="422" fill="#f97316" font-size="10">rows found</text>
+
+  <!-- Kafka publish -->
+  <rect x="260" y="432" width="340" height="52" rx="8" fill="#1e1a00" stroke="#e96a1a" stroke-width="1.5"/>
+  <text x="430" y="452" text-anchor="middle" fill="#fb923c" font-size="12" font-weight="600">Publish to Kafka</text>
+  <text x="430" y="469" text-anchor="middle" fill="#78350f" font-size="10">topic = orders.submitted · key = partition_key (market_id)</text>
+  <text x="430" y="482" text-anchor="middle" fill="#78350f" font-size="9">payload = OrderCreated event JSON</text>
+
+  <!-- Wait for ACK decision -->
+  <line x1="430" y1="484" x2="430" y2="510" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <polygon points="430,510 560,530 430,550 300,530" fill="#0f172a" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="430" y="527" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">Kafka ACK?</text>
+
+  <!-- No ACK → retry -->
+  <line x1="560" y1="530" x2="660" y2="530" stroke="#ef4444" stroke-width="1.3" marker-end="url(#arrR)"/>
+  <text x="610" y="521" text-anchor="middle" fill="#ef4444" font-size="10">NO ACK</text>
+  <rect x="660" y="510" width="150" height="42" rx="7" fill="#1a0000" stroke="#ef4444" stroke-width="1.3"/>
+  <text x="735" y="530" text-anchor="middle" fill="#fca5a5" font-size="11">Retry w/ backoff</text>
+  <text x="735" y="544" text-anchor="middle" fill="#7f1d1d" font-size="9">Row stays published_at=NULL</text>
+
+  <!-- ACK → mark published -->
+  <line x1="430" y1="550" x2="430" y2="578" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="444" y="566" fill="#22c55e" font-size="10">ACK ✓</text>
+
+  <rect x="260" y="578" width="340" height="40" rx="7" fill="#0c1a0c" stroke="#22c55e" stroke-width="1.3"/>
+  <text x="430" y="597" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">UPDATE outbox SET published_at = now()</text>
+  <text x="430" y="611" text-anchor="middle" fill="#166534" font-size="9">Row will not be picked up again · exactly-once effect via idempotent consumer</text>
+
+  <text x="430" y="660" text-anchor="middle" fill="#334155" font-size="10">Outbox pattern guarantees no Kafka publish is lost even if Order Service crashes between commit and publish</text>
+  <text x="430" y="676" text-anchor="middle" fill="#334155" font-size="10">Matching Engine must be an idempotent consumer to handle at-least-once delivery safely</text>
+</svg>

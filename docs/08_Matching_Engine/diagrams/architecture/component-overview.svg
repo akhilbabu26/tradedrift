@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 760" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/>
+      <stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <linearGradient id="kafkaGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#e96a1a"/>
+      <stop offset="100%" style="stop-color:#b34700"/>
+    </linearGradient>
+    <linearGradient id="coreGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#1e3a5f"/>
+      <stop offset="100%" style="stop-color:#0d2137"/>
+    </linearGradient>
+    <linearGradient id="pubGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a5c38"/>
+      <stop offset="100%" style="stop-color:#0d3320"/>
+    </linearGradient>
+    <linearGradient id="outGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#4a1a6e"/>
+      <stop offset="100%" style="stop-color:#2d0f44"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
+    </marker>
+    <marker id="arrowBlue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#3b82f6"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#22c55e"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="760" fill="url(#bgGrad)"/>
+  <rect width="900" height="760" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <!-- Title -->
+  <text x="450" y="38" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700" letter-spacing="1">Matching Engine — Component Overview</text>
+  <text x="450" y="58" text-anchor="middle" fill="#64748b" font-size="12">TradeDrift · 08_Matching_Engine</text>
+  <line x1="80" y1="70" x2="820" y2="70" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- ORDER SERVICE box -->
+  <rect x="310" y="88" width="280" height="58" rx="8" fill="#1e293b" stroke="#e96a1a" stroke-width="1.5"/>
+  <text x="450" y="111" text-anchor="middle" fill="#e96a1a" font-size="13" font-weight="600">Order Service</text>
+  <text x="450" y="129" text-anchor="middle" fill="#94a3b8" font-size="10">Publishes OrderCreated / OrderCancelRequested</text>
+
+  <!-- Arrow: Order Service → Kafka topic -->
+  <line x1="450" y1="146" x2="450" y2="167" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)" stroke-dasharray="4,3"/>
+  <text x="460" y="160" fill="#64748b" font-size="10">Kafka</text>
+
+  <!-- Kafka topic box -->
+  <rect x="310" y="168" width="280" height="46" rx="8" fill="url(#kafkaGrad)" stroke="#e96a1a" stroke-width="1.5" opacity="0.9"/>
+  <text x="450" y="193" text-anchor="middle" fill="#fff" font-size="13" font-weight="600">Kafka: orders.submitted</text>
+  <text x="450" y="208" text-anchor="middle" fill="#fecba1" font-size="10">partitioned by market_id</text>
+
+  <!-- Arrow: Kafka → Kafka Consumer -->
+  <line x1="450" y1="214" x2="450" y2="235" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Matching Engine Node boundary -->
+  <rect x="60" y="236" width="780" height="352" rx="12" fill="none" stroke="#1e3a5f" stroke-width="2" stroke-dasharray="8,4"/>
+  <text x="90" y="256" fill="#3b82f6" font-size="11" font-weight="600">Matching Engine Node</text>
+
+  <!-- Kafka Consumer -->
+  <rect x="310" y="260" width="280" height="46" rx="8" fill="url(#coreGrad)" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="450" y="283" text-anchor="middle" fill="#93c5fd" font-size="13" font-weight="600">Kafka Consumer</text>
+  <text x="450" y="298" text-anchor="middle" fill="#64748b" font-size="10">Deserialize · Schema Validate · Route</text>
+
+  <!-- Arrow: Kafka Consumer → Market Engine Manager -->
+  <line x1="450" y1="306" x2="450" y2="325" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrowBlue)"/>
+
+  <!-- Market Engine Manager -->
+  <rect x="310" y="326" width="280" height="42" rx="8" fill="url(#coreGrad)" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="450" y="347" text-anchor="middle" fill="#93c5fd" font-size="13" font-weight="600">Market Engine Manager</text>
+  <text x="450" y="362" text-anchor="middle" fill="#64748b" font-size="10">Create · Destroy · Recover Market Engines</text>
+
+  <!-- Market Engines: BTC ETH SOL -->
+  <line x1="300" y1="368" x2="200" y2="398" stroke="#3b82f6" stroke-width="1.3" marker-end="url(#arrowBlue)"/>
+  <line x1="450" y1="368" x2="450" y2="398" stroke="#3b82f6" stroke-width="1.3" marker-end="url(#arrowBlue)"/>
+  <line x1="600" y1="368" x2="700" y2="398" stroke="#3b82f6" stroke-width="1.3" marker-end="url(#arrowBlue)"/>
+
+  <!-- BTC Engine -->
+  <rect x="120" y="398" width="160" height="90" rx="8" fill="url(#coreGrad)" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="200" y="418" text-anchor="middle" fill="#f59e0b" font-size="12" font-weight="700">BTC Engine</text>
+  <text x="200" y="434" text-anchor="middle" fill="#64748b" font-size="9">Input Queue</text>
+  <text x="200" y="449" text-anchor="middle" fill="#64748b" font-size="9">Event Loop (single goroutine)</text>
+  <text x="200" y="464" text-anchor="middle" fill="#64748b" font-size="9">Matching Core + Order Book</text>
+  <text x="200" y="479" text-anchor="middle" fill="#64748b" font-size="9">Output Queue</text>
+
+  <!-- ETH Engine -->
+  <rect x="370" y="398" width="160" height="90" rx="8" fill="url(#coreGrad)" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="450" y="418" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="700">ETH Engine</text>
+  <text x="450" y="434" text-anchor="middle" fill="#64748b" font-size="9">Input Queue</text>
+  <text x="450" y="449" text-anchor="middle" fill="#64748b" font-size="9">Event Loop (single goroutine)</text>
+  <text x="450" y="464" text-anchor="middle" fill="#64748b" font-size="9">Matching Core + Order Book</text>
+  <text x="450" y="479" text-anchor="middle" fill="#64748b" font-size="9">Output Queue</text>
+
+  <!-- SOL Engine -->
+  <rect x="620" y="398" width="160" height="90" rx="8" fill="url(#coreGrad)" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="700" y="418" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">SOL Engine</text>
+  <text x="700" y="434" text-anchor="middle" fill="#64748b" font-size="9">Input Queue</text>
+  <text x="700" y="449" text-anchor="middle" fill="#64748b" font-size="9">Event Loop (single goroutine)</text>
+  <text x="700" y="464" text-anchor="middle" fill="#64748b" font-size="9">Matching Core + Order Book</text>
+  <text x="700" y="479" text-anchor="middle" fill="#64748b" font-size="9">Output Queue</text>
+
+  <!-- Arrows: engines → Publisher -->
+  <line x1="200" y1="488" x2="350" y2="540" stroke="#22c55e" stroke-width="1.3" marker-end="url(#arrowGreen)"/>
+  <line x1="450" y1="488" x2="450" y2="540" stroke="#22c55e" stroke-width="1.3" marker-end="url(#arrowGreen)"/>
+  <line x1="700" y1="488" x2="550" y2="540" stroke="#22c55e" stroke-width="1.3" marker-end="url(#arrowGreen)"/>
+
+  <!-- Publisher Layer -->
+  <rect x="260" y="540" width="380" height="36" rx="8" fill="url(#pubGrad)" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="450" y="557" text-anchor="middle" fill="#86efac" font-size="13" font-weight="600">Publisher Layer</text>
+  <text x="450" y="571" text-anchor="middle" fill="#4ade80" font-size="9">Kafka Events · Redis Projection · Metrics · Checkpoints</text>
+
+  <!-- End of ME Node boundary -->
+
+  <!-- Arrows: Publisher → outputs -->
+  <line x1="340" y1="576" x2="220" y2="610" stroke="#22c55e" stroke-width="1.3" marker-end="url(#arrowGreen)"/>
+  <line x1="560" y1="576" x2="670" y2="610" stroke="#22c55e" stroke-width="1.3" marker-end="url(#arrowGreen)"/>
+
+  <!-- trades.executed box -->
+  <rect x="100" y="610" width="230" height="46" rx="8" fill="url(#kafkaGrad)" stroke="#e96a1a" stroke-width="1.5" opacity="0.9"/>
+  <text x="215" y="630" text-anchor="middle" fill="#fff" font-size="12" font-weight="600">Kafka: trades.executed</text>
+  <text x="215" y="647" text-anchor="middle" fill="#fecba1" font-size="10">→ Settlement Service</text>
+
+  <!-- orderbook.updates box -->
+  <rect x="570" y="610" width="230" height="46" rx="8" fill="url(#outGrad)" stroke="#a855f7" stroke-width="1.5" opacity="0.9"/>
+  <text x="685" y="630" text-anchor="middle" fill="#e9d5ff" font-size="12" font-weight="600">Redis: orderbook.updates</text>
+  <text x="685" y="647" text-anchor="middle" fill="#c4b5fd" font-size="10">→ Market Data / WebSocket</text>
+
+  <!-- Footer note -->
+  <text x="450" y="720" text-anchor="middle" fill="#334155" font-size="10">Each Market Engine runs a single goroutine event loop · No shared state between engines</text>
+</svg>

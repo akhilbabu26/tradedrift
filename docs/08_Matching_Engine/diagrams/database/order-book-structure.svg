@@ -1,0 +1,136 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 740" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+  </defs>
+  <rect width="900" height="740" fill="url(#bg)"/>
+  <rect width="900" height="740" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="450" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Order Book Structure</text>
+  <text x="450" y="55" text-anchor="middle" fill="#64748b" font-size="12">In-memory layout for BTC-USDT · Price-Time Priority</text>
+  <line x1="80" y1="66" x2="820" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- OrderBook top-level container -->
+  <rect x="60" y="82" width="780" height="110" rx="10" fill="#0f1f38" stroke="#3b82f6" stroke-width="2"/>
+  <text x="450" y="104" text-anchor="middle" fill="#93c5fd" font-size="14" font-weight="700">OrderBook  { market: "BTC-USDT" }</text>
+  <!-- bids -->
+  <rect x="100" y="115" width="270" height="60" rx="7" fill="#0c1a0c" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="235" y="135" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">bids  (SortedPricesSide)</text>
+  <text x="235" y="151" text-anchor="middle" fill="#475569" font-size="10">sortedPrices: []decimal  [101.50, 100.75, 99.20]</text>
+  <text x="235" y="166" text-anchor="middle" fill="#475569" font-size="10">priceLevels: map[decimal]*PriceLevel</text>
+  <!-- asks -->
+  <rect x="530" y="115" width="270" height="60" rx="7" fill="#1a0000" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="665" y="135" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="600">asks  (SortedPricesSide)</text>
+  <text x="665" y="151" text-anchor="middle" fill="#475569" font-size="10">sortedPrices: []decimal  [102.00, 102.50, 103.10]</text>
+  <text x="665" y="166" text-anchor="middle" fill="#475569" font-size="10">priceLevels: map[decimal]*PriceLevel</text>
+
+  <!-- BID SIDE detailed -->
+  <text x="130" y="215" fill="#86efac" font-size="13" font-weight="700">BID SIDE  (highest first)</text>
+
+  <!-- Price level 101.50 -->
+  <rect x="80" y="228" width="120" height="36" rx="6" fill="#0c1a0c" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="140" y="244" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">101.50</text>
+  <text x="140" y="258" text-anchor="middle" fill="#475569" font-size="9">totalQty: 3.0</text>
+
+  <!-- Order nodes at 101.50 -->
+  <rect x="220" y="228" width="100" height="36" rx="5" fill="#0f1f38" stroke="#3b82f6" stroke-width="1.2"/>
+  <text x="270" y="244" text-anchor="middle" fill="#93c5fd" font-size="10">Order A</text>
+  <text x="270" y="257" text-anchor="middle" fill="#475569" font-size="9">qty: 2.0  t:100</text>
+  <line x1="200" y1="246" x2="220" y2="246" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="200" y1="246" x2="200" y2="246" marker-end="url(#node_arr)"/>
+
+  <rect x="340" y="228" width="100" height="36" rx="5" fill="#0f1f38" stroke="#3b82f6" stroke-width="1.2"/>
+  <text x="390" y="244" text-anchor="middle" fill="#93c5fd" font-size="10">Order B</text>
+  <text x="390" y="257" text-anchor="middle" fill="#475569" font-size="9">qty: 1.0  t:102</text>
+  <line x1="320" y1="246" x2="340" y2="246" stroke="#64748b" stroke-width="1.5"/>
+
+  <text x="460" y="250" fill="#475569" font-size="11">→ nil</text>
+
+  <!-- Double-link arrows -->
+  <text x="213" y="268" fill="#334155" font-size="8">prev ←</text>
+  <text x="328" y="268" fill="#334155" font-size="8">← prev</text>
+
+  <!-- Price level 100.75 -->
+  <rect x="80" y="285" width="120" height="36" rx="6" fill="#0c1a0c" stroke="#22c55e" stroke-width="1.3"/>
+  <text x="140" y="301" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">100.75</text>
+  <text x="140" y="315" text-anchor="middle" fill="#475569" font-size="9">totalQty: 5.5</text>
+
+  <rect x="220" y="285" width="100" height="36" rx="5" fill="#0f1f38" stroke="#3b82f6" stroke-width="1.2"/>
+  <text x="270" y="301" text-anchor="middle" fill="#93c5fd" font-size="10">Order C</text>
+  <text x="270" y="314" text-anchor="middle" fill="#475569" font-size="9">qty: 5.5  t:98</text>
+  <line x1="200" y1="303" x2="220" y2="303" stroke="#64748b" stroke-width="1.5"/>
+  <text x="335" y="306" fill="#475569" font-size="11">→ nil</text>
+
+  <!-- Price level 99.20 -->
+  <rect x="80" y="340" width="120" height="36" rx="6" fill="#0c1a0c" stroke="#22c55e" stroke-width="1"/>
+  <text x="140" y="356" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">99.20</text>
+  <text x="140" y="370" text-anchor="middle" fill="#475569" font-size="9">totalQty: 1.0</text>
+
+  <rect x="220" y="340" width="100" height="36" rx="5" fill="#0f1f38" stroke="#3b82f6" stroke-width="1"/>
+  <text x="270" y="356" text-anchor="middle" fill="#93c5fd" font-size="10">Order D</text>
+  <text x="270" y="369" text-anchor="middle" fill="#475569" font-size="9">qty: 1.0  t:90</text>
+  <line x1="200" y1="358" x2="220" y2="358" stroke="#64748b" stroke-width="1.5"/>
+  <text x="335" y="362" fill="#475569" font-size="11">→ nil</text>
+
+  <!-- Vertical line connecting levels -->
+  <line x1="140" y1="264" x2="140" y2="285" stroke="#22c55e" stroke-width="1" stroke-dasharray="3,2"/>
+  <line x1="140" y1="321" x2="140" y2="340" stroke="#22c55e" stroke-width="1" stroke-dasharray="3,2"/>
+  <text x="140" y="395" text-anchor="middle" fill="#334155" font-size="9">↓ lower prices</text>
+
+  <!-- ASK SIDE detailed -->
+  <text x="590" y="215" fill="#fca5a5" font-size="13" font-weight="700">ASK SIDE  (lowest first)</text>
+
+  <!-- Price level 102.00 -->
+  <rect x="510" y="228" width="120" height="36" rx="6" fill="#1a0000" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="570" y="244" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="600">102.00</text>
+  <text x="570" y="258" text-anchor="middle" fill="#475569" font-size="9">totalQty: 2.5</text>
+
+  <rect x="650" y="228" width="100" height="36" rx="5" fill="#0f1f38" stroke="#ef4444" stroke-width="1.2"/>
+  <text x="700" y="244" text-anchor="middle" fill="#fca5a5" font-size="10">Order X</text>
+  <text x="700" y="257" text-anchor="middle" fill="#475569" font-size="9">qty: 2.5  t:88</text>
+  <line x1="630" y1="246" x2="650" y2="246" stroke="#64748b" stroke-width="1.5"/>
+  <text x="770" y="250" fill="#475569" font-size="11">→ nil</text>
+
+  <!-- Price level 102.50 -->
+  <rect x="510" y="285" width="120" height="36" rx="6" fill="#1a0000" stroke="#ef4444" stroke-width="1.3"/>
+  <text x="570" y="301" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="600">102.50</text>
+  <text x="570" y="315" text-anchor="middle" fill="#475569" font-size="9">totalQty: 4.0</text>
+
+  <rect x="650" y="285" width="90" height="36" rx="5" fill="#0f1f38" stroke="#ef4444" stroke-width="1"/>
+  <text x="695" y="301" text-anchor="middle" fill="#fca5a5" font-size="10">Order Y</text>
+  <text x="695" y="314" text-anchor="middle" fill="#475569" font-size="9">qty: 2.0</text>
+  <line x1="630" y1="303" x2="650" y2="303" stroke="#64748b" stroke-width="1.5"/>
+  <rect x="752" y="285" width="90" height="36" rx="5" fill="#0f1f38" stroke="#ef4444" stroke-width="1"/>
+  <text x="797" y="301" text-anchor="middle" fill="#fca5a5" font-size="10">Order Z</text>
+  <text x="797" y="314" text-anchor="middle" fill="#475569" font-size="9">qty: 2.0</text>
+  <line x1="742" y1="303" x2="752" y2="303" stroke="#64748b" stroke-width="1.5"/>
+
+  <!-- vertical ask levels -->
+  <line x1="570" y1="264" x2="570" y2="285" stroke="#ef4444" stroke-width="1" stroke-dasharray="3,2"/>
+  <text x="570" y="352" text-anchor="middle" fill="#334155" font-size="9">↓ higher prices</text>
+
+  <!-- OrderIndex box -->
+  <rect x="60" y="430" width="400" height="90" rx="8" fill="#0e0a24" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="260" y="452" text-anchor="middle" fill="#d8b4fe" font-size="13" font-weight="700">orderIndex  (HashMap)</text>
+  <text x="260" y="470" text-anchor="middle" fill="#475569" font-size="10">map[UUID]*OrderNode</text>
+  <text x="130" y="490" fill="#6b21a8" font-size="10">Order A UUID → *OrderNode{}</text>
+  <text x="130" y="505" fill="#6b21a8" font-size="10">Order B UUID → *OrderNode{}</text>
+  <text x="130" y="520" fill="#6b21a8" font-size="10">Order X UUID → *OrderNode{} ...</text>
+
+  <!-- OrderIndex purpose -->
+  <rect x="480" y="430" width="380" height="90" rx="8" fill="#0f172a" stroke="#475569" stroke-width="1.3"/>
+  <text x="670" y="452" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">Why OrderIndex?</text>
+  <text x="670" y="470" text-anchor="middle" fill="#475569" font-size="10">Cancel requests carry only order_id</text>
+  <text x="670" y="485" text-anchor="middle" fill="#475569" font-size="10">Without index: O(n) scan of every price level</text>
+  <text x="670" y="500" text-anchor="middle" fill="#475569" font-size="10">With index: O(1) direct pointer to OrderNode</text>
+  <text x="670" y="515" text-anchor="middle" fill="#3b82f6" font-size="10">Cancel = O(1) list splice + O(1) map delete</text>
+
+  <!-- Spread indicator -->
+  <rect x="60" y="545" width="780" height="60" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
+  <text x="450" y="565" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">Current Spread</text>
+  <text x="450" y="583" text-anchor="middle" fill="#64748b" font-size="11">Best Bid: <tspan fill="#86efac" font-weight="700">101.50</tspan>  ·  Best Ask: <tspan fill="#fca5a5" font-weight="700">102.00</tspan>  ·  Spread: <tspan fill="#fbbf24" font-weight="700">0.50</tspan></text>
+  <text x="450" y="598" text-anchor="middle" fill="#334155" font-size="10">Match occurs when incoming BUY ≥ 102.00  or  incoming SELL ≤ 101.50</text>
+
+  <text x="450" y="730" text-anchor="middle" fill="#334155" font-size="10">All data lives in process memory · No database read during matching · O(1) best price via sorted slice index [0]</text>
+</svg>

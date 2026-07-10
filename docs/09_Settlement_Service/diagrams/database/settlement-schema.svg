@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 600" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+  </defs>
+  <rect width="860" height="600" fill="url(#bg)"/>
+  <rect width="860" height="600" fill="none" stroke="#1e293b" stroke-width="2"/>
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Settlement Service — Database Schema</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">PostgreSQL · settled_trades only · No outbox (Settlement Service publishes no events)</text>
+  <line x1="60" y1="66" x2="800" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- settled_trades table -->
+  <rect x="60" y="82" width="740" height="280" rx="10" fill="#0f172a" stroke="#22c55e" stroke-width="2"/>
+  <rect x="60" y="82" width="740" height="36" rx="10" fill="#1e3a5f"/>
+  <text x="430" y="103" text-anchor="middle" fill="#93c5fd" font-size="14" font-weight="700">settled_trades</text>
+  <text x="430" y="118" text-anchor="middle" fill="#475569" font-size="10">1 row per trade · Primary idempotency ledger · trade_id = UUIDv7 from Matching Engine</text>
+  <line x1="80" y1="120" x2="780" y2="120" stroke="#1e3a5f" stroke-width="0.5"/>
+
+  <!-- Column headers -->
+  <text x="100" y="138" fill="#64748b" font-size="10" font-weight="600">COLUMN</text>
+  <text x="280" y="138" fill="#64748b" font-size="10" font-weight="600">TYPE</text>
+  <text x="460" y="138" fill="#64748b" font-size="10" font-weight="600">CONSTRAINT</text>
+  <text x="640" y="138" fill="#64748b" font-size="10" font-weight="600">NOTES</text>
+  <line x1="80" y1="143" x2="780" y2="143" stroke="#1e3a5f" stroke-width="0.5"/>
+
+  <!-- trade_id -->
+  <rect x="78" y="146" width="704" height="20" rx="3" fill="#0d2137"/>
+  <text x="100" y="160" fill="#f59e0b" font-size="10" font-weight="700">trade_id</text>
+  <text x="280" y="160" fill="#475569" font-size="9">UUID</text>
+  <text x="460" y="160" fill="#22c55e" font-size="9">PRIMARY KEY</text>
+  <text x="640" y="160" fill="#22c55e" font-size="9">UUIDv7 · from Matching Engine · idempotency key</text>
+
+  <!-- buyer_id -->
+  <text x="100" y="176" fill="#cbd5e1" font-size="10">buyer_id</text>
+  <text x="280" y="176" fill="#475569" font-size="9">UUID</text>
+  <text x="460" y="176" fill="#475569" font-size="9">NOT NULL</text>
+  <text x="640" y="176" fill="#475569" font-size="9">For audit · idx_settled_trades_buyer</text>
+
+  <!-- seller_id -->
+  <rect x="78" y="180" width="704" height="18" rx="3" fill="#0d2137"/>
+  <text x="100" y="193" fill="#cbd5e1" font-size="10">seller_id</text>
+  <text x="280" y="193" fill="#475569" font-size="9">UUID</text>
+  <text x="460" y="193" fill="#475569" font-size="9">NOT NULL</text>
+  <text x="640" y="193" fill="#475569" font-size="9">For audit · idx_settled_trades_seller</text>
+
+  <!-- buy_order_id -->
+  <text x="100" y="210" fill="#cbd5e1" font-size="10">buy_order_id</text>
+  <text x="280" y="210" fill="#475569" font-size="9">UUID</text>
+  <text x="460" y="210" fill="#475569" font-size="9">NOT NULL</text>
+  <text x="640" y="210" fill="#475569" font-size="9">Passed to Wallet.SettleTrade</text>
+
+  <!-- sell_order_id -->
+  <rect x="78" y="214" width="704" height="18" rx="3" fill="#0d2137"/>
+  <text x="100" y="227" fill="#cbd5e1" font-size="10">sell_order_id</text>
+  <text x="280" y="227" fill="#475569" font-size="9">UUID</text>
+  <text x="460" y="227" fill="#475569" font-size="9">NOT NULL</text>
+  <text x="640" y="227" fill="#475569" font-size="9">Passed to Wallet.SettleTrade</text>
+
+  <!-- base_asset -->
+  <text x="100" y="244" fill="#cbd5e1" font-size="10">base_asset</text>
+  <text x="280" y="244" fill="#475569" font-size="9">VARCHAR(16)</text>
+  <text x="460" y="244" fill="#475569" font-size="9">NOT NULL</text>
+  <text x="640" y="244" fill="#475569" font-size="9">e.g. BTC</text>
+
+  <!-- quote_asset -->
+  <rect x="78" y="248" width="704" height="18" rx="3" fill="#0d2137"/>
+  <text x="100" y="261" fill="#cbd5e1" font-size="10">quote_asset</text>
+  <text x="280" y="261" fill="#475569" font-size="9">VARCHAR(16)</text>
+  <text x="460" y="261" fill="#475569" font-size="9">NOT NULL</text>
+  <text x="640" y="261" fill="#475569" font-size="9">e.g. USDT</text>
+
+  <!-- price -->
+  <text x="100" y="278" fill="#cbd5e1" font-size="10">price</text>
+  <text x="280" y="278" fill="#475569" font-size="9">NUMERIC(28,8)</text>
+  <text x="460" y="278" fill="#475569" font-size="9">NOT NULL</text>
+  <text x="640" y="278" fill="#475569" font-size="9">Execution price</text>
+
+  <!-- quantity -->
+  <rect x="78" y="282" width="704" height="18" rx="3" fill="#0d2137"/>
+  <text x="100" y="295" fill="#cbd5e1" font-size="10">quantity</text>
+  <text x="280" y="295" fill="#475569" font-size="9">NUMERIC(28,8)</text>
+  <text x="460" y="295" fill="#475569" font-size="9">NOT NULL</text>
+  <text x="640" y="295" fill="#475569" font-size="9">Executed quantity</text>
+
+  <!-- status -->
+  <text x="100" y="312" fill="#f59e0b" font-size="10" font-weight="600">status</text>
+  <text x="280" y="312" fill="#475569" font-size="9">VARCHAR(16)</text>
+  <text x="460" y="312" fill="#f59e0b" font-size="9">NOT NULL DEFAULT 'PENDING'</text>
+  <text x="640" y="312" fill="#22c55e" font-size="9">State machine column — PENDING | SETTLED</text>
+
+  <!-- executed_at -->
+  <rect x="78" y="316" width="704" height="18" rx="3" fill="#0d2137"/>
+  <text x="100" y="329" fill="#cbd5e1" font-size="10">executed_at</text>
+  <text x="280" y="329" fill="#475569" font-size="9">TIMESTAMPTZ</text>
+  <text x="460" y="329" fill="#475569" font-size="9">NOT NULL</text>
+  <text x="640" y="329" fill="#475569" font-size="9">Copied from TradeExecuted.executed_at verbatim</text>
+
+  <!-- settled_at -->
+  <text x="100" y="346" fill="#cbd5e1" font-size="10">settled_at</text>
+  <text x="280" y="346" fill="#475569" font-size="9">TIMESTAMPTZ</text>
+  <text x="460" y="346" fill="#475569" font-size="9">NULLABLE</text>
+  <text x="640" y="346" fill="#475569" font-size="9">Set when status → SETTLED (Phase 3)</text>
+
+  <!-- Indexes -->
+  <rect x="60" y="386" width="740" height="100" rx="8" fill="#0f172a" stroke="#1e3a5f" stroke-width="1.3"/>
+  <text x="430" y="406" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">Indexes</text>
+  <line x1="80" y1="414" x2="780" y2="414" stroke="#1e293b" stroke-width="0.5"/>
+  <text x="100" y="430" fill="#64748b" font-size="10" font-weight="600">Index</text>
+  <text x="380" y="430" fill="#64748b" font-size="10" font-weight="600">Definition</text>
+  <text x="640" y="430" fill="#64748b" font-size="10" font-weight="600">Purpose</text>
+  <text x="100" y="448" fill="#475569" font-size="10">idx_settled_trades_buyer</text>
+  <text x="380" y="448" fill="#334155" font-size="10">ON settled_trades(buyer_id)</text>
+  <text x="640" y="448" fill="#475569" font-size="10">Audit / account history queries</text>
+  <text x="100" y="464" fill="#475569" font-size="10">idx_settled_trades_seller</text>
+  <text x="380" y="464" fill="#334155" font-size="10">ON settled_trades(seller_id)</text>
+  <text x="640" y="464" fill="#475569" font-size="10">Audit / account history queries</text>
+  <text x="100" y="480" fill="#f59e0b" font-size="10">idx_settled_trades_pending</text>
+  <text x="380" y="480" fill="#334155" font-size="10">ON settled_trades(executed_at) WHERE status='PENDING'</text>
+  <text x="640" y="480" fill="#f59e0b" font-size="10">Recovery goroutine stale PENDING scan</text>
+
+  <rect x="60" y="508" width="740" height="64" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+  <text x="430" y="528" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">Key Design Notes</text>
+  <text x="90" y="548" fill="#475569" font-size="10">① No outbox table — Settlement Service publishes no Kafka events (SI-4). TradeSettled from Wallet Service's outbox.</text>
+  <text x="90" y="564" fill="#475569" font-size="10">② trade_id PK is the entire idempotency mechanism — no separate deduplication table needed</text>
+  <text x="90" y="580" fill="#475569" font-size="10">③ Partial index on (executed_at WHERE status=PENDING) makes recovery goroutine scan efficient at scale</text>
+</svg>

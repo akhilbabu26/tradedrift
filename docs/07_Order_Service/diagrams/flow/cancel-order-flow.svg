@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 860" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrB" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#3b82f6"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+    <marker id="arrO" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f97316"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f59e0b"/></marker>
+    <marker id="arrP" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#a855f7"/></marker>
+  </defs>
+  <rect width="900" height="860" fill="url(#bg)"/>
+  <rect width="900" height="860" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="450" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Cancel Order Flow</text>
+  <text x="450" y="55" text-anchor="middle" fill="#64748b" font-size="12">DELETE /orders/{id} → CANCELLING → ME Confirms → CANCELLED + ReleaseFunds</text>
+  <line x1="80" y1="66" x2="820" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- 1. Request -->
+  <rect x="270" y="82" width="360" height="46" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="450" y="101" text-anchor="middle" fill="#93c5fd" font-size="13" font-weight="600">DELETE /orders/{id} via API Gateway</text>
+  <text x="450" y="119" text-anchor="middle" fill="#475569" font-size="10">Auth validated · user_id extracted from JWT</text>
+
+  <line x1="450" y1="128" x2="450" y2="154" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- 2. Ownership + status check -->
+  <rect x="270" y="154" width="360" height="50" rx="8" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
+  <text x="450" y="174" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">① Check Ownership + Status</text>
+  <text x="450" y="191" text-anchor="middle" fill="#475569" font-size="10">orders.user_id == requesting user</text>
+  <text x="450" y="204" text-anchor="middle" fill="#334155" font-size="9">Status must be OPEN or PARTIALLY_FILLED</text>
+
+  <!-- Not eligible branch -->
+  <line x1="630" y1="178" x2="700" y2="178" stroke="#ef4444" stroke-width="1.3" marker-end="url(#arrR)"/>
+  <text x="664" y="170" text-anchor="middle" fill="#ef4444" font-size="10">NOT ELIGIBLE</text>
+  <rect x="700" y="160" width="165" height="36" rx="7" fill="#1a0000" stroke="#ef4444" stroke-width="1.3"/>
+  <text x="782" y="178" text-anchor="middle" fill="#fca5a5" font-size="11">409 / 404</text>
+  <text x="782" y="191" text-anchor="middle" fill="#7f1d1d" font-size="9">Already FILLED or CANCELLED</text>
+
+  <line x1="450" y1="204" x2="450" y2="232" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- 3. DB Transaction: CANCELLING + outbox -->
+  <rect x="250" y="232" width="400" height="80" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="2"/>
+  <text x="450" y="254" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">② Atomic DB Transaction</text>
+  <line x1="270" y1="262" x2="630" y2="262" stroke="#166534" stroke-width="0.5"/>
+  <rect x="268" y="268" width="170" height="34" rx="5" fill="#0f172a" stroke="#22c55e" stroke-width="1"/>
+  <text x="353" y="284" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">UPDATE orders</text>
+  <text x="353" y="297" text-anchor="middle" fill="#475569" font-size="9">status = CANCELLING</text>
+  <rect x="448" y="268" width="190" height="34" rx="5" fill="#0f172a" stroke="#22c55e" stroke-width="1"/>
+  <text x="543" y="284" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">INSERT outbox</text>
+  <text x="543" y="297" text-anchor="middle" fill="#475569" font-size="9">event_type=OrderCancelRequested</text>
+
+  <line x1="450" y1="312" x2="450" y2="338" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="464" y="328" fill="#22c55e" font-size="10">Commit ✓</text>
+
+  <!-- 4. Return 202 -->
+  <rect x="270" y="338" width="360" height="42" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1.3"/>
+  <text x="450" y="358" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">③ Return 202 Accepted</text>
+  <text x="450" y="373" text-anchor="middle" fill="#334155" font-size="10">Cancel is async — ME confirmation still pending</text>
+
+  <line x1="450" y1="380" x2="450" y2="406" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+
+  <!-- 5. Outbox publisher → Kafka -->
+  <rect x="270" y="406" width="360" height="44" rx="8" fill="#0f172a" stroke="#f97316" stroke-width="1.5"/>
+  <text x="450" y="426" text-anchor="middle" fill="#fdba74" font-size="12" font-weight="600">④ Outbox Publisher → Kafka</text>
+  <text x="450" y="443" text-anchor="middle" fill="#78350f" font-size="10">OrderCancelRequested · partition key = market_id</text>
+
+  <line x1="450" y1="450" x2="450" y2="476" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+
+  <!-- 6. ME processes -->
+  <rect x="270" y="476" width="360" height="44" rx="8" fill="#0f1f38" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="450" y="496" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="600">⑤ Matching Engine Processes Cancel</text>
+  <text x="450" y="513" text-anchor="middle" fill="#475569" font-size="10">Same partition → in-order with OrderCreated → Cancel vs Fill race</text>
+
+  <!-- Race condition decision -->
+  <line x1="450" y1="520" x2="450" y2="548" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <polygon points="450,548 620,574 450,600 280,574" fill="#0f172a" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="450" y="571" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">Outcome?</text>
+  <text x="450" y="588" text-anchor="middle" fill="#78350f" font-size="9">Fill vs Cancel race</text>
+
+  <!-- ME confirms cancel → OrderCancelled -->
+  <line x1="450" y1="600" x2="450" y2="636" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="462" y="620" fill="#22c55e" font-size="10">ME confirms cancel</text>
+
+  <!-- Fill arrives instead (left branch) -->
+  <line x1="280" y1="574" x2="100" y2="574" stroke="#f59e0b" stroke-width="1.3" marker-end="url(#arrY)"/>
+  <text x="190" y="564" text-anchor="middle" fill="#f59e0b" font-size="10">Fill arrives first</text>
+  <rect x="20" y="545" width="170" height="56" rx="7" fill="#1a1000" stroke="#f59e0b" stroke-width="1.3"/>
+  <text x="105" y="565" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">TradeExecuted</text>
+  <text x="105" y="581" text-anchor="middle" fill="#78350f" font-size="10">Order Service accepts fill</text>
+  <text x="105" y="596" text-anchor="middle" fill="#78350f" font-size="9">CANCELLING → FILLED or PARTIALLY_FILLED</text>
+
+  <!-- Fully filled before cancel (right branch) -->
+  <line x1="620" y1="574" x2="770" y2="574" stroke="#f59e0b" stroke-width="1.3" marker-end="url(#arrY)"/>
+  <text x="695" y="564" text-anchor="middle" fill="#f59e0b" font-size="10">Fully filled</text>
+  <rect x="720" y="545" width="155" height="56" rx="7" fill="#1a1000" stroke="#f59e0b" stroke-width="1.3"/>
+  <text x="797" y="565" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">No OrderCancelled</text>
+  <text x="797" y="581" text-anchor="middle" fill="#78350f" font-size="10">ME ignores cancel</text>
+  <text x="797" y="596" text-anchor="middle" fill="#78350f" font-size="9">→ FILLED state</text>
+
+  <!-- 7. OrderCancelled received → CANCELLED + ReleaseFunds -->
+  <rect x="250" y="636" width="400" height="80" rx="8" fill="#1a0000" stroke="#ef4444" stroke-width="2"/>
+  <text x="450" y="658" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="600">⑥ Order Service: OrderCancelled consumed</text>
+  <line x1="270" y1="666" x2="630" y2="666" stroke="#7f1d1d" stroke-width="0.5"/>
+  <rect x="268" y="672" width="170" height="34" rx="5" fill="#0f172a" stroke="#ef4444" stroke-width="1"/>
+  <text x="353" y="689" text-anchor="middle" fill="#fca5a5" font-size="10" font-weight="600">UPDATE orders</text>
+  <text x="353" y="702" text-anchor="middle" fill="#7f1d1d" font-size="9">status = CANCELLED</text>
+  <rect x="448" y="672" width="175" height="34" rx="5" fill="#0e0a24" stroke="#a855f7" stroke-width="1"/>
+  <text x="535" y="689" text-anchor="middle" fill="#d8b4fe" font-size="10" font-weight="600">ReleaseFunds gRPC</text>
+  <text x="535" y="702" text-anchor="middle" fill="#6b21a8" font-size="9">remaining_quantity only</text>
+
+  <text x="450" y="750" text-anchor="middle" fill="#334155" font-size="10">Fills always win over cancels · CANCELLING state is durable — safe across Order Service restarts</text>
+  <text x="450" y="766" text-anchor="middle" fill="#334155" font-size="10">ReleaseFunds is idempotent on order_id · Settlement Service is NOT involved in cancellations</text>
+</svg>

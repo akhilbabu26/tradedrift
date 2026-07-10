@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 700" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr"  markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f59e0b"/></marker>
+    <marker id="arrP" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#a855f7"/></marker>
+  </defs>
+  <rect width="860" height="700" fill="url(#bg)"/>
+  <rect width="860" height="700" fill="none" stroke="#1e293b" stroke-width="2"/>
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Reserve Funds Flow</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">ReserveFunds(user_id, order_id, asset, amount) · §8.2 idempotency</text>
+  <line x1="80" y1="66" x2="780" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Step 1: gRPC call -->
+  <rect x="260" y="82" width="340" height="46" rx="8" fill="#0e0a24" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="430" y="102" text-anchor="middle" fill="#d8b4fe" font-size="13" font-weight="600">gRPC: ReserveFunds()</text>
+  <text x="430" y="119" text-anchor="middle" fill="#6b21a8" font-size="10">user_id · order_id (idempotency key) · asset · amount</text>
+
+  <line x1="430" y1="128" x2="430" y2="154" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Idempotency check: reservation exists? -->
+  <polygon points="430,154 600,180 430,206 260,180" fill="#0f172a" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="430" y="177" text-anchor="middle" fill="#d8b4fe" font-size="11" font-weight="600">Reservation exists</text>
+  <text x="430" y="193" text-anchor="middle" fill="#6b21a8" font-size="10">for order_id?</text>
+
+  <!-- Already exists → idempotent success -->
+  <line x1="600" y1="180" x2="700" y2="180" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrY)"/>
+  <text x="650" y="172" text-anchor="middle" fill="#f59e0b" font-size="10">YES (duplicate)</text>
+  <rect x="700" y="158" width="140" height="44" rx="7" fill="#1a1000" stroke="#f59e0b" stroke-width="1.3"/>
+  <text x="770" y="176" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">Return success</text>
+  <text x="770" y="190" text-anchor="middle" fill="#78350f" font-size="9">existing reservation details</text>
+  <text x="770" y="201" text-anchor="middle" fill="#78350f" font-size="8">No balance mutation (§8.2)</text>
+
+  <line x1="430" y1="206" x2="430" y2="234" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="444" y="222" fill="#22c55e" font-size="10">NO — new request</text>
+
+  <!-- Balance check -->
+  <rect x="260" y="234" width="340" height="44" rx="8" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
+  <text x="430" y="254" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">① Check available_balance ≥ amount</text>
+  <text x="430" y="271" text-anchor="middle" fill="#475569" font-size="10">SELECT ... FOR UPDATE on wallets row</text>
+
+  <!-- Insufficient -->
+  <line x1="600" y1="256" x2="680" y2="256" stroke="#ef4444" stroke-width="1.3" marker-end="url(#arrR)"/>
+  <text x="640" y="248" text-anchor="middle" fill="#ef4444" font-size="10">INSUFFICIENT</text>
+  <rect x="680" y="238" width="150" height="36" rx="7" fill="#1a0000" stroke="#ef4444" stroke-width="1.3"/>
+  <text x="755" y="256" text-anchor="middle" fill="#fca5a5" font-size="11">Return error</text>
+  <text x="755" y="269" text-anchor="middle" fill="#7f1d1d" font-size="9">Order rejected · no row</text>
+
+  <line x1="430" y1="278" x2="430" y2="308" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="444" y="295" fill="#22c55e" font-size="10">Sufficient ✓</text>
+
+  <!-- Atomic TX -->
+  <rect x="240" y="308" width="380" height="120" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="2"/>
+  <text x="430" y="328" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">② Atomic DB Transaction</text>
+  <line x1="260" y1="337" x2="600" y2="337" stroke="#166534" stroke-width="0.5"/>
+  <!-- Row 1: wallet -->
+  <rect x="258" y="343" width="170" height="36" rx="5" fill="#0f172a" stroke="#22c55e" stroke-width="1"/>
+  <text x="343" y="360" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">UPDATE wallets</text>
+  <text x="343" y="374" text-anchor="middle" fill="#475569" font-size="9">available -= amount</text>
+  <text x="343" y="386" text-anchor="middle" fill="#475569" font-size="9">reserved += amount</text>
+  <!-- Row 2: reservations -->
+  <rect x="438" y="343" width="170" height="36" rx="5" fill="#0f172a" stroke="#22c55e" stroke-width="1"/>
+  <text x="523" y="360" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">INSERT reservation</text>
+  <text x="523" y="374" text-anchor="middle" fill="#475569" font-size="9">status=ACTIVE</text>
+  <text x="523" y="386" text-anchor="middle" fill="#475569" font-size="9">UNIQUE(order_id) guard</text>
+  <!-- Row 3: txn -->
+  <rect x="258" y="387" width="350" height="32" rx="5" fill="#0f172a" stroke="#22c55e" stroke-width="1"/>
+  <text x="433" y="404" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">INSERT wallet_transactions</text>
+  <text x="433" y="417" text-anchor="middle" fill="#475569" font-size="9">DEBIT · ref=order_id · type=RESERVATION · UNIQUE(order_id, RESERVATION, asset)</text>
+
+  <line x1="430" y1="428" x2="430" y2="456" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="444" y="445" fill="#22c55e" font-size="10">COMMIT ✓</text>
+
+  <!-- Return -->
+  <rect x="260" y="456" width="340" height="42" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1.3"/>
+  <text x="430" y="476" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">Return ReserveFundsResponse{success: true}</text>
+  <text x="430" y="492" text-anchor="middle" fill="#334155" font-size="10">reservation_id returned · Order Service proceeds to INSERT order</text>
+
+  <!-- Balance effect diagram -->
+  <rect x="60" y="528" width="740" height="80" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.3"/>
+  <text x="430" y="548" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">Balance Effect</text>
+  <line x1="80" y1="556" x2="780" y2="556" stroke="#1e293b" stroke-width="0.5"/>
+  <text x="220" y="574" text-anchor="middle" fill="#64748b" font-size="10">Before</text>
+  <text x="430" y="574" text-anchor="middle" fill="#64748b" font-size="10">After</text>
+  <text x="680" y="574" text-anchor="middle" fill="#64748b" font-size="10">Change</text>
+  <text x="220" y="592" text-anchor="middle" fill="#475569" font-size="10">available=10000  reserved=0</text>
+  <text x="430" y="592" text-anchor="middle" fill="#475569" font-size="10">available=8000  reserved=2000</text>
+  <text x="680" y="592" text-anchor="middle" fill="#f59e0b" font-size="10">amount=2000 locked</text>
+  <text x="430" y="607" text-anchor="middle" fill="#334155" font-size="9">Total balance (available+reserved) unchanged · funds just reclassified</text>
+
+  <text x="430" y="660" text-anchor="middle" fill="#334155" font-size="10">§8.2: duplicate call for same order_id returns existing reservation details, never double-deducts</text>
+</svg>

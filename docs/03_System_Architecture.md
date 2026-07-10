@@ -127,6 +127,10 @@ Portfolio
  │
  └── Kafka (consume: TradeSettled; publish: PortfolioUpdated)
 
+Trade
+ │
+ └── Kafka (consume: TradeSettled)
+
 Notification
  │
  └── Kafka (consume: TradeSettled, PortfolioUpdated, OrderCancelled)
@@ -267,7 +271,7 @@ Core topics
 - `OrderCancelRequested` — published by Order Service (via outbox), consumed by Matching Engine
 - `OrderCancelled` — published by Matching Engine, consumed by Order Service (status update + fund release)
 - `TradeExecuted` — published by Matching Engine, consumed by Settlement Service
-- `TradeSettled` — published by Wallet Service (via outbox, after settlement commit), consumed by Portfolio Service, Notification Service
+- `TradeSettled` — published by Wallet Service (via outbox, after settlement commit), consumed by **Trade Service**, Portfolio Service, Notification Service
 - `PortfolioUpdated` — published by Portfolio Service, consumed by Notification Service
 - `NotificationCreated` — published by Notification Service, pushed via WebSocket Gateway
 

@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 760" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/></marker>
+    <marker id="arrB" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#3b82f6"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#22c55e"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#f59e0b"/></marker>
+  </defs>
+  <rect width="900" height="760" fill="url(#bg)"/>
+  <rect width="900" height="760" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="450" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Recovery Flow</text>
+  <text x="450" y="55" text-anchor="middle" fill="#64748b" font-size="12">Restart → Checkpoint → Replay → LIVE</text>
+  <line x1="80" y1="66" x2="820" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Numbered steps in a vertical flow -->
+
+  <!-- 1. Start -->
+  <rect x="275" y="82" width="350" height="44" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="450" y="101" text-anchor="middle" fill="#93c5fd" font-size="13" font-weight="600">① Application Starts</text>
+  <text x="450" y="117" text-anchor="middle" fill="#475569" font-size="10">Load config · Connect Kafka · Connect PostgreSQL</text>
+
+  <line x1="450" y1="126" x2="450" y2="152" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- 2. Kafka partitions assigned -->
+  <rect x="275" y="152" width="350" height="44" rx="8" fill="#1e1a00" stroke="#e96a1a" stroke-width="1.5"/>
+  <text x="450" y="171" text-anchor="middle" fill="#fb923c" font-size="13" font-weight="600">② Kafka: Receive Assigned Partitions</text>
+  <text x="450" y="188" text-anchor="middle" fill="#78350f" font-size="10">Consumer group assigns market partitions to this node</text>
+
+  <line x1="450" y1="196" x2="450" y2="222" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Per market loop -->
+  <rect x="60" y="222" width="780" height="380" rx="12" fill="none" stroke="#1e3a5f" stroke-width="2" stroke-dasharray="6,4"/>
+  <text x="90" y="242" fill="#3b82f6" font-size="11" font-weight="600">For each assigned market partition</text>
+
+  <!-- 3. Read checkpoint -->
+  <rect x="275" y="252" width="350" height="44" rx="8" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
+  <text x="450" y="271" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">③ Read Checkpoint from PostgreSQL</text>
+  <text x="450" y="288" text-anchor="middle" fill="#475569" font-size="10">{topic, partition, checkpointOffset} · If absent → offset = −1</text>
+
+  <line x1="450" y1="296" x2="450" y2="322" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- 4. Create empty engine + enter RECOVERY -->
+  <rect x="275" y="322" width="350" height="50" rx="8" fill="#0f1f38" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="450" y="341" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="600">④ Create Empty Market Engine</text>
+  <text x="450" y="357" text-anchor="middle" fill="#475569" font-size="10">Empty bids · Empty asks · Empty OrderIndex</text>
+  <text x="450" y="372" text-anchor="middle" fill="#334155" font-size="10">Enter RECOVERY mode — output suppressed</text>
+
+  <line x1="450" y1="372" x2="450" y2="400" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- 5. Seek to offset 0 and replay -->
+  <rect x="275" y="400" width="350" height="56" rx="8" fill="#0f1f38" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="450" y="419" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="600">⑤ Seek to Offset 0 · Replay Events</text>
+  <text x="450" y="435" text-anchor="middle" fill="#475569" font-size="10">Feed OrderCreated / OrderCancelRequested through</text>
+  <text x="450" y="450" text-anchor="middle" fill="#475569" font-size="10">same Event Loop · Output Queue suppressed</text>
+
+  <!-- Side note: no output during recovery -->
+  <rect x="660" y="400" width="170" height="56" rx="7" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+  <text x="745" y="420" text-anchor="middle" fill="#64748b" font-size="10" font-weight="600">Recovery Suppression</text>
+  <text x="745" y="436" text-anchor="middle" fill="#334155" font-size="9">No Kafka publish</text>
+  <text x="745" y="449" text-anchor="middle" fill="#334155" font-size="9">No Redis snapshot</text>
+  <text x="745" y="462" text-anchor="middle" fill="#334155" font-size="9">No metrics emitted</text>
+  <line x1="625" y1="428" x2="660" y2="428" stroke="#334155" stroke-width="1" stroke-dasharray="3,2"/>
+
+  <line x1="450" y1="456" x2="450" y2="484" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- 6. Checkpoint offset reached -->
+  <polygon points="450,484 610,510 450,536 290,510" fill="#0f172a" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="450" y="506" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">offset == checkpointOffset?</text>
+  <text x="450" y="524" text-anchor="middle" fill="#78350f" font-size="10">Caught up to last known state</text>
+
+  <line x1="450" y1="536" x2="450" y2="570" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="462" y="555" fill="#22c55e" font-size="10">CAUGHT UP</text>
+
+  <!-- 7. Transition LIVE -->
+  <rect x="275" y="570" width="350" height="50" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="450" y="590" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">⑦ Transition → LIVE</text>
+  <text x="450" y="606" text-anchor="middle" fill="#475569" font-size="10">Send sentinel MatchResult → Redis depth snapshot pushed</text>
+  <text x="450" y="619" text-anchor="middle" fill="#475569" font-size="10">Publisher activated · Kafka/Redis/Metrics all enabled</text>
+
+  <!-- End of per-market loop -->
+
+  <line x1="450" y1="622" x2="450" y2="656" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+  <!-- 8. All markets ready -->
+  <rect x="275" y="656" width="350" height="44" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="450" y="675" text-anchor="middle" fill="#86efac" font-size="13" font-weight="600">⑧ All Markets Ready</text>
+  <text x="450" y="693" text-anchor="middle" fill="#166534" font-size="10">Health endpoint reports Ready · Begin live matching</text>
+
+  <text x="450" y="730" text-anchor="middle" fill="#334155" font-size="10">Recovery replays from offset 0 — full history must be retained in Kafka · TradeExecuted events are not replayed</text>
+</svg>

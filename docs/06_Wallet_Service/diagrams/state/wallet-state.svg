@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 580" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr"  markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f59e0b"/></marker>
+  </defs>
+  <rect width="860" height="580" fill="url(#bg)"/>
+  <rect width="860" height="580" fill="none" stroke="#1e293b" stroke-width="2"/>
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Wallet State</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">Per (user_id, asset) wallet lifecycle · available_balance ≥ 0 always</text>
+  <line x1="80" y1="66" x2="780" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Initial -->
+  <ellipse cx="430" cy="92" rx="12" ry="12" fill="#3b82f6"/>
+  <line x1="430" y1="104" x2="430" y2="128" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="444" y="118" fill="#475569" font-size="10">InitializeWallet · INSERT wallets row</text>
+
+  <!-- INITIALIZED -->
+  <rect x="280" y="128" width="300" height="70" rx="10" fill="#0f1f38" stroke="#3b82f6" stroke-width="2"/>
+  <text x="430" y="150" text-anchor="middle" fill="#93c5fd" font-size="14" font-weight="700">INITIALIZED</text>
+  <text x="430" y="168" text-anchor="middle" fill="#475569" font-size="10">available_balance = seed_amount (e.g. 10,000 USDT)</text>
+  <text x="430" y="184" text-anchor="middle" fill="#475569" font-size="10">reserved_balance = 0</text>
+
+  <!-- INITIALIZED → ACTIVE (first reserve) -->
+  <line x1="430" y1="198" x2="430" y2="238" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrY)"/>
+  <text x="444" y="220" fill="#f59e0b" font-size="10">ReserveFunds called</text>
+
+  <!-- ACTIVE -->
+  <rect x="260" y="238" width="340" height="90" rx="10" fill="#0d1f0d" stroke="#22c55e" stroke-width="2"/>
+  <text x="430" y="260" text-anchor="middle" fill="#86efac" font-size="14" font-weight="700">ACTIVE (normal trading)</text>
+  <line x1="280" y1="268" x2="580" y2="268" stroke="#166534" stroke-width="0.5"/>
+  <text x="430" y="284" text-anchor="middle" fill="#475569" font-size="10">available_balance = spendable funds</text>
+  <text x="430" y="300" text-anchor="middle" fill="#475569" font-size="10">reserved_balance = locked for open orders</text>
+  <text x="430" y="316" text-anchor="middle" fill="#334155" font-size="9">available + reserved = total · total only changes on CREDIT events</text>
+
+  <!-- Self-loops -->
+  <path d="M 600,270 Q 680,270 680,280 Q 700,280 700,328 Q 700,328 600,328" stroke="#22c55e" stroke-width="1.3" fill="none" stroke-dasharray="4,3" marker-end="url(#arrG)"/>
+  <text x="720" y="305" text-anchor="middle" fill="#22c55e" font-size="9">ReserveFunds</text>
+  <text x="720" y="318" text-anchor="middle" fill="#166534" font-size="8">ReleaseFunds · SettleTrade</text>
+
+  <!-- Accounting invariants -->
+  <rect x="60" y="370" width="740" height="140" rx="10" fill="#0f172a" stroke="#1e3a5f" stroke-width="1.5"/>
+  <text x="430" y="392" text-anchor="middle" fill="#94a3b8" font-size="13" font-weight="600">Accounting Invariants</text>
+  <line x1="80" y1="400" x2="780" y2="400" stroke="#1e293b" stroke-width="0.5"/>
+
+  <!-- 5 invariants -->
+  <text x="90" y="418" fill="#22c55e" font-size="11">✓</text>
+  <text x="108" y="418" fill="#475569" font-size="10">available_balance ≥ 0 at all times — ReserveFunds fails rather than allow negative available</text>
+
+  <text x="90" y="434" fill="#22c55e" font-size="11">✓</text>
+  <text x="108" y="434" fill="#475569" font-size="10">reserved_amount − consumed_amount ≥ 0 for every reservation row</text>
+
+  <text x="90" y="450" fill="#22c55e" font-size="11">✓</text>
+  <text x="108" y="450" fill="#475569" font-size="10">A reservation is released or fully consumed exactly once — status guard in §8.3 prevents double-release</text>
+
+  <text x="90" y="466" fill="#22c55e" font-size="11">✓</text>
+  <text x="108" y="466" fill="#475569" font-size="10">A given trade_id is settled exactly once — UNIQUE(trade_id, SETTLEMENT, asset) + idempotent-success (§8.1)</text>
+
+  <text x="90" y="482" fill="#22c55e" font-size="11">✓</text>
+  <text x="108" y="482" fill="#475569" font-size="10">A (user, asset) receives exactly one INITIAL_ALLOCATION — UNIQUE(user_id, INITIAL_ALLOCATION, asset)</text>
+
+  <text x="90" y="498" fill="#22c55e" font-size="11">✓</text>
+  <text x="108" y="498" fill="#475569" font-size="10">Every balance change is a ledger entry — no silent column updates; full audit trail in wallet_transactions</text>
+
+  <text x="430" y="560" text-anchor="middle" fill="#334155" font-size="10">Wallet row never deleted · Available balance may reach 0 but never negative · No FROZEN/CLOSED state in V1</text>
+</svg>

@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 700" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+  </defs>
+  <rect width="900" height="700" fill="url(#bg)"/>
+  <rect width="900" height="700" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="450" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Memory Layout</text>
+  <text x="450" y="55" text-anchor="middle" fill="#64748b" font-size="12">In-process heap layout for one Market Engine instance</text>
+  <line x1="80" y1="66" x2="820" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Process heap boundary -->
+  <rect x="60" y="80" width="780" height="490" rx="12" fill="none" stroke="#1e3a5f" stroke-width="2" stroke-dasharray="8,4"/>
+  <text x="90" y="100" fill="#3b82f6" font-size="12" font-weight="600">Go Process Heap  (Market Engine: BTC-USDT)</text>
+
+  <!-- Input Queue goroutine -->
+  <rect x="90" y="110" width="200" height="70" rx="8" fill="#1e1a00" stroke="#e96a1a" stroke-width="1.5"/>
+  <text x="190" y="130" text-anchor="middle" fill="#fb923c" font-size="12" font-weight="600">Kafka Consumer Goroutine</text>
+  <text x="190" y="148" text-anchor="middle" fill="#78350f" font-size="10">reads partition · deserializes</text>
+  <text x="190" y="164" text-anchor="middle" fill="#78350f" font-size="10">writes to inputQueue chan</text>
+
+  <!-- Arrow → inputQueue -->
+  <line x1="290" y1="145" x2="340" y2="145" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <defs>
+    <marker id="arr2" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/></marker>
+    <marker id="arrG2" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#22c55e"/></marker>
+    <marker id="arrO2" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#f97316"/></marker>
+  </defs>
+
+  <!-- inputQueue channel -->
+  <rect x="340" y="128" width="130" height="36" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
+  <text x="405" y="147" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">inputQueue</text>
+  <text x="405" y="160" text-anchor="middle" fill="#475569" font-size="9">chan MatchInput · cap=1024</text>
+
+  <line x1="470" y1="146" x2="520" y2="146" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr2)"/>
+
+  <!-- Event Loop goroutine -->
+  <rect x="520" y="110" width="240" height="200" rx="8" fill="#0f1f38" stroke="#3b82f6" stroke-width="2"/>
+  <text x="640" y="132" text-anchor="middle" fill="#93c5fd" font-size="13" font-weight="700">Event Loop Goroutine</text>
+  <text x="640" y="148" text-anchor="middle" fill="#334155" font-size="10">(single goroutine per market)</text>
+  <line x1="540" y1="155" x2="740" y2="155" stroke="#1e3a5f" stroke-width="0.5"/>
+
+  <!-- OrderBook inside Event Loop -->
+  <rect x="535" y="162" width="210" height="130" rx="7" fill="#0c1a0c" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="640" y="182" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">OrderBook</text>
+  <text x="640" y="198" text-anchor="middle" fill="#475569" font-size="9">bids: SortedPricesSide</text>
+  <text x="640" y="212" text-anchor="middle" fill="#475569" font-size="9">  sortedPrices []decimal</text>
+  <text x="640" y="226" text-anchor="middle" fill="#475569" font-size="9">  priceLevels map → *PriceLevel</text>
+  <text x="640" y="240" text-anchor="middle" fill="#475569" font-size="9">asks: SortedPricesSide</text>
+  <text x="640" y="254" text-anchor="middle" fill="#475569" font-size="9">orderIndex map[UUID]*OrderNode</text>
+  <text x="640" y="270" text-anchor="middle" fill="#334155" font-size="9">Exclusively owned by this goroutine</text>
+  <text x="640" y="283" text-anchor="middle" fill="#334155" font-size="9">Never accessed from another goroutine</text>
+
+  <!-- Matching Core label -->
+  <text x="640" y="310" text-anchor="middle" fill="#60a5fa" font-size="10">↑ Matching Core operates on OrderBook above</text>
+
+  <!-- Output Queue channel -->
+  <line x1="520" y1="200" x2="470" y2="360" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG2)"/>
+
+  <rect x="310" y="360" width="150" height="36" rx="6" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
+  <text x="385" y="379" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">outputQueue</text>
+  <text x="385" y="393" text-anchor="middle" fill="#475569" font-size="9">chan MatchResult · cap=512</text>
+
+  <line x1="460" y1="378" x2="500" y2="378" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG2)"/>
+
+  <!-- Publisher Goroutine -->
+  <rect x="500" y="340" width="260" height="140" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="2"/>
+  <text x="630" y="362" text-anchor="middle" fill="#86efac" font-size="13" font-weight="700">Publisher Goroutine</text>
+  <text x="630" y="378" text-anchor="middle" fill="#334155" font-size="10">reads immutable MatchResults</text>
+  <line x1="520" y1="385" x2="740" y2="385" stroke="#166534" stroke-width="0.5"/>
+  <text x="630" y="402" text-anchor="middle" fill="#475569" font-size="10">Kafka client (produce TradeExecuted)</text>
+  <text x="630" y="418" text-anchor="middle" fill="#475569" font-size="10">Redis client (push depth snapshot)</text>
+  <text x="630" y="434" text-anchor="middle" fill="#475569" font-size="10">PostgreSQL client (upsert checkpoint)</text>
+  <text x="630" y="450" text-anchor="middle" fill="#334155" font-size="9">No pointer into OrderBook memory</text>
+  <text x="630" y="465" text-anchor="middle" fill="#334155" font-size="9">MatchResult is a value-copy, fully immutable</text>
+
+  <!-- Kafka client arrow out -->
+  <line x1="760" y1="360" x2="810" y2="360" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO2)"/>
+  <text x="815" y="355" fill="#f97316" font-size="10">Kafka</text>
+  <line x1="760" y1="400" x2="810" y2="400" stroke="#a855f7" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <text x="815" y="395" fill="#a855f7" font-size="10">Redis</text>
+  <line x1="760" y1="440" x2="810" y2="440" stroke="#84cc16" stroke-width="1.5" marker-end="url(#arr2)"/>
+  <text x="815" y="435" fill="#84cc16" font-size="10">PG</text>
+
+  <!-- Kafka consumer (external) -->
+  <rect x="90" y="348" width="200" height="60" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.3"/>
+  <text x="190" y="372" text-anchor="middle" fill="#64748b" font-size="11" font-weight="600">Recovery State</text>
+  <text x="190" y="388" text-anchor="middle" fill="#334155" font-size="10">recoveryMode: bool</text>
+  <text x="190" y="403" text-anchor="middle" fill="#334155" font-size="10">checkpointOffset: int64</text>
+
+  <!-- Bottom summary table -->
+  <rect x="60" y="590" width="780" height="94" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1.5"/>
+  <text x="450" y="611" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">Goroutine &amp; Channel Summary</text>
+  <!-- Header -->
+  <text x="140" y="628" text-anchor="middle" fill="#64748b" font-size="10" font-weight="600">Goroutine</text>
+  <text x="380" y="628" text-anchor="middle" fill="#64748b" font-size="10" font-weight="600">Owns</text>
+  <text x="620" y="628" text-anchor="middle" fill="#64748b" font-size="10" font-weight="600">Reads</text>
+  <text x="800" y="628" text-anchor="middle" fill="#64748b" font-size="10" font-weight="600">Writes</text>
+  <line x1="80" y1="633" x2="820" y2="633" stroke="#1e293b" stroke-width="0.5"/>
+  <text x="140" y="648" text-anchor="middle" fill="#fb923c" font-size="10">Kafka Consumer</text>
+  <text x="380" y="648" text-anchor="middle" fill="#475569" font-size="10">—</text>
+  <text x="620" y="648" text-anchor="middle" fill="#475569" font-size="10">Kafka partition</text>
+  <text x="800" y="648" text-anchor="middle" fill="#475569" font-size="10">inputQueue</text>
+  <text x="140" y="663" text-anchor="middle" fill="#93c5fd" font-size="10">Event Loop</text>
+  <text x="380" y="663" text-anchor="middle" fill="#475569" font-size="10">OrderBook (exclusive)</text>
+  <text x="620" y="663" text-anchor="middle" fill="#475569" font-size="10">inputQueue</text>
+  <text x="800" y="663" text-anchor="middle" fill="#475569" font-size="10">outputQueue</text>
+  <text x="140" y="678" text-anchor="middle" fill="#86efac" font-size="10">Publisher</text>
+  <text x="380" y="678" text-anchor="middle" fill="#475569" font-size="10">Kafka/Redis/PG clients</text>
+  <text x="620" y="678" text-anchor="middle" fill="#475569" font-size="10">outputQueue (MatchResults)</text>
+  <text x="800" y="678" text-anchor="middle" fill="#475569" font-size="10">External systems</text>
+</svg>

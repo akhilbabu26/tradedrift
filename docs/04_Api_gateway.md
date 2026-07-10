@@ -62,7 +62,7 @@ See `images/api_gateway_pipeline.png` for the full flow diagram.
 - Auth Service
 - Order Service
 - Market Service
-- *(Wallet Service routes — `GET /wallets/me`, `/wallets/balances`, `/wallets/transactions` — join this list per `07_Wallet_Service.md`; same pipeline, no special-casing.)*
+- *(Wallet Service routes — `GET /wallets/me`, `/wallets/balances`, `/wallets/transactions` — join this list per `06_Wallet_Service/06_Wallet_Service.md`; same pipeline, no special-casing.)*
 
 ## Rate Limiting
 

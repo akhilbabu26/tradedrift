@@ -1,0 +1,145 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 680" width="860" height="680">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+    <linearGradient id="tableGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#1e3a8a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="860" height="600" fill="url(#bg)" rx="12"/>
+
+  <text x="430" y="36" text-anchor="middle" fill="#f1f5f9" font-family="monospace" font-size="16" font-weight="bold">Trade Service — Database Schema</text>
+  <text x="430" y="54" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="10">trades table · append-only · DECIMAL(30,10) = MONETARY_PRECISION · no UPDATE · no DELETE</text>
+
+  <!-- trades table -->
+  <rect x="200" y="75" width="460" height="42" rx="8 8 0 0" fill="url(#tableGrad)" stroke="#3b82f6" stroke-width="2"/>
+  <text x="430" y="94" text-anchor="middle" fill="#93c5fd" font-family="monospace" font-size="13" font-weight="bold">trades</text>
+  <text x="430" y="109" text-anchor="middle" fill="#1e40af" font-family="monospace" font-size="9">PostgreSQL · append-only · no outbox · no status column</text>
+
+  <!-- Column header row -->
+  <rect x="200" y="117" width="460" height="20" fill="#1e293b" stroke="#3b82f6" stroke-width="1"/>
+  <text x="230" y="131" fill="#60a5fa" font-family="monospace" font-size="9" font-weight="bold">Column</text>
+  <text x="395" y="131" fill="#60a5fa" font-family="monospace" font-size="9" font-weight="bold">Type</text>
+  <text x="540" y="131" fill="#60a5fa" font-family="monospace" font-size="9" font-weight="bold">Notes</text>
+
+  <!-- Rows -->
+  <!-- id -->
+  <rect x="200" y="137" width="460" height="22" fill="#0f172a" stroke="#1e3a8a" stroke-width="0.5"/>
+  <text x="230" y="152" fill="#fbbf24" font-family="monospace" font-size="9" font-weight="bold">id</text>
+  <text x="395" y="152" fill="#475569" font-family="monospace" font-size="9">UUID PRIMARY KEY</text>
+  <text x="540" y="152" fill="#22c55e" font-family="monospace" font-size="9">= trade_id · owned by Matching Engine (UUIDv7)</text>
+
+  <!-- buyer_id -->
+  <rect x="200" y="159" width="460" height="22" fill="#1e293b" stroke="#1e3a8a" stroke-width="0.5"/>
+  <text x="230" y="174" fill="#cbd5e1" font-family="monospace" font-size="9">buyer_id</text>
+  <text x="395" y="174" fill="#475569" font-family="monospace" font-size="9">UUID NOT NULL</text>
+  <text x="540" y="174" fill="#475569" font-family="monospace" font-size="9">FK → users</text>
+
+  <!-- seller_id -->
+  <rect x="200" y="181" width="460" height="22" fill="#0f172a" stroke="#1e3a8a" stroke-width="0.5"/>
+  <text x="230" y="196" fill="#cbd5e1" font-family="monospace" font-size="9">seller_id</text>
+  <text x="395" y="196" fill="#475569" font-family="monospace" font-size="9">UUID NOT NULL</text>
+  <text x="540" y="196" fill="#475569" font-family="monospace" font-size="9">FK → users</text>
+
+  <!-- buy_order_id -->
+  <rect x="200" y="203" width="460" height="22" fill="#1e293b" stroke="#1e3a8a" stroke-width="0.5"/>
+  <text x="230" y="218" fill="#cbd5e1" font-family="monospace" font-size="9">buy_order_id</text>
+  <text x="395" y="218" fill="#475569" font-family="monospace" font-size="9">UUID NOT NULL</text>
+  <text x="540" y="218" fill="#475569" font-family="monospace" font-size="9">FK → orders (buyer's order)</text>
+
+  <!-- sell_order_id -->
+  <rect x="200" y="225" width="460" height="22" fill="#0f172a" stroke="#1e3a8a" stroke-width="0.5"/>
+  <text x="230" y="240" fill="#cbd5e1" font-family="monospace" font-size="9">sell_order_id</text>
+  <text x="395" y="240" fill="#475569" font-family="monospace" font-size="9">UUID NOT NULL</text>
+  <text x="540" y="240" fill="#475569" font-family="monospace" font-size="9">FK → orders (seller's order)</text>
+
+  <!-- market_id -->
+  <rect x="200" y="247" width="460" height="22" fill="#1e293b" stroke="#1e3a8a" stroke-width="0.5"/>
+  <text x="230" y="262" fill="#f97316" font-family="monospace" font-size="9">market_id</text>
+  <text x="395" y="262" fill="#475569" font-family="monospace" font-size="9">VARCHAR(20) NOT NULL</text>
+  <text x="540" y="262" fill="#ea580c" font-family="monospace" font-size="9">new field — added to TradeSettled payload</text>
+
+  <!-- base_asset -->
+  <rect x="200" y="269" width="460" height="22" fill="#0f172a" stroke="#1e3a8a" stroke-width="0.5"/>
+  <text x="230" y="284" fill="#cbd5e1" font-family="monospace" font-size="9">base_asset</text>
+  <text x="395" y="284" fill="#475569" font-family="monospace" font-size="9">VARCHAR(16) NOT NULL</text>
+  <text x="540" y="284" fill="#475569" font-family="monospace" font-size="9">e.g. "BTC"</text>
+
+  <!-- quote_asset -->
+  <rect x="200" y="291" width="460" height="22" fill="#1e293b" stroke="#1e3a8a" stroke-width="0.5"/>
+  <text x="230" y="306" fill="#cbd5e1" font-family="monospace" font-size="9">quote_asset</text>
+  <text x="395" y="306" fill="#475569" font-family="monospace" font-size="9">VARCHAR(16) NOT NULL</text>
+  <text x="540" y="306" fill="#475569" font-family="monospace" font-size="9">e.g. "USDT"</text>
+
+  <!-- price -->
+  <rect x="200" y="313" width="460" height="22" fill="#0f172a" stroke="#1e3a8a" stroke-width="0.5"/>
+  <text x="230" y="328" fill="#f59e0b" font-family="monospace" font-size="9">price</text>
+  <text x="395" y="328" fill="#475569" font-family="monospace" font-size="9">DECIMAL(30,10) NOT NULL</text>
+  <text x="540" y="328" fill="#78350f" font-family="monospace" font-size="9">MONETARY_PRECISION</text>
+
+  <!-- quantity -->
+  <rect x="200" y="335" width="460" height="22" fill="#1e293b" stroke="#1e3a8a" stroke-width="0.5"/>
+  <text x="230" y="350" fill="#f59e0b" font-family="monospace" font-size="9">quantity</text>
+  <text x="395" y="350" fill="#475569" font-family="monospace" font-size="9">DECIMAL(30,10) NOT NULL</text>
+  <text x="540" y="350" fill="#78350f" font-family="monospace" font-size="9">MONETARY_PRECISION</text>
+
+  <!-- executed_at -->
+  <rect x="200" y="357" width="460" height="22" fill="#0f172a" stroke="#1e3a8a" stroke-width="0.5"/>
+  <text x="230" y="372" fill="#a78bfa" font-family="monospace" font-size="9">executed_at</text>
+  <text x="395" y="372" fill="#475569" font-family="monospace" font-size="9">TIMESTAMPTZ NOT NULL</text>
+  <text x="540" y="372" fill="#475569" font-family="monospace" font-size="9">ME clock — time of match · sort key</text>
+
+  <!-- settled_at -->
+  <rect x="200" y="379" width="460" height="22" fill="#1e293b" stroke="#1e3a8a" stroke-width="0.5"/>
+  <text x="230" y="394" fill="#a78bfa" font-family="monospace" font-size="9">settled_at</text>
+  <text x="395" y="394" fill="#475569" font-family="monospace" font-size="9">TIMESTAMPTZ NOT NULL</text>
+  <text x="540" y="394" fill="#475569" font-family="monospace" font-size="9">Wallet clock — time balances moved</text>
+
+  <!-- Closing border -->
+  <rect x="200" y="401" width="460" height="4" rx="0 0 4 4" fill="#1e3a8a"/>
+
+  <!-- Indexes section -->
+  <text x="430" y="430" text-anchor="middle" fill="#60a5fa" font-family="monospace" font-size="11" font-weight="bold">Indexes</text>
+
+  <!-- idx_trades_buyer -->
+  <rect x="30" y="440" width="250" height="60" rx="6" fill="#1e293b" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="155" y="460" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="9" font-weight="bold">idx_trades_buyer</text>
+  <text x="155" y="476" text-anchor="middle" fill="#475569" font-family="monospace" font-size="9">(buyer_id, executed_at DESC)</text>
+  <text x="155" y="492" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">user trade history — buyer side</text>
+
+  <!-- idx_trades_seller -->
+  <rect x="305" y="440" width="250" height="60" rx="6" fill="#1e293b" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="430" y="460" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="9" font-weight="bold">idx_trades_seller</text>
+  <text x="430" y="476" text-anchor="middle" fill="#475569" font-family="monospace" font-size="9">(seller_id, executed_at DESC)</text>
+  <text x="430" y="492" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">user trade history — seller side</text>
+
+  <!-- idx_trades_market -->
+  <rect x="580" y="440" width="250" height="60" rx="6" fill="#1e293b" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="705" y="460" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="9" font-weight="bold">idx_trades_market</text>
+  <text x="705" y="476" text-anchor="middle" fill="#475569" font-family="monospace" font-size="9">(market_id, executed_at DESC)</text>
+  <text x="705" y="492" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">public market feed / price ticker</text>
+
+  <!-- idx_trades_buyer_market -->
+  <rect x="165" y="515" width="250" height="60" rx="6" fill="#1e293b" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="290" y="535" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="9" font-weight="bold">idx_trades_buyer_market</text>
+  <text x="290" y="551" text-anchor="middle" fill="#475569" font-family="monospace" font-size="9">(buyer_id, market_id, executed_at DESC)</text>
+  <text x="290" y="567" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">buyer trade history with market filter</text>
+
+  <!-- idx_trades_seller_market -->
+  <rect x="445" y="515" width="250" height="60" rx="6" fill="#1e293b" stroke="#0284c7" stroke-width="1.5"/>
+  <text x="570" y="535" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="9" font-weight="bold">idx_trades_seller_market</text>
+  <text x="570" y="551" text-anchor="middle" fill="#475569" font-family="monospace" font-size="9">(seller_id, market_id, executed_at DESC)</text>
+  <text x="570" y="567" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">seller trade history with market filter</text>
+
+  <!-- Idempotency note -->
+  <rect x="30" y="595" width="800" height="45" rx="6" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
+  <text x="430" y="615" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9" font-weight="bold">Idempotency</text>
+  <text x="430" y="632" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">INSERT ... ON CONFLICT (id) DO NOTHING — duplicate TradeSettled redeliveries are safe. No application-layer dedup table needed.</text>
+
+  <!-- Footer -->
+  <text x="430" y="662" text-anchor="middle" fill="#334155" font-family="monospace" font-size="9">All IDs are UUID (UUIDv7, id = trade_id from Matching Engine) · DECIMAL(30,10) for all monetary amounts · No FLOAT columns · Append-only</text>
+</svg>

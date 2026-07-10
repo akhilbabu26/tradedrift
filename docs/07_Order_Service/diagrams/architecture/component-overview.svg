@@ -1,0 +1,144 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 720" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/>
+      <stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrB" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#3b82f6"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrO" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f97316"/></marker>
+    <marker id="arrP" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#a855f7"/></marker>
+  </defs>
+
+  <rect width="960" height="720" fill="url(#bg)"/>
+  <rect width="960" height="720" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <!-- Title -->
+  <text x="480" y="38" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Order Service — Component Overview</text>
+  <text x="480" y="57" text-anchor="middle" fill="#64748b" font-size="12">TradeDrift · V5 · Choreography-based saga</text>
+  <line x1="80" y1="68" x2="880" y2="68" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- External: Client + API Gateway -->
+  <rect x="60" y="82" width="160" height="46" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <text x="140" y="102" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">Client</text>
+  <text x="140" y="119" text-anchor="middle" fill="#475569" font-size="10">REST / gRPC</text>
+
+  <line x1="220" y1="105" x2="270" y2="105" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <rect x="270" y="82" width="160" height="46" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1.5"/>
+  <text x="350" y="102" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">API Gateway</text>
+  <text x="350" y="119" text-anchor="middle" fill="#475569" font-size="10">Auth · Rate Limit · grpc-gateway</text>
+
+  <line x1="430" y1="105" x2="475" y2="105" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Order Service boundary -->
+  <rect x="475" y="75" width="410" height="510" rx="12" fill="none" stroke="#1e3a5f" stroke-width="2" stroke-dasharray="8,4"/>
+  <text x="505" y="96" fill="#3b82f6" font-size="11" font-weight="600">Order Service</text>
+
+  <!-- API Layer inside -->
+  <rect x="495" y="82" width="360" height="46" rx="8" fill="#0f1f38" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="675" y="101" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="600">API Layer</text>
+  <text x="675" y="118" text-anchor="middle" fill="#475569" font-size="10">CreateOrder · CancelOrder · GetOrder · ListOrders</text>
+
+  <line x1="675" y1="128" x2="675" y2="155" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrB)"/>
+
+  <!-- Service Layer -->
+  <rect x="495" y="155" width="360" height="70" rx="8" fill="#0f1f38" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="675" y="175" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="600">Service Layer</text>
+  <text x="675" y="193" text-anchor="middle" fill="#475569" font-size="10">Generate UUIDv7 order_id · Validate request</text>
+  <text x="675" y="208" text-anchor="middle" fill="#475569" font-size="10">Orchestrate: ReserveFunds → DB write → events</text>
+  <text x="675" y="222" text-anchor="middle" fill="#334155" font-size="9">Kafka consumer handlers: TradeExecuted / OrderCancelled</text>
+
+  <!-- Three sub-layers row -->
+  <line x1="580" y1="225" x2="535" y2="258" stroke="#3b82f6" stroke-width="1.3" marker-end="url(#arrB)"/>
+  <line x1="675" y1="225" x2="675" y2="258" stroke="#3b82f6" stroke-width="1.3" marker-end="url(#arrB)"/>
+  <line x1="775" y1="225" x2="820" y2="258" stroke="#3b82f6" stroke-width="1.3" marker-end="url(#arrB)"/>
+
+  <!-- Validator -->
+  <rect x="495" y="258" width="160" height="50" rx="7" fill="#0f172a" stroke="#475569" stroke-width="1.3"/>
+  <text x="575" y="278" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">Validator</text>
+  <text x="575" y="294" text-anchor="middle" fill="#475569" font-size="9">Pair · Qty · Price · Auth</text>
+  <text x="575" y="307" text-anchor="middle" fill="#334155" font-size="9">Market pair config check</text>
+
+  <!-- Wallet gRPC Client -->
+  <rect x="595" y="258" width="160" height="50" rx="7" fill="#0f172a" stroke="#a855f7" stroke-width="1.3"/>
+  <text x="675" y="278" text-anchor="middle" fill="#d8b4fe" font-size="11" font-weight="600">Wallet gRPC Client</text>
+  <text x="675" y="294" text-anchor="middle" fill="#6b21a8" font-size="9">ReserveFunds(order_id)</text>
+  <text x="675" y="307" text-anchor="middle" fill="#6b21a8" font-size="9">ReleaseFunds(order_id)</text>
+
+  <!-- Repository -->
+  <rect x="695" y="258" width="160" height="50" rx="7" fill="#0f172a" stroke="#475569" stroke-width="1.3"/>
+  <text x="775" y="278" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">Repository</text>
+  <text x="775" y="294" text-anchor="middle" fill="#475569" font-size="9">orders + outbox</text>
+  <text x="775" y="307" text-anchor="middle" fill="#334155" font-size="9">Atomic DB transaction</text>
+
+  <!-- Arrow: Repository → PostgreSQL -->
+  <line x1="775" y1="308" x2="775" y2="360" stroke="#64748b" stroke-width="1.3" marker-end="url(#arr)"/>
+
+  <!-- PostgreSQL -->
+  <rect x="695" y="360" width="160" height="50" rx="7" fill="#0d1f0d" stroke="#22c55e" stroke-width="1.3"/>
+  <text x="775" y="380" text-anchor="middle" fill="#86efac" font-size="11" font-weight="600">PostgreSQL</text>
+  <text x="775" y="396" text-anchor="middle" fill="#166534" font-size="9">orders · outbox tables</text>
+  <text x="775" y="409" text-anchor="middle" fill="#334155" font-size="9">UUID PK · status · quantities</text>
+
+  <!-- Outbox Publisher -->
+  <rect x="495" y="360" width="180" height="60" rx="7" fill="#0f172a" stroke="#f97316" stroke-width="1.5"/>
+  <text x="585" y="382" text-anchor="middle" fill="#fdba74" font-size="11" font-weight="600">Outbox Publisher</text>
+  <text x="585" y="398" text-anchor="middle" fill="#78350f" font-size="9">Polls unpublished rows (100–250ms)</text>
+  <text x="585" y="411" text-anchor="middle" fill="#78350f" font-size="9">Publishes → marks published after ACK</text>
+
+  <line x1="695" y1="388" x2="675" y2="388" stroke="#f97316" stroke-width="1.3" stroke-dasharray="3,2" marker-end="url(#arrO)"/>
+
+  <!-- Kafka Consumer -->
+  <rect x="495" y="440" width="180" height="60" rx="7" fill="#0f172a" stroke="#f97316" stroke-width="1.5"/>
+  <text x="585" y="462" text-anchor="middle" fill="#fdba74" font-size="11" font-weight="600">Kafka Consumer</text>
+  <text x="585" y="478" text-anchor="middle" fill="#78350f" font-size="9">TradeExecuted → update fill qty/status</text>
+  <text x="585" y="491" text-anchor="middle" fill="#78350f" font-size="9">OrderCancelled → CANCELLED + ReleaseFunds</text>
+
+  <!-- Arrow: Outbox Publisher → Kafka topic out -->
+  <line x1="585" y1="420" x2="585" y2="437" stroke="#f97316" stroke-width="1.3" marker-end="url(#arrO)"/>
+
+  <!-- External boxes outside boundary -->
+
+  <!-- Kafka -->
+  <rect x="60" y="375" width="195" height="55" rx="8" fill="#1e1a00" stroke="#e96a1a" stroke-width="1.5"/>
+  <text x="157" y="396" text-anchor="middle" fill="#fb923c" font-size="12" font-weight="600">Kafka</text>
+  <text x="157" y="412" text-anchor="middle" fill="#78350f" font-size="10">orders.submitted (OrderCreated)</text>
+  <text x="157" y="426" text-anchor="middle" fill="#78350f" font-size="10">orders.submitted (OrderCancelRequested)</text>
+
+  <!-- Arrow: Outbox Publisher → Kafka -->
+  <line x1="495" y1="388" x2="255" y2="395" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+  <text x="375" y="383" text-anchor="middle" fill="#f97316" font-size="10">publish via outbox</text>
+
+  <!-- Kafka → ME (downstream) -->
+  <rect x="60" y="460" width="195" height="55" rx="8" fill="#1e1a00" stroke="#e96a1a" stroke-width="1.3"/>
+  <text x="157" y="481" text-anchor="middle" fill="#fb923c" font-size="12" font-weight="600">Kafka (inbound)</text>
+  <text x="157" y="497" text-anchor="middle" fill="#78350f" font-size="10">trades.executed (TradeExecuted)</text>
+  <text x="157" y="511" text-anchor="middle" fill="#78350f" font-size="10">orders.cancelled (OrderCancelled)</text>
+
+  <line x1="255" y1="483" x2="495" y2="467" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+  <text x="375" y="476" text-anchor="middle" fill="#f97316" font-size="10">consume</text>
+
+  <!-- Wallet Service (external) -->
+  <rect x="60" y="545" width="195" height="50" rx="8" fill="#0e0a24" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="157" y="565" text-anchor="middle" fill="#d8b4fe" font-size="12" font-weight="600">Wallet Service</text>
+  <text x="157" y="582" text-anchor="middle" fill="#6b21a8" font-size="10">ReserveFunds · ReleaseFunds (gRPC)</text>
+  <text x="157" y="595" text-anchor="middle" fill="#4c1d95" font-size="9">Idempotent on order_id · synchronous</text>
+
+  <!-- Double-headed arrow between Wallet gRPC Client and Wallet Service -->
+  <line x1="495" y1="555" x2="255" y2="568" stroke="#a855f7" stroke-width="1.5" marker-end="url(#arrP)"/>
+  <line x1="255" y1="555" x2="495" y2="542" stroke="#a855f7" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrP)"/>
+
+  <!-- Downstream consumers label -->
+  <rect x="700" y="440" width="155" height="110" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.3"/>
+  <text x="777" y="460" text-anchor="middle" fill="#64748b" font-size="11" font-weight="600">Downstream</text>
+  <text x="777" y="477" text-anchor="middle" fill="#334155" font-size="10">Matching Engine</text>
+  <text x="777" y="493" text-anchor="middle" fill="#334155" font-size="10">Settlement Service</text>
+  <text x="777" y="509" text-anchor="middle" fill="#334155" font-size="10">Portfolio Service</text>
+  <text x="777" y="525" text-anchor="middle" fill="#334155" font-size="10">Notification Service</text>
+  <text x="777" y="541" text-anchor="middle" fill="#1e293b" font-size="9">(all consume Kafka only)</text>
+
+  <text x="480" y="660" text-anchor="middle" fill="#334155" font-size="10">Order Service never performs matching · Matching Engine never queries Order Service DB directly</text>
+  <text x="480" y="676" text-anchor="middle" fill="#334155" font-size="10">All state changes driven by Kafka events or synchronous gRPC · Stateless — scales horizontally</text>
+</svg>

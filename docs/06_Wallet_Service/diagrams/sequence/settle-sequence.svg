@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1020 700" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a1a"/><stop offset="100%" style="stop-color:#141428"/>
+    </linearGradient>
+    <marker id="arrB" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#3b82f6"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrO" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f97316"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f59e0b"/></marker>
+  </defs>
+  <rect width="1020" height="700" fill="url(#bg)"/>
+  <rect width="1020" height="700" fill="none" stroke="#1e293b" stroke-width="2"/>
+  <text x="510" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">SettleTrade — Sequence Diagram</text>
+  <text x="510" y="55" text-anchor="middle" fill="#64748b" font-size="12">Settlement Service → Wallet Service gRPC · Two-leg atomic TX · Outbox TradeSettled</text>
+  <line x1="60" y1="66" x2="960" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Participants: Settlement=100, WalletGRPC=310, WalletSvc=530, WalletDB=750, Kafka=930 -->
+  <text x="100"  y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Settlement Service</text>
+  <text x="300"  y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Wallet gRPC Layer</text>
+  <text x="520"  y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Wallet Service Layer</text>
+  <text x="740"  y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">PostgreSQL</text>
+  <text x="930"  y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Kafka</text>
+
+  <line x1="100"  y1="100" x2="100"  y2="660" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="300"  y1="100" x2="300"  y2="660" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="520"  y1="100" x2="520"  y2="660" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="740"  y1="100" x2="740"  y2="660" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="930"  y1="100" x2="930"  y2="660" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+
+  <rect x="95"  y="100" width="10" height="550" rx="2" fill="#1e3a5f"/>
+  <rect x="295" y="116" width="10" height="40"  rx="2" fill="#1e3a5f"/>
+  <rect x="515" y="148" width="10" height="350" rx="2" fill="#1e3a5f"/>
+  <rect x="735" y="192" width="10" height="244" rx="2" fill="#1e3a5f"/>
+  <rect x="925" y="490" width="10" height="40"  rx="2" fill="#1e3a5f"/>
+
+  <!-- M1: gRPC SettleTrade -->
+  <line x1="110" y1="116" x2="290" y2="116" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="200" y="109" text-anchor="middle" fill="#22c55e" font-size="10">SettleTrade(trade_id, buyer, seller, assets, price, qty)</text>
+
+  <!-- M2: route -->
+  <line x1="300" y1="148" x2="510" y2="148" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="404" y="141" text-anchor="middle" fill="#166534" font-size="10">route to service layer</text>
+
+  <!-- M3: idempotency check -->
+  <rect x="515" y="158" width="200" height="20" rx="3" fill="#0f172a"/>
+  <text x="615" y="172" text-anchor="middle" fill="#86efac" font-size="9">§8.1 upfront check: SELECT wallet_transactions</text>
+
+  <!-- M4: SELECT txn rows -->
+  <line x1="525" y1="192" x2="730" y2="192" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrB)"/>
+  <text x="627" y="185" text-anchor="middle" fill="#60a5fa" font-size="10">SELECT WHERE ref=trade_id, type=SETTLEMENT</text>
+  <line x1="735" y1="210" x2="530" y2="210" stroke="#3b82f6" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrB)"/>
+  <text x="632" y="204" text-anchor="middle" fill="#60a5fa" font-size="9">rows (or empty)</text>
+
+  <!-- Already settled path -->
+  <rect x="515" y="218" width="200" height="16" rx="3" fill="#1a1000"/>
+  <text x="615" y="230" text-anchor="middle" fill="#f59e0b" font-size="9">If rows found → return success immediately (§8.1)</text>
+
+  <!-- Lock reservations -->
+  <line x1="525" y1="244" x2="730" y2="244" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrB)"/>
+  <text x="627" y="237" text-anchor="middle" fill="#60a5fa" font-size="10">SELECT buyer/seller reservations FOR UPDATE</text>
+  <line x1="735" y1="262" x2="530" y2="262" stroke="#3b82f6" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrB)"/>
+  <text x="632" y="256" text-anchor="middle" fill="#60a5fa" font-size="9">locked rows</text>
+
+  <!-- BEGIN TX -->
+  <rect x="515" y="270" width="200" height="16" rx="3" fill="#0c1a0c"/>
+  <text x="615" y="282" text-anchor="middle" fill="#4ade80" font-size="9">BEGIN TRANSACTION</text>
+
+  <!-- Buyer leg -->
+  <line x1="525" y1="298" x2="730" y2="298" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="627" y="291" text-anchor="middle" fill="#22c55e" font-size="10">[BUYER] UPDATE reservation: consumed += price×qty</text>
+  <line x1="525" y1="318" x2="730" y2="318" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="627" y="311" text-anchor="middle" fill="#22c55e" font-size="10">[BUYER] UPDATE wallets: available += qty (BTC)</text>
+  <line x1="525" y1="338" x2="730" y2="338" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="627" y="331" text-anchor="middle" fill="#22c55e" font-size="10">[BUYER] INSERT wallet_transactions CREDIT base_asset</text>
+
+  <!-- Seller leg -->
+  <line x1="525" y1="360" x2="730" y2="360" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="627" y="353" text-anchor="middle" fill="#22c55e" font-size="10">[SELLER] UPDATE reservation: consumed += qty</text>
+  <line x1="525" y1="380" x2="730" y2="380" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="627" y="373" text-anchor="middle" fill="#22c55e" font-size="10">[SELLER] UPDATE wallets: available += price×qty (USDT)</text>
+  <line x1="525" y1="400" x2="730" y2="400" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="627" y="393" text-anchor="middle" fill="#22c55e" font-size="10">[SELLER] INSERT wallet_transactions CREDIT quote_asset</text>
+
+  <!-- Outbox -->
+  <line x1="525" y1="420" x2="730" y2="420" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+  <text x="627" y="413" text-anchor="middle" fill="#f97316" font-size="10">INSERT outbox: TradeSettled event</text>
+
+  <!-- COMMIT -->
+  <rect x="515" y="430" width="200" height="16" rx="3" fill="#0c1a0c"/>
+  <text x="615" y="442" text-anchor="middle" fill="#4ade80" font-size="9">COMMIT</text>
+  <line x1="735" y1="450" x2="530" y2="450" stroke="#22c55e" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrG)"/>
+  <text x="632" y="444" text-anchor="middle" fill="#166534" font-size="9">commit ✓</text>
+
+  <!-- Outbox publisher → Kafka -->
+  <line x1="735" y1="490" x2="920" y2="490" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+  <text x="827" y="483" text-anchor="middle" fill="#f97316" font-size="10">Outbox Publisher: Kafka TradeSettled</text>
+
+  <!-- Return gRPC -->
+  <line x1="515" y1="468" x2="305" y2="468" stroke="#22c55e" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrG)"/>
+  <text x="409" y="461" text-anchor="middle" fill="#22c55e" font-size="10">SettleTradeResponse{success: true}</text>
+  <line x1="295" y1="482" x2="110" y2="482" stroke="#22c55e" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrG)"/>
+  <text x="202" y="475" text-anchor="middle" fill="#166534" font-size="10">gRPC success · Settlement marks SETTLED</text>
+
+  <!-- Footer -->
+  <line x1="60" y1="620" x2="960" y2="620" stroke="#1e293b" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="510" y="640" text-anchor="middle" fill="#334155" font-size="10">Solid = sync request · Dashed = async/response · DB connection released before gRPC returns (short TX)</text>
+  <text x="510" y="656" text-anchor="middle" fill="#334155" font-size="10">TradeSettled published by Wallet outbox — NOT Settlement Service · Portfolio/Notification consume from Wallet's topic</text>
+</svg>

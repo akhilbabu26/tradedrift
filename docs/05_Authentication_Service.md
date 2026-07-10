@@ -47,7 +47,7 @@ Check Duplicate (email / username exists?)
             Registration Success — return user info + tokens
 ```
 
-> **Integration point:** `InitializeWallet` is called synchronously, in the critical path of registration, before tokens are issued (see `07_Wallet_Service.md`, "Why Synchronous"). If `InitializeWallet` fails, registration itself fails — see [Section 8](#8-failure-handling) for exactly how.
+> **Integration point:** `InitializeWallet` is called synchronously, in the critical path of registration, before tokens are issued (see `06_Wallet_Service/06_Wallet_Service.md`, "Why Synchronous"). If `InitializeWallet` fails, registration itself fails — see [Section 8](#8-failure-handling) for exactly how.
 
 ## 2. Login Flow
 

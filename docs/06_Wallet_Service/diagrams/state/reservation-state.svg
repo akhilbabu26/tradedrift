@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 620" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr"  markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f59e0b"/></marker>
+  </defs>
+  <rect width="860" height="620" fill="url(#bg)"/>
+  <rect width="860" height="620" fill="none" stroke="#1e293b" stroke-width="2"/>
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Reservation State Machine</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">wallet_reservations.status · One reservation per order_id · Released exactly once</text>
+  <line x1="80" y1="66" x2="780" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Initial dot -->
+  <ellipse cx="430" cy="92" rx="12" ry="12" fill="#3b82f6"/>
+  <line x1="430" y1="104" x2="430" y2="128" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="444" y="118" fill="#475569" font-size="10">ReserveFunds success · INSERT reservation</text>
+
+  <!-- ACTIVE -->
+  <rect x="300" y="128" width="260" height="70" rx="10" fill="#0f1f38" stroke="#3b82f6" stroke-width="2"/>
+  <text x="430" y="150" text-anchor="middle" fill="#93c5fd" font-size="14" font-weight="700">ACTIVE</text>
+  <text x="430" y="168" text-anchor="middle" fill="#475569" font-size="10">reserved_amount = full original amount</text>
+  <text x="430" y="183" text-anchor="middle" fill="#475569" font-size="10">consumed_amount = 0 · remaining = full</text>
+
+  <!-- ACTIVE → PARTIALLY_CONSUMED (partial fill) -->
+  <line x1="430" y1="198" x2="430" y2="238" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrY)"/>
+  <text x="444" y="220" fill="#f59e0b" font-size="10">partial fill via SettleTrade</text>
+
+  <!-- PARTIALLY_CONSUMED -->
+  <rect x="280" y="238" width="300" height="72" rx="10" fill="#1a1000" stroke="#f59e0b" stroke-width="2"/>
+  <text x="430" y="260" text-anchor="middle" fill="#fbbf24" font-size="14" font-weight="700">PARTIALLY_CONSUMED</text>
+  <text x="430" y="278" text-anchor="middle" fill="#78350f" font-size="10">consumed_amount &gt; 0 · remaining_amount &gt; 0</text>
+  <text x="430" y="293" text-anchor="middle" fill="#78350f" font-size="9">Partially filled order — still resting on book</text>
+  <text x="430" y="305" text-anchor="middle" fill="#334155" font-size="8">remaining = reserved_amount − consumed_amount always</text>
+
+  <!-- Self-loop on PARTIALLY_CONSUMED: further fills -->
+  <path d="M 580,272 Q 660,272 660,272 Q 680,272 680,310 Q 680,310 580,310" stroke="#f59e0b" stroke-width="1.3" fill="none" stroke-dasharray="4,3" marker-end="url(#arrY)"/>
+  <text x="700" y="293" fill="#f59e0b" font-size="9">further fills</text>
+
+  <!-- PARTIALLY_CONSUMED → RELEASED -->
+  <line x1="280" y1="275" x2="160" y2="380" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+  <text x="190" y="330" text-anchor="middle" fill="#ef4444" font-size="10">cancel (ReleaseFunds)</text>
+
+  <!-- PARTIALLY_CONSUMED → CONSUMED -->
+  <line x1="430" y1="310" x2="430" y2="356" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="444" y="336" text-anchor="middle" fill="#22c55e" font-size="10">full fill</text>
+
+  <!-- ACTIVE → RELEASED (cancel with no fills) -->
+  <line x1="300" y1="163" x2="120" y2="380" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+  <text x="190" y="278" text-anchor="middle" fill="#ef4444" font-size="10">cancel (no fills)</text>
+  <text x="190" y="291" text-anchor="middle" fill="#7f1d1d" font-size="9">ReleaseFunds</text>
+
+  <!-- ACTIVE → CONSUMED (full fill in one trade) -->
+  <line x1="560" y1="163" x2="600" y2="356" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="610" y="265" text-anchor="middle" fill="#22c55e" font-size="10">full fill</text>
+  <text x="610" y="278" text-anchor="middle" fill="#166534" font-size="9">one trade</text>
+
+  <!-- CONSUMED -->
+  <rect x="480" y="356" width="200" height="70" rx="10" fill="#0c1a0c" stroke="#22c55e" stroke-width="2"/>
+  <text x="580" y="378" text-anchor="middle" fill="#86efac" font-size="14" font-weight="700">CONSUMED</text>
+  <text x="580" y="396" text-anchor="middle" fill="#475569" font-size="10">Terminal state</text>
+  <text x="580" y="412" text-anchor="middle" fill="#166534" font-size="9">consumed = reserved · remaining = 0</text>
+  <text x="580" y="424" text-anchor="middle" fill="#166534" font-size="8">Fully filled order · no funds to release</text>
+  <ellipse cx="580" cy="428" rx="8" ry="8" fill="#22c55e"/>
+
+  <!-- RELEASED -->
+  <rect x="60" y="380" width="200" height="70" rx="10" fill="#1a0000" stroke="#ef4444" stroke-width="2"/>
+  <text x="160" y="402" text-anchor="middle" fill="#fca5a5" font-size="14" font-weight="700">RELEASED</text>
+  <text x="160" y="420" text-anchor="middle" fill="#475569" font-size="10">Terminal state</text>
+  <text x="160" y="436" text-anchor="middle" fill="#7f1d1d" font-size="9">remaining_amount returned to available</text>
+  <text x="160" y="448" text-anchor="middle" fill="#7f1d1d" font-size="8">status = RELEASED is the idempotency guard (§8.3)</text>
+  <ellipse cx="160" cy="452" rx="8" ry="8" fill="#ef4444"/>
+
+  <!-- Transitions table -->
+  <rect x="280" y="460" width="540" height="120" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1.3"/>
+  <text x="550" y="480" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">Transition Rules</text>
+  <text x="300" y="500" fill="#64748b" font-size="10" font-weight="600">From</text>
+  <text x="420" y="500" fill="#64748b" font-size="10" font-weight="600">To</text>
+  <text x="560" y="500" fill="#64748b" font-size="10" font-weight="600">Trigger</text>
+  <line x1="290" y1="505" x2="800" y2="505" stroke="#1e293b" stroke-width="0.5"/>
+  <text x="300" y="521" fill="#93c5fd" font-size="10">ACTIVE</text>
+  <text x="420" y="521" fill="#fbbf24" font-size="10">PARTIALLY_CONSUMED</text>
+  <text x="560" y="521" fill="#475569" font-size="10">SettleTrade partial fill</text>
+  <text x="300" y="537" fill="#93c5fd" font-size="10">ACTIVE</text>
+  <text x="420" y="537" fill="#86efac" font-size="10">CONSUMED</text>
+  <text x="560" y="537" fill="#475569" font-size="10">SettleTrade full fill</text>
+  <text x="300" y="553" fill="#93c5fd" font-size="10">ACTIVE</text>
+  <text x="420" y="553" fill="#fca5a5" font-size="10">RELEASED</text>
+  <text x="560" y="553" fill="#475569" font-size="10">ReleaseFunds (no fills)</text>
+  <text x="300" y="569" fill="#fbbf24" font-size="10">PARTIALLY_CONSUMED</text>
+  <text x="420" y="569" fill="#86efac" font-size="10">CONSUMED</text>
+  <text x="560" y="569" fill="#475569" font-size="10">SettleTrade fills remainder</text>
+  <text x="300" y="585" fill="#fbbf24" font-size="10">PARTIALLY_CONSUMED</text>
+  <text x="420" y="585" fill="#fca5a5" font-size="10">RELEASED</text>
+  <text x="560" y="585" fill="#475569" font-size="10">ReleaseFunds (cancel partial)</text>
+
+  <text x="430" y="608" text-anchor="middle" fill="#334155" font-size="10">remaining_amount = reserved_amount − consumed_amount at all times · Release exactly once guaranteed by §8.3 status guard</text>
+</svg>

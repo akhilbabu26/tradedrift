@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 760" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr"  markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f59e0b"/></marker>
+    <marker id="arrO" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f97316"/></marker>
+  </defs>
+  <rect width="860" height="760" fill="url(#bg)"/>
+  <rect width="860" height="760" fill="none" stroke="#1e293b" stroke-width="2"/>
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Settlement Flow</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">Three-phase settlement · Zero double-settlement · Short DB transactions</text>
+  <line x1="80" y1="66" x2="780" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Start -->
+  <rect x="260" y="82" width="320" height="44" rx="8" fill="#0f172a" stroke="#f97316" stroke-width="1.5"/>
+  <text x="420" y="102" text-anchor="middle" fill="#fdba74" font-size="13" font-weight="600">Consume TradeExecuted from Kafka</text>
+  <text x="420" y="119" text-anchor="middle" fill="#78350f" font-size="10">fields: trade_id · buyer_id · seller_id · buy/sell_order_id · assets · price · qty</text>
+
+  <line x1="420" y1="126" x2="420" y2="152" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Idempotency check diamond -->
+  <polygon points="420,152 600,178 420,204 240,178" fill="#0f172a" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="420" y="175" text-anchor="middle" fill="#93c5fd" font-size="11" font-weight="600">trade_id in</text>
+  <text x="420" y="191" text-anchor="middle" fill="#475569" font-size="10">settled_trades?</text>
+
+  <!-- SETTLED path -->
+  <line x1="600" y1="178" x2="730" y2="178" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="665" y="170" text-anchor="middle" fill="#22c55e" font-size="10">SETTLED</text>
+  <rect x="730" y="158" width="110" height="42" rx="7" fill="#0c1a0c" stroke="#22c55e" stroke-width="1.3"/>
+  <text x="785" y="177" text-anchor="middle" fill="#86efac" font-size="11" font-weight="600">ACK Kafka</text>
+  <text x="785" y="191" text-anchor="middle" fill="#166534" font-size="9">no-op, done</text>
+
+  <!-- PENDING path (right) -->
+  <line x1="600" y1="190" x2="700" y2="250" stroke="#f59e0b" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrY)"/>
+  <text x="680" y="224" text-anchor="middle" fill="#f59e0b" font-size="9">PENDING</text>
+  <text x="680" y="237" text-anchor="middle" fill="#78350f" font-size="8">skip Phase 1</text>
+
+  <!-- No row path -->
+  <line x1="420" y1="204" x2="420" y2="234" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="434" y="221" fill="#64748b" font-size="10">No row → Phase 1</text>
+
+  <!-- Phase 1 box -->
+  <rect x="240" y="234" width="380" height="80" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="2"/>
+  <text x="420" y="254" text-anchor="middle" fill="#86efac" font-size="13" font-weight="700">Phase 1 — Short Transaction</text>
+  <line x1="260" y1="263" x2="600" y2="263" stroke="#166534" stroke-width="0.5"/>
+  <text x="420" y="279" text-anchor="middle" fill="#475569" font-size="10">INSERT settled_trades (status='PENDING', executed_at = event.executed_at)</text>
+  <text x="420" y="295" text-anchor="middle" fill="#22c55e" font-size="10" font-weight="600">COMMIT immediately · DB connection released ← SI-1</text>
+  <text x="420" y="310" text-anchor="middle" fill="#334155" font-size="8">No network call in flight — connection returned to pool before gRPC begins</text>
+
+  <!-- PENDING path joins Phase 2 -->
+  <line x1="700" y1="250" x2="620" y2="320" stroke="#f59e0b" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arr)"/>
+
+  <line x1="420" y1="314" x2="420" y2="344" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Phase 2 box -->
+  <rect x="240" y="344" width="380" height="80" rx="8" fill="#0d1f0d" stroke="#22c55e" stroke-width="2"/>
+  <text x="420" y="364" text-anchor="middle" fill="#86efac" font-size="13" font-weight="700">Phase 2 — gRPC (No DB TX held)</text>
+  <line x1="260" y1="373" x2="600" y2="373" stroke="#166534" stroke-width="0.5"/>
+  <text x="420" y="389" text-anchor="middle" fill="#475569" font-size="10">Call Wallet.SettleTrade(…) — buyer/seller balance shift, both legs</text>
+  <text x="420" y="405" text-anchor="middle" fill="#334155" font-size="9">Wallet publishes TradeSettled via its outbox after commit</text>
+  <text x="420" y="419" text-anchor="middle" fill="#334155" font-size="8">No DB connection held during this RPC — SI-1 guaranteed</text>
+
+  <!-- Failure path from Phase 2 -->
+  <line x1="620" y1="395" x2="720" y2="395" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+  <text x="670" y="387" text-anchor="middle" fill="#ef4444" font-size="10">Failure / timeout</text>
+  <rect x="720" y="374" width="120" height="42" rx="7" fill="#1a0000" stroke="#ef4444" stroke-width="1.3"/>
+  <text x="780" y="392" text-anchor="middle" fill="#fca5a5" font-size="11">Do NOT ACK</text>
+  <text x="780" y="406" text-anchor="middle" fill="#7f1d1d" font-size="9">Retry w/ backoff</text>
+
+  <line x1="420" y1="424" x2="420" y2="454" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="434" y="441" fill="#22c55e" font-size="10">Success ✓</text>
+
+  <!-- Phase 3 box -->
+  <rect x="240" y="454" width="380" height="70" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="2"/>
+  <text x="420" y="474" text-anchor="middle" fill="#86efac" font-size="13" font-weight="700">Phase 3 — Short Transaction</text>
+  <line x1="260" y1="483" x2="600" y2="483" stroke="#166534" stroke-width="0.5"/>
+  <text x="420" y="499" text-anchor="middle" fill="#475569" font-size="10">UPDATE settled_trades SET status='SETTLED', settled_at=NOW()</text>
+  <text x="420" y="515" text-anchor="middle" fill="#22c55e" font-size="10" font-weight="600">COMMIT · then ACK Kafka offset — SI-2</text>
+
+  <line x1="420" y1="524" x2="420" y2="554" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- ACK -->
+  <rect x="280" y="554" width="280" height="40" rx="7" fill="#1e1a00" stroke="#f97316" stroke-width="1.5"/>
+  <text x="420" y="572" text-anchor="middle" fill="#fb923c" font-size="12" font-weight="600">Commit Kafka offset (ACK)</text>
+  <text x="420" y="587" text-anchor="middle" fill="#78350f" font-size="9">Trade settlement complete · ready for next message</text>
+
+  <!-- Key invariants -->
+  <rect x="60" y="622" width="740" height="96" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.3"/>
+  <text x="430" y="642" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">Service Invariants</text>
+  <line x1="80" y1="650" x2="780" y2="650" stroke="#1e293b" stroke-width="0.5"/>
+  <text x="90" y="666" fill="#22c55e" font-size="10">SI-1:</text><text x="125" y="666" fill="#475569" font-size="10">No DB transaction open while gRPC is in flight — prevents connection pool exhaustion</text>
+  <text x="90" y="682" fill="#22c55e" font-size="10">SI-2:</text><text x="125" y="682" fill="#475569" font-size="10">SETTLED rows are permanent no-ops — all subsequent deliveries of same event are ACKed without alerts</text>
+  <text x="90" y="698" fill="#22c55e" font-size="10">SI-3:</text><text x="125" y="698" fill="#475569" font-size="10">Exactly 1 goroutine per Kafka partition — trades within a market settled in chronological order</text>
+  <text x="90" y="714" fill="#22c55e" font-size="10">SI-4:</text><text x="125" y="714" fill="#475569" font-size="10">No Kafka publishing — TradeSettled is exclusively Wallet Service's outbox · single authoritative source</text>
+</svg>

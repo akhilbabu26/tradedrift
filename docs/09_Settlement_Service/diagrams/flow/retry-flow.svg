@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 600" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr"  markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f59e0b"/></marker>
+  </defs>
+  <rect width="860" height="600" fill="url(#bg)"/>
+  <rect width="860" height="600" fill="none" stroke="#1e293b" stroke-width="2"/>
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Retry Flow</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">Settlement Service · Phase 2 failure → Kafka redelivery retry path</text>
+  <line x1="80" y1="66" x2="780" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Phase 2 failure -->
+  <rect x="260" y="82" width="320" height="44" rx="8" fill="#1a0000" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="420" y="102" text-anchor="middle" fill="#fca5a5" font-size="13" font-weight="600">Phase 2 Failure</text>
+  <text x="420" y="119" text-anchor="middle" fill="#7f1d1d" font-size="10">Wallet.SettleTrade() timeout / connection refused / error</text>
+
+  <line x1="420" y1="126" x2="420" y2="152" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+
+  <!-- Do NOT ACK -->
+  <rect x="270" y="152" width="300" height="44" rx="8" fill="#1a0000" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="420" y="172" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="600">Do NOT ACK Kafka offset</text>
+  <text x="420" y="189" text-anchor="middle" fill="#7f1d1d" font-size="10">Phase 3 is skipped · PENDING row remains in DB</text>
+
+  <!-- Retry options -->
+  <line x1="420" y1="196" x2="420" y2="224" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+
+  <!-- Two paths split -->
+  <rect x="160" y="224" width="520" height="24" rx="6" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+  <text x="420" y="240" text-anchor="middle" fill="#64748b" font-size="10">Two independent recovery mechanisms — both safe due to Wallet.SettleTrade idempotency</text>
+
+  <!-- Path 1: Kafka redelivery -->
+  <line x1="300" y1="248" x2="220" y2="288" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrY)"/>
+  <text x="235" y="272" text-anchor="middle" fill="#f59e0b" font-size="9">Primary</text>
+
+  <rect x="60" y="288" width="290" height="100" rx="8" fill="#1a1000" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="205" y="308" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">Path 1: Kafka Redelivery</text>
+  <line x1="80" y1="316" x2="330" y2="316" stroke="#3d2000" stroke-width="0.5"/>
+  <text x="205" y="332" text-anchor="middle" fill="#475569" font-size="10">Consumer restarts · replays from</text>
+  <text x="205" y="348" text-anchor="middle" fill="#475569" font-size="10">last uncommitted offset</text>
+  <text x="205" y="364" text-anchor="middle" fill="#475569" font-size="9">Idempotency check finds PENDING row</text>
+  <text x="205" y="378" text-anchor="middle" fill="#22c55e" font-size="9">→ Skip Phase 1, retry Phase 2 directly</text>
+
+  <!-- Path 2: Recovery goroutine -->
+  <line x1="540" y1="248" x2="640" y2="288" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="625" y="272" text-anchor="middle" fill="#64748b" font-size="9">Safety net</text>
+
+  <rect x="510" y="288" width="290" height="120" rx="8" fill="#0f1f38" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="655" y="308" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="600">Path 2: Recovery Goroutine</text>
+  <line x1="530" y1="316" x2="780" y2="316" stroke="#1e3a5f" stroke-width="0.5"/>
+  <text x="655" y="332" text-anchor="middle" fill="#475569" font-size="10">Background poll every N seconds</text>
+  <text x="655" y="348" text-anchor="middle" fill="#3b82f6" font-size="9">SELECT WHERE status=PENDING</text>
+  <text x="655" y="362" text-anchor="middle" fill="#3b82f6" font-size="9">AND executed_at &lt; NOW()-60s</text>
+  <text x="655" y="376" text-anchor="middle" fill="#3b82f6" font-size="9">FOR UPDATE SKIP LOCKED</text>
+  <text x="655" y="392" text-anchor="middle" fill="#22c55e" font-size="9">→ Retry Phase 2 → Phase 3 if success</text>
+  <text x="655" y="405" text-anchor="middle" fill="#334155" font-size="8">SKIP LOCKED prevents double-retry with main consumer</text>
+
+  <!-- Both converge -->
+  <line x1="205" y1="388" x2="205" y2="430" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <line x1="655" y1="408" x2="655" y2="430" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <line x1="205" y1="430" x2="655" y2="430" stroke="#22c55e" stroke-width="1.5"/>
+  <line x1="430" y1="430" x2="430" y2="458" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+  <!-- Phase 2 retry -->
+  <rect x="260" y="458" width="320" height="60" rx="8" fill="#0d1f0d" stroke="#22c55e" stroke-width="2"/>
+  <text x="420" y="478" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">Phase 2 Retry</text>
+  <text x="420" y="496" text-anchor="middle" fill="#475569" font-size="10">Wallet.SettleTrade(trade_id, …) — idempotent call</text>
+  <text x="420" y="512" text-anchor="middle" fill="#166534" font-size="9">Wallet's UNIQUE constraint absorbs duplicate safely (§8.1)</text>
+
+  <!-- Key note -->
+  <rect x="60" y="544" width="740" height="40" rx="7" fill="#0f172a" stroke="#334155" stroke-width="1"/>
+  <text x="430" y="562" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Why Retry Is Always Safe</text>
+  <text x="430" y="578" text-anchor="middle" fill="#475569" font-size="10">Wallet.SettleTrade uses trade_id as idempotency key · duplicate gRPC = success, no double settlement</text>
+</svg>

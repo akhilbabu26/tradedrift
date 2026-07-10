@@ -1,0 +1,126 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 720" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a1a"/><stop offset="100%" style="stop-color:#141428"/>
+    </linearGradient>
+  </defs>
+  <rect width="1000" height="720" fill="url(#bg)"/>
+  <rect width="1000" height="720" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="500" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Order Matching Sequence</text>
+  <text x="500" y="55" text-anchor="middle" fill="#64748b" font-size="12">Client → Order Service → Matching Engine → Settlement · Full lifecycle</text>
+  <line x1="60" y1="66" x2="940" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Participants -->
+  <!-- Columns: Client=100, OrderSvc=240, WalletSvc=380, Kafka=510, ME=640, Settlement=790 -->
+  <text x="80" y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Client</text>
+  <text x="220" y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Order Service</text>
+  <text x="370" y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Wallet Service</text>
+  <text x="510" y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Kafka</text>
+  <text x="660" y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Matching Engine</text>
+  <text x="830" y="92" text-anchor="middle" fill="#94a3b8" font-size="11" font-weight="600">Settlement Svc</text>
+
+  <!-- Lifelines -->
+  <line x1="80"  y1="100" x2="80"  y2="700" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="220" y1="100" x2="220" y2="700" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="370" y1="100" x2="370" y2="700" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="510" y1="100" x2="510" y2="700" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="660" y1="100" x2="660" y2="700" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="830" y1="100" x2="830" y2="700" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+
+  <!-- Activation boxes -->
+  <rect x="75"  y="100" width="10" height="590" rx="2" fill="#1e3a5f"/>
+  <rect x="215" y="116" width="10" height="480" rx="2" fill="#1e3a5f"/>
+  <rect x="365" y="148" width="10" height="80"  rx="2" fill="#1e3a5f"/>
+  <rect x="505" y="228" width="10" height="60"  rx="2" fill="#1e3a5f"/>
+  <rect x="655" y="268" width="10" height="200" rx="2" fill="#1e3a5f"/>
+  <rect x="825" y="490" width="10" height="60"  rx="2" fill="#1e3a5f"/>
+
+  <!-- M1: POST /orders -->
+  <line x1="90" y1="116" x2="210" y2="116" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrB)"/>
+  <text x="150" y="110" text-anchor="middle" fill="#60a5fa" font-size="10">POST /orders</text>
+  <defs>
+    <marker id="arrB" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#3b82f6"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#22c55e"/></marker>
+    <marker id="arrO" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#f97316"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#ef4444"/></marker>
+    <marker id="arrW" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#94a3b8"/></marker>
+  </defs>
+
+  <!-- M2: Validate & Generate order_id -->
+  <rect x="215" y="128" width="145" height="18" rx="3" fill="#0f1f38"/>
+  <text x="287" y="141" text-anchor="middle" fill="#475569" font-size="9">Validate · Generate order_id (UUIDv7)</text>
+
+  <!-- M3: ReserveFunds gRPC -->
+  <line x1="225" y1="148" x2="360" y2="148" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+  <text x="292" y="142" text-anchor="middle" fill="#f97316" font-size="10">ReserveFunds gRPC</text>
+
+  <!-- M4: Funds reserved response -->
+  <line x1="365" y1="172" x2="225" y2="172" stroke="#f97316" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrO)"/>
+  <text x="292" y="168" text-anchor="middle" fill="#78350f" font-size="10">reserved ✓</text>
+
+  <!-- M5: INSERT order + outbox to DB -->
+  <rect x="215" y="178" width="145" height="18" rx="3" fill="#0f1f38"/>
+  <text x="287" y="191" text-anchor="middle" fill="#475569" font-size="9">INSERT order + outbox_events (1 tx)</text>
+
+  <!-- M6: Outbox publisher → Kafka OrderCreated -->
+  <line x1="225" y1="204" x2="500" y2="204" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="360" y="197" text-anchor="middle" fill="#22c55e" font-size="10">Kafka: OrderCreated (outbox publisher)</text>
+
+  <!-- M7: 202 Accepted to Client -->
+  <line x1="215" y1="228" x2="90" y2="228" stroke="#3b82f6" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrB)"/>
+  <text x="152" y="222" text-anchor="middle" fill="#60a5fa" font-size="10">202 Accepted</text>
+
+  <!-- M8: ME consumes OrderCreated -->
+  <line x1="515" y1="268" x2="650" y2="268" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="582" y="262" text-anchor="middle" fill="#22c55e" font-size="10">consume OrderCreated</text>
+
+  <!-- M9: Event Loop processes -->
+  <rect x="655" y="278" width="145" height="18" rx="3" fill="#0f1f38"/>
+  <text x="727" y="291" text-anchor="middle" fill="#475569" font-size="9">Event Loop: match / insert resting</text>
+
+  <!-- M10: MatchResult generated -->
+  <rect x="655" y="300" width="145" height="18" rx="3" fill="#0f1f38"/>
+  <text x="727" y="313" text-anchor="middle" fill="#475569" font-size="9">MatchResult → Output Queue</text>
+
+  <!-- M11: Publisher: TradeExecuted to Kafka -->
+  <line x1="665" y1="340" x2="520" y2="340" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+  <text x="592" y="333" text-anchor="middle" fill="#f97316" font-size="10">TradeExecuted → Kafka</text>
+
+  <!-- M12: Publisher: Redis depth -->
+  <line x1="665" y1="370" x2="825" y2="370" stroke="#a855f7" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrW)"/>
+  <text x="745" y="364" text-anchor="middle" fill="#a855f7" font-size="10">Redis depth snapshot</text>
+
+  <!-- M13: Checkpoint written after Kafka ACK -->
+  <rect x="655" y="380" width="145" height="18" rx="3" fill="#0f1f38"/>
+  <text x="727" y="393" text-anchor="middle" fill="#475569" font-size="9">Checkpoint → PostgreSQL (after ACK)</text>
+
+  <!-- M14: Order Service: TradeExecuted consumed -->
+  <line x1="515" y1="440" x2="225" y2="440" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrO)"/>
+  <text x="370" y="434" text-anchor="middle" fill="#78350f" font-size="10">OrderSvc consumes TradeExecuted → FILLED status</text>
+
+  <!-- M15: Settlement consumes TradeExecuted -->
+  <line x1="515" y1="490" x2="820" y2="490" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+  <text x="667" y="483" text-anchor="middle" fill="#f97316" font-size="10">Settlement consumes TradeExecuted</text>
+
+  <!-- M16: Settlement Phase 1 + 2 + 3 -->
+  <rect x="825" y="502" width="145" height="18" rx="3" fill="#0f1f38"/>
+  <text x="897" y="515" text-anchor="middle" fill="#475569" font-size="9">Ph1: INSERT PENDING · Ph2: SettleTrade gRPC</text>
+
+  <!-- M17: Wallet SettleTrade gRPC call -->
+  <line x1="830" y1="530" x2="375" y2="530" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="602" y="523" text-anchor="middle" fill="#22c55e" font-size="10">Wallet.SettleTrade gRPC</text>
+
+  <!-- M18: Wallet responds + TradeSettled outbox -->
+  <line x1="375" y1="552" x2="830" y2="552" stroke="#22c55e" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrG)"/>
+  <text x="602" y="546" text-anchor="middle" fill="#166534" font-size="10">success · TradeSettled published (Wallet outbox)</text>
+
+  <!-- M19: Ph3 SETTLED -->
+  <rect x="825" y="558" width="145" height="18" rx="3" fill="#0f1f38"/>
+  <text x="897" y="571" text-anchor="middle" fill="#475569" font-size="9">Ph3: UPDATE SETTLED · ACK Kafka</text>
+
+  <!-- Separator line -->
+  <line x1="60" y1="635" x2="940" y2="635" stroke="#1e293b" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="500" y="655" text-anchor="middle" fill="#334155" font-size="10">Dashed arrows = async / response · Solid arrows = synchronous request</text>
+  <text x="500" y="672" text-anchor="middle" fill="#334155" font-size="10">Matching Engine never calls other services · Publisher is decoupled from Event Loop via Output Queue</text>
+</svg>

@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 720" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+  </defs>
+  <rect width="900" height="720" fill="url(#bg)"/>
+  <rect width="900" height="720" fill="none" stroke="#1e293b" stroke-width="2"/>
+  <text x="450" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Wallet Service — Database Schema</text>
+  <text x="450" y="55" text-anchor="middle" fill="#64748b" font-size="12">PostgreSQL · 5 core tables · UUID PKs (UUIDv7 app-generated) · V7 Final</text>
+  <line x1="60" y1="66" x2="840" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- wallets table -->
+  <rect x="60" y="82" width="360" height="170" rx="8" fill="#0f1f38" stroke="#3b82f6" stroke-width="2"/>
+  <rect x="60" y="82" width="360" height="34" rx="8" fill="#1e3a5f"/>
+  <text x="240" y="102" text-anchor="middle" fill="#93c5fd" font-size="13" font-weight="700">wallets</text>
+  <text x="240" y="116" text-anchor="middle" fill="#475569" font-size="9">1 row per (user_id, asset)</text>
+  <line x1="80" y1="118" x2="400" y2="118" stroke="#1e3a5f" stroke-width="0.5"/>
+  <text x="80"  y="134" fill="#f59e0b" font-size="10" font-weight="700">id</text><text x="200" y="134" fill="#475569" font-size="9">UUID PK</text><text x="310" y="134" fill="#334155" font-size="9">UUIDv7</text>
+  <rect x="70" y="138" width="310" height="14" rx="2" fill="#0d2137"/>
+  <text x="80"  y="149" fill="#cbd5e1" font-size="10">user_id</text><text x="200" y="149" fill="#475569" font-size="9">UUID NOT NULL</text><text x="310" y="149" fill="#334155" font-size="9">FK → users</text>
+  <text x="80"  y="163" fill="#cbd5e1" font-size="10">asset</text><text x="200" y="163" fill="#475569" font-size="9">VARCHAR(10) NOT NULL</text><text x="310" y="163" fill="#475569" font-size="9">FK → supported_assets</text>
+  <rect x="70" y="167" width="310" height="14" rx="2" fill="#0d2137"/>
+  <text x="80"  y="178" fill="#f59e0b" font-size="10">available_balance</text><text x="200" y="178" fill="#475569" font-size="9">DECIMAL(30,10)</text><text x="310" y="178" fill="#22c55e" font-size="9">≥ 0 always</text>
+  <text x="80"  y="192" fill="#cbd5e1" font-size="10">reserved_balance</text><text x="200" y="192" fill="#475569" font-size="9">DECIMAL(30,10)</text><text x="310" y="192" fill="#475569" font-size="9">≥ 0</text>
+  <rect x="70" y="196" width="310" height="14" rx="2" fill="#0d2137"/>
+  <text x="80"  y="207" fill="#cbd5e1" font-size="10">updated_at</text><text x="200" y="207" fill="#475569" font-size="9">TIMESTAMPTZ</text>
+  <text x="240" y="244" text-anchor="middle" fill="#3b82f6" font-size="9">UNIQUE (user_id, asset)</text>
+
+  <!-- wallet_reservations table -->
+  <rect x="480" y="82" width="380" height="220" rx="8" fill="#1e1a00" stroke="#f59e0b" stroke-width="2"/>
+  <rect x="480" y="82" width="380" height="34" rx="8" fill="#3d2000"/>
+  <text x="670" y="102" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700">wallet_reservations</text>
+  <text x="670" y="116" text-anchor="middle" fill="#78350f" font-size="9">1 row per order · UNIQUE(order_id)</text>
+  <line x1="500" y1="118" x2="840" y2="118" stroke="#3d2000" stroke-width="0.5"/>
+  <text x="500" y="134" fill="#f59e0b" font-size="10" font-weight="700">id</text><text x="640" y="134" fill="#78350f" font-size="9">UUID PK</text>
+  <rect x="490" y="138" width="360" height="14" rx="2" fill="#2d1800"/>
+  <text x="500" y="149" fill="#fbbf24" font-size="10">order_id</text><text x="640" y="149" fill="#78350f" font-size="9">UUID UNIQUE NOT NULL</text><text x="780" y="149" fill="#f97316" font-size="9">idempotency key</text>
+  <text x="500" y="163" fill="#fdba74" font-size="10">user_id</text><text x="640" y="163" fill="#78350f" font-size="9">UUID NOT NULL</text>
+  <rect x="490" y="167" width="360" height="14" rx="2" fill="#2d1800"/>
+  <text x="500" y="178" fill="#fdba74" font-size="10">asset</text><text x="640" y="178" fill="#78350f" font-size="9">VARCHAR(10) NOT NULL</text>
+  <text x="500" y="192" fill="#fdba74" font-size="10">reserved_amount</text><text x="640" y="192" fill="#78350f" font-size="9">DECIMAL(30,10)</text>
+  <rect x="490" y="196" width="360" height="14" rx="2" fill="#2d1800"/>
+  <text x="500" y="207" fill="#fdba74" font-size="10">consumed_amount</text><text x="640" y="207" fill="#78350f" font-size="9">DECIMAL(30,10) DEFAULT 0</text>
+  <text x="500" y="221" fill="#fdba74" font-size="10">remaining_amount</text><text x="640" y="221" fill="#78350f" font-size="9">DECIMAL(30,10)</text><text x="780" y="221" fill="#78350f" font-size="9">= reserved−consumed</text>
+  <rect x="490" y="225" width="360" height="14" rx="2" fill="#2d1800"/>
+  <text x="500" y="236" fill="#f59e0b" font-size="10" font-weight="600">status</text><text x="640" y="236" fill="#78350f" font-size="9">VARCHAR(20) NOT NULL</text><text x="780" y="236" fill="#f59e0b" font-size="9">§8.3 guard</text>
+  <text x="500" y="250" fill="#fdba74" font-size="10">created_at</text><text x="640" y="250" fill="#78350f" font-size="9">TIMESTAMPTZ NOT NULL</text>
+  <rect x="490" y="282" width="360" height="16" rx="4" fill="#1a1000"/>
+  <text x="670" y="294" text-anchor="middle" fill="#f59e0b" font-size="9">status: ACTIVE | PARTIALLY_CONSUMED | CONSUMED | RELEASED</text>
+
+  <!-- wallet_transactions table -->
+  <rect x="60" y="310" width="800" height="180" rx="8" fill="#0f172a" stroke="#a855f7" stroke-width="2"/>
+  <rect x="60" y="310" width="800" height="34" rx="8" fill="#4c1d95"/>
+  <text x="460" y="330" text-anchor="middle" fill="#d8b4fe" font-size="13" font-weight="700">wallet_transactions</text>
+  <text x="460" y="344" text-anchor="middle" fill="#6b21a8" font-size="9">Immutable ledger · Every balance change is a row · UNIQUE(reference_id, reference_type, asset)</text>
+  <line x1="80" y1="346" x2="840" y2="346" stroke="#4c1d95" stroke-width="0.5"/>
+  <!-- Columns in two columns -->
+  <text x="80"  y="362" fill="#f59e0b" font-size="10" font-weight="700">id</text><text x="200" y="362" fill="#6b21a8" font-size="9">UUID PK</text>
+  <text x="430" y="362" fill="#d8b4fe" font-size="10">wallet_id</text><text x="580" y="362" fill="#6b21a8" font-size="9">UUID NOT NULL</text>
+  <rect x="70" y="366" width="760" height="14" rx="2" fill="#0e0a24"/>
+  <text x="80"  y="377" fill="#d8b4fe" font-size="10">reference_id</text><text x="200" y="377" fill="#6b21a8" font-size="9">UUID NOT NULL</text><text x="320" y="377" fill="#475569" font-size="8">order_id / user_id / trade_id</text>
+  <text x="430" y="377" fill="#d8b4fe" font-size="10">reference_type</text><text x="580" y="377" fill="#6b21a8" font-size="9">TEXT NOT NULL</text><text x="680" y="377" fill="#475569" font-size="8">RESERVATION | RELEASE | SETTLEMENT | INITIAL_ALLOCATION</text>
+  <text x="80"  y="391" fill="#d8b4fe" font-size="10">transaction_type</text><text x="200" y="391" fill="#6b21a8" font-size="9">TEXT NOT NULL</text><text x="320" y="391" fill="#475569" font-size="8">DEBIT | CREDIT</text>
+  <rect x="70" y="395" width="760" height="14" rx="2" fill="#0e0a24"/>
+  <text x="80"  y="406" fill="#d8b4fe" font-size="10">asset</text><text x="200" y="406" fill="#6b21a8" font-size="9">VARCHAR(10) NOT NULL</text>
+  <text x="430" y="406" fill="#d8b4fe" font-size="10">amount</text><text x="580" y="406" fill="#6b21a8" font-size="9">DECIMAL(30,10) NOT NULL</text>
+  <text x="80"  y="420" fill="#d8b4fe" font-size="10">created_at</text><text x="200" y="420" fill="#6b21a8" font-size="9">TIMESTAMPTZ NOT NULL</text>
+  <rect x="70" y="428" width="760" height="22" rx="4" fill="#0e0a24"/>
+  <text x="460" y="440" text-anchor="middle" fill="#a855f7" font-size="9" font-weight="600">UNIQUE (reference_id, reference_type, asset) — covers ALL 4 gRPC methods; see §6.1 reference_type map</text>
+  <text x="460" y="455" text-anchor="middle" fill="#334155" font-size="8">Bug fix V6: asset column added to allow multi-asset INITIAL_ALLOCATION (old UNIQUE without asset only allowed 1 row per user)</text>
+  <text x="460" y="467" text-anchor="middle" fill="#334155" font-size="8">Bug fix V7: SettleTrade inserts 2 rows per trade (one per leg/asset) — constraint must include asset to allow both</text>
+
+  <!-- outbox + supported_assets small tables -->
+  <rect x="60" y="510" width="360" height="100" rx="8" fill="#1e1a00" stroke="#f97316" stroke-width="1.5"/>
+  <text x="240" y="530" text-anchor="middle" fill="#fb923c" font-size="12" font-weight="700">outbox</text>
+  <text x="80" y="548" fill="#78350f" font-size="9">id UUID PK · aggregate_id UUID · event_type TEXT</text>
+  <text x="80" y="564" fill="#78350f" font-size="9">payload JSONB · partition_key TEXT (=market_id)</text>
+  <text x="80" y="580" fill="#78350f" font-size="9">published_at TIMESTAMPTZ · created_at TIMESTAMPTZ</text>
+  <text x="80" y="596" fill="#334155" font-size="8">Only TradeSettled events · published after SettleTrade commits atomically</text>
+
+  <rect x="480" y="510" width="380" height="100" rx="8" fill="#0f172a" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="670" y="530" text-anchor="middle" fill="#86efac" font-size="12" font-weight="700">supported_assets</text>
+  <text x="500" y="548" fill="#166534" font-size="9">asset_code VARCHAR(10) PK · asset_name VARCHAR(50)</text>
+  <text x="500" y="564" fill="#166534" font-size="9">decimals INT NOT NULL · is_enabled BOOLEAN DEFAULT TRUE</text>
+  <text x="500" y="580" fill="#166534" font-size="9">seed_amount DECIMAL(30,10) DEFAULT 0 · display_order INT</text>
+  <text x="500" y="596" fill="#334155" font-size="8">Adding new asset = INSERT row only · no redeploy · determines InitializeWallet behavior</text>
+
+  <text x="450" y="648" text-anchor="middle" fill="#334155" font-size="10">All IDs are UUID (UUIDv7, app-generated before INSERT) · DECIMAL(30,10) for all monetary amounts · No FLOAT columns</text>
+  <text x="450" y="664" text-anchor="middle" fill="#334155" font-size="10">Row-level FOR UPDATE locking on every mutation path · No silent column updates — every change is a wallet_transactions row</text>
+</svg>

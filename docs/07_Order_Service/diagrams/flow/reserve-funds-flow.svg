@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 720" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+    <marker id="arrP" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#a855f7"/></marker>
+  </defs>
+  <rect width="860" height="720" fill="url(#bg)"/>
+  <rect width="860" height="720" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Reserve Funds Flow</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">Order Service → Wallet Service gRPC · ReserveFunds(order_id)</text>
+  <line x1="80" y1="66" x2="780" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- 1. UUIDv7 generated first -->
+  <rect x="255" y="82" width="350" height="46" rx="8" fill="#0e0a24" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="430" y="101" text-anchor="middle" fill="#d8b4fe" font-size="13" font-weight="600">order_id generated (UUIDv7) in memory</text>
+  <text x="430" y="119" text-anchor="middle" fill="#6b21a8" font-size="10">Before DB write · Before gRPC call · Idempotency key for Wallet</text>
+
+  <line x1="430" y1="128" x2="430" y2="154" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- 2. Determine reservation amount -->
+  <rect x="255" y="154" width="350" height="80" rx="8" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
+  <text x="430" y="174" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">Determine Reservation Amount</text>
+  <line x1="275" y1="183" x2="585" y2="183" stroke="#1e293b" stroke-width="0.5"/>
+  <!-- Three rows -->
+  <text x="290" y="198" fill="#94a3b8" font-size="10" font-weight="600">LIMIT BUY</text>
+  <text x="440" y="198" fill="#475569" font-size="10">price × quantity  (quote asset)</text>
+  <text x="290" y="213" fill="#94a3b8" font-size="10" font-weight="600">MARKET BUY</text>
+  <text x="440" y="213" fill="#f59e0b" font-size="10">entire available quote balance  ⚠ locked temporarily</text>
+  <text x="290" y="228" fill="#94a3b8" font-size="10" font-weight="600">ANY SELL</text>
+  <text x="440" y="228" fill="#475569" font-size="10">quantity  (base asset, no price dependency)</text>
+
+  <line x1="430" y1="234" x2="430" y2="260" stroke="#a855f7" stroke-width="1.5" marker-end="url(#arrP)"/>
+
+  <!-- 3. ReserveFunds call -->
+  <rect x="235" y="260" width="390" height="80" rx="8" fill="#0e0a24" stroke="#a855f7" stroke-width="2"/>
+  <text x="430" y="282" text-anchor="middle" fill="#d8b4fe" font-size="13" font-weight="600">gRPC: ReserveFunds()</text>
+  <line x1="255" y1="292" x2="605" y2="292" stroke="#4c1d95" stroke-width="0.5"/>
+  <text x="350" y="308" fill="#6b21a8" font-size="10" font-weight="600">user_id:</text>
+  <text x="430" y="308" fill="#475569" font-size="10">UUID of ordering user</text>
+  <text x="350" y="322" fill="#6b21a8" font-size="10" font-weight="600">order_id:</text>
+  <text x="430" y="322" fill="#475569" font-size="10">pre-generated UUIDv7 — idempotency key</text>
+  <text x="350" y="336" fill="#6b21a8" font-size="10" font-weight="600">asset / amount:</text>
+  <text x="430" y="336" fill="#475569" font-size="10">as computed above</text>
+
+  <!-- Wallet Service response decision -->
+  <line x1="430" y1="340" x2="430" y2="366" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <polygon points="430,366 590,390 430,414 270,390" fill="#0f172a" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="430" y="387" text-anchor="middle" fill="#d8b4fe" font-size="12" font-weight="600">Wallet Response?</text>
+
+  <!-- Fail: insufficient funds -->
+  <line x1="270" y1="390" x2="120" y2="390" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+  <text x="195" y="380" text-anchor="middle" fill="#ef4444" font-size="10">INSUFFICIENT</text>
+  <rect x="20" y="368" width="180" height="44" rx="7" fill="#1a0000" stroke="#ef4444" stroke-width="1.3"/>
+  <text x="110" y="387" text-anchor="middle" fill="#fca5a5" font-size="11" font-weight="600">Reject Order</text>
+  <text x="110" y="401" text-anchor="middle" fill="#7f1d1d" font-size="10">No DB row created</text>
+  <text x="110" y="414" text-anchor="middle" fill="#7f1d1d" font-size="9">Return 422 to client</text>
+
+  <!-- Success: proceed -->
+  <line x1="430" y1="414" x2="430" y2="444" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="444" y="432" fill="#22c55e" font-size="10">Reserved ✓</text>
+
+  <!-- 4. Balance effect in Wallet -->
+  <rect x="235" y="444" width="390" height="70" rx="8" fill="#0d1f0d" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="430" y="464" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">Wallet Service Effect</text>
+  <line x1="255" y1="473" x2="605" y2="473" stroke="#166534" stroke-width="0.5"/>
+  <text x="430" y="489" text-anchor="middle" fill="#475569" font-size="10">available_balance  -= amount</text>
+  <text x="430" y="504" text-anchor="middle" fill="#475569" font-size="10">reserved_balance   += amount</text>
+  <text x="430" y="517" text-anchor="middle" fill="#334155" font-size="9">Idempotent on order_id — duplicate call returns success without double-deducting</text>
+
+  <line x1="430" y1="514" x2="430" y2="540" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+  <!-- 5. Proceed to DB write -->
+  <rect x="255" y="540" width="350" height="44" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="1.3"/>
+  <text x="430" y="560" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">Proceed: DB Transaction</text>
+  <text x="430" y="577" text-anchor="middle" fill="#475569" font-size="10">INSERT order (OPEN) + outbox (OrderCreated) · single transaction</text>
+
+  <!-- Release note -->
+  <rect x="80" y="614" width="700" height="64" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.3"/>
+  <text x="430" y="634" text-anchor="middle" fill="#64748b" font-size="12" font-weight="600">When Funds Are Released</text>
+  <text x="430" y="652" text-anchor="middle" fill="#475569" font-size="10">CANCEL: ReleaseFunds(order_id) called by Order Service after OrderCancelled consumed · releases remaining_quantity</text>
+  <text x="430" y="668" text-anchor="middle" fill="#475569" font-size="10">MARKET IOC partial: Matching Engine publishes OrderCancelled with unfilled qty → Order Service calls ReleaseFunds</text>
+
+  <text x="430" y="706" text-anchor="middle" fill="#334155" font-size="10">ReserveFunds and ReleaseFunds are both idempotent on order_id — safe to retry on transient gRPC failures</text>
+</svg>

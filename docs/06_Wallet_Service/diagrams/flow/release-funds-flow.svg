@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 680" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr"  markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f59e0b"/></marker>
+    <marker id="arrP" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#a855f7"/></marker>
+  </defs>
+  <rect width="860" height="680" fill="url(#bg)"/>
+  <rect width="860" height="680" fill="none" stroke="#1e293b" stroke-width="2"/>
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Release Funds Flow</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">ReleaseFunds(order_id) · §8.3 idempotency · releases remaining_amount only</text>
+  <line x1="80" y1="66" x2="780" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <rect x="270" y="82" width="320" height="44" rx="8" fill="#0e0a24" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="430" y="102" text-anchor="middle" fill="#d8b4fe" font-size="13" font-weight="600">gRPC: ReleaseFunds(order_id)</text>
+  <text x="430" y="119" text-anchor="middle" fill="#6b21a8" font-size="10">Called by Order Service after OrderCancelled consumed</text>
+
+  <line x1="430" y1="126" x2="430" y2="152" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Lock reservation -->
+  <rect x="270" y="152" width="320" height="44" rx="8" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
+  <text x="430" y="172" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">① SELECT reservation FOR UPDATE</text>
+  <text x="430" y="189" text-anchor="middle" fill="#475569" font-size="10">Lock by order_id · read current status</text>
+
+  <line x1="430" y1="196" x2="430" y2="222" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Status check diamond -->
+  <polygon points="430,222 610,248 430,274 250,248" fill="#0f172a" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="430" y="245" text-anchor="middle" fill="#d8b4fe" font-size="11" font-weight="600">Reservation status?</text>
+
+  <!-- Already released/consumed -->
+  <line x1="610" y1="248" x2="700" y2="248" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arrY)"/>
+  <text x="655" y="240" text-anchor="middle" fill="#f59e0b" font-size="10">RELEASED or CONSUMED</text>
+  <rect x="700" y="228" width="140" height="44" rx="7" fill="#1a1000" stroke="#f59e0b" stroke-width="1.3"/>
+  <text x="770" y="248" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">Return success</text>
+  <text x="770" y="262" text-anchor="middle" fill="#78350f" font-size="9">No-op · §8.3 guard</text>
+  <text x="770" y="272" text-anchor="middle" fill="#78350f" font-size="8">Prevents double-credit</text>
+
+  <!-- ACTIVE or PARTIALLY_CONSUMED -->
+  <line x1="430" y1="274" x2="430" y2="304" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="200" y="292" text-anchor="middle" fill="#22c55e" font-size="10">ACTIVE or PARTIALLY_CONSUMED</text>
+
+  <!-- Compute remaining -->
+  <rect x="270" y="304" width="320" height="36" rx="7" fill="#0f172a" stroke="#475569" stroke-width="1.3"/>
+  <text x="430" y="322" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">② Compute: release_amount = remaining_amount</text>
+  <text x="430" y="337" text-anchor="middle" fill="#475569" font-size="9">remaining = reserved_amount − consumed_amount</text>
+
+  <line x1="430" y1="340" x2="430" y2="368" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+  <!-- Atomic TX -->
+  <rect x="240" y="368" width="380" height="110" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="2"/>
+  <text x="430" y="388" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">③ Atomic DB Transaction</text>
+  <line x1="260" y1="397" x2="600" y2="397" stroke="#166534" stroke-width="0.5"/>
+  <rect x="258" y="403" width="170" height="36" rx="5" fill="#0f172a" stroke="#22c55e" stroke-width="1"/>
+  <text x="343" y="420" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">UPDATE wallets</text>
+  <text x="343" y="433" text-anchor="middle" fill="#475569" font-size="9">available += remaining_amount</text>
+  <text x="343" y="444" text-anchor="middle" fill="#475569" font-size="9">reserved -= remaining_amount</text>
+  <rect x="438" y="403" width="170" height="36" rx="5" fill="#0f172a" stroke="#22c55e" stroke-width="1"/>
+  <text x="523" y="420" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">UPDATE reservation</text>
+  <text x="523" y="433" text-anchor="middle" fill="#475569" font-size="9">status = RELEASED</text>
+  <text x="523" y="444" text-anchor="middle" fill="#475569" font-size="9">remaining_amount = 0</text>
+  <rect x="258" y="447" width="350" height="24" rx="5" fill="#0f172a" stroke="#22c55e" stroke-width="1"/>
+  <text x="433" y="463" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">INSERT wallet_transactions  CREDIT · RELEASE · UNIQUE guard</text>
+
+  <line x1="430" y1="478" x2="430" y2="504" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+  <rect x="270" y="504" width="320" height="40" rx="8" fill="#1e293b" stroke="#475569" stroke-width="1.3"/>
+  <text x="430" y="522" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">Return ReleaseFundsResponse{success: true}</text>
+  <text x="430" y="538" text-anchor="middle" fill="#334155" font-size="10">Released amount = remaining_quantity only · filled portion stays spent</text>
+
+  <rect x="60" y="570" width="740" height="56" rx="8" fill="#0f172a" stroke="#334155" stroke-width="1.3"/>
+  <text x="430" y="590" text-anchor="middle" fill="#94a3b8" font-size="12" font-weight="600">§8.3 Idempotency Invariant</text>
+  <text x="90" y="608" fill="#475569" font-size="10">A reservation in RELEASED or CONSUMED state is an idempotent-success signal — do NOT credit available_balance again.</text>
+  <text x="90" y="622" fill="#475569" font-size="10">A redelivered Order Service cancel (at-least-once Kafka) must never silently manufacture funds. The status column is the guard.</text>
+
+  <text x="430" y="660" text-anchor="middle" fill="#334155" font-size="10">ReleaseFunds is NOT involved in settlement — it only applies to cancellations · Settlement Service calls SettleTrade, not ReleaseFunds</text>
+</svg>

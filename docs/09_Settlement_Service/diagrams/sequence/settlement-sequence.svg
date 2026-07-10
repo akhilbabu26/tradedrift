@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 700" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0a1a"/><stop offset="100%" style="stop-color:#141428"/>
+    </linearGradient>
+    <marker id="arr"  markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrO" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f97316"/></marker>
+    <marker id="arrB" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#3b82f6"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f59e0b"/></marker>
+  </defs>
+  <rect width="960" height="700" fill="url(#bg)"/>
+  <rect width="960" height="700" fill="none" stroke="#1e293b" stroke-width="2"/>
+  <text x="480" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Settlement — Full Sequence Diagram</text>
+  <text x="480" y="55" text-anchor="middle" fill="#64748b" font-size="12">Kafka → Phase 1 DB → Phase 2 gRPC → Phase 3 DB → ACK · Short transactions · SI-1 guaranteed</text>
+  <line x1="60" y1="66" x2="900" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Participants: ME=90, Kafka=230, SettlSvc=410, SettlDB=590, WalletSvc=760, WalletKafka=900 -->
+  <text x="90"  y="92" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="600">Matching Engine</text>
+  <text x="230" y="92" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="600">Kafka: trades</text>
+  <text x="410" y="92" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="600">Settlement Service</text>
+  <text x="590" y="92" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="600">PostgreSQL (Settlement)</text>
+  <text x="760" y="92" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="600">Wallet Service</text>
+  <text x="910" y="92" text-anchor="middle" fill="#94a3b8" font-size="10" font-weight="600">Kafka: TradeSettled</text>
+
+  <line x1="90"  y1="100" x2="90"  y2="650" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="230" y1="100" x2="230" y2="650" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="410" y1="100" x2="410" y2="650" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="590" y1="100" x2="590" y2="650" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="760" y1="100" x2="760" y2="650" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+  <line x1="910" y1="100" x2="910" y2="650" stroke="#1e293b" stroke-width="1.5" stroke-dasharray="6,4"/>
+
+  <rect x="85"  y="100" width="10" height="50"  rx="2" fill="#1e3a5f"/>
+  <rect x="225" y="100" width="10" height="300" rx="2" fill="#1e3a5f"/>
+  <rect x="405" y="148" width="10" height="450" rx="2" fill="#1e3a5f"/>
+  <rect x="585" y="192" width="10" height="200" rx="2" fill="#1e3a5f"/>
+  <rect x="755" y="380" width="10" height="100" rx="2" fill="#1e3a5f"/>
+  <rect x="905" y="474" width="10" height="40"  rx="2" fill="#1e3a5f"/>
+
+  <!-- M1: TradeExecuted -->
+  <line x1="100" y1="116" x2="220" y2="116" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+  <text x="160" y="109" text-anchor="middle" fill="#f97316" font-size="10">publish TradeExecuted</text>
+
+  <!-- M2: consume -->
+  <line x1="230" y1="148" x2="400" y2="148" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+  <text x="315" y="141" text-anchor="middle" fill="#f97316" font-size="10">consume TradeExecuted</text>
+
+  <!-- Idempotency check -->
+  <rect x="405" y="158" width="175" height="20" rx="3" fill="#0f172a"/>
+  <text x="492" y="172" text-anchor="middle" fill="#93c5fd" font-size="9">Idempotency: query settled_trades</text>
+
+  <!-- M3: SELECT settled_trades -->
+  <line x1="415" y1="192" x2="580" y2="192" stroke="#3b82f6" stroke-width="1.5" marker-end="url(#arrB)"/>
+  <text x="497" y="185" text-anchor="middle" fill="#60a5fa" font-size="9">SELECT WHERE trade_id = ?</text>
+  <line x1="585" y1="210" x2="420" y2="210" stroke="#3b82f6" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrB)"/>
+  <text x="502" y="204" text-anchor="middle" fill="#60a5fa" font-size="9">no row (proceed to Phase 1)</text>
+
+  <!-- Phase 1 label -->
+  <line x1="60" y1="224" x2="900" y2="224" stroke="#0c1a0c" stroke-width="8"/>
+  <text x="480" y="229" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">── Phase 1: Short Transaction ──</text>
+
+  <!-- M4: INSERT PENDING -->
+  <line x1="415" y1="244" x2="580" y2="244" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="497" y="237" text-anchor="middle" fill="#22c55e" font-size="9">INSERT settled_trades (status=PENDING)</text>
+  <line x1="585" y1="262" x2="420" y2="262" stroke="#22c55e" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrG)"/>
+  <text x="502" y="256" text-anchor="middle" fill="#166534" font-size="9">COMMIT ✓ · DB conn released (SI-1)</text>
+
+  <!-- Phase 2 label -->
+  <line x1="60" y1="280" x2="900" y2="280" stroke="#0d1f0d" stroke-width="8"/>
+  <text x="480" y="285" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">── Phase 2: gRPC (No DB TX held) ──</text>
+
+  <!-- M5: gRPC SettleTrade -->
+  <line x1="415" y1="300" x2="750" y2="300" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="582" y="293" text-anchor="middle" fill="#22c55e" font-size="9">Wallet.SettleTrade(trade_id, buyer, seller, assets, price, qty)</text>
+
+  <!-- Wallet internals -->
+  <rect x="755" y="310" width="145" height="60" rx="5" fill="#0d1f0d" stroke="#22c55e" stroke-width="1"/>
+  <text x="827" y="328" text-anchor="middle" fill="#86efac" font-size="9" font-weight="600">Wallet commits:</text>
+  <text x="827" y="342" text-anchor="middle" fill="#475569" font-size="8">Buyer: reserved→credit BTC</text>
+  <text x="827" y="354" text-anchor="middle" fill="#475569" font-size="8">Seller: reserved→credit USDT</text>
+  <text x="827" y="366" text-anchor="middle" fill="#f97316" font-size="8">INSERT outbox TradeSettled</text>
+
+  <!-- TradeSettled to Kafka -->
+  <line x1="765" y1="470" x2="900" y2="474" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+  <text x="832" y="464" text-anchor="middle" fill="#f97316" font-size="9">async: TradeSettled</text>
+
+  <!-- gRPC return -->
+  <line x1="755" y1="380" x2="420" y2="380" stroke="#22c55e" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrG)"/>
+  <text x="587" y="373" text-anchor="middle" fill="#166534" font-size="9">SettleTradeResponse{success: true}</text>
+
+  <!-- Phase 3 label -->
+  <line x1="60" y1="398" x2="900" y2="398" stroke="#0c1a0c" stroke-width="8"/>
+  <text x="480" y="403" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">── Phase 3: Short Transaction ──</text>
+
+  <!-- M6: UPDATE SETTLED -->
+  <line x1="415" y1="418" x2="580" y2="418" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="497" y="411" text-anchor="middle" fill="#22c55e" font-size="9">UPDATE SET status=SETTLED, settled_at=NOW()</text>
+  <line x1="585" y1="436" x2="420" y2="436" stroke="#22c55e" stroke-width="1.3" stroke-dasharray="4,3" marker-end="url(#arrG)"/>
+  <text x="502" y="430" text-anchor="middle" fill="#166534" font-size="9">COMMIT ✓</text>
+
+  <!-- ACK Kafka -->
+  <line x1="415" y1="454" x2="225" y2="454" stroke="#f97316" stroke-width="1.5" marker-end="url(#arrO)"/>
+  <text x="320" y="447" text-anchor="middle" fill="#f97316" font-size="9">ACK Kafka offset (after Phase 3 commits)</text>
+
+  <!-- Footer -->
+  <line x1="60" y1="580" x2="900" y2="580" stroke="#1e293b" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="480" y="600" text-anchor="middle" fill="#334155" font-size="10">SI-1: No DB TX held during Phase 2 · SI-2: SETTLED rows = permanent no-ops · SI-4: Settlement Svc publishes nothing</text>
+  <text x="480" y="616" text-anchor="middle" fill="#334155" font-size="10">TradeSettled from Wallet's outbox is the downstream authoritative event, not from Settlement Service</text>
+</svg>

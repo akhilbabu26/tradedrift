@@ -139,6 +139,7 @@ orders(
   filled_quantity DECIMAL(30,10) NOT NULL DEFAULT 0,
   remaining_quantity DECIMAL(30,10) NOT NULL,
   status VARCHAR(20) NOT NULL,      -- OPEN | PARTIALLY_FILLED | FILLED | CANCELLING | CANCELLED
+  idempotency_key UUID UNIQUE,      -- client-supplied Idempotency-Key header; expires after 24h
   created_at TIMESTAMPTZ NOT NULL,
   updated_at TIMESTAMPTZ NOT NULL
 )
@@ -174,33 +175,50 @@ For **sell orders** (both limit and market), the reservation is always `quantity
 ```
 OPEN
   |
-  |-- Full match ----------> FILLED
-  |-- Partial match --------> PARTIALLY_FILLED
-  |                              |
-  |                              |-- Remaining matched ----> FILLED
-  |                              `-- Cancel requested -----> CANCELLING
-  |                                                              |
-  |                                                              |-- ME confirms -------> CANCELLED
-  |                                                              `-- Fill before cancel -> PARTIALLY_FILLED / FILLED
-  `-- Cancel requested -----> CANCELLING
-                                  |
-                                  |-- ME confirms -------> CANCELLED
-                                  `-- Fill before cancel -> PARTIALLY_FILLED / FILLED
+  |-- Full match -----------> FILLED
+  |-- Partial match ----------> PARTIALLY_FILLED
+  |                                |
+  |                                |-- Remaining matched -----> FILLED
+  |                                |-- Cancel requested (user) -> CANCELLING
+  |                                |                                 |
+  |                                |                                 |-- ME confirms --------> CANCELLED
+  |                                |                                 `-- Fill before cancel -> PARTIALLY_FILLED / FILLED
+  |                                `-- IOC remainder cancelled -----> CANCELLED  (ME-initiated, no CANCELLING intermediate)
+  |
+  |-- Cancel requested (user) --> CANCELLING
+  |                                   |
+  |                                   |-- ME confirms --------> CANCELLED
+  |                                   `-- Fill before cancel -> PARTIALLY_FILLED / FILLED
+  |
+  `-- IOC: no fills at all ----------> CANCELLED  (ME-initiated, no CANCELLING intermediate)
 ```
+
+> **User-cancel vs ME-initiated cancel:** The `CANCELLING` intermediate state exists only for **user-initiated** cancels — it represents the window between the client's `DELETE /orders/{id}` being accepted (202) and the Matching Engine confirming removal. **ME-initiated cancels** (market order IOC: unfilled remainder after matching completes) skip `CANCELLING` entirely — the ME publishes `OrderCancelled` directly with no prior user request. Order Service's `OrderCancelled` Kafka consumer handles both paths identically: `UPDATE status = CANCELLED`, then call `Wallet.ReleaseFunds(order_id)` for the remaining reserved amount.
 
 **Valid transitions:**
 - `OPEN → PARTIALLY_FILLED` — partial match
 - `OPEN → FILLED` — full match in one trade
-- `OPEN → CANCELLING` — cancel requested, awaiting Matching Engine confirmation
+- `OPEN → CANCELLING` — user-initiated cancel, awaiting Matching Engine confirmation
+- `OPEN → CANCELLED` — ME-initiated: IOC market order with zero fills
 - `PARTIALLY_FILLED → FILLED` — remaining quantity matched
-- `PARTIALLY_FILLED → CANCELLING` — cancel requested for unfilled remainder
+- `PARTIALLY_FILLED → CANCELLING` — user-initiated cancel for unfilled remainder
+- `PARTIALLY_FILLED → CANCELLED` — ME-initiated: IOC market order remainder cancelled after partial fill
 - `CANCELLING → CANCELLED` — Matching Engine confirmed removal, remaining funds released
 - `CANCELLING → PARTIALLY_FILLED` — fill arrived before cancel was processed by ME (see Cancel vs Fill Race Condition)
 - `CANCELLING → FILLED` — fully filled before cancel was processed by ME
 
 ## Failure Handling
 
-- Idempotency key prevents duplicate orders on client retry.
+### `CreateOrder` Idempotency
+
+Clients submit a client-supplied `Idempotency-Key` header (UUID, required for `POST /orders`). The API Gateway forwards it to the Order Service gRPC layer as request metadata. **Idempotency is guaranteed only for successful creates.** The Order Service checks for an existing `idempotency_key` entry before generating `order_id` — so on a duplicate of a previously successful request, no new `order_id` is minted, no `ReserveFunds` call is made, and the existing `order_id` and current order status are returned.
+
+If the original request **failed** (e.g. fund reservation was rejected), no order row was ever created, so there is nothing to match against — the retry is treated as a new request and re-validates against current state. This is the correct behavior: the failure reason may no longer apply (e.g. funds have since arrived), and replaying a stale rejection would produce a wrong result.
+
+The idempotency key is stored as an `idempotency_key UUID UNIQUE` column on `orders`. It exists only when an order row exists (i.e. when creation succeeded). Keys expire after 24 hours. Requests that omit the header are rejected with `400 Bad Request`.
+
+This is distinct from Wallet Service's `ReserveFunds` idempotency (keyed on `order_id`, §8.2 of the Wallet Service spec). Both guards are active, at different layers: the API-level key prevents duplicate `order_id` generation for successful orders; the Wallet-level guard absorbs duplicate `order_id` gRPC calls even if the Order Service retries after a transient network error post-reservation.
+
 - If validation or fund reservation fails, the request is rejected immediately — no order row is persisted, no compensation needed.
 - On `CANCELLED`: release only the remaining reserved amount, calculated from `remaining_quantity` — not the original reserved amount.
 - Retry transient gRPC failures to Wallet Service with exponential backoff; do not retry indefinitely without a circuit breaker.
@@ -224,8 +242,6 @@ The order-to-settlement lifecycle spans Order Service, Wallet Service, Matching 
 | Outbox Publisher crashes before publish | Order/cancel committed to DB, event not yet in Kafka | Row stays unpublished; publisher resumes polling on restart and delivers it |
 | Settlement Service settlement fails after match | Trade matched in-engine but DB write failed | Settlement Service retries the Postgres transaction from the Kafka offset; offset only commits after success. If retries are exhausted, message goes to a dead-letter topic for manual reconciliation |
 | Kafka consumer crashes mid-processing | Event may be redelivered on restart | All event handlers must be idempotent (keyed by `order_id` / `trade_id`) so redelivery does not double-apply a fill or double-release funds |
-
-> **Naming note:** This component was previously called "Executor" in earlier drafts. It is the same service as "Settlement Service" referenced in `07_Wallet_Service.md` — renamed here for consistency across both docs. No behavior changed, only the name.
 
 ## Scalability
 

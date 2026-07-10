@@ -65,6 +65,9 @@ A resting limit order that sits on the order book and provides liquidity to the 
 ### MatchResult
 The bundled, atomic in-memory outcome of a single input event processed by the Matching Engine. It contains a slice of fills, any cancel/reject results, the L2 depth snapshot, and the event's Kafka offset.
 
+### MONETARY_PRECISION
+The system-wide PostgreSQL column type used for **all monetary amounts** across every TradeDrift service: `DECIMAL(30,10)`. This provides up to 20 digits left of the decimal point (sufficient for all realistic asset quantities) and 10 digits of fractional precision (sufficient for the highest-precision assets in `supported_assets.decimals`). All services **must** use this type for price, quantity, and balance columns — no service may independently choose a different precision. In V1 this resolves to `DECIMAL(30,10)` for all assets.
+
 ---
 
 ## P

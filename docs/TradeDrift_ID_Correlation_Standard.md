@@ -1,7 +1,8 @@
 # TradeDrift — Identifier & Correlation Standard
 
-> **Status:** ✅ Designed (V1)
+> **Status:** ✅ Designed (V2)
 > **Scope:** A cross-service standard, referenced by every service design doc rather than restated in each one. Applies to Authentication, Order, Wallet, Settlement, Matching Engine, Trade, Portfolio, Market, and Notification services.
+> **Revision notes:** V2 adds the Notification aggregate (`notification_id`) owned by the Notification Service.
 
 ## Purpose
 
@@ -85,5 +86,6 @@ This matches Order Service's own saga design ("`order_id` is carried as a correl
 | Reservation | `reservation_id` | Wallet Service |
 | Trade | `trade_id` | Matching Engine |
 | Wallet Transaction | `transaction_id` | Wallet Service |
+| Notification | `notification_id` | Notification Service |
 
 Every service design doc should reference this document for ID generation rules rather than restating them.

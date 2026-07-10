@@ -65,9 +65,9 @@
   <line x1="280" y1="170" x2="440" y2="170" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arr)"/>
   <text x="360" y="163" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="8">2. consume TradeSettled</text>
 
-  <!-- 3. Worker opens transaction & writes database -->
+  <!-- 3. Worker opens transaction & writes database (including processed_events check) -->
   <line x1="440" y1="210" x2="600" y2="210" stroke="#10b981" stroke-width="1.5" marker-end="url(#arrGreen)"/>
-  <text x="520" y="203" text-anchor="middle" fill="#34d399" font-family="monospace" font-size="8">3. INSERT INTO notifications &amp; outbox</text>
+  <text x="520" y="203" text-anchor="middle" fill="#34d399" font-family="monospace" font-size="8">3. INSERT INTO notifications, outbox &amp; processed_events</text>
 
   <!-- 4. DB transaction returns commit -->
   <line x1="600" y1="250" x2="440" y2="250" stroke="#64748b" stroke-width="1" stroke-dasharray="3,2" marker-end="url(#arr)"/>

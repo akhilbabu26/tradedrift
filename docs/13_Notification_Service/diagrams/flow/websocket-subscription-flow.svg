@@ -27,18 +27,18 @@
   <text x="70" y="150" fill="#cbd5e1" font-family="monospace" font-size="8">- Client sends GET /ws</text>
   <text x="70" y="165" fill="#cbd5e1" font-family="monospace" font-size="8">- Upgrade: websocket headers</text>
   <text x="70" y="180" fill="#22c55e" font-family="monospace" font-size="8">- Response: 101 Switching Protocols</text>
-  <text x="70" y="195" fill="#eab308" font-family="monospace" font-size="8">- Starts 5s Auth Grace Timer</text>
+  <text x="70" y="195" fill="#eab308" font-family="monospace" font-size="8">- Anonymous access enabled (public feeds)</text>
 
   <line x1="270" y1="155" x2="330" y2="155" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
 
-  <!-- Step 2: Auth -->
+  <!-- Step 2: Auth (Optional) -->
   <rect x="330" y="100" width="220" height="110" rx="8" fill="#1e293b" stroke="#a78bfa" stroke-width="1.5"/>
-  <text x="440" y="125" text-anchor="middle" fill="#a78bfa" font-family="monospace" font-size="10" font-weight="bold">2. JWT Handshake</text>
+  <text x="440" y="125" text-anchor="middle" fill="#a78bfa" font-family="monospace" font-size="10" font-weight="bold">2. JWT Promotion (Optional)</text>
   <text x="350" y="148" fill="#cbd5e1" font-family="monospace" font-size="8">- Client sends frame: {"action":"auth"}</text>
-  <text x="350" y="160" fill="#cbd5e1" font-family="monospace" font-size="8">- Server validates token signature</text>
+  <text x="350" y="160" fill="#cbd5e1" font-family="monospace" font-size="8">- Server validates JWT signature</text>
   <text x="350" y="172" fill="#cbd5e1" font-family="monospace" font-size="8">- Binds user_id to connection</text>
-  <text x="350" y="184" fill="#22c55e" font-family="monospace" font-size="8">- Cancels 5s Auth Grace Timer</text>
-  <text x="350" y="196" fill="#64748b" font-family="monospace" font-size="7">Fail -&gt; Forceful Close connection</text>
+  <text x="350" y="184" fill="#22c55e" font-family="monospace" font-size="8">- Promoted to Authenticated User</text>
+  <text x="350" y="196" fill="#64748b" font-family="monospace" font-size="7">Fail / Expired -> Closes connection</text>
 
   <line x1="550" y1="155" x2="610" y2="155" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
 
@@ -46,9 +46,10 @@
   <rect x="610" y="100" width="220" height="110" rx="8" fill="#1e293b" stroke="#eab308" stroke-width="1.5"/>
   <text x="720" y="125" text-anchor="middle" fill="#facc15" font-family="monospace" font-size="10" font-weight="bold">3. Topic Subscription</text>
   <text x="630" y="150" fill="#cbd5e1" font-family="monospace" font-size="8">- Send: {"action":"subscribe"}</text>
-  <text x="630" y="165" fill="#cbd5e1" font-family="monospace" font-size="8">- Topics: user:portfolio, etc.</text>
-  <text x="630" y="180" fill="#cbd5e1" font-family="monospace" font-size="8">- Server checks ACL permissions</text>
-  <text x="630" y="195" fill="#22c55e" font-family="monospace" font-size="8">- Success status returned to client</text>
+  <text x="630" y="162" fill="#cbd5e1" font-family="monospace" font-size="8">- market:* is allowed for guests</text>
+  <text x="630" y="174" fill="#cbd5e1" font-family="monospace" font-size="8">- user:* triggers auth check</text>
+  <text x="630" y="185" fill="#eab308" font-family="monospace" font-size="8">- Unauthenticated? 5s Grace Timer starts</text>
+  <text x="630" y="197" fill="#f87171" font-family="monospace" font-size="7">Fail to auth in 5s -> Closes socket</text>
 
   <!-- Connect to Redis mapping below -->
   <line x1="720" y1="210" x2="720" y2="280" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>

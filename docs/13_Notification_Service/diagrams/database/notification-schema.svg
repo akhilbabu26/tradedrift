@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 400" width="100%" height="100%">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 540" width="100%" height="100%">
   <rect width="100%" height="100%" fill="#0f172a"/>
   
   <!-- Grid Background -->
@@ -11,15 +11,15 @@
 
   <!-- Title -->
   <text x="30" y="35" fill="#f8fafc" font-family="monospace" font-size="14" font-weight="bold">Notification Service Schema Design</text>
-  <text x="30" y="52" fill="#64748b" font-family="monospace" font-size="9">PostgreSQL Inbox and Outbox Table Layouts with Primary Keys &amp; Indexes</text>
+  <text x="30" y="52" fill="#64748b" font-family="monospace" font-size="9">PostgreSQL Inbox, Outbox, and Deduplication Table Layouts with Primary Keys &amp; Indexes</text>
 
   <!-- Table: notifications -->
-  <rect x="50" y="100" width="340" height="230" rx="8" fill="#1e293b" stroke="#1e40af" stroke-width="1.5"/>
+  <rect x="50" y="100" width="340" height="280" rx="8" fill="#1e293b" stroke="#1e40af" stroke-width="1.5"/>
   <rect x="50" y="100" width="340" height="35" rx="8" fill="#1e3a8a" opacity="0.8"/>
   <text x="70" y="122" fill="#93c5fd" font-family="monospace" font-size="11" font-weight="bold">Table: notifications</text>
   
   <!-- Columns -->
-  <text x="70" y="160" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">id</text>
+  <text x="70" y="160" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">notification_id</text>
   <text x="180" y="160" fill="#a78bfa" font-family="monospace" font-size="9">UUID [PK, UUIDv7]</text>
 
   <text x="70" y="180" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">user_id</text>
@@ -35,18 +35,24 @@
   <text x="180" y="240" fill="#fbcfe8" font-family="monospace" font-size="9">notification_type NOT NULL</text>
   <text x="180" y="252" fill="#64748b" font-family="monospace" font-size="7">ENUM: 'INFO', 'TRADE_FILL', 'SYSTEM', 'ACCOUNT'</text>
 
-  <text x="70" y="275" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">is_read</text>
-  <text x="180" y="275" fill="#facc15" font-family="monospace" font-size="9">BOOLEAN DEFAULT FALSE</text>
+  <text x="70" y="270" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">reference_id</text>
+  <text x="180" y="270" fill="#60a5fa" font-family="monospace" font-size="9">UUID NULL [Correlation ID]</text>
 
-  <text x="70" y="295" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">created_at</text>
-  <text x="180" y="295" fill="#f87171" font-family="monospace" font-size="9">TIMESTAMPTZ DEFAULT NOW()</text>
+  <text x="70" y="290" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">reference_type</text>
+  <text x="180" y="290" fill="#e2e8f0" font-family="monospace" font-size="9">VARCHAR(30) NULL [e.g. 'TRADE'|'ORDER']</text>
 
-  <line x1="50" y1="305" x2="390" y2="305" stroke="#1e3a8a" stroke-width="1"/>
-  <text x="70" y="320" fill="#cbd5e1" font-family="monospace" font-size="8">INDEX: idx_notifications_user_inbox (user_id, created_at DESC)</text>
+  <text x="70" y="315" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">is_read</text>
+  <text x="180" y="315" fill="#facc15" font-family="monospace" font-size="9">BOOLEAN DEFAULT FALSE</text>
+
+  <text x="70" y="335" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">created_at</text>
+  <text x="180" y="335" fill="#f87171" font-family="monospace" font-size="9">TIMESTAMPTZ DEFAULT NOW()</text>
+
+  <line x1="50" y1="345" x2="390" y2="345" stroke="#1e3a8a" stroke-width="1"/>
+  <text x="70" y="362" fill="#cbd5e1" font-family="monospace" font-size="8">INDEX: idx_notifications_user_inbox (user_id, created_at DESC)</text>
 
 
   <!-- Table: notification_outbox -->
-  <rect x="490" y="100" width="340" height="230" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
+  <rect x="490" y="100" width="340" height="240" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
   <rect x="490" y="100" width="340" height="35" rx="8" fill="#065f46" opacity="0.8"/>
   <text x="510" y="122" fill="#a7f3d0" font-family="monospace" font-size="11" font-weight="bold">Table: notification_outbox</text>
 
@@ -54,21 +60,38 @@
   <text x="510" y="160" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">id</text>
   <text x="620" y="160" fill="#a78bfa" font-family="monospace" font-size="9">UUID [PK, UUIDv7]</text>
 
-  <text x="510" y="185" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">event_type</text>
-  <text x="620" y="185" fill="#e2e8f0" font-family="monospace" font-size="9">VARCHAR(50) NOT NULL</text>
-  <text x="620" y="197" fill="#64748b" font-family="monospace" font-size="7">Value: 'NotificationCreated'</text>
+  <text x="510" y="180" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">event_type</text>
+  <text x="620" y="180" fill="#e2e8f0" font-family="monospace" font-size="9">VARCHAR(50) NOT NULL</text>
 
-  <text x="510" y="220" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">payload</text>
-  <text x="620" y="220" fill="#cbd5e1" font-family="monospace" font-size="9">JSONB NOT NULL</text>
-  <text x="620" y="232" fill="#64748b" font-family="monospace" font-size="7">Contains serialized notification info</text>
+  <text x="510" y="200" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">payload</text>
+  <text x="620" y="200" fill="#cbd5e1" font-family="monospace" font-size="9">JSONB NOT NULL</text>
 
-  <text x="510" y="255" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">partition_key</text>
-  <text x="620" y="255" fill="#e2e8f0" font-family="monospace" font-size="9">VARCHAR(50) NOT NULL</text>
-  <text x="620" y="267" fill="#64748b" font-family="monospace" font-size="7">Set to user_id (guarantees partition order)</text>
+  <text x="510" y="220" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">partition_key</text>
+  <text x="620" y="220" fill="#e2e8f0" font-family="monospace" font-size="9">VARCHAR(50) NOT NULL [user_id]</text>
 
-  <text x="510" y="290" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">created_at</text>
-  <text x="620" y="290" fill="#f87171" font-family="monospace" font-size="9">TIMESTAMPTZ DEFAULT NOW()</text>
+  <text x="510" y="240" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">status</text>
+  <text x="620" y="240" fill="#e2e8f0" font-family="monospace" font-size="9">VARCHAR(20) DEFAULT 'PENDING'</text>
+  <text x="620" y="252" fill="#64748b" font-family="monospace" font-size="7">Values: 'PENDING', 'PUBLISHED', 'FAILED'</text>
+
+  <text x="510" y="275" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">published_at</text>
+  <text x="620" y="275" fill="#f87171" font-family="monospace" font-size="9">TIMESTAMPTZ NULL</text>
+
+  <text x="510" y="295" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">created_at</text>
+  <text x="620" y="295" fill="#f87171" font-family="monospace" font-size="9">TIMESTAMPTZ DEFAULT NOW()</text>
+
+
+  <!-- Table: processed_events -->
+  <rect x="490" y="360" width="340" height="110" rx="8" fill="#1e293b" stroke="#eab308" stroke-width="1.5"/>
+  <rect x="490" y="360" width="340" height="30" rx="8" fill="#854d0e" opacity="0.8"/>
+  <text x="510" y="379" fill="#fef08a" font-family="monospace" font-size="10" font-weight="bold">Table: processed_events</text>
+
+  <text x="510" y="415" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">event_id</text>
+  <text x="620" y="415" fill="#a78bfa" font-family="monospace" font-size="9">UUID [PK, Kafka Message ID]</text>
+
+  <text x="510" y="435" fill="#cbd5e1" font-family="monospace" font-size="9" font-weight="bold">processed_at</text>
+  <text x="620" y="435" fill="#f87171" font-family="monospace" font-size="9">TIMESTAMPTZ DEFAULT NOW()</text>
+
 
   <!-- Info footer -->
-  <text x="440" y="365" text-anchor="middle" fill="#475569" font-family="monospace" font-size="8">Transactional Outbox ensures zero lost notifications · UUIDv7 ensures natural temporal sorting order</text>
+  <text x="440" y="505" text-anchor="middle" fill="#475569" font-family="monospace" font-size="8">Deduplication is enforced atomically with notifications write · Status mapping enables outbox pollers to track delivery progress</text>
 </svg>

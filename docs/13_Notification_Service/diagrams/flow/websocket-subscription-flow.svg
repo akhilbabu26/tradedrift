@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 500" width="100%" height="100%">
+  <rect width="100%" height="100%" fill="#0f172a"/>
+  
+  <!-- Grid Background -->
+  <defs>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.75"/>
+    </pattern>
+    <marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#64748b"/>
+    </marker>
+    <marker id="arrBlue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#0ea5e9"/>
+    </marker>
+  </defs>
+  <rect width="100%" height="100%" fill="url(#grid)"/>
+
+  <!-- Title -->
+  <text x="30" y="35" fill="#f8fafc" font-family="monospace" font-size="14" font-weight="bold">WebSocket Handshake &amp; Subscription Flow</text>
+  <text x="30" y="52" fill="#64748b" font-family="monospace" font-size="9">Authentication Handshake, Topic Binding, and Redis Pub/Sub Mapping</text>
+
+  <!-- Flow boxes -->
+  
+  <!-- Step 1: Upgrade -->
+  <rect x="50" y="100" width="220" height="110" rx="8" fill="#1e293b" stroke="#38bdf8" stroke-width="1.5"/>
+  <text x="160" y="125" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="10" font-weight="bold">1. WS Connection Upgrade</text>
+  <text x="70" y="150" fill="#cbd5e1" font-family="monospace" font-size="8">- Client sends GET /ws</text>
+  <text x="70" y="165" fill="#cbd5e1" font-family="monospace" font-size="8">- Upgrade: websocket headers</text>
+  <text x="70" y="180" fill="#22c55e" font-family="monospace" font-size="8">- Response: 101 Switching Protocols</text>
+  <text x="70" y="195" fill="#eab308" font-family="monospace" font-size="8">- Starts 5s Auth Grace Timer</text>
+
+  <line x1="270" y1="155" x2="330" y2="155" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 2: Auth -->
+  <rect x="330" y="100" width="220" height="110" rx="8" fill="#1e293b" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="440" y="125" text-anchor="middle" fill="#a78bfa" font-family="monospace" font-size="10" font-weight="bold">2. JWT Handshake</text>
+  <text x="350" y="148" fill="#cbd5e1" font-family="monospace" font-size="8">- Client sends frame: {"action":"auth"}</text>
+  <text x="350" y="160" fill="#cbd5e1" font-family="monospace" font-size="8">- Server validates token signature</text>
+  <text x="350" y="172" fill="#cbd5e1" font-family="monospace" font-size="8">- Binds user_id to connection</text>
+  <text x="350" y="184" fill="#22c55e" font-family="monospace" font-size="8">- Cancels 5s Auth Grace Timer</text>
+  <text x="350" y="196" fill="#64748b" font-family="monospace" font-size="7">Fail -&gt; Forceful Close connection</text>
+
+  <line x1="550" y1="155" x2="610" y2="155" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 3: Subscribe -->
+  <rect x="610" y="100" width="220" height="110" rx="8" fill="#1e293b" stroke="#eab308" stroke-width="1.5"/>
+  <text x="720" y="125" text-anchor="middle" fill="#facc15" font-family="monospace" font-size="10" font-weight="bold">3. Topic Subscription</text>
+  <text x="630" y="150" fill="#cbd5e1" font-family="monospace" font-size="8">- Send: {"action":"subscribe"}</text>
+  <text x="630" y="165" fill="#cbd5e1" font-family="monospace" font-size="8">- Topics: user:portfolio, etc.</text>
+  <text x="630" y="180" fill="#cbd5e1" font-family="monospace" font-size="8">- Server checks ACL permissions</text>
+  <text x="630" y="195" fill="#22c55e" font-family="monospace" font-size="8">- Success status returned to client</text>
+
+  <!-- Connect to Redis mapping below -->
+  <line x1="720" y1="210" x2="720" y2="280" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 4: Redis Mapping -->
+  <rect x="610" y="280" width="220" height="110" rx="8" fill="#1e293b" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="720" y="305" text-anchor="middle" fill="#f87171" font-family="monospace" font-size="10" font-weight="bold">4. Redis Pub/Sub Mapping</text>
+  <text x="630" y="330" fill="#cbd5e1" font-family="monospace" font-size="8">- API Node joins Redis channel</text>
+  <text x="630" y="345" fill="#cbd5e1" font-family="monospace" font-size="8">- Subscribes: user:portfolio:{id}</text>
+  <text x="630" y="360" fill="#cbd5e1" font-family="monospace" font-size="8">- Link established for cross-pod</text>
+  <text x="630" y="375" fill="#cbd5e1" font-family="monospace" font-size="8">  notification delivery</text>
+
+  <line x1="610" y1="335" x2="380" y2="335" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 5: Keep-Alive -->
+  <rect x="160" y="280" width="220" height="110" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
+  <text x="270" y="305" text-anchor="middle" fill="#34d399" font-family="monospace" font-size="10" font-weight="bold">5. Ping / Pong Keep-Alive</text>
+  <text x="180" y="330" fill="#cbd5e1" font-family="monospace" font-size="8">- Server sends Ping every 30s</text>
+  <text x="180" y="345" fill="#cbd5e1" font-family="monospace" font-size="8">- Client must Pong within 10s</text>
+  <text x="180" y="360" fill="#cbd5e1" font-family="monospace" font-size="8">- Heartbeat monitors active TCP</text>
+  <text x="180" y="375" fill="#f87171" font-family="monospace" font-size="8">- Timeout triggers Auto-Cleanup</text>
+
+  <!-- Connect to Cleanup below -->
+  <line x1="270" y1="390" x2="270" y2="440" stroke="#64748b" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <line x1="270" y1="440" x2="385" y2="440" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 6: Cleanup -->
+  <rect x="385" y="415" width="220" height="60" rx="6" fill="#0f172a" stroke="#f87171" stroke-width="1"/>
+  <text x="495" y="435" text-anchor="middle" fill="#f87171" font-family="monospace" font-size="9" font-weight="bold">6. Disconnection Cleanup</text>
+  <text x="400" y="452" fill="#cbd5e1" font-family="monospace" font-size="8">- Unsubscribes from Redis channels</text>
+  <text x="400" y="464" fill="#cbd5e1" font-family="monospace" font-size="8">- Removes in-memory socket mappings</text>
+</svg>

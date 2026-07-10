@@ -142,7 +142,7 @@ Market
 
 Notification
  │
- └── Kafka (consume: TradeSettled, PortfolioUpdated, OrderCancelled)
+ └── Kafka (consume: TradeSettled, PortfolioUpdated, OrderCancelled, OrderCreated)
 ```
 
 ---

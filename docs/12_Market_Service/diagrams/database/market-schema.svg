@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 620" width="860" height="620">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+    <linearGradient id="tableGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#1e3a8a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="860" height="620" fill="url(#bg)" rx="12"/>
+
+  <text x="430" y="36" text-anchor="middle" fill="#f1f5f9" font-family="monospace" font-size="16" font-weight="bold">Market Service — Database Schema</text>
+  <text x="430" y="54" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="10">PostgreSQL tables · immutable pair configurations · aggregated historical candles</text>
+
+  <!-- markets table -->
+  <rect x="50" y="85" width="360" height="36" rx="6 6 0 0" fill="url(#tableGrad)" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="230" y="103" text-anchor="middle" fill="#93c5fd" font-family="monospace" font-size="11" font-weight="bold">markets</text>
+  <text x="230" y="115" text-anchor="middle" fill="#1d4ed8" font-family="monospace" font-size="8">trading pair configurations (immutable ticket/lot)</text>
+
+  <rect x="50" y="121" width="360" height="150" fill="#0f172a" stroke="#3b82f6" stroke-width="1"/>
+  <text x="60" y="137" fill="#cbd5e1" font-family="monospace" font-size="9"><tspan fill="#fbbf24" font-weight="bold">id</tspan> VARCHAR(20) PRIMARY KEY</text>
+  <text x="60" y="153" fill="#cbd5e1" font-family="monospace" font-size="9">base_asset VARCHAR(10) NOT NULL</text>
+  <text x="60" y="169" fill="#cbd5e1" font-family="monospace" font-size="9">quote_asset VARCHAR(10) NOT NULL</text>
+  <text x="60" y="185" fill="#cbd5e1" font-family="monospace" font-size="9">tick_size DECIMAL(30,10) NOT NULL</text>
+  <text x="60" y="201" fill="#cbd5e1" font-family="monospace" font-size="9">lot_size DECIMAL(30,10) NOT NULL</text>
+  <text x="60" y="217" fill="#cbd5e1" font-family="monospace" font-size="9">is_enabled BOOLEAN NOT NULL DEFAULT TRUE</text>
+  <text x="60" y="233" fill="#cbd5e1" font-family="monospace" font-size="9">created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()</text>
+  <text x="60" y="255" fill="#64748b" font-family="monospace" font-size="8">validated against Wallet supported_assets via gRPC</text>
+
+  <!-- market_trades table -->
+  <rect x="50" y="295" width="360" height="36" rx="6 6 0 0" fill="url(#tableGrad)" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="230" y="313" text-anchor="middle" fill="#93c5fd" font-family="monospace" font-size="11" font-weight="bold">market_trades</text>
+  <text x="230" y="325" text-anchor="middle" fill="#1d4ed8" font-family="monospace" font-size="8">rolling 24h trades log (for ticker calculations)</text>
+
+  <rect x="50" y="331" width="360" height="110" fill="#0f172a" stroke="#3b82f6" stroke-width="1"/>
+  <text x="60" y="347" fill="#cbd5e1" font-family="monospace" font-size="9"><tspan fill="#fbbf24" font-weight="bold">id</tspan> UUID PRIMARY KEY</text>
+  <text x="60" y="363" fill="#cbd5e1" font-family="monospace" font-size="9">market_id VARCHAR(20) NOT NULL</text>
+  <text x="60" y="379" fill="#cbd5e1" font-family="monospace" font-size="9">price DECIMAL(30,10) NOT NULL</text>
+  <text x="60" y="395" fill="#cbd5e1" font-family="monospace" font-size="9">quantity DECIMAL(30,10) NOT NULL</text>
+  <text x="60" y="411" fill="#cbd5e1" font-family="monospace" font-size="9">executed_at TIMESTAMPTZ NOT NULL</text>
+
+  <!-- ohlc_candles table -->
+  <rect x="450" y="85" width="360" height="36" rx="6 6 0 0" fill="url(#tableGrad)" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="630" y="103" text-anchor="middle" fill="#93c5fd" font-family="monospace" font-size="11" font-weight="bold">ohlc_candles</text>
+  <text x="630" y="115" text-anchor="middle" fill="#1d4ed8" font-family="monospace" font-size="8">historical charts data</text>
+
+  <rect x="450" y="121" width="360" height="210" fill="#0f172a" stroke="#3b82f6" stroke-width="1"/>
+  <text x="460" y="137" fill="#cbd5e1" font-family="monospace" font-size="9"><tspan fill="#fbbf24" font-weight="bold">market_id</tspan> VARCHAR(20) NOT NULL</text>
+  <text x="460" y="153" fill="#cbd5e1" font-family="monospace" font-size="9"><tspan fill="#fbbf24" font-weight="bold">resolution</tspan> VARCHAR(5) NOT NULL</text>
+  <text x="460" y="169" fill="#cbd5e1" font-family="monospace" font-size="9"><tspan fill="#fbbf24" font-weight="bold">start_time</tspan> TIMESTAMPTZ NOT NULL</text>
+  <text x="460" y="185" fill="#cbd5e1" font-family="monospace" font-size="9">open_price DECIMAL(30,10) NOT NULL</text>
+  <text x="460" y="201" fill="#cbd5e1" font-family="monospace" font-size="9">high_price DECIMAL(30,10) NOT NULL</text>
+  <text x="460" y="217" fill="#cbd5e1" font-family="monospace" font-size="9">low_price DECIMAL(30,10) NOT NULL</text>
+  <text x="460" y="233" fill="#cbd5e1" font-family="monospace" font-size="9">close_price DECIMAL(30,10) NOT NULL</text>
+  <text x="460" y="249" fill="#cbd5e1" font-family="monospace" font-size="9">volume DECIMAL(30,10) NOT NULL DEFAULT 0</text>
+  <text x="460" y="265" fill="#cbd5e1" font-family="monospace" font-size="9">quote_volume DECIMAL(30,10) NOT NULL DEFAULT 0</text>
+  <text x="460" y="287" fill="#64748b" font-family="monospace" font-size="8">PK (market_id, resolution, start_time)</text>
+
+  <!-- Indexes list -->
+  <rect x="50" y="460" width="760" height="95" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>
+  <text x="430" y="480" text-anchor="middle" fill="#60a5fa" font-family="monospace" font-size="11" font-weight="bold">Indexes</text>
+  <text x="70" y="505" fill="#cbd5e1" font-family="monospace" font-size="9"><tspan fill="#fbbf24" font-weight="bold">idx_candles_time</tspan> on ohlc_candles(market_id, resolution, start_time DESC)</text>
+  <text x="70" y="520" fill="#64748b" font-family="monospace" font-size="8">Fast range queries for chart data fetch</text>
+  <text x="70" y="540" fill="#cbd5e1" font-family="monospace" font-size="9"><tspan fill="#fbbf24" font-weight="bold">idx_market_trades_rolling</tspan> on market_trades(market_id, executed_at DESC)</text>
+  <text x="70" y="550" fill="#64748b" font-family="monospace" font-size="8">Used by the rolling 24h ticker calculations job</text>
+
+  <!-- Footer -->
+  <text x="430" y="595" text-anchor="middle" fill="#334155" font-family="monospace" font-size="9">All quantities &amp; prices use DECIMAL(30,10) · markets table values are immutable (MI-1)</text>
+</svg>

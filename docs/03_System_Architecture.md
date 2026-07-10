@@ -107,10 +107,12 @@ Gateway
 Order
  │
  ├── Wallet (gRPC: ReserveFunds, ReleaseFunds)
+ ├── Market (gRPC: GetMarket)
  └── Kafka (publish: OrderCreated, OrderCancelRequested)
 
 Matching Engine
  │
+ ├── Market (gRPC: GetMarket - startup config)
  └── Kafka (consume: OrderCreated, OrderCancelRequested;
           publish: TradeExecuted, OrderCancelled)
 
@@ -132,6 +134,11 @@ Portfolio
 Trade
  │
  └── Kafka (consume: TradeSettled)
+
+Market
+ │
+ ├── Wallet (gRPC: GetSupportedAssets)
+ └── Kafka (consume: TradeExecuted)
 
 Notification
  │
@@ -272,7 +279,7 @@ Core topics
 - `OrderCreated` — published by Order Service (via outbox), consumed by Matching Engine
 - `OrderCancelRequested` — published by Order Service (via outbox), consumed by Matching Engine
 - `OrderCancelled` — published by Matching Engine, consumed by Order Service (status update + fund release)
-- `TradeExecuted` — published by Matching Engine, consumed by Settlement Service
+- `TradeExecuted` — published by Matching Engine, consumed by Settlement Service, Market Service
 - `TradeSettled` — published by Wallet Service (via outbox, after settlement commit), consumed by **Trade Service**, Portfolio Service, Notification Service
 - `PortfolioUpdated` — published by Portfolio Service (via outbox), consumed by Notification Service
 - `NotificationCreated` — published by Notification Service, pushed via WebSocket Gateway

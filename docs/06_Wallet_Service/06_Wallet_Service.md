@@ -1,7 +1,7 @@
 # TradeDrift — Wallet Service
 
-> **Status:** ✅ Designed (V8, Final)
-> Revision notes: V8 adds `market_id VARCHAR(20)` to the `SettleTrade` gRPC signature and documents the full `TradeSettled` outbox payload field list explicitly — required by Trade Service (10_Trade_Service.md) to build its per-market index without a cross-service join on the write path.
+> **Status:** ✅ Designed (V9, Final)
+> Revision notes: V9 adds `GetSupportedAssets` gRPC endpoint to expose the active supported assets configuration to the Market Service (12_Market_Service.md) for referential integrity checks during market creation.
 
 ## Purpose
 
@@ -168,6 +168,7 @@ ACTIVE
 - `SettleTrade(trade_id, buyer_id, seller_id, buy_order_id, sell_order_id, base_asset, quote_asset, price, quantity, market_id)`.
 - `GetBalance(user_id, asset)`
 - `GetBalances(user_id)`
+- `GetSupportedAssets()` — read-only gRPC endpoint returning list of supported assets (code, name, decimals, seeding details). Used by Market Service to validate base/quote assets.
 - `Health()`
 
 All four state-changing methods above are idempotent on their natural key. See §8 for the explicit per-method behavior.
@@ -284,3 +285,29 @@ wallet-service/
 - Multi-currency wallets beyond the initial `supported_assets` set.
 - Margin and futures wallets.
 - Fee and rebate accounting, applied through Settlement Service's `SettleTrade` call.
+
+---
+
+## 9. GetSupportedAssets gRPC Specification
+
+To support referential integrity checks during market creation in the Market Service, Wallet Service exposes the following gRPC Protobuf schema:
+
+```protobuf
+rpc GetSupportedAssets(GetSupportedAssetsRequest)
+    returns (GetSupportedAssetsResponse);
+
+message GetSupportedAssetsRequest {}
+
+message GetSupportedAssetsResponse {
+    repeated AssetInfo assets = 1;
+}
+
+message AssetInfo {
+    string asset_code    = 1;  // e.g. "BTC"
+    string asset_name    = 2;  // e.g. "Bitcoin"
+    int32  decimals      = 3;  // e.g. 8
+    bool   is_enabled    = 4;  // e.g. true
+    string seed_amount   = 5;  // e.g. "0.0000000000"
+    int32  display_order = 6;  // e.g. 2
+}
+```

@@ -291,7 +291,7 @@ AI Intelligence
 
 ✅ Portfolio Service Designed
 
-🚧 Market Service
+✅ Market Service Designed
 
 🚧 Notification Service
 

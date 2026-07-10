@@ -3,9 +3,9 @@
 > **Status:** ✅ Designed (V1)
 > **Document:** 11_Portfolio_Service.md
 > **Service:** Portfolio Service
-> **Version:** V1
+> **Version:** V1.1
 > **Last Updated:** July 2026
-> Revision notes: V1 initial design. Source of truth for trades: `TradeSettled` (Wallet Service outbox). Source of truth for cash balance: Wallet Service gRPC. Source of truth for market prices: Redis.
+> Revision notes: V1.1 fixes two design gaps: (1) clarifies that cross-market trades for a single user run on separate Kafka partition goroutines concurrently, making DB row-locking the sole protection against lost updates; (2) adds a dedicated self-trade accounting handler to prevent deadlocks and cost-basis corruption. Source of truth for trades: `TradeSettled` (Wallet Service outbox). Source of truth for cash balance: Wallet Service gRPC. Source of truth for market prices: Redis.
 
 ---
 
@@ -74,7 +74,7 @@ Portfolio Service does not track cash balance (`USDT`) locally. Doing so introdu
 When a portfolio summary is requested, the Portfolio Service queries Wallet Service synchronously via the `Wallet.GetBalances(user_id)` gRPC interface to retrieve the current available cash balance.
 
 ### 2. Market Prices (Redis read on demand)
-Matching Engine or Market Service writes the latest market prices to Redis (hash key `ticker:prices`, e.g. `{"BTC_USDT": "58200.00"}`). Portfolio Service queries Redis on demand to get latest asset valuation prices.
+Market Service writes the rolling 24h ticker statistics to Redis under the hash key `ticker:{market_id}` (e.g. `ticker:BTC_USDT`). Portfolio Service queries the `last_price` field from this hash on demand to get the latest asset valuation price.
 
 ### 3. Cost Basis & Realized PnL (Postgres local)
 Holdings (quantity, cost basis, average price, realized PnL) are computed from the historical flow of trades and stored locally in Postgres.
@@ -85,7 +85,7 @@ Holdings (quantity, cost basis, average price, realized PnL) are computed from t
                                 ▼
                        Portfolio Service
                         ├── Query local DB holdings (BTC qty, cost basis)
-                        ├── Query Redis for market price (BTC_USDT price)
+                        ├── Query Redis for market last_price (from ticker:BTC_USDT)
                         └── Query Wallet Service gRPC for USDT cash balance
                                 │
                                 ▼
@@ -131,6 +131,22 @@ For the seller, the quantity of the base asset decreases. The cost basis is redu
   realized_pnl_new = realized_pnl_prev + (trade_revenue - cost_of_sold_qty)
   ```
 - **Clamping:** If `qty_new == 0`, then `cost_new` is set to exactly `0` to prevent fractional floating-point remainder drift or division-by-zero errors on subsequent trades.
+
+### 3.3 Self-Trades (Wash Trades)
+
+A self-trade is a trade where `buyer_id == seller_id`. In a self-trade, the user is buying from and selling to themselves.
+- The user's net holding quantity does not change.
+- The net cost basis does not change.
+- No realized PnL is generated (self-sales cannot realize profits or losses).
+
+**Handler Rule:**
+If the consumer receives a `TradeSettled` event where `buyer_id == seller_id`:
+1. The consumer skips mutating the `holdings` table entirely.
+2. The consumer inserts the `trade_id` into the `processed_trades` table (to prevent double-processing on replay).
+3. The consumer inserts a `PortfolioUpdated` event into `portfolio_outbox` carrying the current holdings unchanged (triggering UI refresh).
+4. Commits the transaction.
+
+This bypass prevents database deadlocks (trying to acquire two row-locks on the same `(user_id, asset_code)` row in the same transaction) and avoids cost-basis corruption.
 
 ---
 
@@ -192,7 +208,10 @@ To ensure the holding updates and the event publishing are atomically consistent
 - **Consumer Topic:** `TradeSettled`
 - **Partition Key:** `market_id`
 - **Consumer Group:** `portfolio-service`
-- **Concurrency:** One goroutine per partition (SI-3 order preservation is required). This guarantees that trades for the same market are processed sequentially, preventing race conditions or deadlocks when updating a user's holdings.
+- **Concurrency:** One goroutine per Kafka partition.
+- **Race Condition Warning (Critical):** Partitioning by `market_id` ensures that events for a single market are sequential. However, a single user can trade on multiple markets concurrently (e.g. BTC-USDT and BTC-EUR). Because these events have different `market_id` partition keys, they are processed by **different consumer goroutines concurrently**, and will attempt to write to the same `(user_id, 'BTC')` holding row at the same time.
+- **Sole Concurrency Protection:** Therefore, the row-level lock (`SELECT ... FOR UPDATE` in §3) is the **sole safety mechanism** that prevents concurrent updates from overriding each other (lost updates). Do not remove these row locks under the false assumption that Kafka partition ordering protects against multi-market user updates.
+- **Deadlock Avoidance:** To prevent deadlocks when locking both the buyer and seller holding rows in a single transaction, rows must always be locked in a consistent deterministic order (e.g., always lock the lower `user_id` first: `IF buyer_id < seller_id`).
 - **Idempotency Guard:** `TradeSettled` is at-least-once. However, since the database schema uses a `PRIMARY KEY (user_id, asset_code)` constraint and updates rows cumulatively, processing a duplicate event would cause double-counting.
 - **Deduplication Check:** To guarantee idempotency, Portfolio Service maintains a small duplicate checking table or checks trade records:
   ```sql
@@ -201,7 +220,7 @@ To ensure the holding updates and the event publishing are atomically consistent
       processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
   ```
-  Before processing a `TradeSettled` event, the consumer checks if `trade_id` exists in `processed_trades`. If it exists, the event is immediately ignored and the Kafka offset is acknowledged as a safe no-op.
+  Before processing a `TradeSettled` event, the consumer checks if `trade_id` exists in `processed_trades`. If it exists, the event is immediately ignored and the Kafka offset is acknowledged as a safe no-op. If `buyer_id == seller_id`, the self-trade bypass logic (§3.3) is applied.
 
 ---
 

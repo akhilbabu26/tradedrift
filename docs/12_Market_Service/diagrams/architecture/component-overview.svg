@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 620" width="900" height="620">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f172a"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+    <linearGradient id="msGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0ea5e9"/>
+      <stop offset="100%" style="stop-color:#2563eb"/>
+    </linearGradient>
+    <linearGradient id="kafkaGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#f59e0b"/>
+      <stop offset="100%" style="stop-color:#d97706"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="coloredBlur"/>
+      <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="620" fill="url(#bg)" rx="12"/>
+
+  <!-- Title -->
+  <text x="450" y="38" text-anchor="middle" fill="#f1f5f9" font-family="monospace" font-size="17" font-weight="bold">Market Service — Component Overview</text>
+  <text x="450" y="56" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="11">V1 · Reference configuration · Real-time order book, tickers &amp; charts</text>
+
+  <!-- Matching Engine (Source) -->
+  <rect x="50" y="90" width="180" height="52" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1.5"/>
+  <text x="140" y="112" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="10" font-weight="bold">Matching Engine</text>
+  <text x="140" y="128" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="9">pushes book · publishes trade</text>
+
+  <!-- arrow ME → Redis -->
+  <line x1="230" y1="100" x2="310" y2="100" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrRed)"/>
+  <text x="270" y="94" text-anchor="middle" fill="#f87171" font-family="monospace" font-size="8">L2 depth</text>
+
+  <!-- arrow ME → Kafka -->
+  <line x1="140" y1="142" x2="140" y2="190" stroke="#f59e0b" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrYellow)"/>
+
+  <!-- Redis book replica -->
+  <rect x="310" y="75" width="160" height="52" rx="8" fill="#1e293b" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="390" y="97" text-anchor="middle" fill="#f87171" font-family="monospace" font-size="10" font-weight="bold">Redis Ticker/Book</text>
+  <text x="390" y="113" text-anchor="middle" fill="#7f1d1d" font-family="monospace" font-size="9">orderbook:{id} · ticker:{id}</text>
+
+  <!-- Kafka TradeExecuted -->
+  <rect x="50" y="190" width="220" height="52" rx="8" fill="url(#kafkaGrad)" opacity="0.15" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="160" y="212" text-anchor="middle" fill="#fbbf24" font-family="monospace" font-size="11" font-weight="bold">Kafka: TradeExecuted</text>
+  <text x="160" y="228" text-anchor="middle" fill="#92400e" font-family="monospace" font-size="8">partition key: market_id</text>
+
+  <!-- arrow Kafka → Market Svc -->
+  <line x1="160" y1="242" x2="160" y2="300" stroke="#0ea5e9" stroke-width="2" marker-end="url(#arrBlue)"/>
+  <text x="175" y="275" text-anchor="start" fill="#0ea5e9" font-family="monospace" font-size="8">Consumer</text>
+
+  <!-- Market Service Core -->
+  <rect x="60" y="300" width="360" height="150" rx="10" fill="url(#msGrad)" opacity="0.18" stroke="#0ea5e9" stroke-width="2"/>
+  <text x="240" y="325" text-anchor="middle" fill="#38bdf8" font-family="monospace" font-size="13" font-weight="bold">Market Service Core</text>
+  <text x="240" y="345" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9">- Consume TradeExecuted to write candles</text>
+  <text x="240" y="360" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9">- Run 10s job to update Redis 24h stats</text>
+  <text x="240" y="375" text-anchor="middle" fill="#94a3b8" font-family="monospace" font-size="9">- Expose orderbook from Redis cache</text>
+  <text x="240" y="395" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Asset Validation → gRPC Wallet.GetSupportedAssets</text>
+  <text x="240" y="410" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">Order Status Check → gRPC server for Order Svc</text>
+
+  <!-- PostgreSQL (Database) -->
+  <rect x="60" y="500" width="220" height="80" rx="8" fill="#1e293b" stroke="#1e40af" stroke-width="1.5"/>
+  <text x="170" y="523" text-anchor="middle" fill="#60a5fa" font-family="monospace" font-size="10" font-weight="bold">PostgreSQL Database</text>
+  <text x="170" y="542" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">markets (tick/lot config)</text>
+  <text x="170" y="558" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">ohlc_candles (1m, 5m, 15m, 1h, 1d)</text>
+  <text x="170" y="572" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">market_trades (rolling 24h log)</text>
+
+  <!-- arrow Svc ↔ DB -->
+  <line x1="170" y1="450" x2="170" y2="500" stroke="#0ea5e9" stroke-width="1.5" marker-end="url(#arrBlue)"/>
+  <text x="180" y="480" text-anchor="start" fill="#0ea5e9" font-family="monospace" font-size="8">read/write</text>
+
+  <!-- Redis connections (Read/Write) -->
+  <line x1="390" y1="127" x2="390" y2="300" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrRed)"/>
+  <text x="400" y="150" text-anchor="start" fill="#ef4444" font-family="monospace" font-size="8">read book / write stats</text>
+
+  <!-- Wallet Service (GetSupportedAssets) -->
+  <rect x="520" y="300" width="180" height="52" rx="8" fill="#1e293b" stroke="#10b981" stroke-width="1.5"/>
+  <text x="610" y="322" text-anchor="middle" fill="#34d399" font-family="monospace" font-size="10" font-weight="bold">Wallet Service</text>
+  <text x="610" y="338" text-anchor="middle" fill="#064e3b" font-family="monospace" font-size="9">gRPC GetSupportedAssets</text>
+
+  <!-- arrow Svc → Wallet -->
+  <line x1="420" y1="326" x2="520" y2="326" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="470" y="320" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">validate assets</text>
+
+  <!-- Order Service (GetMarket Check) -->
+  <rect x="520" y="380" width="180" height="52" rx="8" fill="#1e293b" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="610" y="402" text-anchor="middle" fill="#a78bfa" font-family="monospace" font-size="10" font-weight="bold">Order Service</text>
+  <text x="610" y="418" text-anchor="middle" fill="#5b21b6" font-family="monospace" font-size="9">gRPC GetMarket (10s TTL cache)</text>
+
+  <!-- arrow Order → Svc -->
+  <line x1="520" y1="406" x2="420" y2="406" stroke="#475569" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="470" y="400" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">gRPC fetch</text>
+
+  <!-- REST Gateway -->
+  <rect x="310" y="500" width="220" height="80" rx="8" fill="#1e293b" stroke="#0d9488" stroke-width="1.5"/>
+  <text x="420" y="523" text-anchor="middle" fill="#2dd4bf" font-family="monospace" font-size="10" font-weight="bold">REST Public Gateway</text>
+  <text x="420" y="542" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">GET /markets  ·  GET /orderbook</text>
+  <text x="420" y="558" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">GET /ticker  ·  GET /candles</text>
+  <text x="420" y="572" text-anchor="middle" fill="#64748b" font-family="monospace" font-size="8">POST /admin/markets (role: admin)</text>
+
+  <!-- arrow Svc → REST -->
+  <line x1="370" y1="450" x2="370" y2="500" stroke="#0ea5e9" stroke-width="1.2" stroke-dasharray="3,2" marker-end="url(#arrBlue)"/>
+
+  <!-- Footer -->
+  <text x="450" y="605" text-anchor="middle" fill="#334155" font-family="monospace" font-size="9">TradeDrift Market Service V1 · tick_size/lot_size immutable config · 24h ticker updated via 10s cron job</text>
+
+  <!-- Arrow definitions -->
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#475569"/>
+    </marker>
+    <marker id="arrBlue" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#0ea5e9"/>
+    </marker>
+    <marker id="arrRed" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#ef4444"/>
+    </marker>
+    <marker id="arrYellow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L8,3 z" fill="#f59e0b"/>
+    </marker>
+  </defs>
+</svg>

@@ -1,7 +1,7 @@
 # TradeDrift — Wallet Service
 
-> **Status:** ✅ Designed (V9, Final)
-> Revision notes: V9 adds `GetSupportedAssets` gRPC endpoint to expose the active supported assets configuration to the Market Service (12_Market_Service.md) for referential integrity checks during market creation.
+> **Status:** ✅ Designed (V10, Final)
+> Revision notes: V10 specifies the first-class deposit and withdrawal lifecycle, including the `wallet_transfers` database schema, execution state machines, outbox event definitions, and gRPC endpoints to prevent integration and funding discrepancies.
 
 ## Purpose
 
@@ -309,5 +309,141 @@ message AssetInfo {
     bool   is_enabled    = 4;  // e.g. true
     string seed_amount   = 5;  // e.g. "0.0000000000"
     int32  display_order = 6;  // e.g. 2
+}
+```
+
+---
+
+## 10. Deposit & Withdrawal Lifecycle
+
+To support external account funding and secure asset retrieval, the Wallet Service implements a dedicated deposit and withdrawal state machine.
+
+### 10.1 Database Schema
+```sql
+CREATE TYPE transfer_type AS ENUM ('DEPOSIT', 'WITHDRAWAL');
+CREATE TYPE transfer_status AS ENUM ('PENDING', 'COMPLETED', 'FAILED');
+
+CREATE TABLE wallet_transfers (
+    id            UUID PRIMARY KEY,                      -- UUIDv7 identifier
+    wallet_id     UUID NOT NULL REFERENCES wallets(id),
+    type          transfer_type NOT NULL,
+    amount        DECIMAL(30,10) NOT NULL,
+    status        transfer_status NOT NULL DEFAULT 'PENDING',
+    reference_id  VARCHAR(64) NOT NULL,                  -- Idempotency key from external payment/bridge gateway
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT    uq_transfer_ref UNIQUE(reference_id)
+);
+
+CREATE INDEX idx_transfers_wallet ON wallet_transfers(wallet_id);
+```
+
+---
+
+### 10.2 Deposit Execution Flow (Idempotent Webhook Ingestion)
+```
+[ Payment Webhook / Bridge ]
+             │
+      (Inbound credit notify)
+             ▼
+     [ API Gateway ]
+             │
+      (gRPC DepositFunds)
+             ▼
+     [ Wallet Service ] ──(Check reference_id)──► [ db: wallet_transfers ]
+             │                                              │
+             ├── (Exists: returns success, no-op) ◄─────────┘
+             │
+             └── (New: Starts DB Transaction)
+                      ├── 1. Insert PENDING wallet_transfers
+                      ├── 2. available_balance += deposit_amount
+                      ├── 3. status = 'COMPLETED', updated_at = NOW()
+                      ├── 4. Insert Outbox (DepositCompleted)
+                      └── COMMIT ──► Publish Event
+```
+
+#### Steps:
+1. External bank wire or cryptocurrency bridge publishes a credit notification webhook to the API Gateway, which forwards to `DepositFunds(user_id, asset, amount, reference_id)`.
+2. **Idempotency Guard:** If a transfer row already exists matching `reference_id`, the call short-circuits and returns success immediately to prevent duplicate credits.
+3. **Transaction Execution:**
+   - Lock user wallet row `FOR UPDATE`.
+   - Insert a row into `wallet_transfers` with status `COMPLETED` (or `PENDING` if awaiting async blockchain confirmation triggers).
+   - Credit `available_balance = available_balance + amount`.
+   - Write a `wallet_transactions` history record (`reference_type = DEPOSIT`).
+   - Write `DepositCompleted` event into the Transactional Outbox.
+   - Commit transaction atomically.
+
+---
+
+### 10.3 Withdrawal Execution Flow (Secure Reserve-then-Debit)
+```
+[ User UI ] ──(Request withdraw)──► [ Wallet Service ] ──► [ available_balance >= amount? ]
+                                                                      │
+                                        ┌─────────────────────────────┴─────────────────────────────┐
+                                        ▼ (Yes)                                                     ▼ (No)
+                           [ Start DB Transaction ]                                          [ Reject Request ]
+                             ├── 1. available_balance -= amount
+                             ├── 2. reserved_balance += amount
+                             ├── 3. Insert PENDING wallet_transfers
+                             ├── 4. Insert Outbox (WithdrawalInitiated)
+                             └── COMMIT ──────────────────────────────────────────┐
+                                                                                  ▼
+                                                                      [ Call External Bridge API ]
+                                                                                  │
+                                        ┌─────────────────────────────────────────┴─────────────────────────┐
+                                        ▼ (Success Callback)                                                ▼ (Failure Callback)
+                           [ Start DB Transaction ]                                          [ Start DB Transaction ]
+                             ├── 1. reserved_balance -= amount                                 ├── 1. reserved_balance -= amount
+                             ├── 2. status = 'COMPLETED'                                       ├── 2. available_balance += amount
+                             ├── 3. Insert Outbox (WithdrawalCompleted)                        ├── 3. status = 'FAILED'
+                             └── COMMIT                                                        └── COMMIT
+```
+
+#### Steps:
+1. **Initiation Phase:** User requests a withdrawal via the `WithdrawFunds` gRPC service.
+   - Check if `available_balance >= withdrawal_amount`. If not, reject immediately.
+   - Lock available funds: debit `available_balance` and credit `reserved_balance` by the withdrawal amount.
+   - Insert a row into `wallet_transfers` with status `PENDING` and a generated `reference_id` (used as transactional idempotency key for external gateways).
+   - Insert `WithdrawalInitiated` event into outbox.
+   - Commit and initiate the external transfer (blockchain transaction or fiat payout).
+2. **Settlement Phase (Callback):**
+   - **On Success:** Debit the funds from `reserved_balance`, update `wallet_transfers.status` to `COMPLETED`, insert a `wallet_transactions` record (`reference_type = WITHDRAWAL`), write `WithdrawalCompleted` event to outbox, and commit.
+   - **On Failure:** Move the funds back from `reserved_balance` to `available_balance`, update `wallet_transfers.status` to `FAILED`, and commit (restoring the user's funds).
+
+---
+
+### 10.4 Outbox Integration Events
+
+#### `DepositCompleted` Event Payload:
+```json
+{
+  "event_id": "018f60f3-c540-7798-8422-efa6b29f9999",
+  "event_type": "wallet.deposit_completed.v1",
+  "event_version": 1,
+  "data": {
+    "user_id": "018f60f3-a120-7798-8422-cfb6a29e11aa",
+    "wallet_id": "018f60f3-b240-7798-8422-dfb6a29e22bb",
+    "asset": "USDT",
+    "amount": "5000.0000000000",
+    "reference_id": "tx_dep_987654321",
+    "completed_at": "2026-07-10T14:48:12Z"
+  }
+}
+```
+
+#### `WithdrawalCompleted` Event Payload:
+```json
+{
+  "event_id": "018f60f3-d120-7798-8422-dfb8a29f8888",
+  "event_type": "wallet.withdrawal_completed.v1",
+  "event_version": 1,
+  "data": {
+    "user_id": "018f60f3-a120-7798-8422-cfb6a29e11aa",
+    "wallet_id": "018f60f3-b240-7798-8422-dfb6a29e22bb",
+    "asset": "BTC",
+    "amount": "0.0500000000",
+    "reference_id": "tx_wdr_123456789",
+    "completed_at": "2026-07-10T14:50:42Z"
+  }
 }
 ```

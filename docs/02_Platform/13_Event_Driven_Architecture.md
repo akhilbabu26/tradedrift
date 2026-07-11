@@ -104,7 +104,7 @@ sequenceDiagram
     Note over Wallet: Checks available balance.<br/>Creates Reservation (status=RESERVED).
     Wallet-->>Order: Reservation Confirmed (Success)
     
-    Note over Order: DB Transaction Begins:<br/>1. Save Order (status=PENDING)<br/>2. Write Outbox (event=OrderCreated)<br/>DB Transaction Commits.
+    Note over Order: DB Transaction Begins:<br/>1. Save Order (status=OPEN)<br/>2. Write Outbox (event=OrderCreated)<br/>DB Transaction Commits.
     Order-->>Gateway: Response: 201 Created (order_id)
     Gateway-->>Client: Return JSON (order_id)
 

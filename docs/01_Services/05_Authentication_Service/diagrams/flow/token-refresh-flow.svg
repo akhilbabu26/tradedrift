@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 650" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+  </defs>
+  <rect width="860" height="650" fill="url(#bg)"/>
+  <rect width="860" height="650" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Refresh Token Rotation &amp; Reuse Detection</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">Security Guard: Re-authentication forced everywhere when an already-used refresh token is presented</text>
+  <line x1="80" y1="66" x2="780" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Input -->
+  <rect x="325" y="82" width="210" height="38" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="430" y="106" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="600">RefreshRequest(refresh_token)</text>
+
+  <line x1="430" y1="120" x2="430" y2="146" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 1: Database Lookup -->
+  <rect x="295" y="146" width="270" height="42" rx="8" fill="#0f172a" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="430" y="172" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">① Find refresh token in database</text>
+
+  <line x1="430" y1="188" x2="430" y2="214" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Check 1: Token exists &amp; is valid? -->
+  <polygon points="430,214 510,238 430,262 350,238" fill="#0f172a" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="430" y="242" text-anchor="middle" fill="#cbd5e1" font-size="10" font-weight="600">Exists &amp; Valid?</text>
+
+  <!-- No -> Reject -->
+  <line x1="510" y1="238" x2="670" y2="238" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+  <text x="590" y="230" text-anchor="middle" fill="#ef4444" font-size="10">NO</text>
+
+  <rect x="670" y="214" width="160" height="46" rx="6" fill="#1b0c0c" stroke="#ef4444" stroke-width="1.3"/>
+  <text x="750" y="236" text-anchor="middle" fill="#fca5a5" font-size="11" font-weight="600">401 Unauthorized</text>
+  <text x="750" y="250" text-anchor="middle" fill="#fca5a5" font-size="8">Invalid or expired token</text>
+
+  <!-- Yes -> Check 2: Already rotated / used? -->
+  <line x1="430" y1="262" x2="430" y2="290" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="445" y="278" fill="#22c55e" font-size="10">YES</text>
+
+  <polygon points="430,290 510,314 430,338 350,314" fill="#0f172a" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="430" y="318" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">Already Rotated?</text>
+
+  <!-- YES (REUSE DETECTED / SECURITY RISK) -->
+  <line x1="350" y1="314" x2="190" y2="314" stroke="#ef4444" stroke-width="1.8" marker-end="url(#arrR)"/>
+  <text x="270" y="306" text-anchor="middle" fill="#ef4444" font-size="10" font-weight="600">YES — Reuse!</text>
+
+  <rect x="20" y="280" width="170" height="92" rx="8" fill="#1b0c0c" stroke="#ef4444" stroke-width="2"/>
+  <text x="105" y="304" text-anchor="middle" fill="#f87171" font-size="12" font-weight="700">② Emergency Revocation</text>
+  <line x1="30" y1="312" x2="180" y2="312" stroke="#991b1b" stroke-width="0.5"/>
+  <text x="105" y="328" text-anchor="middle" fill="#fca5a5" font-size="9">Revoke ALL user refresh</text>
+  <text x="105" y="342" text-anchor="middle" fill="#fca5a5" font-size="9">tokens immediately</text>
+  <text x="105" y="356" text-anchor="middle" fill="#991b1b" font-size="8">Force logout on all devices</text>
+
+  <line x1="105" y1="372" x2="105" y2="408" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+
+  <rect x="25" y="408" width="160" height="42" rx="6" fill="#1b0c0c" stroke="#ef4444" stroke-width="1.3"/>
+  <text x="105" y="430" text-anchor="middle" fill="#fca5a5" font-size="11" font-weight="600">403 Forbidden</text>
+  <text x="105" y="444" text-anchor="middle" fill="#fca5a5" font-size="8">Reuse detected; compromised</text>
+
+  <!-- NO (NORMAL PATH) -->
+  <line x1="430" y1="338" x2="430" y2="368" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="445" y="354" fill="#22c55e" font-size="10">NO</text>
+
+  <!-- Step 2: Invalidate old token, issue new -->
+  <rect x="260" y="368" width="340" height="154" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="2"/>
+  <text x="430" y="390" text-anchor="middle" fill="#86efac" font-size="13" font-weight="700">③ Rotate Refresh Token</text>
+  <line x1="280" y1="400" x2="580" y2="400" stroke="#166534" stroke-width="0.5"/>
+  
+  <text x="280" y="420" fill="#a7f3d0" font-size="10" font-weight="600">Action A: Invalidate Old Token</text>
+  <text x="295" y="434" fill="#64748b" font-size="9">- Set user_sessions.used = TRUE for this JTI</text>
+  
+  <text x="280" y="454" fill="#a7f3d0" font-size="10" font-weight="600">Action B: Generate New Token Pair</text>
+  <text x="295" y="468" fill="#64748b" font-size="9">- Generate new access token (15m TTL)</text>
+  <text x="295" y="482" fill="#64748b" font-size="9">- Generate new refresh token (7d TTL)</text>
+  <text x="295" y="496" fill="#64748b" font-size="9">- Insert new JTI in user_sessions table</text>
+  <text x="295" y="510" fill="#4ade80" font-size="9">Executed atomically in PostgreSQL transaction</text>
+
+  <line x1="430" y1="522" x2="430" y2="558" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+  <!-- Success Return -->
+  <rect x="295" y="558" width="270" height="42" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1.3"/>
+  <text x="430" y="582" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="600">200 OK — return rotated tokens</text>
+  <text x="430" y="596" text-anchor="middle" fill="#475569" font-size="9">Client replaces stored refresh token with the new one</text>
+</svg>

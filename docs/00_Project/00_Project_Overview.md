@@ -243,6 +243,7 @@ AI Intelligence
 # Documentation
 
 ## 00_Project (Core)
+* [README.md](README.md)
 * [00_Project_Overview.md](00_Project_Overview.md)
 * [01_Project_Vision.md](01_Project_Vision.md)
 * [02_Architecture_Blueprint.md](02_Architecture_Blueprint.md)
@@ -250,6 +251,7 @@ AI Intelligence
 * [Glossary.md](Glossary.md)
 
 ## 01_Services
+* [README.md](../01_Services/README.md)
 * [04_API_Gateway.md](../01_Services/04_API_Gateway/04_API_Gateway.md)
 * [05_Authentication_Service.md](../01_Services/05_Authentication_Service/05_Authentication_Service.md)
 * [07_Wallet_Service.md](../01_Services/07_Wallet_Service/07_Wallet_Service.md)
@@ -262,6 +264,7 @@ AI Intelligence
 * [12_Notification_Service.md](../01_Services/12_Notification_Service/12_Notification_Service.md)
 
 ## 02_Platform (Infrastructure Specifications)
+* [README.md](../02_Platform/README.md)
 * [13_Event_Driven_Architecture.md](../02_Platform/13_Event_Driven_Architecture.md)
 * [14_Fund_Reservation_Contract.md](../02_Platform/14_Fund_Reservation_Contract.md)
 * [15_Kafka_Topic_Design.md](../02_Platform/15_Kafka_Topic_Design.md)
@@ -272,9 +275,20 @@ AI Intelligence
 * [20_Deployment.md](../02_Platform/20_Deployment.md)
 * [21_Observability.md](../02_Platform/21_Observability.md)
 * [22_Disaster_Recovery.md](../02_Platform/22_Disaster_Recovery.md)
+* [24_Admin_Workflows.md](../02_Platform/24_Admin_Workflows.md)
 
 ## 03_Standards
+* [README.md](../03_Standards/README.md)
 * [ID_Correlation_Standard.md](../03_Standards/ID_Correlation_Standard.md)
+
+## 04_Audits
+* [README.md](../04_Audits/README.md)
+* [01_Trading_Lifecycle_Audit.md](../04_Audits/01_Trading_Lifecycle_Audit.md)
+* [02_Data_Consistency_Audit.md](../04_Audits/02_Data_Consistency_Audit.md)
+* [03_Security_Audit.md](../04_Audits/03_Security_Audit.md)
+* [04_Operational_Readiness_Audit.md](../04_Audits/04_Operational_Readiness_Audit.md)
+* [05_Disaster_Recovery_Audit.md](../04_Audits/05_Disaster_Recovery_Audit.md)
+* [06_Admin_Platform_Audit.md](../04_Audits/06_Admin_Platform_Audit.md)
 
 ---
 

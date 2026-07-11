@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 600" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrP" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#a855f7"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+  </defs>
+  <rect width="860" height="600" fill="url(#bg)"/>
+  <rect width="860" height="600" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Authentication Service Architecture</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">User Identity &amp; Session Management · Sync Wallet Onboarding · Distributed Caching</text>
+  <line x1="80" y1="66" x2="780" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- API Gateway -->
+  <rect x="50" y="240" width="160" height="66" rx="8" fill="#0f172a" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="130" y="274" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="700">API Gateway</text>
+  <text x="130" y="290" text-anchor="middle" fill="#475569" font-size="9">Ingress Entry Point</text>
+
+  <!-- Flow to Auth Service -->
+  <line x1="210" y1="273" x2="310" y2="273" stroke="#a855f7" stroke-width="1.5" marker-end="url(#arrP)"/>
+  <text x="260" y="262" text-anchor="middle" fill="#d8b4fe" font-size="10">Login / Signup</text>
+
+  <!-- Auth Service -->
+  <rect x="310" y="213" width="220" height="120" rx="8" fill="#13102b" stroke="#a855f7" stroke-width="2"/>
+  <text x="420" y="248" text-anchor="middle" fill="#d8b4fe" font-size="14" font-weight="700">Authentication Service</text>
+  <text x="420" y="266" text-anchor="middle" fill="#701a75" font-size="10">Bcrypt password hashing</text>
+  <text x="420" y="280" text-anchor="middle" fill="#701a75" font-size="10">JWT token generation</text>
+  <text x="420" y="294" text-anchor="middle" fill="#701a75" font-size="10">Refresh token rotation</text>
+  <text x="420" y="310" text-anchor="middle" fill="#94a3b8" font-size="9">UUIDv7 user_id generator</text>
+
+  <!-- Auth Service DB -->
+  <rect x="310" y="440" width="220" height="70" rx="8" fill="#0f172a" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="420" y="470" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="700">PostgreSQL DB</text>
+  <text x="420" y="488" text-anchor="middle" fill="#475569" font-size="10">users table · user_sessions table</text>
+  <text x="420" y="500" text-anchor="middle" fill="#475569" font-size="9">unique(email, username)</text>
+
+  <line x1="420" y1="333" x2="420" y2="440" stroke="#cbd5e1" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Shared Redis cache (blacklist) -->
+  <rect x="50" y="440" width="160" height="70" rx="8" fill="#1b0c0c" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="130" y="470" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="700">Redis Blacklist</text>
+  <text x="130" y="488" text-anchor="middle" fill="#78350f" font-size="10">Revoked access tokens</text>
+  <text x="130" y="500" text-anchor="middle" fill="#78350f" font-size="9">Fast JWT validation</text>
+
+  <path d="M 310,300 L 130,300 L 130,440" fill="none" stroke="#f59e0b" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="210" y="316" text-anchor="middle" fill="#f59e0b" font-size="9">Blacklist token JTI</text>
+
+  <!-- Wallet Service sync onboarding -->
+  <line x1="530" y1="273" x2="650" y2="273" stroke="#22c55e" stroke-width="1.8" marker-end="url(#arrG)"/>
+  <text x="590" y="260" text-anchor="middle" fill="#4ade80" font-size="10" font-weight="600">InitializeWallet (gRPC)</text>
+
+  <rect x="650" y="220" width="160" height="106" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="730" y="250" text-anchor="middle" fill="#86efac" font-size="13" font-weight="700">Wallet Service</text>
+  <text x="730" y="270" text-anchor="middle" fill="#166534" font-size="9">Creates user wallet</text>
+  <text x="730" y="284" text-anchor="middle" fill="#166534" font-size="9">Seeds initial USDT</text>
+  <text x="730" y="298" text-anchor="middle" fill="#166534" font-size="9">Checks multi-asset config</text>
+
+  <!-- Compensating delete indicator -->
+  <path d="M 730,326 L 730,390 L 420,390 L 420,333" fill="none" stroke="#ef4444" stroke-width="1.2" stroke-dasharray="3,3" marker-end="url(#arr)"/>
+  <text x="575" y="380" text-anchor="middle" fill="#ef4444" font-size="9">On Fail: Compensating delete user record</text>
+</svg>

@@ -1,11 +1,11 @@
 # TradeDrift — gRPC Service Contracts
 
-> **Status:** ✅ Designed (V1.2)
+> **Status:** ✅ Designed (V1.3)
 > **Document:** 16_gRPC_Contracts.md
 > **Service:** Platform Architecture
-> **Version:** V1.2
+> **Version:** V1.3
 > **Last Updated:** July 2026
-> Revision notes: V1.2 decouples user profile operations by moving GetProfile and UpdateProfile out of AuthService into a dedicated UserService (user.proto).
+> Revision notes: V1.3 specifies WalletService gRPC endpoints for funding (DepositFunds, WithdrawFunds) to align with the V10 Wallet Service specification.
 
 ---
 
@@ -82,12 +82,11 @@ enum OrderType {
 
 enum OrderStatus {
     ORDER_STATUS_UNSPECIFIED = 0;
-    ORDER_STATUS_PENDING = 1;
-    ORDER_STATUS_OPEN = 2;
-    ORDER_STATUS_PARTIALLY_FILLED = 3;
-    ORDER_STATUS_FILLED = 4;
-    ORDER_STATUS_CANCELLING = 5;
-    ORDER_STATUS_CANCELLED = 6;
+    ORDER_STATUS_OPEN = 1;
+    ORDER_STATUS_PARTIALLY_FILLED = 2;
+    ORDER_STATUS_FILLED = 3;
+    ORDER_STATUS_CANCELLING = 4;
+    ORDER_STATUS_CANCELLED = 5;
 }
 
 enum ReservationStatus {
@@ -127,6 +126,8 @@ service WalletService {
     rpc GetBalance(GetBalanceRequest) returns (GetBalanceResponse);
     rpc GetBalances(GetBalancesRequest) returns (GetBalancesResponse);
     rpc GetSupportedAssets(GetSupportedAssetsRequest) returns (GetSupportedAssetsResponse);
+    rpc DepositFunds(DepositFundsRequest) returns (DepositFundsResponse);
+    rpc WithdrawFunds(WithdrawFundsRequest) returns (WithdrawFundsResponse);
 }
 
 message InitializeWalletRequest {
@@ -221,6 +222,34 @@ message AssetDetail {
 
 message GetSupportedAssetsResponse {
     repeated AssetDetail assets = 1;
+}
+
+message DepositFundsRequest {
+    string user_id      = 1; // User receiving credit (UUIDv7 format)
+    string asset        = 2; // Asset code, e.g. "USDT"
+    string amount       = 3; // Amount to deposit (String)
+    string reference_id = 4; // Unique provider transaction identifier (idempotency key)
+}
+
+message DepositFundsResponse {
+    string transfer_id  = 1; // Ledger transaction ID (UUIDv7 format)
+    string reference_id = 2; // Gateway transaction reference ID
+    bool success        = 3;
+    string new_balance  = 4; // User's updated available balance (String)
+}
+
+message WithdrawFundsRequest {
+    string user_id      = 1; // User requesting withdrawal (UUIDv7 format)
+    string asset        = 2; // Asset code, e.g. "BTC"
+    string amount       = 3; // Amount to withdraw (String)
+    string reference_id = 4; // Client-supplied idempotency key (UUIDv7 format)
+}
+
+message WithdrawFundsResponse {
+    string transfer_id  = 1; // Ledger transaction ID (UUIDv7 format)
+    string reference_id = 2; // Client-supplied reference ID
+    string status       = 3; // Status of transfer: "PENDING" | "COMPLETED" | "FAILED"
+    string new_balance  = 4; // User's updated available balance (String)
 }
 ```
 

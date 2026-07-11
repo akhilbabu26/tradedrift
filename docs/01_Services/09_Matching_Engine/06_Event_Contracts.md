@@ -150,7 +150,7 @@ Published once per fill — a single incoming order can produce multiple `TradeE
 | `quantity` | decimal string | Fill quantity for this trade: `min(incoming.remainingQty, best.remainingQty)` |
 | `executed_at` | RFC3339 timestamp | ME wall-clock time when the fill was produced |
 
-> **Field-for-field match with `SettleTrade`:** Wallet Service's signature is `SettleTrade(trade_id, buyer_id, seller_id, buy_order_id, sell_order_id, base_asset, quote_asset, price, quantity)`. Every one of those 9 parameters is present verbatim in this payload — Settlement Service performs no field translation, only pass-through plus its own outbox write.
+> **Field-for-field match with `SettleTrade`:** Wallet Service's signature is `SettleTrade(trade_id, buyer_id, seller_id, buy_order_id, sell_order_id, base_asset, quote_asset, price, quantity, market_id)`. Every one of those 10 parameters is present verbatim in this payload — Settlement Service performs no field translation, only pass-through plus its own outbox write.
 
 **Both `buy_order_id`/`sell_order_id` and `maker_order_id`/`taker_order_id` are included.** They serve different consumers: Settlement/Wallet need buy/sell semantics (which leg gets which asset); Order Service bookkeeping and any future maker/taker fee logic need maker/taker semantics. Carrying both avoids forcing a consumer to re-derive one from the other.
 

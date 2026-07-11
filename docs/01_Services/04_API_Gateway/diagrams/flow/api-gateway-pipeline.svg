@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 700" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr"  markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+    <marker id="arrY" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#f59e0b"/></marker>
+  </defs>
+  <rect width="860" height="700" fill="url(#bg)"/>
+  <rect width="860" height="700" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">API Gateway Request Pipeline</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">Inbound HTTP Request → Middleware Stack → Downstream gRPC Forwarding</text>
+  <line x1="80" y1="66" x2="780" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Inbound Request -->
+  <rect x="295" y="82" width="270" height="42" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="430" y="107" text-anchor="middle" fill="#93c5fd" font-size="13" font-weight="600">Client HTTP Request</text>
+
+  <line x1="430" y1="124" x2="430" y2="150" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Middleware 1: CORS -->
+  <rect x="295" y="150" width="270" height="40" rx="8" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
+  <text x="430" y="174" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">1. CORS Middleware</text>
+  <text x="430" y="186" text-anchor="middle" fill="#475569" font-size="9">Handles preflight OPTIONS and header checks</text>
+
+  <line x1="430" y1="190" x2="430" y2="216" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Middleware 2: Logging / Metrics -->
+  <rect x="295" y="216" width="270" height="40" rx="8" fill="#0f172a" stroke="#475569" stroke-width="1.5"/>
+  <text x="430" y="240" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">2. Logging / Metrics</text>
+  <text x="430" y="252" text-anchor="middle" fill="#475569" font-size="9">Records request latencies and response counters</text>
+
+  <line x1="430" y1="256" x2="430" y2="282" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Middleware 3: Rate Limiter -->
+  <rect x="295" y="282" width="270" height="48" rx="8" fill="#0f172a" stroke="#f59e0b" stroke-width="1.5"/>
+  <text x="430" y="304" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">3. Rate Limit Middleware</text>
+  <text x="430" y="316" text-anchor="middle" fill="#78350f" font-size="9">Redis-backed Token Bucket algorithm check</text>
+
+  <!-- Rate Limit check decision -->
+  <line x1="430" y1="330" x2="430" y2="356" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+  
+  <polygon points="430,356 500,380 430,404 360,380" fill="#0f172a" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="430" y="384" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">Over Limit?</text>
+
+  <!-- Over Limit -> 429 -->
+  <line x1="500" y1="380" x2="680" y2="380" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+  <text x="590" y="372" text-anchor="middle" fill="#ef4444" font-size="10">YES</text>
+  <rect x="680" y="362" width="140" height="36" rx="6" fill="#1b0c0c" stroke="#ef4444" stroke-width="1.3"/>
+  <text x="750" y="384" text-anchor="middle" fill="#fca5a5" font-size="11" font-weight="600">Reject: 429 Too Many Requests</text>
+
+  <!-- Under Limit -> Route Resolution -->
+  <line x1="430" y1="404" x2="430" y2="430" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="445" y="420" fill="#22c55e" font-size="10">NO</text>
+
+  <!-- Middleware 4: Route Resolution -->
+  <rect x="295" y="430" width="270" height="40" rx="8" fill="#0f172a" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="430" y="454" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">4. Route Resolution</text>
+  <text x="430" y="466" text-anchor="middle" fill="#475569" font-size="9">Resolves downstream service and auth flag</text>
+
+  <line x1="430" y1="470" x2="430" y2="496" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Auth Required check -->
+  <polygon points="430,496 500,520 430,544 360,520" fill="#0f172a" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="430" y="524" text-anchor="middle" fill="#e9d5ff" font-size="10" font-weight="600">Auth Required?</text>
+
+  <!-- Yes -> JWT Validation -->
+  <line x1="360" y1="520" x2="220" y2="520" stroke="#a855f7" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="290" y="512" text-anchor="middle" fill="#d8b4fe" font-size="10">YES</text>
+
+  <rect x="50" y="500" width="170" height="40" rx="8" fill="#0f172a" stroke="#a855f7" stroke-width="1.5"/>
+  <text x="135" y="524" text-anchor="middle" fill="#d8b4fe" font-size="11" font-weight="600">5. JWT Validation</text>
+  <text x="135" y="534" text-anchor="middle" fill="#581c87" font-size="8">Verifies signature, expiry &amp; blacklist</text>
+
+  <path d="M 135,540 L 135,580 L 295,580" fill="none" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="190" y="574" fill="#22c55e" font-size="9">Valid Token</text>
+
+  <!-- JWT invalid error path -->
+  <path d="M 50,520 L 20,520 L 20,440 L 50,440" fill="none" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+  <rect x="50" y="422" width="170" height="36" rx="6" fill="#1b0c0c" stroke="#ef4444" stroke-width="1.3"/>
+  <text x="135" y="444" text-anchor="middle" fill="#fca5a5" font-size="10" font-weight="600">Reject: 401 Unauthorized</text>
+
+  <!-- No -> Bypass to gRPC -->
+  <line x1="430" y1="544" x2="430" y2="560" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="445" y="552" fill="#22c55e" font-size="10">NO</text>
+  
+  <path d="M 430,560 L 430,580 L 295,580" fill="none" stroke="#22c55e" stroke-width="1.5"/>
+
+  <!-- gRPC Forwarding Client -->
+  <rect x="295" y="560" width="270" height="42" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="2"/>
+  <text x="430" y="586" text-anchor="middle" fill="#86efac" font-size="13" font-weight="700">6. gRPC Downstream Forward</text>
+  <text x="430" y="597" text-anchor="middle" fill="#166534" font-size="9">Default 5s timeout · Circuit Breaker protected</text>
+
+  <!-- Downstream Target -->
+  <line x1="430" y1="602" x2="430" y2="628" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+  <rect x="245" y="628" width="370" height="38" rx="8" fill="#1e293b" stroke="#334155" stroke-width="1.3"/>
+  <text x="430" y="652" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">Target Backend Service (Auth / Order / Wallet / Market ...)</text>
+</svg>

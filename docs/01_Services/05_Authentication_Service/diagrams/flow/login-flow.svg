@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 650" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+  </defs>
+  <rect width="860" height="650" fill="url(#bg)"/>
+  <rect width="860" height="650" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="430" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Authentication Login Flow</text>
+  <text x="430" y="55" text-anchor="middle" fill="#64748b" font-size="12">Identical Reject Messages for User Missing/Wrong Password (No Enumeration Leak)</text>
+  <line x1="80" y1="66" x2="780" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Start -->
+  <rect x="325" y="82" width="210" height="38" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="430" y="106" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="600">LoginRequest(identity, password)</text>
+
+  <line x1="430" y1="120" x2="430" y2="146" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 1: Query User -->
+  <rect x="310" y="146" width="240" height="42" rx="8" fill="#0f172a" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="420" y="172" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">① Query user by email/username</text>
+
+  <line x1="430" y1="188" x2="430" y2="214" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Check 1: User Found? -->
+  <polygon points="430,214 510,238 430,262 350,238" fill="#0f172a" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="430" y="242" text-anchor="middle" fill="#cbd5e1" font-size="10" font-weight="600">User Found?</text>
+
+  <!-- User Found -> No -->
+  <line x1="510" y1="238" x2="680" y2="238" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+  <text x="590" y="230" text-anchor="middle" fill="#ef4444" font-size="10">NO</text>
+
+  <!-- User Found -> Yes -->
+  <line x1="430" y1="262" x2="430" y2="288" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="445" y="278" fill="#22c55e" font-size="10">YES</text>
+
+  <!-- Step 2: Compare Passwords -->
+  <rect x="310" y="288" width="240" height="42" rx="8" fill="#0f172a" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="420" y="314" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">② Verify password hash (Bcrypt)</text>
+
+  <line x1="430" y1="330" x2="430" y2="356" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Check 2: Password Valid? -->
+  <polygon points="430,356 510,380 430,404 350,380" fill="#0f172a" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="430" y="384" text-anchor="middle" fill="#cbd5e1" font-size="10" font-weight="600">Password Valid?</text>
+
+  <!-- Password -> No -->
+  <line x1="510" y1="380" x2="680" y2="380" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+  <text x="590" y="372" text-anchor="middle" fill="#ef4444" font-size="10">NO</text>
+
+  <!-- Reject: Wrong Creds (Merged rejects to prevent username enumeration) -->
+  <rect x="680" y="298" width="150" height="46" rx="6" fill="#1b0c0c" stroke="#ef4444" stroke-width="1.3"/>
+  <text x="755" y="320" text-anchor="middle" fill="#fca5a5" font-size="11" font-weight="600">401 Unauthorized</text>
+  <text x="755" y="334" text-anchor="middle" fill="#fca5a5" font-size="9">"Invalid credentials"</text>
+
+  <!-- Connect both failures to the same reject box -->
+  <path d="M 680,238 L 660,238 L 660,320 L 680,320" fill="none" stroke="#ef4444" stroke-width="1.5"/>
+
+  <!-- Password -> Yes -->
+  <line x1="430" y1="404" x2="430" y2="430" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="445" y="420" fill="#22c55e" font-size="10">YES</text>
+
+  <!-- Check 3: Account Suspended? -->
+  <polygon points="430,430 510,454 430,478 350,454" fill="#0f172a" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="430" y="458" text-anchor="middle" fill="#cbd5e1" font-size="10" font-weight="600">Account Active?</text>
+
+  <!-- Active -> No -->
+  <line x1="510" y1="454" x2="680" y2="454" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+  <text x="590" y="446" text-anchor="middle" fill="#ef4444" font-size="10">NO</text>
+  
+  <rect x="680" y="432" width="150" height="44" rx="6" fill="#1b0c0c" stroke="#ef4444" stroke-width="1.3"/>
+  <text x="755" y="454" text-anchor="middle" fill="#fca5a5" font-size="11" font-weight="600">403 Forbidden</text>
+  <text x="755" y="468" text-anchor="middle" fill="#fca5a5" font-size="9">"Account suspended"</text>
+
+  <!-- Active -> Yes -->
+  <line x1="430" y1="478" x2="430" y2="504" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="445" y="492" fill="#22c55e" font-size="10">YES</text>
+
+  <!-- Step 3: Issue Tokens -->
+  <rect x="310" y="504" width="240" height="52" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="2"/>
+  <text x="420" y="528" text-anchor="middle" fill="#86efac" font-size="12" font-weight="700">③ Generate Access + Refresh</text>
+  <text x="420" y="542" text-anchor="middle" fill="#166534" font-size="9">Log user_sessions row · update last_login_at</text>
+
+  <line x1="430" y1="556" x2="430" y2="582" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+  <!-- Success return -->
+  <rect x="310" y="582" width="240" height="38" rx="8" fill="#1e293b" stroke="#3b82f6" stroke-width="1.3"/>
+  <text x="420" y="606" text-anchor="middle" fill="#93c5fd" font-size="12" font-weight="600">200 OK — return JWT tokens pair</text>
+</svg>

@@ -23,7 +23,7 @@ Client         Order Service             Wallet Service               Postgres D
   │                  │                         ├─ 3. Lock available balance─►
   │                  │                         │  4. Insert Reservation     │
   │                  │                         ◄─ 5. Success response ──────┤
-  │                  ├─ 6. Save Order(PENDING) ─────────────────────────────►
+  │                  ├─ 6. Save Order(OPEN) ────────────────────────────────►
 ```
 
 ### Core Rules:

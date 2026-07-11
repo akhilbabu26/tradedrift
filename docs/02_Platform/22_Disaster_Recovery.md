@@ -56,24 +56,7 @@ Redis operates strictly as a volatile Cache and Pub/Sub Backplane, never the sys
 
 In the event of a catastrophic primary region outage, the platform executes a failover sequence to transition services to the passive disaster recovery region.
 
-```
-[ Primary Region Outage ]
-           │
-           ▼
-[ DNS Switchover (Route 53) ] ──► Points traffic to DR Region Gateway
-           │
-           ▼
-[ Promote Postgres Replica ]   ──► Promotes Passive Read Replica to Master
-           │
-           ▼
-[ Boot Application Workloads ] ──► Spins up API Gateway, Core Services & Workers
-           │
-           ▼
-[ Recover Matching Engine ]   ──► ME loads latest checkpoint & replays Kafka offsets
-           │
-           ▼
-[ System Health Checks (PASS) ] ──► Enable public trading paths
-```
+![Cross-Region Failover Pipeline](diagrams/flow/dr-failover-pipeline.svg)
 
 ### Failover Operational Checklist:
 1. **DNS Redirection:** Route 53 or Cloudflare DNS failover records are modified to redirect ingress gateway traffic to the passive DR ingress load balancers. **DNS propagation is not instantaneous; failover execution assumes automated routing policies, low TTL settings (60 seconds), and active-active load-balancer endpoints to minimize resolution lag.**
@@ -95,21 +78,7 @@ Once all checks return `PASS`, public trading access is enabled.
 
 To guarantee database integrity and verify that transactional operations match exactly, an automated **Ledger Reconciliation Job** runs **daily at 01:00 UTC as a baseline, with high-frequency reconciliation (e.g. hourly or continuous) planned for implementation as trading volume scales.**
 
-```
-               [ Run Ledger Reconciliation Job ]
-                               │
-               (Check Wallet Balance Invariants)
-             available + reserved == total_balance
-                               │
-                (Cross-Check Transaction Logs)
-         initial_bal + credits - debits == current_bal
-                               │
-                   ┌───────────┴───────────┐
-                   ▼ (Success)             ▼ (Mismatch Detected)
-             [ Log Audit OK ]       [ 1. Trigger P0 SRE Alarm ]
-                                    [ 2. Freeze Wallet Updates ]
-                                    [ 3. Lock Suspect Account ]
-```
+![Ledger Reconciliation Flow](diagrams/flow/ledger-reconciliation-flow.svg)
 
 ### Audit Procedures:
 1. **Wallet Balance Invariant Validation:**

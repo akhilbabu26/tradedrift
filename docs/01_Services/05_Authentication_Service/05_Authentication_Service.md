@@ -23,6 +23,9 @@ The Authentication Service owns user identity, credentials, and session lifecycl
 - Does not own order, trade, or portfolio data.
 - Does not send notification emails/SMS directly — out of scope for V1.
 
+## Architecture Topology
+![Authentication Service Architecture](diagrams/architecture/auth-architecture.svg)
+
 ---
 
 ## 1. Register Flow
@@ -50,6 +53,9 @@ Check Duplicate (email / username exists?)
 > **Integration point:** `InitializeWallet` is called synchronously, in the critical path of registration, before tokens are issued (see `06_Wallet_Service/06_Wallet_Service.md`, "Why Synchronous"). If `InitializeWallet` fails, registration itself fails — see [Section 8](../../#8-failure-handling) for exactly how.
 
 ## 2. Login Flow
+
+### Login Flow Diagram
+![Authentication Service Login Flow](diagrams/flow/login-flow.svg)
 
 ```
 Login Request (email/username, password)
@@ -100,6 +106,9 @@ Signature Valid?
 ## 4. Refresh Token Flow
 
 Mandatory rotation and reuse detection — a refresh token can only be used once; using an already-rotated token revokes every session for that user.
+
+### Token Rotation & Reuse Flow
+![Authentication Service Token Rotation & Reuse](diagrams/flow/token-refresh-flow.svg)
 
 ```
 Refresh Request (refresh token)

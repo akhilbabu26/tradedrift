@@ -42,7 +42,11 @@ Requires auth?
 Downstream service (Auth Service / Order Service / Wallet Service / Market Service / ...)
 ```
 
-See `images/api_gateway_pipeline.png` for the full flow diagram.
+### Request Pipeline Flow
+![API Gateway Pipeline Flow](diagrams/flow/api-gateway-pipeline.svg)
+
+### Deployment Topology
+![API Gateway Topology](diagrams/architecture/gateway-architecture.svg)
 
 ## Middleware Order (fixed, always in this sequence)
 

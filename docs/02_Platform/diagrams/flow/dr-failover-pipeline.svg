@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 700" font-family="'Segoe UI', Inter, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0f0c29"/><stop offset="100%" style="stop-color:#1a1a2e"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#64748b"/></marker>
+    <marker id="arrG" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#22c55e"/></marker>
+    <marker id="arrR" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0,10 3.5,0 7" fill="#ef4444"/></marker>
+  </defs>
+  <rect width="900" height="700" fill="url(#bg)"/>
+  <rect width="900" height="700" fill="none" stroke="#1e293b" stroke-width="2"/>
+
+  <text x="450" y="36" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="700">Active-Passive Cross-Region Failover Pipeline</text>
+  <text x="450" y="55" text-anchor="middle" fill="#64748b" font-size="12">Regional Outage → Automated DNS Failover → Database Promotion → Gate PASS Validation</text>
+  <line x1="80" y1="66" x2="820" y2="66" stroke="#1e293b" stroke-width="1"/>
+
+  <!-- Step 1: Outage -->
+  <rect x="340" y="82" width="220" height="42" rx="8" fill="#1b0c0c" stroke="#ef4444" stroke-width="1.5"/>
+  <text x="450" y="108" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="700"> Catastrophic Primary Region Outage</text>
+
+  <line x1="450" y1="124" x2="450" y2="152" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arrR)"/>
+
+  <!-- Step 2: DNS Failover -->
+  <rect x="310" y="152" width="280" height="50" rx="8" fill="#0f172a" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="450" y="174" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">① DNS Switchover (Route 53)</text>
+  <text x="450" y="188" text-anchor="middle" fill="#475569" font-size="9">Redirects public traffic to DR Load Balancers · TTL = 60s</text>
+
+  <line x1="450" y1="202" x2="450" y2="230" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 3: Promote PG -->
+  <rect x="310" y="230" width="280" height="50" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="1.5"/>
+  <text x="450" y="252" text-anchor="middle" fill="#86efac" font-size="12" font-weight="600">② Promote PostgreSQL Replica</text>
+  <text x="450" y="266" text-anchor="middle" fill="#166534" font-size="9">Execute pg_promote() → Passive Read Replica becomes Primary Master</text>
+
+  <line x1="450" y1="280" x2="450" y2="308" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 4: Scale workloads -->
+  <rect x="310" y="308" width="280" height="50" rx="8" fill="#0f172a" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="450" y="330" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">③ Scale Up Application Workloads</text>
+  <text x="450" y="344" text-anchor="middle" fill="#475569" font-size="9">Kubernetes HPA scales up API Gateway, Services, and Workers</text>
+
+  <line x1="450" y1="358" x2="450" y2="386" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 5: ME Recovery -->
+  <rect x="310" y="386" width="280" height="66" rx="8" fill="#0f172a" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="450" y="408" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">④ Recover Matching Engine</text>
+  <text x="450" y="422" text-anchor="middle" fill="#78350f" font-size="9">ME loads latest checkpoint database from PG</text>
+  <text x="450" y="434" text-anchor="middle" fill="#78350f" font-size="9">Replays Kafka events from committed offsets tracker</text>
+
+  <line x1="450" y1="452" x2="450" y2="480" stroke="#64748b" stroke-width="1.5" marker-end="url(#arr)"/>
+
+  <!-- Step 6: SRE Gate PASS checks -->
+  <rect x="290" y="480" width="320" height="96" rx="8" fill="#1b0c0c" stroke="#ef4444" stroke-width="1.8"/>
+  <text x="450" y="502" text-anchor="middle" fill="#fca5a5" font-size="12" font-weight="700">⑤ SRE Gate PASS Verification Checklist</text>
+  <line x1="305" y1="510" x2="595" y2="510" stroke="#991b1b" stroke-width="0.5"/>
+  <text x="310" y="524" fill="#fca5a5" font-size="9">✔ Wallet Invariants: available + reserved == total_balance</text>
+  <text x="310" y="538" fill="#fca5a5" font-size="9">✔ Kafka status: Brokers in-sync replicas aligned</text>
+  <text x="310" y="552" fill="#fca5a5" font-size="9">✔ ME catchup: offset lag is zero, orderbooks loaded</text>
+  <text x="310" y="566" fill="#fca5a5" font-size="9">✔ E2E synthetic trade checks: placements &amp; cancels pass</text>
+
+  <line x1="450" y1="576" x2="450" y2="604" stroke="#22c55e" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="465" y="594" fill="#22c55e" font-size="10">ALL PASS</text>
+
+  <!-- Step 7: Open lanes -->
+  <rect x="330" y="604" width="240" height="38" rx="8" fill="#0c1a0c" stroke="#22c55e" stroke-width="2"/>
+  <text x="450" y="628" text-anchor="middle" fill="#86efac" font-size="12" font-weight="700">⑥ Open Public Trading Lanes</text>
+</svg>

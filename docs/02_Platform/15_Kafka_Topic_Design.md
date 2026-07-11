@@ -50,8 +50,14 @@ Topics are partitioned based on their structural serialization key to distribute
 | `orders.cancel-requested.v1` | `12` | `market_id` | user cancel queue request | `market_id` |
 | `orders.cancelled.v1` | `12` | `market_id` | engine order cancellation execution | `market_id` |
 | `trades.executed.v1` | `12` | `market_id` | buy/sell order matched in-memory | `market_id` |
-| `trades.settled.v1` | `12` | `user_id` | wallet balance settlement complete | `user_id` |
+| `user-trades.settled.v1` | `12` | `user_id` | wallet balance settlement complete | `user_id` |
 | `portfolios.updated.v1` | `12` | `user_id` | holdings and average cost recalculation | `user_id` |
+| `admin.user-suspended.v1` | `12` | `user_id` | user account suspended notification | `user_id` |
+| `admin.market-halted.v1` | `12` | `market_id` | market trading emergency halt status | `market_id` |
+| `admin.market-commands.v1` | `12` | `market_id` | matching engine administrative triggers | `market_id` |
+| `wallet.deposit_completed.v1` | `12` | `user_id` | user cash/crypto deposit completed | `user_id` |
+| `wallet.withdrawal-initiated.v1` | `12` | `user_id` | outbound transfer check initiated | `user_id` |
+| `wallet.withdrawal-completed.v1` | `12` | `user_id` | transfer successfully sent off-chain | `user_id` |
 
 ---
 
@@ -173,8 +179,8 @@ Published when the Matching Engine successfully executes a buy/sell priority mat
 
 ---
 
-### 4.5 `TradeSettled` (Wallet Service)
-Published after `SettleTrade` commits. **Note: Because this event partitions by `user_id`, a single executed trade produces two separate `TradeSettled` messages — one for the buyer (key: buyer_id) and one for the seller (key: seller_id) — to parallelize portfolio rollup pipelines.**
+### 4.5 `UserTradeSettled` (Wallet Service)
+Published after `SettleTrade` commits. **Note: Because this event partitions by `user_id`, a single executed trade produces two separate `UserTradeSettled` messages — one for the buyer (key: buyer_id) and one for the seller (key: seller_id) — to parallelize portfolio rollup pipelines.**
 
 ```json
 {
@@ -216,8 +222,14 @@ To isolate failed events without blocking partition streams, every primary topic
 * `orders.cancel-requested.v1-dlq`
 * `orders.cancelled.v1-dlq`
 * `trades.executed.v1-dlq`
-* `trades.settled.v1-dlq`
+* `user-trades.settled.v1-dlq`
 * `portfolios.updated.v1-dlq`
+* `admin.user-suspended.v1-dlq`
+* `admin.market-halted.v1-dlq`
+* `admin.market-commands.v1-dlq`
+* `wallet.deposit_completed.v1-dlq`
+* `wallet.withdrawal-initiated.v1-dlq`
+* `wallet.withdrawal-completed.v1-dlq`
 
 ### DLQ Properties:
 * **Partition Count:** `1` (DLQs only record failure logs; strict ordering is not required).

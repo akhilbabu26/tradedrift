@@ -1,0 +1,41 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="750" height="450" viewBox="0 0 750 450">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#555555" />
+    </marker>
+    <marker id="one-to-many" viewBox="0 0 20 10" refX="18" refY="5" markerWidth="10" markerHeight="6" orient="auto-start-reverse">
+      <!-- Crow's foot representation for ER diagram -->
+      <path d="M 0 5 L 18 5 M 10 0 L 18 5 L 10 10" fill="none" stroke="#555555" stroke-width="1.5" />
+      <circle cx="6" cy="5" r="2" fill="white" stroke="#555555" stroke-width="1.5" />
+    </marker>
+  </defs>
+  <!-- Background -->
+  <rect width="100%" height="100%" fill="#fafafa" />  <rect x="50" y="50" width="120" height="50" rx="6" ry="6" fill="#e1d5e7" stroke="#b85450" stroke-width="2" />
+  <text x="110" y="80" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Extensions</text>
+  <rect x="210" y="50" width="120" height="50" rx="6" ry="6" fill="#e1d5e7" stroke="#b85450" stroke-width="2" />
+  <text x="270" y="80" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Auth DB</text>
+  <rect x="370" y="50" width="120" height="50" rx="6" ry="6" fill="#e1d5e7" stroke="#b85450" stroke-width="2" />
+  <text x="430" y="80" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Wallet DB</text>
+  <rect x="530" y="50" width="120" height="50" rx="6" ry="6" fill="#e1d5e7" stroke="#b85450" stroke-width="2" />
+  <text x="590" y="80" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Market DB</text>
+  <rect x="50" y="200" width="120" height="50" rx="6" ry="6" fill="#e1d5e7" stroke="#b85450" stroke-width="2" />
+  <text x="110" y="230" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Order DB</text>
+  <rect x="210" y="200" width="120" height="50" rx="6" ry="6" fill="#e1d5e7" stroke="#b85450" stroke-width="2" />
+  <text x="270" y="230" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Settlement DB</text>
+  <rect x="370" y="200" width="120" height="50" rx="6" ry="6" fill="#e1d5e7" stroke="#b85450" stroke-width="2" />
+  <text x="430" y="230" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Portfolio DB</text>
+  <rect x="530" y="200" width="120" height="50" rx="6" ry="6" fill="#e1d5e7" stroke="#b85450" stroke-width="2" />
+  <text x="590" y="230" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Trade DB</text>
+  <rect x="370" y="320" width="120" height="50" rx="6" ry="6" fill="#e1d5e7" stroke="#b85450" stroke-width="2" />
+  <text x="430" y="350" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Notification DB</text>
+  <line x1="170" y1="75" x2="200" y2="75" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="330" y1="75" x2="360" y2="75" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="490" y1="75" x2="520" y2="75" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="650" y1="75" x2="110" y2="190" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <text x="380" y="126.5" font-family="Segoe UI, sans-serif" font-size="10" font-weight="bold" fill="#777777" text-anchor="middle">Next</text>
+  <line x1="170" y1="225" x2="200" y2="225" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="330" y1="225" x2="360" y2="225" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="490" y1="225" x2="520" y2="225" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="590" y1="250" x2="430" y2="315" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <text x="510" y="276.5" font-family="Segoe UI, sans-serif" font-size="10" font-weight="bold" fill="#777777" text-anchor="middle">Settle Finish</text>
+</svg>

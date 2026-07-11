@@ -49,6 +49,7 @@ The Matching Engine is responsible for:
 - Publishing `TradeExecuted` events.
 - Publishing `OrderCancelled` events.
 - Publishing order book updates to Redis.
+- Consuming administrative commands (Halt/Resume) via Kafka to halt/resume matching per market.
 - Recovering the order book after restart.
 - Maintaining Kafka processing checkpoints.
 

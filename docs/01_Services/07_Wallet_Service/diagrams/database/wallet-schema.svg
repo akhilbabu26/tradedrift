@@ -75,9 +75,9 @@
   <rect x="60" y="510" width="360" height="100" rx="8" fill="#1e1a00" stroke="#f97316" stroke-width="1.5"/>
   <text x="240" y="530" text-anchor="middle" fill="#fb923c" font-size="12" font-weight="700">outbox</text>
   <text x="80" y="548" fill="#78350f" font-size="9">id UUID PK · aggregate_id UUID · event_type TEXT</text>
-  <text x="80" y="564" fill="#78350f" font-size="9">payload JSONB · partition_key TEXT (=market_id)</text>
+  <text x="80" y="564" fill="#78350f" font-size="9">payload JSONB · partition_key TEXT (=user_id)</text>
   <text x="80" y="580" fill="#78350f" font-size="9">published_at TIMESTAMPTZ · created_at TIMESTAMPTZ</text>
-  <text x="80" y="596" fill="#334155" font-size="8">Only TradeSettled events · published after SettleTrade commits atomically</text>
+  <text x="80" y="596" fill="#334155" font-size="8">Only UserTradeSettled events · published after SettleTrade commits atomically</text>
 
   <rect x="480" y="510" width="380" height="100" rx="8" fill="#0f172a" stroke="#22c55e" stroke-width="1.5"/>
   <text x="670" y="530" text-anchor="middle" fill="#86efac" font-size="12" font-weight="700">supported_assets</text>

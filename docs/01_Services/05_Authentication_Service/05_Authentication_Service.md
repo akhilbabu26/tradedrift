@@ -243,11 +243,11 @@ The JWT Validation Flow ([Section 3](../../#3-jwt-validation-flow)) and the API 
 ## 11. Security
 
 - All traffic to and from Authentication Service is over TLS — no plaintext credentials or tokens in transit, including internal gRPC calls.
-- Passwords are hashed with bcrypt/argon2, never stored or logged in plaintext.
+- Passwords are hashed with bcrypt. The cost factor work parameter is locked at a value of **10** (to be validated and adjusted during performance testing to ensure resource requirements and verification latencies remain stable), never stored or logged in plaintext.
 - Refresh tokens are stored hashed (not plaintext) in `refresh_tokens`, so a database read alone cannot be used to impersonate a session.
 - Every authentication-relevant event (login, logout, password change, refresh reuse detection) is written to an audit log with `user_id`, `ip`, `user_agent`, and timestamp, for security review.
 - Rate limiting on login and refresh endpoints is enforced at the API Gateway (Redis token bucket), not duplicated here.
-- **V1 deferral — Account lockout:** No per-account lockout after failed login attempts in V1. Gateway rate limiting (per-IP) provides baseline protection. A `failed_login_count` + `locked_until` mechanism on the `users` table is planned for V2.
+- **V1 failed login protection:** To defend against brute force credential stuffing, the `users` table tracks failed attempts in `failed_login_attempts` and temporarily locks accounts via `locked_until` after 5 failed attempts.
 - **V1 deferral — Email verification:** No email verification on registration in V1. TradeDrift is a simulator with no real assets, so the risk of unverified emails is acceptable. Email verification deferred to V2.
 
 ## 12. Identifiers
@@ -262,6 +262,8 @@ users(
   email, username,
   password_hash,
   status,                        -- ACTIVE | SUSPENDED | BANNED
+  failed_login_attempts INT,     -- tracks password failure count
+  locked_until TIMESTAMPTZ,      -- locked until this time on lockout
   created_at, updated_at, last_login_at, last_login_ip, last_login_ua
 )
 
@@ -271,6 +273,12 @@ refresh_tokens(
   token_hash,
   status,                        -- ACTIVE | ROTATED | REVOKED
   expires_at, created_at
+)
+
+blacklisted_tokens(
+  jti UUID PRIMARY KEY,
+  user_id UUID,
+  expires_at TIMESTAMPTZ
 )
 ```
 

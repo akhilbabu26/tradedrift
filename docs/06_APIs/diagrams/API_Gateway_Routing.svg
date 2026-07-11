@@ -1,0 +1,38 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="750" height="600" viewBox="0 0 750 600">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#555555" />
+    </marker>
+  </defs>
+  <!-- Background -->
+  <rect width="100%" height="100%" fill="#fafafa" />  <rect x="280" y="40" width="180" height="50" rx="6" ry="6" fill="#dae8fc" stroke="#6c8ebf" stroke-width="2" />
+  <text x="370" y="70" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Client HTTP Request</text>
+  <rect x="280" y="140" width="180" height="50" rx="6" ry="6" fill="#fff2cc" stroke="#d6b656" stroke-width="2" />
+  <text x="370" y="170" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">API Gateway Ingress</text>
+  <rect x="100" y="240" width="180" height="50" rx="6" ry="6" fill="#fff2cc" stroke="#d6b656" stroke-width="2" />
+  <text x="190" y="270" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Auth Check Gate</text>
+  <rect x="280" y="240" width="180" height="50" rx="6" ry="6" fill="#fff2cc" stroke="#d6b656" stroke-width="2" />
+  <text x="370" y="270" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Rate Limit Gate</text>
+  <rect x="460" y="240" width="180" height="50" rx="6" ry="6" fill="#fff2cc" stroke="#d6b656" stroke-width="2" />
+  <text x="550" y="270" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Idempotency Check Gate</text>
+  <rect x="50" y="400" width="180" height="50" rx="6" ry="6" fill="#dae8fc" stroke="#6c8ebf" stroke-width="2" />
+  <text x="140" y="430" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Auth gRPC Service</text>
+  <rect x="220" y="400" width="180" height="50" rx="6" ry="6" fill="#dae8fc" stroke="#6c8ebf" stroke-width="2" />
+  <text x="310" y="430" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Wallet gRPC Service</text>
+  <rect x="390" y="400" width="180" height="50" rx="6" ry="6" fill="#dae8fc" stroke="#6c8ebf" stroke-width="2" />
+  <text x="480" y="430" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Order gRPC Service</text>
+  <rect x="560" y="400" width="180" height="50" rx="6" ry="6" fill="#dae8fc" stroke="#6c8ebf" stroke-width="2" />
+  <text x="650" y="430" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Market gRPC Service</text>
+  <line x1="370" y1="90" x2="370" y2="140" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="370" y1="190" x2="190" y2="240" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="370" y1="190" x2="370" y2="240" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="370" y1="190" x2="550" y2="240" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="190" y1="290" x2="140" y2="400" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <text x="165" y="339" font-family="Segoe UI, sans-serif" font-size="10" font-weight="bold" fill="#777777" text-anchor="middle">Success</text>
+  <line x1="370" y1="290" x2="310" y2="400" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <text x="340" y="339" font-family="Segoe UI, sans-serif" font-size="10" font-weight="bold" fill="#777777" text-anchor="middle">Success</text>
+  <line x1="370" y1="290" x2="480" y2="400" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <text x="425" y="339" font-family="Segoe UI, sans-serif" font-size="10" font-weight="bold" fill="#777777" text-anchor="middle">Success</text>
+  <line x1="550" y1="290" x2="650" y2="400" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <text x="600" y="339" font-family="Segoe UI, sans-serif" font-size="10" font-weight="bold" fill="#777777" text-anchor="middle">Success</text>
+</svg>

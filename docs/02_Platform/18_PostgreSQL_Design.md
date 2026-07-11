@@ -53,15 +53,14 @@ To ensure atomic state mutations and message delivery guarantees across microser
 
 ### 3.1 Outbox Schema
 ```sql
-CREATE TYPE outbox_status AS ENUM ('PENDING', 'PUBLISHED');
-
 CREATE TABLE outbox (
     id             UUID PRIMARY KEY,                      -- UUIDv7 event identifier
     aggregate_id   UUID NOT NULL,                         -- Target aggregate UUID (e.g. order_id, user_id)
     event_type     VARCHAR(50) NOT NULL,                  -- Versioned type, e.g. 'orders.created.v1'
     payload        JSONB NOT NULL,                        -- Complete JSON payload content
     partition_key  VARCHAR(50) NOT NULL,                  -- Kafka partition routing key (e.g., market_id)
-    status         outbox_status NOT NULL DEFAULT 'PENDING',
+    status         VARCHAR(20) NOT NULL DEFAULT 'PENDING',-- 'PENDING', 'PUBLISHED', 'FAILED'
+    failed_reason  TEXT,                                  -- Failure context/error traceback
     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     published_at   TIMESTAMPTZ                            -- NULL until sent successfully
 );

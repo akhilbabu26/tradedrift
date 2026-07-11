@@ -1,0 +1,41 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="750" height="520" viewBox="0 0 750 520">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#555555" />
+    </marker>
+    <marker id="one-to-many" viewBox="0 0 20 10" refX="18" refY="5" markerWidth="10" markerHeight="6" orient="auto-start-reverse">
+      <!-- Crow's foot representation for ER diagram -->
+      <path d="M 0 5 L 18 5 M 10 0 L 18 5 L 10 10" fill="none" stroke="#555555" stroke-width="1.5" />
+      <circle cx="6" cy="5" r="2" fill="white" stroke="#555555" stroke-width="1.5" />
+    </marker>
+  </defs>
+  <!-- Background -->
+  <rect width="100%" height="100%" fill="#fafafa" />  <rect x="100" y="50" width="160" height="50" rx="6" ry="6" fill="#fff2cc" stroke="#d6b656" stroke-width="2" />
+  <text x="180" y="80" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Client Request</text>
+  <rect x="100" y="150" width="160" height="50" rx="6" ry="6" fill="#fff2cc" stroke="#d6b656" stroke-width="2" />
+  <text x="180" y="180" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">API Gateway</text>
+  <rect x="50" y="280" width="160" height="50" rx="6" ry="6" fill="#fff2cc" stroke="#d6b656" stroke-width="2" />
+  <text x="130" y="310" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Wallet Service</text>
+  <rect x="280" y="280" width="160" height="50" rx="6" ry="6" fill="#fff2cc" stroke="#d6b656" stroke-width="2" />
+  <text x="360" y="310" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Portfolio Service</text>
+  <!-- Cylinder: Wallet DB: Read Balances -->
+  <path d="M 50 410 L 50 450 A 80 10 0 0 0 210 450 L 210 410 A 80 10 0 0 1 50 410 Z" fill="#ffe6cc" stroke="#d79b00" stroke-width="2" />
+  <ellipse cx="130" cy="410" rx="80" ry="10" fill="#ffe6cc" stroke="#d79b00" stroke-width="2" />
+  <text x="130" y="438" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Wallet DB: Read Balances</text>
+  <!-- Cylinder: Portfolio DB: Read Holdings -->
+  <path d="M 280 410 L 280 450 A 80 10 0 0 0 440 450 L 440 410 A 80 10 0 0 1 280 410 Z" fill="#ffe6cc" stroke="#d79b00" stroke-width="2" />
+  <ellipse cx="360" cy="410" rx="80" ry="10" fill="#ffe6cc" stroke="#d79b00" stroke-width="2" />
+  <text x="360" y="438" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Portfolio DB: Read Holdings</text>
+  <rect x="510" y="400" width="160" height="50" rx="6" ry="6" fill="#fff2cc" stroke="#d6b656" stroke-width="2" />
+  <text x="590" y="430" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Redis: Read Tickers</text>
+  <line x1="180" y1="100" x2="180" y2="145" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="150" y1="200" x2="130" y2="275" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <text x="140" y="231.5" font-family="Segoe UI, sans-serif" font-size="10" font-weight="bold" fill="#777777" text-anchor="middle">GET /balances</text>
+  <line x1="210" y1="200" x2="330" y2="275" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <text x="270" y="231.5" font-family="Segoe UI, sans-serif" font-size="10" font-weight="bold" fill="#777777" text-anchor="middle">GET /portfolio/summary</text>
+  <line x1="130" y1="330" x2="130" y2="395" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="360" y1="330" x2="360" y2="395" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="360" y1="305" x2="220" y2="305" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <text x="290" y="299" font-family="Segoe UI, sans-serif" font-size="10" font-weight="bold" fill="#777777" text-anchor="middle">gRPC: GetBalance</text>
+  <line x1="440" y1="305" x2="590" y2="395" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+</svg>

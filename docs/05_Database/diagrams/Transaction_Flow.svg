@@ -1,0 +1,48 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="950" height="450" viewBox="0 0 950 450">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#555555" />
+    </marker>
+    <marker id="one-to-many" viewBox="0 0 20 10" refX="18" refY="5" markerWidth="10" markerHeight="6" orient="auto-start-reverse">
+      <!-- Crow's foot representation for ER diagram -->
+      <path d="M 0 5 L 18 5 M 10 0 L 18 5 L 10 10" fill="none" stroke="#555555" stroke-width="1.5" />
+      <circle cx="6" cy="5" r="2" fill="white" stroke="#555555" stroke-width="1.5" />
+    </marker>
+  </defs>
+  <!-- Background -->
+  <rect width="100%" height="100%" fill="#fafafa" />  <rect x="30" y="50" width="260" height="50" rx="6" ry="6" fill="#d5e8d4" stroke="#82b366" stroke-width="2" />
+  <text x="160" y="80" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Client: POST /orders</text>
+  <rect x="30" y="150" width="260" height="50" rx="6" ry="6" fill="#d5e8d4" stroke="#82b366" stroke-width="2" />
+  <text x="160" y="180" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Order Service: Write Order + Outbox (Tx 1)</text>
+  <rect x="30" y="250" width="260" height="50" rx="6" ry="6" fill="#d5e8d4" stroke="#82b366" stroke-width="2" />
+  <text x="160" y="280" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Outbox Publisher: Poll &amp; Produce</text>
+  <rect x="30" y="350" width="260" height="50" rx="6" ry="6" fill="#f8cecc" stroke="#b85450" stroke-width="2" />
+  <text x="160" y="380" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Kafka Topic: orders.created</text>
+  <rect x="330" y="350" width="260" height="50" rx="6" ry="6" fill="#d5e8d4" stroke="#82b366" stroke-width="2" />
+  <text x="460" y="380" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Matching Engine: Match &amp; Produce</text>
+  <rect x="330" y="250" width="260" height="50" rx="6" ry="6" fill="#f8cecc" stroke="#b85450" stroke-width="2" />
+  <text x="460" y="280" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Kafka Topic: trades.executed</text>
+  <rect x="330" y="150" width="260" height="50" rx="6" ry="6" fill="#d5e8d4" stroke="#82b366" stroke-width="2" />
+  <text x="460" y="180" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Settlement Svc: Consume &amp; Call SettleTrade</text>
+  <rect x="330" y="50" width="260" height="50" rx="6" ry="6" fill="#d5e8d4" stroke="#82b366" stroke-width="2" />
+  <text x="460" y="80" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Wallet Svc: Settle balance &amp; Outbox (Tx 2)</text>
+  <rect x="630" y="50" width="260" height="50" rx="6" ry="6" fill="#d5e8d4" stroke="#82b366" stroke-width="2" />
+  <text x="760" y="80" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Outbox Publisher: Poll &amp; Produce Settled</text>
+  <rect x="630" y="150" width="260" height="50" rx="6" ry="6" fill="#f8cecc" stroke="#b85450" stroke-width="2" />
+  <text x="760" y="180" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Kafka Topic: user-trades.settled</text>
+  <rect x="630" y="250" width="260" height="50" rx="6" ry="6" fill="#d5e8d4" stroke="#82b366" stroke-width="2" />
+  <text x="760" y="280" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Notification Svc: Write inbox &amp; Push WS (Tx 3)</text>
+  <rect x="630" y="350" width="260" height="50" rx="6" ry="6" fill="#d5e8d4" stroke="#82b366" stroke-width="2" />
+  <text x="760" y="380" font-family="Segoe UI, sans-serif" font-size="12" font-weight="bold" text-anchor="middle" fill="#2c3e50">Client: WS Trade Fill Notification</text>
+  <line x1="160" y1="100" x2="160" y2="150" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="160" y1="200" x2="160" y2="250" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="160" y1="300" x2="160" y2="350" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="160" y1="400" x2="460" y2="350" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="460" y1="400" x2="460" y2="250" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="460" y1="300" x2="460" y2="150" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="460" y1="200" x2="460" y2="50" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="460" y1="100" x2="760" y2="50" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="760" y1="100" x2="760" y2="150" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="760" y1="200" x2="760" y2="250" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+  <line x1="760" y1="300" x2="760" y2="350" stroke="#555555" stroke-width="1.5" marker-end="url(#arrow)" />
+</svg>

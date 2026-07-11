@@ -65,9 +65,9 @@
   <text x="562" y="408" text-anchor="middle" fill="#334155" font-size="8">reservation: ACTIVE → PARTIALLY/CONSUMED</text>
   <text x="562" y="419" text-anchor="middle" fill="#334155" font-size="8">txn: CREDIT · SETTLEMENT · quote_asset</text>
 
-  <!-- Outbox TradeSettled -->
+  <!-- Outbox UserTradeSettled -->
   <rect x="238" y="428" width="424" height="30" rx="5" fill="#1e1a00" stroke="#f97316" stroke-width="1.2"/>
-  <text x="450" y="447" text-anchor="middle" fill="#fdba74" font-size="10" font-weight="600">INSERT outbox: TradeSettled event (partition_key = market_id)</text>
+  <text x="450" y="447" text-anchor="middle" fill="#fdba74" font-size="10" font-weight="600">INSERT outbox: UserTradeSettled event (partition_key = user_id)</text>
 
   <!-- Unique violation catch note -->
   <rect x="238" y="465" width="424" height="48" rx="5" fill="#0f172a" stroke="#334155" stroke-width="1"/>

@@ -37,7 +37,7 @@ Detailed verification writeups for each scenario are split into specific domain 
 
 ## 3. Audit Domain Catalog
 
-The audit report is divided into six specialized documents:
+The audit report is divided into eight specialized documents:
 
 1. **[`01_Trading_Lifecycle_Audit.md`](01_Trading_Lifecycle_Audit.md)**: Validates order creation, validation, reservation locking, matching execution, and cancellation flows.
 2. **[`02_Data_Consistency_Audit.md`](02_Data_Consistency_Audit.md)**: Verifies exact fixed-decimal representation, outbox sequence locks, event broker contracts, and database isolation levels.
@@ -45,6 +45,8 @@ The audit report is divided into six specialized documents:
 4. **[`04_Operational_Readiness_Audit.md`](04_Operational_Readiness_Audit.md)**: Reviews managed cloud architecture vs self-hosting, trace propagation sampling levels, structured logging keys, and SRE alerts catalogs.
 5. **[`05_Disaster_Recovery_Audit.md`](05_Disaster_Recovery_Audit.md)**: Reviews backup schedule compliance, cross-region replication latency bounds, matching engine checkpoint replays, and switchover gate checklists.
 6. **[`06_Admin_Platform_Audit.md`](06_Admin_Platform_Audit.md)**: Validates account suspensions, frozen wallets, emergency trading pair halts, and manual DLQ settlement retry procedures.
+7. **[`07_Scalability_Audit.md`](07_Scalability_Audit.md)**: Audits system horizontal scaling bottlenecks, Kafka partition mappings, single consumer thread limits, and Redis/PostgreSQL scaling constraints.
+8. **[`08_Latency_Performance_Audit.md`](08_Latency_Performance_Audit.md)**: Deconstructs network hops and measures logical P50/P95/P99 latency estimates across all critical path operations (logins, placements, fills).
 
 ---
 

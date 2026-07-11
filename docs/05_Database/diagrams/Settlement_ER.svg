@@ -1,0 +1,25 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="450" height="350" viewBox="0 0 450 350">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1.5 L 8 5 L 0 8.5 z" fill="#555555" />
+    </marker>
+    <marker id="one-to-many" viewBox="0 0 20 10" refX="18" refY="5" markerWidth="10" markerHeight="6" orient="auto-start-reverse">
+      <!-- Crow's foot representation for ER diagram -->
+      <path d="M 0 5 L 18 5 M 10 0 L 18 5 L 10 10" fill="none" stroke="#555555" stroke-width="1.5" />
+      <circle cx="6" cy="5" r="2" fill="white" stroke="#555555" stroke-width="1.5" />
+    </marker>
+  </defs>
+  <!-- Background -->
+  <rect width="100%" height="100%" fill="#fafafa" />  <!-- Table: settled_trades -->
+  <rect x="100" y="50" width="240" height="232" rx="6" ry="6" fill="#ffffff" stroke="#4e5d6c" stroke-width="1.5" />
+  <path d="M 100 56 A 6 6 0 0 1 106 50 L 334 50 A 6 6 0 0 1 340 56 L 340 80 L 100 80 Z" fill="#4e5d6c" />
+  <text x="220" y="70" font-family="Segoe UI, sans-serif" font-size="13" font-weight="bold" text-anchor="middle" fill="#ffffff">settled_trades</text>
+  <text x="112" y="98" font-family="Consolas, Monaco, monospace" font-size="11" font-weight="bold" fill="#c0392b">+ trade_id : UUID [PK]</text>
+  <text x="112" y="122" font-family="Consolas, Monaco, monospace" font-size="11" font-weight="normal" fill="#2c3e50">  buyer_id : UUID</text>
+  <text x="112" y="146" font-family="Consolas, Monaco, monospace" font-size="11" font-weight="normal" fill="#2c3e50">  seller_id : UUID</text>
+  <text x="112" y="170" font-family="Consolas, Monaco, monospace" font-size="11" font-weight="normal" fill="#2c3e50">  market_id : VARCHAR(20)</text>
+  <text x="112" y="194" font-family="Consolas, Monaco, monospace" font-size="11" font-weight="normal" fill="#2c3e50">  price : DECIMAL(30,10)</text>
+  <text x="112" y="218" font-family="Consolas, Monaco, monospace" font-size="11" font-weight="normal" fill="#2c3e50">  quantity : DECIMAL(30,10)</text>
+  <text x="112" y="242" font-family="Consolas, Monaco, monospace" font-size="11" font-weight="normal" fill="#2c3e50">  status : VARCHAR(20)</text>
+  <text x="112" y="266" font-family="Consolas, Monaco, monospace" font-size="11" font-weight="normal" fill="#2c3e50">  settled_at : TIMESTAMPTZ</text>
+</svg>

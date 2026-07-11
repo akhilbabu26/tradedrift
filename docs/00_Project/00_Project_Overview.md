@@ -8,7 +8,7 @@
 
 # Overview
 
-TradeDrift is a production-inspired cryptocurrency paper trading platform that reproduces the architecture and operational behavior of a real cryptocurrency exchange while using entirely virtual assets.
+TradeDrift is a production-inspired cryptocurrency exchange simulator engineered to reproduce the technical architecture and operational behavior of a real cryptocurrency exchange while trading exclusively in virtual assets.
 
 Unlike traditional paper trading applications that only simulate profit and loss, TradeDrift models the complete exchange lifecycle, including:
 
@@ -280,6 +280,7 @@ AI Intelligence
 ## 03_Standards
 * [README.md](../03_Standards/README.md)
 * [ID_Correlation_Standard.md](../03_Standards/ID_Correlation_Standard.md)
+* [02_Shared_Foundation_Design.md](../03_Standards/02_Shared_Foundation_Design.md)
 
 ## 04_Audits
 * [README.md](../04_Audits/README.md)
@@ -289,6 +290,22 @@ AI Intelligence
 * [04_Operational_Readiness_Audit.md](../04_Audits/04_Operational_Readiness_Audit.md)
 * [05_Disaster_Recovery_Audit.md](../04_Audits/05_Disaster_Recovery_Audit.md)
 * [06_Admin_Platform_Audit.md](../04_Audits/06_Admin_Platform_Audit.md)
+* [07_Scalability_Audit.md](../04_Audits/07_Scalability_Audit.md)
+* [08_Latency_Performance_Audit.md](../04_Audits/08_Latency_Performance_Audit.md)
+
+## 07_Database
+* [README.md](../07_Database/README.md)
+* [01_Database_Standards.md](../07_Database/01_Database_Standards.md)
+* [02_Auth_Database.md](../07_Database/02_Auth_Database.md)
+* [03_Wallet_Database.md](../07_Database/03_Wallet_Database.md)
+* [04_Order_Database.md](../07_Database/04_Order_Database.md)
+* [05_Settlement_Database.md](../07_Database/05_Settlement_Database.md)
+* [06_Portfolio_Database.md](../07_Database/06_Portfolio_Database.md)
+* [07_Trade_Database.md](../07_Database/07_Trade_Database.md)
+* [08_Notification_Database.md](../07_Database/08_Notification_Database.md)
+* [09_Market_Database.md](../07_Database/09_Market_Database.md)
+* [10_Index_Strategy.md](../07_Database/10_Index_Strategy.md)
+* [11_Migration_Order.md](../07_Database/11_Migration_Order.md)
 
 ---
 

@@ -16,3 +16,4 @@ This directory contains the engineering standards, guidelines, and specification
 ## 2. Standards Catalog
 
 * **[`ID_Correlation_Standard.md`](ID_Correlation_Standard.md):** Defines our UUIDv7 primary keys generation policies, transaction causation tracking, context headers mapping, and databases layout requirements.
+* **[`02_Shared_Foundation_Design.md`](02_Shared_Foundation_Design.md):** Defines our shared package layouts, Go workspaces configuration, protobuf compilation scripts, and reuse interfaces for UUID, outbox, and JWT interceptors.

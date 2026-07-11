@@ -52,13 +52,15 @@ In the event of market anomaly or system maintenance, SRE can halt trading for a
 
 ![Market Halt Circuit Breaker Flow](diagrams/flow/market-halt-flow.svg)
 
-* **Matching Engine Behavior:**
-  * When a `HaltMarket` command is received, the ME updates the market's state to `HALTED` in memory.
-  * Any subsequent `OrderCreated` events consumed from the Kafka partition are immediately rejected: ME publishes an `OrderCancelled` event with reason `market_halted`, and does not add the order to the book.
-  * `OrderCancelRequested` events are still processed normally to allow users to pull resting orders during a halt.
+* **Matching Engine Behavior & Command Delivery:**
+  - Administrative commands (`HaltMarket`, `ResumeMarket`) are delivered asynchronously via the **`admin.market-commands.v1`** Kafka topic (partitioned by `market_id` to route to the correct market Event Loop).
+  - When a `HaltMarket` command is consumed, the ME updates the market's state to `HALTED` in memory.
+  - Any subsequent `OrderCreated` events consumed from the Kafka partition are immediately rejected: ME publishes an `OrderCancelled` event with reason `market_halted`, and does not add the order to the book.
+  - `OrderCancelRequested` events are still processed normally to allow users to pull resting orders during a halt.
+  - Consuming a `ResumeMarket` command updates the market's state back to `ACTIVE`, enabling matching to resume.
 * **Order Service Behavior:**
-  * Consumes the `MarketHalted` Kafka event and updates its local cache.
-  * The API Gateway / Order Service immediately rejects incoming `POST /orders` requests for the halted symbol with a `503 Service Unavailable` response, reducing useless Kafka traffic.
+  - Consumes the `MarketHalted` Kafka event and updates its local cache.
+  - The API Gateway / Order Service immediately rejects incoming `POST /orders` requests for the halted symbol with a `503 Service Unavailable` response, reducing useless Kafka traffic.
 
 ---
 

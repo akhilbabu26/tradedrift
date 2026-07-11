@@ -252,6 +252,7 @@ AI Intelligence
 
 ## 01_Services
 * [README.md](../01_Services/README.md)
+* [00_System_Flows.md](../01_Services/00_System_Flows.md)
 * [04_API_Gateway.md](../01_Services/04_API_Gateway/04_API_Gateway.md)
 * [05_Authentication_Service.md](../01_Services/05_Authentication_Service/05_Authentication_Service.md)
 * [07_Wallet_Service.md](../01_Services/07_Wallet_Service/07_Wallet_Service.md)
@@ -276,6 +277,7 @@ AI Intelligence
 * [21_Observability.md](../02_Platform/21_Observability.md)
 * [22_Disaster_Recovery.md](../02_Platform/22_Disaster_Recovery.md)
 * [24_Admin_Workflows.md](../02_Platform/24_Admin_Workflows.md)
+* [25_Production_Infrastructure_Architecture.md](../02_Platform/25_Production_Infrastructure_Architecture.md)
 
 ## 03_Standards
 * [README.md](../03_Standards/README.md)

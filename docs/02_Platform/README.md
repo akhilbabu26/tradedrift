@@ -26,3 +26,4 @@ This directory contains specifications detailing our underlying infrastructure, 
 * **[`21_Observability.md`](21_Observability.md):** Hybrid tracing trace parent propagation standard, W3C standards, and alert catalogs.
 * **[`22_Disaster_Recovery.md`](22_Disaster_Recovery.md):** Async cross-region latency limits, promote commands, and restoration drills.
 * **[`24_Admin_Workflows.md`](24_Admin_Workflows.md):** Administrative procedures (halts, suspension saga, freeze wallet), mTLS, and rate limits.
+* **[`25_Production_Infrastructure_Architecture.md`](25_Production_Infrastructure_Architecture.md):** Complete production platform infrastructure design covering DNS, CDN, gateways, scaling, proxies, and deployment policies.

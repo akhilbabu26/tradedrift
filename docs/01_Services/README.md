@@ -15,6 +15,7 @@ This directory contains the detailed service design specifications for each micr
 
 ## 2. Services Specification Catalog
 
+* **[`00_System_Flows.md`](00_System_Flows.md):** Complete sequence flows, step-by-step logic, transaction boundaries, and state machines across all microservices.
 * **[`04_API_Gateway`](04_API_Gateway/04_API_Gateway.md):** Ingress gateway middleware pipeline (CORS, rate limit checks, route resolution, JWT validations, gRPC forwarding).
 * **[`05_Authentication_Service`](05_Authentication_Service/05_Authentication_Service.md):** Session lifecycles, user profiles management, refresh token rotation, and active blacklist caches.
 * **[`07_Wallet_Service`](07_Wallet_Service/07_Wallet_Service.md):** In-ledger balance adjustments, reservations, and V10 deposit/withdrawal funding lifecycles.

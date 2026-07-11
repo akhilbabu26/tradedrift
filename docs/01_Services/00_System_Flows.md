@@ -1,4 +1,4 @@
-﻿# TradeDrift — Complete System Flows
+# TradeDrift — Complete System Flows
 
 > Every flow across all services, in correct order.
 
@@ -96,7 +96,7 @@ Incoming HTTP Request (from web / mobile client)
 +----------------------------------------------------------+
 | 6. gRPC Client                                           |
 |    Forward to resolved target service                    |
-|    Timeout: 5s  |  Circuit breaker on persistent fails  |
+|    Timeout: 2s  |  Circuit breaker on persistent fails  |
 +-----------------------------+----------------------------+
                               |              |
                            SUCCESS         FAIL
@@ -582,9 +582,12 @@ gRPC: SettleTrade(trade_id, buyer_id, seller_id,
   |     UPDATE wallets (buyer's BTC wallet)
   |       available_balance += 0.5 BTC
   |     INSERT wallet_transactions(
-  |       reference_id   = trade_id  [*]
-  |       reference_type = SETTLEMENT
-  |       asset = BTC, amount = 0.5, type = CREDIT
+  |       id               = UUIDv7
+  |       wallet_id        = buyer_btc_wallet_id
+  |       reference_id     = trade_id  [*]
+  |       reference_type   = SETTLEMENT
+  |       transaction_type = CREDIT
+  |       asset = BTC, amount = 0.5
   |     )
   |
   +-- SELLER LEG  (spent BTC, receives USDT)
@@ -594,9 +597,12 @@ gRPC: SettleTrade(trade_id, buyer_id, seller_id,
   |     UPDATE wallets (seller's USDT wallet)
   |       available_balance += 30,000 USDT
   |     INSERT wallet_transactions(
-  |       reference_id   = trade_id  [*]
-  |       reference_type = SETTLEMENT
-  |       asset = USDT, amount = 30,000, type = CREDIT
+  |       id               = UUIDv7
+  |       wallet_id        = seller_usdt_wallet_id
+  |       reference_id     = trade_id  [*]
+  |       reference_type   = SETTLEMENT
+  |       transaction_type = CREDIT
+  |       asset = USDT, amount = 30,000
   |     )
   |
   +-- INSERT outbox(event = TradeSettled, payload includes trade_id, order_ids)
@@ -842,7 +848,7 @@ ReleaseFunds returns exactly remaining_amount to available_balance
 ```
 ===================== SYNCHRONOUS (gRPC -- blocking) =====================
 
-  API Gateway        --> Any downstream service    (gRPC forward, 5s timeout)
+  API Gateway        --> Any downstream service    (gRPC forward, 2s timeout)
   Auth Service       --> Wallet Service            InitializeWallet(user_id)
   Order Service      --> Wallet Service            ReserveFunds(user_id, order_id, asset, amount)
   Order Service      --> Wallet Service            ReleaseFunds(order_id)

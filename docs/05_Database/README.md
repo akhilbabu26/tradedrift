@@ -2,7 +2,7 @@
 
 > **Status:** ✅ Designed (V1.0)
 > **Document:** README.md
-> **Directory:** docs/07_Database/
+> **Directory:** docs/05_Database/
 > **Last Updated:** July 2026
 
 ---

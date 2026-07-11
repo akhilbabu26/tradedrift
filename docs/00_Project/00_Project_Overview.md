@@ -293,43 +293,89 @@ AI Intelligence
 * [07_Scalability_Audit.md](../04_Audits/07_Scalability_Audit.md)
 * [08_Latency_Performance_Audit.md](../04_Audits/08_Latency_Performance_Audit.md)
 
-## 07_Database
-* [README.md](../07_Database/README.md)
-* [01_Database_Standards.md](../07_Database/01_Database_Standards.md)
-* [02_Auth_Database.md](../07_Database/02_Auth_Database.md)
-* [03_Wallet_Database.md](../07_Database/03_Wallet_Database.md)
-* [04_Order_Database.md](../07_Database/04_Order_Database.md)
-* [05_Settlement_Database.md](../07_Database/05_Settlement_Database.md)
-* [06_Portfolio_Database.md](../07_Database/06_Portfolio_Database.md)
-* [07_Trade_Database.md](../07_Database/07_Trade_Database.md)
-* [08_Notification_Database.md](../07_Database/08_Notification_Database.md)
-* [09_Market_Database.md](../07_Database/09_Market_Database.md)
-* [10_Index_Strategy.md](../07_Database/10_Index_Strategy.md)
-* [11_Migration_Order.md](../07_Database/11_Migration_Order.md)
+## 05_Database
+* [README.md](../05_Database/README.md)
+* [01_Database_Standards.md](../05_Database/01_Database_Standards.md)
+* [02_Auth_Database.md](../05_Database/02_Auth_Database.md)
+* [03_Wallet_Database.md](../05_Database/03_Wallet_Database.md)
+* [04_Order_Database.md](../05_Database/04_Order_Database.md)
+* [05_Settlement_Database.md](../05_Database/05_Settlement_Database.md)
+* [06_Portfolio_Database.md](../05_Database/06_Portfolio_Database.md)
+* [07_Trade_Database.md](../05_Database/07_Trade_Database.md)
+* [08_Notification_Database.md](../05_Database/08_Notification_Database.md)
+* [09_Market_Database.md](../05_Database/09_Market_Database.md)
+* [10_Index_Strategy.md](../05_Database/10_Index_Strategy.md)
+* [11_Migration_Order.md](../05_Database/11_Migration_Order.md)
+
+## 06_APIs
+* [README.md](../06_APIs/README.md)
+* [01_API_Standards.md](../06_APIs/01_API_Standards.md)
+* [02_Authentication_API.md](../06_APIs/02_Authentication_API.md)
+* [03_Wallet_API.md](../06_APIs/03_Wallet_API.md)
+* [04_Order_API.md](../06_APIs/04_Order_API.md)
+* [05_Market_API.md](../06_APIs/05_Market_API.md)
+* [06_Notification_API.md](../06_APIs/06_Notification_API.md)
+* [07_Portfolio_API.md](../06_APIs/07_Portfolio_API.md)
+* [08_Admin_API.md](../06_APIs/08_Admin_API.md)
+* [09_WebSocket_API.md](../06_APIs/09_WebSocket_API.md)
+* [10_Health_API.md](../06_APIs/10_Health_API.md)
+
+## 07_Development
+* [README.md](../07_Development/README.md)
+* [01_Project_Structure.md](../07_Development/01_Project_Structure.md)
+* [02_Coding_Standards.md](../07_Development/02_Coding_Standards.md)
+* [03_Branch_Strategy.md](../07_Development/03_Branch_Strategy.md)
+* [04_Testing_Strategy.md](../07_Development/04_Testing_Strategy.md)
+* [05_Contribution_Guide.md](../07_Development/05_Contribution_Guide.md)
 
 ---
 
 # Current Status
 
-✅ API Gateway Designed
+### 1. Service Architectures (Design Phase)
+* [x] **API Gateway:** ✅ Designed
+* [x] **Authentication Service:** ✅ Designed
+* [x] **Wallet Service:** ✅ Designed
+* [x] **Order Service:** ✅ Designed
+* [x] **Matching Engine:** ✅ Designed
+* [x] **Settlement Service:** ✅ Designed
+* [x] **Trade Service:** ✅ Designed
+* [x] **Portfolio Service:** ✅ Designed
+* [x] **Market Service:** ✅ Designed
+* [x] **Notification Service:** ✅ Designed
 
-✅ Authentication Service Designed
+### 2. Platform & Standards (Design Phase)
+* [x] **Distributed Tracing & Correlation:** ✅ Designed
+* [x] **Shared SDK Foundation:** ✅ Designed
+* [x] **Database Outbox Engine:** ✅ Designed
+* [x] **Kafka Topic Topology:** ✅ Designed
 
-✅ Order Service Designed
+### 3. Database Architecture (Design Phase)
+* [x] **Unified DB Standards:** ✅ Designed
+* [x] **8 Service Schema Definitions (DDL SQL):** ✅ Designed & Created
+* [x] **Composite Index Strategy:** ✅ Designed
+* [x] **Migration Dependency Sequence:** ✅ Designed
+* [x] **Vector Database ER / Flow Diagrams:** ✅ Generated (SVGs)
 
-✅ Wallet Service Designed
+### 4. API Design (Design Phase)
+* [x] **REST Contract Standards:** ✅ Designed
+* [x] **Idempotency & Rate Limit Catalog:** ✅ Designed
+* [x] **API Error Codes Registry:** ✅ Designed
+* [x] **Kubernetes Health Probe Spec:** ✅ Designed
+* [x] **WebSocket Streaming Frame Spec:** ✅ Designed
+* [x] **Vector API Routing Diagrams:** ✅ Generated (SVGs)
 
-✅ Matching Engine Designed
+### 5. Development Guidelines (Design Phase)
+* [x] **Multi-Module Monorepo Layout:** ✅ Designed
+* [x] **Linter & Coding Standards:** ✅ Designed
+* [x] **Git Branch & Review Strategy:** ✅ Designed
+* [x] **Mocking & Integration Testing Strategy:** ✅ Designed
+* [x] **Architecture Change Request (ACR) Governance:** ✅ Designed
 
-✅ Settlement Service Designed
-
-✅ Trade Service Designed
-
-✅ Portfolio Service Designed
-
-✅ Market Service Designed
-
-✅ Notification Service Designed
+### 6. Source Implementation Phase
+* [ ] **Phase 1: Must Fix Before Code (Shared SDK / Wallet ordering):** ⏳ Pending Code
+* [ ] **Phase 2: Local Deployment Execution:** ⏳ Pending Code
+* [ ] **Phase 3: Production Hardening:** ⏳ Pending Code
 
 ---
 

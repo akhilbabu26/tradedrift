@@ -1,4 +1,4 @@
-$outDir = "c:\Users\AKHIL BABU\OneDrive\Desktop\tradedrift\docs\07_Database\diagrams"
+$outDir = "c:\Users\AKHIL BABU\OneDrive\Desktop\tradedrift\docs\05_Database\diagrams"
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir }
 
 function Create-SvgBase($width, $height) {

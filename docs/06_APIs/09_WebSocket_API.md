@@ -2,7 +2,7 @@
 
 > **Status:** ✅ Frozen (V1.0)
 > **Document:** 09_WebSocket_API.md
-> **Directory:** docs/08_APIs/
+> **Directory:** docs/06_APIs/
 > **Last Updated:** July 2026
 
 ---

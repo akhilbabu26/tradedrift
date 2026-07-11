@@ -2,7 +2,7 @@
 
 > **Status:** ✅ Designed (V1.0)
 > **Document:** README.md
-> **Directory:** docs/08_APIs/
+> **Directory:** docs/06_APIs/
 > **Last Updated:** July 2026
 
 ---

@@ -2,7 +2,7 @@
 
 > **Status:** ✅ Frozen (V1.0)
 > **Document:** 02_Auth_Database.md
-> **Directory:** docs/07_Database/
+> **Directory:** docs/05_Database/
 > **Last Updated:** July 2026
 
 ---

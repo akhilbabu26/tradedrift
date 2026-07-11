@@ -2,7 +2,7 @@
 
 > **Status:** ✅ Frozen (V1.0)
 > **Document:** 01_API_Standards.md
-> **Directory:** docs/08_APIs/
+> **Directory:** docs/06_APIs/
 > **Last Updated:** July 2026
 
 ---
@@ -28,6 +28,26 @@ To enforce clear data conventions, names translate automatically at boundary lay
 1. **REST JSON Payload:** Property names must use **`camelCase`** (e.g. `orderId`, `price`).
 2. **PostgreSQL DB Tables:** Column names must use **`snake_case`** (e.g. `order_id`, `price`).
 3. **Go Application Code:** Struct properties must use **`CamelCase`** (e.g. `OrderID`, `Price`).
+
+### 1.3 Intentional Translation Mappings
+Naming differences across boundaries (for example, client-facing `orderType` in REST API vs `order_type` inside Postgres columns) are intentional and expected mappings. These are handled natively by Go structs using field tags:
+```go
+type Order struct {
+    OrderType string `json:"orderType" db:"order_type"`
+}
+```
+
+### 1.4 Supported Assets Initialization
+To guarantee that newly provisioned databases are instantly ready for registration:
+* **Seeding Choice:** Standard supported assets (`USDT`, `BTC`, `ETH`, `SOL`) are initialized via SQL `INSERT` DDL statements at database setup time (SQL seed files / migrations) rather than application bootstrap code.
+* **Dynamic Expansion:** Adding new tradable tokens post-deployment is managed by DBA transactions inserting new rows into the `supported_assets` table without requiring application code changes.
+
+### 1.5 Event Schema Version Consistency
+* All event formats published by the Outbox Pattern must follow strict version consistency matching:
+  - Protobuf Package Version: `v1` (e.g. `order/v1/order.proto`).
+  - Kafka Suffix Suffix: `.v1` (e.g. `orders.created.v1`).
+  - Envelope Metadata: `event_version = 1`.
+* Breaking updates require releasing a parallel `v2` package stub and a corresponding `.v2` Kafka topic pipeline.
 
 ---
 

@@ -47,6 +47,8 @@ The audit report is divided into eight specialized documents:
 6. **[`06_Admin_Platform_Audit.md`](06_Admin_Platform_Audit.md)**: Validates account suspensions, frozen wallets, emergency trading pair halts, and manual DLQ settlement retry procedures.
 7. **[`07_Scalability_Audit.md`](07_Scalability_Audit.md)**: Audits system horizontal scaling bottlenecks, Kafka partition mappings, single consumer thread limits, and Redis/PostgreSQL scaling constraints.
 8. **[`08_Latency_Performance_Audit.md`](08_Latency_Performance_Audit.md)**: Deconstructs network hops and measures logical P50/P95/P99 latency estimates across all critical path operations (logins, placements, fills).
+9. **[`09_Final_Design_Readiness_Audit.md`](09_Final_Design_Readiness_Audit.md)**: Comprehensive design readiness audit certifying 100/100 APPROVED status for code freeze.
+10. **[`09_Final_Design_Readiness_Audit_v1.md`](09_Final_Design_Readiness_Audit_v1.md)**: Archived historical v1 audit record documenting initial anomalies and required database fixes.
 
 ---
 

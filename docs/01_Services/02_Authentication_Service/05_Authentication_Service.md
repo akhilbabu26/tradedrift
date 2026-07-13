@@ -39,7 +39,7 @@ Validate Input (email format, password rules, username rules)
   ↓
 Check Duplicate (email / username exists?)
   ├── Yes → 409 Conflict: email/username already exists
-  └── No  → Hash Password (bcrypt / argon2)
+  └── No  → Hash Password (bcrypt)
               ↓
             Create User (insert into users table, id = UUIDv7)
               ↓
@@ -185,7 +185,7 @@ Token Valid?
               ├── No  → 401 Unauthorized: incorrect password
               └── Yes → Validate New Password (check strength rules)
                           ↓
-                        Hash New Password (bcrypt / argon2)
+                        Hash New Password (bcrypt)
                           ↓
                         Update Password (in users table)
                           ↓
@@ -243,7 +243,7 @@ The JWT Validation Flow ([Section 3](#3-jwt-validation-flow)) and the API Gatewa
 ## 11. Security
 
 - All traffic to and from Authentication Service is over TLS — no plaintext credentials or tokens in transit, including internal gRPC calls.
-- Passwords are hashed with bcrypt. The cost factor work parameter is locked at a value of **10** (to be validated and adjusted during performance testing to ensure resource requirements and verification latencies remain stable), never stored or logged in plaintext.
+- Passwords are hashed with **bcrypt** (not argon2). The cost factor work parameter is locked at a value of **10** (to be validated and adjusted during performance testing to ensure resource requirements and verification latencies remain stable), never stored or logged in plaintext.
 - Refresh tokens are stored hashed (not plaintext) in `refresh_tokens`, so a database read alone cannot be used to impersonate a session.
 - Every authentication-relevant event (login, logout, password change, refresh reuse detection) is written to an audit log with `user_id`, `ip`, `user_agent`, and timestamp, for security review.
 - Rate limiting on login and refresh endpoints is enforced at the API Gateway (Redis token bucket), not duplicated here.

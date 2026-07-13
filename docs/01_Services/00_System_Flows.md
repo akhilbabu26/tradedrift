@@ -129,7 +129,7 @@ POST /auth/register  { email, username, password }
   |     email exists?          YES --> 409 Conflict
   |     username exists?       YES --> 409 Conflict
   |
-  +-- Hash password  (bcrypt / argon2 -- never stored plaintext)
+  +-- Hash password  (bcrypt -- never stored plaintext)
   |
   +-- [*] Generate user_id  (UUIDv7, in application code)
   |          This ID is passed to Wallet and used by every service forever
@@ -179,7 +179,7 @@ POST /auth/login  { email, password }
   |     NOT FOUND --> 401 "invalid credentials"
   |       (same message as wrong password -- intentional, no enumeration)
   |
-  +-- Compare password hash  (bcrypt / argon2 compare)
+  +-- Compare password hash  (bcrypt compare)
   |     WRONG --> 401 "invalid credentials"
   |
   +-- Check account status
@@ -314,7 +314,7 @@ Authorization: Bearer <access_token>
   +-- Validate new_password strength
   |     WEAK --> 400
   |
-  +-- Hash new_password  (bcrypt / argon2)
+  +-- Hash new_password  (bcrypt)
   +-- UPDATE users SET password_hash = new_hash
   |
   +-- Revoke all sessions:

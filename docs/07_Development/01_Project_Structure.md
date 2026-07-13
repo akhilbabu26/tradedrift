@@ -150,7 +150,7 @@ This table shows which optional internal folders each service has. It makes cros
 | Service | `kafka/consumer/` | `kafka/publisher/` | `client/<target>/` |
 |---|---|---|---|
 | `gateway` | — | — | `auth/`, `wallet/`, `order/`, `market/`, `portfolio/`, `trade/` |
-| `auth` | — | — | — |
+| `auth` | — | — | `wallet/` |
 | `wallet` | — | ✅ (`user-trades.settled.v1`) | — |
 | `order` | ✅ (`orders.cancel-requested.v1`) | ✅ (`orders.created.v1`) | `wallet/` |
 | `matching` | ✅ (`orders.created.v1`, `admin.market-commands.v1`) | ✅ (`trades.executed.v1`, `orders.cancelled.v1`) | — |

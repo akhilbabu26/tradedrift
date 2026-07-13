@@ -64,7 +64,7 @@ The Settlement Service acts as a bridge between the asynchronous matching queue 
 
 The Settlement Service integrates directly against the output payloads of the Matching Engine. To prevent contract drift, the event schemas defined in the Matching Engine documentation serve as the single source of truth:
 
-* **Trigger Event**: Consumes the `TradeExecuted` event payload defined in **[06_Event_Contracts.md (Section 4.1)](file:///C:/Users/AKHIL BABU/OneDrive/Desktop/tradedrift/docs/01_Services/Settlement_Service/08_Matching_Engine/06_Event_Contracts.md#L133-L157)**.
+* **Trigger Event**: Consumes the `TradeExecuted` event payload defined in **[06_Event_Contracts.md (Section 4.1)](../05_Matching_Engine/06_Event_Contracts.md#L133-L157)**.
 * **Idempotency Key**: Uses `trade_id` (generated as a UUIDv7 in-memory by the Matching Engine at match time) as the unique primary key for the ledger.
 * **Pass-Through Fields**: Invokes the Wallet Service's gRPC method using field-for-field mappings from the event payload.
 
@@ -107,7 +107,7 @@ CREATE INDEX idx_settled_trades_pending ON settled_trades(executed_at)
     WHERE status = 'PENDING';
 ```
 
-> **Why no `outbox_events` table:** Settlement Service does not publish Kafka events. The `TradeSettled` event (consumed by Portfolio and Notification Services) is published by the Wallet Service's own outbox immediately after `SettleTrade` commits atomically inside the Wallet DB. See [06_Wallet_Service.md § Event Ownership: TradeSettled](../../07_Wallet_Service/07_Wallet_Service.md).
+> **Why no `outbox_events` table:** Settlement Service does not publish Kafka events. The `TradeSettled` event (consumed by Portfolio and Notification Services) is published by the Wallet Service's own outbox immediately after `SettleTrade` commits atomically inside the Wallet DB. See [07_Wallet_Service.md § Event Ownership: TradeSettled](../03_Wallet_Service/07_Wallet_Service.md).
 
 ---
 
@@ -169,7 +169,7 @@ For every `TradeExecuted` message consumed from Kafka, the service executes a **
    * Moves base asset (`quantity`) from the Seller's reserved balance to the Buyer's available balance.
    * Upon commit, the Wallet Service atomically inserts a `TradeSettled` outbox event for downstream consumers (Trade Service, Portfolio, Notification). Settlement Service is not involved in this step.
 
-   > **Fee deduction:** Explicit fee parameters (`taker_fee`, `maker_fee`) are not present in the current `TradeExecuted` event payload or `SettleTrade` gRPC signature. Fee accounting is deferred to a future enhancement. No fee logic executes in V1. See [06_Wallet_Service.md § Future Extensions](file:///C:/Users/AKHIL BABU/OneDrive/Desktop/tradedrift/docs/01_Services/Settlement_Service/06_Wallet_Service.md).
+   > **Fee deduction:** Explicit fee parameters (`taker_fee`, `maker_fee`) are not present in the current `TradeExecuted` event payload or `SettleTrade` gRPC signature. Fee accounting is deferred to a future enhancement. No fee logic executes in V1. See [07_Wallet_Service.md § Future Extensions](../03_Wallet_Service/07_Wallet_Service.md).
 
 4. **Phase 3 — Completion (Short Transaction)**: Open a second short database transaction. UPDATE `settled_trades` SET `status = 'SETTLED'`, `settled_at = NOW()` WHERE `trade_id = ?`. Commit and release the database connection.
 5. **Kafka Acknowledge**: Commit the Kafka consumer offset only after Phase 3 commits successfully.

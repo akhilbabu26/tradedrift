@@ -59,14 +59,14 @@ Downstream service (Auth Service / Order Service / Wallet Service / Market Servi
 
 ## Shared JWT Validation Logic
 
-> **Decision:** JWT middleware here and Authentication Service's own JWT Validation Flow are backed by the *same* shared internal package — not two independent implementations. See `05_Authentication_Service.md`, Section 10, for the full rationale. If the two implementations diverged, a token accepted by one and rejected by the other would be a serious, hard-to-diagnose bug.
+> **Decision:** JWT middleware here and Authentication Service's own JWT Validation Flow are backed by the *same* shared internal package — not two independent implementations. See [05_Authentication_Service.md](../02_Authentication_Service/05_Authentication_Service.md#10-shared-jwt-validation-logic) for the full rationale. If the two implementations diverged, a token accepted by one and rejected by the other would be a serious, hard-to-diagnose bug.
 
 ## Downstream Services (current)
 
 - Auth Service
 - Order Service
 - Market Service
-- *(Wallet Service routes — `GET /wallets/me`, `/wallets/balances`, `/wallets/transactions` — join this list per `06_Wallet_Service/06_Wallet_Service.md`; same pipeline, no special-casing.)*
+- *(Wallet Service routes — `GET /wallets/me`, `/wallets/balances`, `/wallets/transactions` — join this list per [07_Wallet_Service.md](../03_Wallet_Service/07_Wallet_Service.md); same pipeline, no special-casing.)*
 
 ## Rate Limiting
 

@@ -151,22 +151,24 @@ This is the same `ON CONFLICT DO NOTHING` pattern established in Settlement Serv
 
 ## 5. Kafka Consumer
 
+> **Naming:** This event is referred to as `TradeSettled` throughout this document — that is its informal conceptual name. The registered Kafka topic name is `user-trades.settled.v1`. The `event_type` field in the message envelope is `UserTradeSettled`. All three refer to the same event. Source of truth: `15_Kafka_Topic_Design.md §4.5`.
+
 | Property | Value |
 |---|---|
-| Topic | `TradeSettled` |
-| Partition key | `market_id` |
+| Topic | `user-trades.settled.v1` |
+| Partition key | `user_id` |
 | Consumer group | `trade-service` |
 | Concurrency | One goroutine per Kafka partition |
 | Write path | Parse → `INSERT ON CONFLICT DO NOTHING` → ACK |
 | Recovery goroutine | Not needed |
 
-**One goroutine per partition** — the same SI-3 ordering invariant used by Settlement Service. Trades for the same market are written in the exact order they were settled.
+**One goroutine per partition** — the same SI-3 ordering invariant used by Settlement Service. Because the topic partitions by `user_id`, all settlement events for a given user land on the same partition in chronological order.
 
 **No recovery goroutine needed.** Unlike Settlement Service, there is no network call between the INSERT and the Kafka ACK. The entire write is a single fast DB INSERT. If it fails, the offset is not committed and Kafka redelivers — which the `ON CONFLICT` handles safely.
 
 ### Consumer Step-by-Step
 
-1. Receive `TradeSettled` message from Kafka partition.
+1. Receive `UserTradeSettled` message from `user-trades.settled.v1` Kafka partition.
 2. Deserialize and validate payload — all required fields present, UUIDs valid, amounts positive.
 3. `INSERT INTO trades (...) ON CONFLICT (id) DO NOTHING`.
 4. ACK Kafka offset.

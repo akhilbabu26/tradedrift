@@ -44,7 +44,7 @@ A dedicated dead-letter topic (e.g. `matching-engine.deadletter`) receives:
 - Events that fail schema validation/deserialization.
 - Events that cause a panic in the Match Loop. No retry is attempted — retrying a logic bug (nil pointer, assertion failure) just panics again. Dead-letter immediately.
 
-Each dead-lettered message carries the original payload plus a failure reason and timestamp, enabling manual reconciliation — consistent with the dead-letter pattern already established for Settlement Service failures in `07_Order_Service.md §8 Saga Pattern and Compensating Actions`. Dead-lettering an event still advances the Kafka consumer offset for that partition (after the checkpoint rules in `08_Recovery_Strategy.md §6` are respected) — one poison-pill message must never permanently stall an entire market.
+Each dead-lettered message carries the original payload plus a failure reason and timestamp, enabling manual reconciliation — consistent with the dead-letter pattern already established for Settlement Service failures in [08_Order_Service.md §8 Saga Pattern and Compensating Actions](../04_Order_Service/08_Order_Service.md#8-saga-pattern-and-compensating-actions). Dead-lettering an event still advances the Kafka consumer offset for that partition (after the checkpoint rules in `08_Recovery_Strategy.md §6` are respected) — one poison-pill message must never permanently stall an entire market.
 
 ---
 
@@ -126,4 +126,4 @@ Rather than trying to prevent every possible redelivery, the ME leans on idempot
 - `07_Concurrency_Model.md §4, §6` — bounded channels and backpressure mechanics
 - `06_Event_Contracts.md` — idempotency keys (`trade_id`, `order_id`) referenced throughout this document
 - `11_Monitoring.md` — metrics and alerts for every failure mode listed in Section 3
-- `07_Order_Service.md §8` — cross-service saga compensating-action pattern this document mirrors
+- [08_Order_Service.md §8](../04_Order_Service/08_Order_Service.md#8-saga-pattern-and-compensating-actions) — cross-service saga compensating-action pattern this document mirrors

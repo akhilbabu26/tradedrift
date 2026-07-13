@@ -132,7 +132,7 @@ Matching Engine --TradeExecuted(Kafka)--> Settlement Service
 - `wallet_reservations(id UUID, order_id UUID, user_id UUID, asset, reserved_amount, consumed_amount, remaining_amount, status, created_at)` — `UNIQUE(order_id)`
 - `wallet_transactions(id UUID, wallet_id UUID, reference_id UUID, reference_type, transaction_type, asset, amount, created_at)` — `UNIQUE(reference_id, reference_type, asset)`
 - `outbox(id UUID, aggregate_id UUID, event_type, payload, partition_key, status, failed_reason TEXT, created_at, published_at)`
-- `supported_assets(asset_code PRIMARY KEY, asset_name, decimals, is_enabled, seed_amount, display_order)` — see [Section 1](../../07_Wallet_Service#1-supported_assets--single-authoritative-schema), single definition, no other version exists.
+- `supported_assets(asset_code PRIMARY KEY, asset_name, decimals, is_enabled, seed_amount, display_order)` — see [Section 1](#1-supported_assets--single-authoritative-schema), single definition, no other version exists.
 
 ### 6.1 `reference_type` / `transaction_type` map (new in V7)
 
@@ -210,9 +210,9 @@ Wallet Service publishes two separate `UserTradeSettled` events via its own Outb
 | `quantity` | DECIMAL(30,10) | from `TradeExecuted` |
 | `settled_at` | TIMESTAMPTZ | Wallet Service clock — time `SettleTrade` committed |
 
-> **`market_id` added in V8:** Required by Trade Service (`10_Trade_Service.md`) for its `(market_id, executed_at DESC)` index, which powers `GET /markets/{id}/trades`. Settlement Service passes `market_id` from the `TradeExecuted` event payload into the `SettleTrade` gRPC call.
+> **`market_id` added in V8:** Required by Trade Service ([Trade_Service.md](../10_Trade_Service/Trade_Service.md)) for its `(market_id, executed_at DESC)` index, which powers `GET /markets/{id}/trades`. Settlement Service passes `market_id` from the `TradeExecuted` event payload into the `SettleTrade` gRPC call.
 
-> **Settlement Service publishes no Kafka events.** After `SettleTrade` returns successfully, Settlement Service only updates its local `settled_trades.status` to `SETTLED` and acknowledges the Kafka consumer offset. It has no outbox table and writes to no Kafka topics. `UserTradeSettled` (from this service) is the single authoritative source for all downstream consumers. See [09_Settlement_Service.md § SI-4](file:///C:/Users/AKHIL BABU/OneDrive/Desktop/tradedrift/docs/01_Services/07_Wallet_Service/09_Settlement_Service.md).
+> **Settlement Service publishes no Kafka events.** After `SettleTrade` returns successfully, Settlement Service only updates its local `settled_trades.status` to `SETTLED` and acknowledges the Kafka consumer offset. It has no outbox table and writes to no Kafka topics. `UserTradeSettled` (from this service) is the single authoritative source for all downstream consumers. See [Settlement_Service.md § SI-4](../09_Settlement_Service/Settlement_Service.md).
 
 > **Note on idempotent replays and `UserTradeSettled`:** when `SettleTrade` short-circuits on an already-settled `trade_id` (either check in §7), it does **not** re-publish `UserTradeSettled` or insert a second Outbox row — the event was already published the one time this trade actually settled. Idempotent-success means "no new effects," not "replay the effects."
 

@@ -63,12 +63,12 @@ The multi-step settlement loop showing how trade matches executed in the Matchin
 ### 4. Matching Engine Execution Loop
 Sequence of incoming order matching within the sequential, memory-isolated engine:
 
-![Matching Engine Sequence](./docs/01_Services/09_Matching_Engine/diagrams/sequence/order-matching-sequence.svg)
+![Matching Engine Sequence](./docs/01_Services/05_Matching_Engine/diagrams/sequence/order-matching-sequence.svg)
 
 ### 5. Wallet Balance State Machine
 The state lifecycle of balance reservations from allocation through consumption or cancellation release:
 
-![Wallet State Transitions](./docs/01_Services/07_Wallet_Service/diagrams/state/wallet-state.svg)
+![Wallet State Transitions](./docs/01_Services/03_Wallet_Service/diagrams/state/wallet-state.svg)
 
 ---
 
@@ -79,8 +79,8 @@ These metrics reflect the actual design and specification footprint of the Trade
 |---|---|---|
 | **Architecture & Design Documents** | 101 | Detailed markdown specifications mapping all platform constraints. |
 | **Vector & Mermaid Diagrams** | 86 | Complete component, sequence, state, and ER database diagrams. |
-| **Microservices Defined** | 10 | Decoupled functional microservice boundary spaces. |
-| **Service Specifications** | 10 | Complete, individual service blueprints. |
+| **Microservices Defined** | 11 | Decoupled functional microservice boundary spaces. |
+| **Service Specifications** | 11 | Complete, individual service blueprints. |
 | **Platform Specifications** | 25 | In-depth platform infrastructure specifications. |
 | **Database Tables (DDL)** | 21 | Postgres table schemas containing strict check constraints. |
 | **REST Endpoints** | 22 | Client JSON-REST gateway endpoints mapping to services. |
@@ -156,7 +156,12 @@ Every service, API contract, event schema, database model, recovery strategy, an
 │   ├── wallet/                # Wallet & Ledger Service
 │   ├── order/                 # Order Lifecycle Service
 │   ├── matching/              # In-Memory Matching Engine
-│   └── settlement/            # Trade Settlement Orchestrator
+│   ├── settlement/            # Trade Settlement Orchestrator
+│   ├── market/                # Market Metadata & Ticker Service
+│   ├── portfolio/             # Portfolio & PnL Projector
+│   ├── notification/          # Real-Time Notification (WebSocket)
+│   ├── trade/                 # Trade History & Public Feed (read-side projector)
+│   └── admin/                 # Admin Control Plane (suspend/freeze/halt)
 ├── deployments/               # Infrastructure deployment files (Docker Compose, K8s manifests)
 ├── diagrams/                  # Compiled visual layouts (.svg flowcharts, ER diagrams)
 ├── scripts/                   # DB migrations, seed triggers, and build scripts
@@ -173,8 +178,8 @@ Every service, API contract, event schema, database model, recovery strategy, an
 | **Platform Blueprint** | [00_Project_Overview.md](./docs/00_Project/00_Project_Overview.md) | High-level system overview, services list, and status tables. |
 | **System Flows** | [00_System_Flows.md](./docs/01_Services/00_System_Flows.md) | Mapped system lifecycles, state machines, and sequence logs. |
 | **Infrastructure Components**| [25_Production_Infrastructure_Architecture.md](./docs/02_Platform/25_Production_Infrastructure_Architecture.md) | Production networking, load balancing, scaling, TLS, HA, retries, circuit breakers. |
-| **Wallet & Ledger** | [07_Wallet_Service.md](./docs/01_Services/07_Wallet_Service/07_Wallet_Service.md) | Double-entry ledger constraints and reservation logic. |
-| **Matching Engine** | [README.md](./docs/01_Services/09_Matching_Engine/README.md) | FIFO book design, memory mapping, and recovery loops. |
+| **Wallet & Ledger** | [07_Wallet_Service.md](./docs/01_Services/03_Wallet_Service/07_Wallet_Service.md) | Double-entry ledger constraints and reservation logic. |
+| **Matching Engine** | [README.md](./docs/01_Services/05_Matching_Engine/README.md) | FIFO book design, memory mapping, and recovery loops. |
 | **API Standards** | [01_API_Standards.md](./docs/06_APIs/01_API_Standards.md) | Casing maps, error catalogs, and idempotency key caching. |
 | **SQL Database DDL** | [README.md](./docs/05_Database/README.md) | SQL tables, composite indices, and migration orders. |
 | **Readiness Audit** | [09_Final_Design_Readiness_Audit.md](./docs/04_Audits/09_Final_Design_Readiness_Audit.md) | Core validation audit certifying system implementation readiness. |

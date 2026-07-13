@@ -9,7 +9,7 @@ The Order Service owns the complete lifecycle of trading orders. It validates re
 
 ## Responsibilities
 
-- Generate a UUIDv7 `order_id` for every new order, before any database write (see [Section 1](../../08_Order_Service#1-order-id-generation--uuidv7-before-persistence)).
+- Generate a UUIDv7 `order_id` for every new order, before any database write (see [Section 1](#1-order-id-generation--uuidv7-before-persistence)).
 - Create Market and Limit orders.
 - Validate trading pair, quantity, price, and user permissions.
 - Reserve funds through Wallet Service (synchronous call), passing the pre-generated `order_id`.
@@ -24,7 +24,7 @@ The Order Service owns the complete lifecycle of trading orders. It validates re
 - Does not perform matching.
 - Does not calculate portfolio PnL.
 - Does not send notifications directly.
-- Does not retry or dead-letter settlement — that is Settlement Service's responsibility (see [Section 8](../../08_Order_Service#8-saga-pattern-and-compensating-actions)).
+- Does not retry or dead-letter settlement — that is Settlement Service's responsibility (see [Section 8](#8-saga-pattern-and-compensating-actions)).
 
 ---
 

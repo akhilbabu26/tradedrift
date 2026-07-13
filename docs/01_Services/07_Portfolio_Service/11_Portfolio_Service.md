@@ -227,7 +227,7 @@ To ensure the holding updates and the event publishing are atomically consistent
 ## 7. Integration Events
 
 ### 7.1 Consumed Event: `TradeSettled`
-Consumes from Wallet Service. See `06_Wallet_Service.md § Event Ownership: TradeSettled` for the exact payload definition.
+Consumes from Wallet Service. See [07_Wallet_Service.md](../03_Wallet_Service/07_Wallet_Service.md) for the exact payload definition.
 
 ### 7.2 Published Event: `PortfolioUpdated`
 Published by Portfolio Service outbox.

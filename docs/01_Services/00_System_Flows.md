@@ -77,13 +77,14 @@ Incoming HTTP Request (from web / mobile client)
                       |              |
                       |              v
                       |    +---------------------------+
-                      |    | 5. JWT Middleware          |
+                      |    | 5. JWT Middleware         |
                       |    | Shared verification pkg   |
                       |    | NO gRPC call to Auth Svc  |
                       |    |                           |
                       |    | a) Verify signature       |
                       |    | b) Check expiry           |
-                      |    | c) Check Redis blacklist  |
+                      |    | c) Check token_version    |
+                      |    | d) Check JTI blacklist    |
                       |    +----------+----------------+
                       |              |         |
                       |           VALID    INVALID / EXPIRED / REVOKED
@@ -134,7 +135,28 @@ POST /auth/register  { email, username, password }
   +-- [*] Generate user_id  (UUIDv7, in application code)
   |          This ID is passed to Wallet and used by every service forever
   |
-  +-- INSERT users(id=user_id, email, username, password_hash, status=ACTIVE)
+  +-- INSERT users(id=user_id, email, username, password_hash, status=PENDING_VERIFICATION)
+  |
+  +-- Generate 6-digit numeric OTP code
+  +-- Store OTP in Redis (Key: "otp:register:<email>", TTL: 5 min)
+  +-- Send verification email with OTP (out-of-band / mock in V1)
+  |
+  +-- Return 200 OK { user_id }
+```
+
+---
+
+## 2a. Auth — Verify Email
+
+```
+POST /auth/verify  { email, code }
+  |
+  v  API Gateway: CORS > Log > Route (public) > gRPC forward
+  |
+  v  Authentication Service
+  |
+  +-- Read OTP from Redis (Key: "otp:register:<email>")
+  |     NOT FOUND / EXPIRED / WRONG --> 400 "invalid or expired verification code"
   |
   +-- gRPC --> Wallet Service: InitializeWallet(user_id)
   |                |
@@ -144,7 +166,7 @@ POST /auth/register  { email, username, password }
   |                      CREATE wallet row (available_balance = seed_amount)
   |                      If seed_amount > 0:
   |                        INSERT wallet_transactions(
-  |                          reference_id   = user_id  [*]
+  |                          reference_id   = user_id
   |                          reference_type = INITIAL_ALLOCATION
   |                          asset          = asset_code
   |                          amount         = seed_amount
@@ -152,16 +174,21 @@ POST /auth/register  { email, username, password }
   |                        UNIQUE(reference_id, reference_type, asset)
   |                        prevents duplicate seeds per user per asset
   |
-  |     [If InitializeWallet FAILS after user committed]
+  |     [If InitializeWallet FAILS]
   |       Retry 2-3x with backoff
-  |       Still fails --> DELETE user row (compensating action) --> 500
-  |         [If DELETE also fails --> orphan user detected on next startup]
+  |       Still fails --> Return 500 "wallet initialization failed, please retry"
+  |                         (user status remains PENDING_VERIFICATION, safe to retry)
   |
-  +-- Generate JWT access token  (15 min)
-  +-- Generate refresh token  (7 days)
-  +-- INSERT refresh_tokens(user_id, token_hash, status=ACTIVE, expires_at)
+  +-- BEGIN DB Transaction
+  |     UPDATE users SET status = 'VERIFIED', email_verified_at = now() WHERE id = user_id
+  |     INSERT outbox(aggregate_type='User', aggregate_id=user_id, event_type='UserVerified', payload)
+  +-- COMMIT DB Transaction
   |
-  +-- Return 200 { user: {id, email, username}, access_token, refresh_token }
+  +-- Generate JWT access token containing token_version (15 min)
+  +-- Generate refresh token (7 days)
+  +-- INSERT refresh_tokens(user_id, token_hash, ACTIVE, expires_at)
+  |
+  +-- Return 200 OK { user, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at }
 ```
 
 ---
@@ -179,6 +206,8 @@ POST /auth/login  { email, password }
   |     NOT FOUND --> 401 "invalid credentials"
   |       (same message as wrong password -- intentional, no enumeration)
   |
+  +-- Read user.token_version from PostgreSQL
+  +-- Compare status (requires VERIFIED)
   +-- Compare password hash  (bcrypt compare)
   |     WRONG --> 401 "invalid credentials"
   |
@@ -186,16 +215,14 @@ POST /auth/login  { email, password }
   |     SUSPENDED --> 403 Forbidden
   |     BANNED    --> 403 Forbidden
   |
-  +-- Generate JWT access token  (15 min)
+  +-- Generate JWT access token containing token_version (15 min)
   +-- Generate refresh token  (7 days)
-  +-- INSERT refresh_tokens(user_id, token_hash, ACTIVE, expires_at)
+  +-- INSERT refresh_tokens(user_id, token_hash, ACTIVE, ip_address, user_agent, device_name, expires_at)
   |
   +-- UPDATE users SET
   |     last_login_at = now()
-  |     last_login_ip = request.ip
-  |     last_login_ua = request.user_agent
   |
-  +-- Return 200 { user: {id, email, username}, access_token, refresh_token }
+  +-- Return 200 { user, access_token, refresh_token, access_token_expires_at, refresh_token_expires_at }
 ```
 
 ---
@@ -222,14 +249,22 @@ Authorization: Bearer <access_token>
   +-- Check exp claim (expiry timestamp)
   |     Token expired --> 401
   |
-  +-- Check Redis blacklist
-  |     Key: "blacklist:{jti}"  (jti = JWT unique ID)
-  |     Found in blacklist --> 401  (token was revoked on logout)
+  +-- Check token_version
+  |     a) Try Redis key "auth:token_version:<user_id>"
+  |     b) Miss? Query PostgreSQL users table and save in Redis (24h TTL)
+  |     c) If claims.token_version != activeVersion --> 401 (token version revoked)
+  |
+  +-- Check JTI blacklist
+  |     a) Try Redis key "token:blacklist:<jti>"
+  |     b) Miss? Query PostgreSQL blacklisted_tokens table
+  |     c) Negative Cache: Save "valid" or "revoked" in Redis for remaining TTL
+  |     d) If status is revoked --> 401 (token JTI revoked)
   |
   +-- VALID --> Attach to request context:
-        user_id  (from sub claim)
-        roles    (from roles claim)
-        jti      (for downstream checks)
+        user_id       (from sub claim)
+        email         (from email claim)
+        token_version (from token_version claim)
+        jti           (for downstream checks)
         |
         v  Request forwarded to target service with user context
 ```
@@ -280,18 +315,13 @@ Authorization: Bearer <access_token>
   v  Authentication Service
   |
   +-- Hash incoming refresh_token
-  +-- UPDATE refresh_tokens SET status = REVOKED WHERE token_hash = ?
+  +-- UPDATE refresh_tokens SET status = 'REVOKED' WHERE token_hash = ?
   |
   +-- Extract jti from access token claims
-  +-- SET Redis key: "blacklist:{jti}"
-  |     Value: "revoked"
-  |     TTL  : remaining lifetime of access token
-  |     (blacklist only needed until natural expiry)
+  +-- INSERT INTO blacklisted_tokens(jti, user_id, expires_at)
+  +-- SET Redis key: "token:blacklist:{jti}" = "revoked" (TTL = remaining access token lifespan)
   |
-  +-- [Optional] logout all sessions:
-  |     UPDATE refresh_tokens SET status = REVOKED WHERE user_id = ?
-  |
-  +-- Return 204 No Content
+  +-- Return 200 OK (success=true)
 ```
 
 ---
@@ -315,13 +345,14 @@ Authorization: Bearer <access_token>
   |     WEAK --> 400
   |
   +-- Hash new_password  (bcrypt)
-  +-- UPDATE users SET password_hash = new_hash
+  +-- BEGIN DB Transaction
+  |     UPDATE users SET password_hash = new_hash, token_version = token_version + 1 WHERE id = user_id
+  |     UPDATE refresh_tokens SET status = 'REVOKED' WHERE user_id = user_id
+  +-- COMMIT DB Transaction
   |
-  +-- Revoke all sessions:
-  |     UPDATE refresh_tokens SET status = REVOKED WHERE user_id = ?
-  |     Reason: if password was compromised, kill attacker sessions too
+  +-- Evict Redis Key: auth:token_version:<user_id>
   |
-  +-- Return 200 "password changed, all sessions revoked"
+  +-- Return 200 OK "password changed, all sessions revoked"
 ```
 
 ---

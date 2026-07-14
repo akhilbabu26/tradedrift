@@ -94,7 +94,7 @@ A user's transaction history begins with entries like `INITIAL_ALLOCATION +10,00
 
 ## 4. Why Synchronous (Option A), Not Event-Driven (Option B)
 
-> **Decision:** Authentication Service calls `InitializeWallet` synchronously during registration, before generating tokens. Async wallet creation (publish `UserRegistered`, let Wallet Service consume it) was rejected for V1 — it introduces a window where a user exists and can log in but has no wallet yet, pushing "what if this user has no wallet" checks into every downstream service. Revisit only if registration throughput or Wallet Service availability makes the synchronous call a bottleneck.
+> **Decision:** Authentication Service calls `InitializeWallet` synchronously during email verification, before the user status is set to `VERIFIED` and tokens are issued. Async wallet creation (publish `UserRegistered`, let Wallet Service consume it) was rejected for V1 — it introduces a window where a user exists and can log in but has no wallet yet, pushing "what if this user has no wallet" checks into every downstream service. Revisit only if registration throughput or Wallet Service availability makes the synchronous call a bottleneck.
 
 ## 5. Identifiers
 
@@ -162,7 +162,7 @@ ACTIVE
 
 ## gRPC APIs
 
-- `InitializeWallet(user_id)` — synchronous, called by Authentication Service during registration.
+- `InitializeWallet(user_id)` — synchronous, called by Authentication Service during email verification.
 - `ReserveFunds(user_id, order_id, asset, amount)` — synchronous, called by Order Service before `OPEN`.
 - `ReleaseFunds(order_id)` — releases `remaining_amount` of the named order's reservation.
 - `SettleTrade(trade_id, buyer_id, seller_id, buy_order_id, sell_order_id, base_asset, quote_asset, price, quantity, market_id)`.

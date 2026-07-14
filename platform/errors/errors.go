@@ -7,9 +7,9 @@ import (
 
 // Platform error codes matching the API Standards.
 const (
-	CodeTokenExpired       = "AUTH_INVALID_TOKEN"
+	CodeTokenExpired       = "AUTH_TOKEN_EXPIRED"
 	CodeInvalidCredentials = "AUTH_INVALID_CREDENTIALS"
-	CodeTokenRevoked       = "AUTH_INVALID_TOKEN"
+	CodeTokenRevoked       = "AUTH_TOKEN_REVOKED"
 )
 
 // PlatformError represents a structured, code-carrying error.

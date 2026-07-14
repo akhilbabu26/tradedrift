@@ -445,48 +445,86 @@ package tradedrift.auth.v1;
 option go_package = "github.com/tradedrift/platform/api/auth/v1;authv1";
 
 service AuthService {
-    // Registers a new user. Triggers InitializeWallet synchronously.
+    // ==========================================
+    // Public RPCs
+    // ==========================================
+
+    // Registers a new user account. Returns the generated user ID.
     rpc Register(RegisterRequest) returns (RegisterResponse);
 
-    // Validates credentials and returns access/refresh JWT tokens.
+    // Verifies the user's email using a numeric OTP code.
+    rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
+
+    // Resends a new email verification code (OTP) if expired or lost.
+    rpc ResendVerificationCode(ResendVerificationCodeRequest) returns (ResendVerificationCodeResponse);
+
+    // Authenticates credentials (username or email) and issues access + refresh tokens.
     rpc Login(LoginRequest) returns (LoginResponse);
 
     // Rotates the refresh token to yield a new token pair.
     rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
 
-    // Revokes current session tokens.
+    // ==========================================
+    // Authenticated RPCs (Requires JWT Context)
+    // ==========================================
+
+    // Revokes current session tokens based on the authenticated JWT context.
     rpc Logout(LogoutRequest) returns (LogoutResponse);
 
-    // Changes password and revokes all other sessions.
+    // Changes password for the authenticated user and revokes all other sessions.
     rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
 }
 
 message RegisterRequest {
+    // Required. Must be a valid email format.
     string email    = 1;
+    // Required. Must be between 3 and 32 characters, alphanumeric.
     string username = 2;
+    // Required. Minimum 8 characters; must contain at least one letter and one number.
     string password = 3;
 }
 
 message RegisterResponse {
-    string user_id      = 1;
-    string email        = 2;
-    string username     = 3;
-    string access_token = 4;
-    string refresh_token= 5;
+    string user_id = 1;
+}
+
+message VerifyEmailRequest {
+    // Required. Must match the registered email address.
+    string email = 1;
+    // Required. Must be exactly a 6-digit numeric OTP code.
+    string code  = 2;
+}
+
+message VerifyEmailResponse {
+    bool success = 1;
+}
+
+message ResendVerificationCodeRequest {
+    // Required. Must be a valid email format.
+    string email = 1;
+}
+
+message ResendVerificationCodeResponse {
+    bool success = 1;
 }
 
 message LoginRequest {
-    string email    = 1;
-    string password = 2;
+    // Required. Can be the registered email or username.
+    string identifier = 1;
+    // Required. User password.
+    string password   = 2;
 }
 
 message LoginResponse {
-    string user_id      = 1;
-    string access_token = 2;
-    string refresh_token= 3;
+    string user_id       = 1;
+    string username      = 2;
+    string email         = 3;
+    string access_token  = 4;
+    string refresh_token = 5;
 }
 
 message RefreshTokenRequest {
+    // Required. Secure, random 64-character opaque refresh token string.
     string refresh_token = 1;
 }
 
@@ -495,18 +533,18 @@ message RefreshTokenResponse {
     string refresh_token = 2;
 }
 
-message LogoutRequest {
-    string refresh_token = 1;
-}
+// Empty body since session is identified by the authenticated access token
+message LogoutRequest {}
 
 message LogoutResponse {
     bool success = 1;
 }
 
 message ChangePasswordRequest {
-    string user_id      = 1;
-    string old_password = 2;
-    string new_password = 3;
+    // Required. Currently active password.
+    string old_password = 1;
+    // Required. New password. Same complexity rules as registration (min 8 chars, letter + number).
+    string new_password = 2;
 }
 
 message ChangePasswordResponse {

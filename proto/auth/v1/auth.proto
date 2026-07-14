@@ -1,0 +1,206 @@
+syntax = "proto3";
+
+package tradedrift.auth.v1;
+
+option go_package = "tradedrift/platform/api/auth/v1;authv1";
+import "google/protobuf/timestamp.proto";
+
+
+service AuthService {
+    // ==========================================
+    // Public RPCs
+    // ==========================================
+
+    // Registers a new user account with status PENDING_VERIFICATION.
+    // Does NOT create a wallet and does NOT return tokens — see VerifyEmail.
+    rpc Register(RegisterRequest) returns (RegisterResponse);
+
+    // Verifies the email using the provided OTP.
+    // On success, activates the account and completes any required
+    // account initialization before issuing authentication tokens.
+    rpc VerifyEmail(VerifyEmailRequest) returns (VerifyEmailResponse);
+
+    // Resends a new email verification code (OTP) if expired or lost.
+    rpc ResendVerificationCode(ResendVerificationCodeRequest) returns (ResendVerificationCodeResponse);
+
+    // Authenticates credentials (username or email) and issues access + refresh
+    // tokens. Requires status == VERIFIED.
+    rpc Login(LoginRequest) returns (LoginResponse);
+
+    // Rotates the refresh token to yield a new token pair.
+    // Reuse of an already-rotated token revokes all sessions for that user.
+    rpc RefreshToken(RefreshTokenRequest) returns (RefreshTokenResponse);
+
+    // Requests a password reset code. Always returns success regardless of
+    // whether the email exists, to avoid user-enumeration.
+    rpc ForgotPassword(ForgotPasswordRequest) returns (ForgotPasswordResponse);
+
+    // Validates the reset code and sets a new password. On success, revokes
+    // all refresh tokens and blacklists all currently-issued access tokens for
+    // the user.
+    rpc ResetPassword(ResetPasswordRequest) returns (ResetPasswordResponse);
+
+    // ==========================================
+    // Authenticated RPCs (Requires JWT Context)
+    // ==========================================
+
+    // Revokes current session tokens based on the authenticated JWT context.
+    rpc Logout(LogoutRequest) returns (LogoutResponse);
+
+    // Revokes ALL sessions for the authenticated user across all devices.
+    rpc LogoutAll(LogoutAllRequest) returns (LogoutAllResponse);
+
+    // Changes password for the authenticated user and revokes all other sessions.
+    rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+}
+
+// ==========================================
+// Shared Messages
+// ==========================================
+
+message User {
+    string user_id  = 1;
+    string email    = 2;
+    string username = 3;
+}
+
+// ==========================================
+// Register / Verify / Resend
+// ==========================================
+
+message RegisterRequest {
+    // Required. Must be a valid email format.
+    string email    = 1;
+    // Required. Must be between 3 and 32 characters, alphanumeric.
+    string username = 2;
+    // Required. Minimum 8 characters; must contain at least one letter and one number.
+    string password = 3;
+}
+
+message RegisterResponse {
+    // User is created with status PENDING_VERIFICATION.
+    string user_id = 1;
+    // Useful for future OAuth logic. True for V1 registration.
+    bool verification_required = 2;
+}
+
+
+message VerifyEmailRequest {
+    // Required. Must match the registered email address.
+    string email = 1;
+    // Required. Must be exactly a 6-digit numeric OTP code.
+    string code  = 2;
+}
+
+message VerifyEmailResponse {
+    User user                                 = 1;
+    string access_token                       = 2;
+    string refresh_token                      = 3;
+    google.protobuf.Timestamp access_token_expires_at  = 4;
+    google.protobuf.Timestamp refresh_token_expires_at = 5;
+}
+
+
+message ResendVerificationCodeRequest {
+    // Required. Must be a valid email format.
+    string email = 1;
+}
+
+message ResendVerificationCodeResponse {
+    // Always true if the email exists and is still PENDING_VERIFICATION.
+    // Does not distinguish "email not found" from "already verified" to avoid account leaking.
+    bool success = 1;
+}
+
+// ==========================================
+// Login / Refresh
+// ==========================================
+
+message LoginRequest {
+    // Required. Can be the registered email or username.
+    string identifier = 1;
+    // Required. User password.
+    string password   = 2;
+}
+
+message LoginResponse {
+    User user                                 = 1;
+    string access_token                       = 2;
+    string refresh_token                      = 3;
+    google.protobuf.Timestamp access_token_expires_at  = 4;
+    google.protobuf.Timestamp refresh_token_expires_at = 5;
+}
+
+
+message RefreshTokenRequest {
+    // Required. Secure, random 64-character opaque refresh token string.
+    string refresh_token = 1;
+}
+
+message RefreshTokenResponse {
+    string access_token                       = 1;
+    string refresh_token                      = 2;
+    google.protobuf.Timestamp access_token_expires_at  = 3;
+    google.protobuf.Timestamp refresh_token_expires_at = 4;
+}
+
+
+// ==========================================
+// Forgot / Reset Password
+// ==========================================
+
+message ForgotPasswordRequest {
+    // Required. Email to send the reset code to, if it exists.
+    string email = 1;
+}
+
+message ForgotPasswordResponse {
+    // Always true — response is identical whether or not the email exists.
+    bool success = 1;
+}
+
+message ResetPasswordRequest {
+    // Required. Must match the email the reset code was issued to.
+    string email        = 1;
+    // Required. 6-digit numeric OTP code from the reset email.
+    string code         = 2;
+    // Required. New password. Same complexity rules as registration.
+    string new_password = 3;
+}
+
+message ResetPasswordResponse {
+    bool success = 1;
+}
+
+// ==========================================
+// Logout / LogoutAll
+// ==========================================
+
+// Empty body since session is identified by the authenticated access token.
+message LogoutRequest {}
+
+message LogoutResponse {
+    bool success = 1;
+}
+
+// Empty body since the user is identified by the authenticated access token.
+message LogoutAllRequest {}
+
+message LogoutAllResponse {
+    bool success = 1;
+}
+
+// ==========================================
+// Change Password
+// ==========================================
+
+message ChangePasswordRequest {
+    // Required. Currently active password.
+    string old_password = 1;
+    // Required. New password. Same complexity rules as registration (min 8 chars, letter + number).
+    string new_password = 2;
+}
+
+message ChangePasswordResponse {
+    bool success = 1;
+}

@@ -9,19 +9,20 @@ The Authentication Service owns user identity, credentials, and session lifecycl
 
 ## Responsibilities
 
-- Register new users: validate input, hash passwords, create the user record, trigger wallet initialization, issue tokens.
-- Authenticate login attempts and issue access + refresh token pairs.
-- Validate JWTs on behalf of the API Gateway (signature, expiry, revocation) for every authenticated request.
-- Rotate refresh tokens on use and detect reuse of already-rotated tokens.
-- Serve and update user profile data.
-- Log out sessions (single session or all sessions).
-- Change passwords and revoke all other sessions when a password changes.
+- Register new users: validate input, hash passwords, create the user record with PENDING_VERIFICATION status, send OTP code.
+- Verify email: validate OTP, trigger Wallet Service's InitializeWallet synchronously, activate user to VERIFIED, and write Kafka outbox event.
+- Authenticate login attempts: verify credentials and issue access + refresh token pairs with timestamp expirations.
+- Validate JWTs: API Gateway locally verifies signature, token_version, and JTI blacklist states using a shared platform validator.
+- Rotate refresh tokens on use and detect session hijack attempts via reuse checks.
+- Log out sessions (single session JTI blacklisting or global session version increment).
+- Change, Reset, and Forgot password flows (global session revocation via token_version increment).
 
 ## Out of Scope
 
-- Does not own wallet balances — only triggers `InitializeWallet` and waits for confirmation.
+- Does not own wallet balances — only triggers InitializeWallet.
 - Does not own order, trade, or portfolio data.
-- Does not send notification emails/SMS directly — out of scope for V1.
+- Does not send notification emails/SMS directly.
+- Does not serve user profiles (profile management has been relocated to the User Service).
 
 ## Architecture Topology
 ![Authentication Service Architecture](diagrams/architecture/auth-architecture.svg)
@@ -30,7 +31,7 @@ The Authentication Service owns user identity, credentials, and session lifecycl
 
 ## 1. Register Flow
 
-Validate → check duplicate → hash password → create user → initialize wallet → generate tokens → return.
+Validate → check duplicate → hash password → create user (PENDING_VERIFICATION) → store OTP (Redis) → send email (OTP) → return user_id.
 
 ```
 Register Request (email, username, password)
@@ -41,16 +42,36 @@ Check Duplicate (email / username exists?)
   ├── Yes → 409 Conflict: email/username already exists
   └── No  → Hash Password (bcrypt)
               ↓
-            Create User (insert into users table, id = UUIDv7)
+            Create User (insert into users table, id = UUIDv7, status=PENDING_VERIFICATION)
               ↓
-            InitializeWallet(user_id)   -- gRPC call to Wallet Service
+            Store OTP (Redis, 5-minute TTL)
               ↓
-            Generate Tokens (JWT access + refresh)
+            Send Verification Code (email)
               ↓
-            Registration Success — return user info + tokens
+            Registration Success — return user_id
 ```
 
-> **Integration point:** `InitializeWallet` is called synchronously, in the critical path of registration, before tokens are issued (see [07_Wallet_Service.md](../03_Wallet_Service/07_Wallet_Service.md) "Why Synchronous"). If `InitializeWallet` fails, registration itself fails — see [Section 8](#8-failure-handling) for exactly how.
+## 1.1 Verify Email Flow
+
+Validate OTP → Initialize Wallet (synchronous gRPC) → DB Transaction (mark VERIFIED, insert Outbox row) → Commit → publish `UserVerified` event to Kafka.
+
+```
+VerifyEmail Request (email, code)
+  ↓
+Validate OTP (lookup and verify code in Redis)
+  ├── Invalid/Expired → 400 Bad Request: invalid or expired OTP code
+  └── Valid → InitializeWallet(user_id) -- synchronous gRPC call to Wallet Service
+                ├── Fails → 500 Internal Server Error (user status remains PENDING_VERIFICATION)
+                └── Success → DB Transaction {
+                                 Update users.status = 'VERIFIED'
+                                 Insert outbox row (UserVerified)
+                              }
+                              Commit
+                                ↓
+                              Return 200 OK (success=true)
+```
+
+> **Integration point:** `InitializeWallet` is called synchronously in the critical path of `VerifyEmail` before the user is marked `VERIFIED`. This ensures that a user can never be verified or log in without a functioning wallet already existing. If it fails, the user remains `PENDING_VERIFICATION` and can safely retry verification.
 
 ## 2. Login Flow
 
@@ -91,16 +112,18 @@ Token Received (from API Gateway)
   ↓
 Extract Token (from Authorization header)
   ↓
-Verify Signature (using secret / public key)
+Verify Signature (using secret)
   ↓
 Signature Valid?
   ├── No  → 401 Unauthorized: invalid signature
   └── Yes → Token Expired?
               ├── Yes → 401 Unauthorized: token expired
-              └── No  → Token Revoked? (Redis blacklist check)
-                          ├── Yes → 401 Unauthorized: token revoked
-                          └── No  → Token Valid — attach user claims to context
-                                     (user_id, roles, permissions)
+              └── No  → Token Version Valid? (claims.token_version == active token_version)
+                          ├── No  → 401 Unauthorized: token revoked
+                          └── Yes → JTI Blacklisted? (Check Redis cache with DB fallback)
+                                      ├── Yes → 401 Unauthorized: token revoked
+                                      └── No  → Token Valid — attach user claims to context
+                                                 (user_id, email, token_version)
 ```
 
 ## 4. Refresh Token Flow
@@ -134,44 +157,32 @@ Token Found?
 
 > **Why mandatory rotation + reuse detection:** A refresh token is only ever valid for one use. If a token that has already been rotated is presented again, that's a signal the token was compromised — the correct response is to revoke every session for that user, forcing re-authentication everywhere, not just reject the one request.
 
-## 5. Profile Flow
+## 5. [Moved] Profile Flow
 
-```
-Get/Update Profile Request (with JWT access token)
-  ↓
-Validate JWT (verify signature, expiry, revocation)
-  ↓
-Extract User ID (from token claims)
-  ↓
-Token Valid?
-  ├── No  → 401 Unauthorized: invalid token
-  └── Yes → [GET]   Fetch User Profile → Return Profile
-            [PATCH] Validate Update Data (check allowed fields)
-                      → Update User Profile → Return Updated Profile
-```
+> [!NOTE]
+> Profile management flows (`GetProfile` and `UpdateProfile`) do **not** live in the Authentication Service. To enforce domain boundaries, they are owned by the **User Service**. The Authentication Service strictly handles identity verification, token lifecycle, and session management.
 
 ## 6. Logout Flow
 
 ```
 Logout Request (with refresh token + JWT access token)
   ↓
-Validate JWT (verify signature, expiry, revocation)
+Validate JWT (verify signature, expiry, version, JTI blacklist)
   ↓
-Invalidate Refresh Token (remove / mark as revoked in database)
+Invalidate Refresh Token (set status = 'REVOKED' in PostgreSQL)
   ↓
-Blacklist Access Token (store jti in Redis with TTL until natural expiry)
-  ↓
-(Optional) Invalidate All Sessions (logout from other devices)
+Blacklist Access Token (INSERT JTI and user_id into blacklisted_tokens in Postgres;
+                        SET token:blacklist:<jti> = "revoked" in Redis)
   ↓
 Logout Success — 204 No Content
 ```
 
-Blacklisting the access token matters because a valid, non-expired access token would otherwise keep working after logout until it naturally expires — the Redis blacklist closes that window.
+Blacklisting the access token JTI is backed durably by PostgreSQL `blacklisted_tokens`. Caching both negative (`"valid"`) and positive (`"revoked"`) states in Redis (Negative Caching) prevents database round-trips on subsequent requests while surviving Redis cold restarts.
 
 ## 7. Change Password Flow
 
 ```
-Change Password Request (current_password, new_password)
+Change Password Request (old_password, new_password)
   ↓
 Validate JWT (verify token)
   ↓
@@ -187,43 +198,43 @@ Token Valid?
                           ↓
                         Hash New Password (bcrypt)
                           ↓
-                        Update Password (in users table)
+                        DB Transaction {
+                          UPDATE users SET password_hash = new_hash, token_version = token_version + 1
+                          UPDATE refresh_tokens SET status = 'REVOKED' WHERE user_id = ?
+                        }
+                        Commit
                           ↓
-                        Revoke All Refresh Tokens
-                        (logout from all devices/sessions)
+                        Evict Redis Key: auth:token_version:<user_id>
                           ↓
                         Password Changed — success
 ```
 
-Revoking all refresh tokens on password change is deliberate: if the password was changed because it was compromised, every existing session (including an attacker's) is killed, not just the one making the request.
+Revoking all sessions on password change is deliberate: incrementing the `token_version` invalidates all previously issued JWT access tokens instantly, while revoking the refresh tokens kills all long-lived sessions.
 
 ## 8. Failure Handling
 
-- **Register:** duplicate email/username → `409 Conflict`, no user row created, no wallet call made.
-- **Login/Refresh:** transient DB failure → `503`, client retries; no partial token issuance ever occurs (tokens are generated only after every prior check passes).
+- **Register:** duplicate email/username → `409 Conflict`, no user row created.
+- **VerifyEmail:** invalid OTP → `400 Bad Request`, user remains `PENDING_VERIFICATION`.
+- **Login/Refresh:** transient DB failure → `503`, client retries.
 - **Refresh reuse detected** → revoke all sessions for that user, log the event for security review.
 
-### Register: InitializeWallet Failure — Compensating Delete
+### VerifyEmail: InitializeWallet Failure
 
-> **Decision:** If the `InitializeWallet` gRPC call fails after the user row has committed, Authentication Service compensates by **deleting the just-created user row** and returning a registration failure to the client — rather than a `wallet_status = PENDING` + reconciliation-job approach. This is simpler: no orphan `PENDING` users, no background job to maintain, and it's safe specifically because nothing else can reference this `user_id` yet at this point in the flow (registration hasn't returned success, so no token was issued and no other service has seen this user). The client sees a clean failure and can simply retry registration.
+> **Decision:** If the `InitializeWallet` gRPC call fails during email verification, the user's status remains `PENDING_VERIFICATION` in the database. Since the user cannot log in or make authenticated requests until their status is `VERIFIED`, there is no risk of a "user without wallet" race condition in other services.
+> 
+> No compensating delete is required. The client receives a `500 Internal Server Error` and is free to retry verification again.
 
 ```
-Create User (commit)
+Validate OTP (success)
   ↓
 InitializeWallet(user_id)
   ↓
 Fails?
-  ├── Yes → Delete User (compensating action) → 500: registration failed, please retry
-  └── No  → continue to Generate Tokens
+  ├── Yes → Return 500: wallet initialization failed, please retry (status remains PENDING_VERIFICATION)
+  └── No  → DB Transaction { Status = VERIFIED, Insert Outbox } -> Commit
 ```
 
-*If `InitializeWallet` is retried with backoff first (recommended, e.g. 2–3 attempts) and still fails, only then is the user row deleted — so a single transient blip doesn't fail registration unnecessarily.*
-
-### Register: Double-Failure Recovery (Compensating Delete Fails)
-
-> If `InitializeWallet` fails **and** the compensating `DELETE FROM users` also fails (e.g., DB temporarily unavailable, process crash), an orphan user row remains — exists in `users` table with no wallet and no token ever issued. The next registration attempt with the same email would hit `409 Conflict`.
->
-> **Recovery:** On startup, Authentication Service runs a reconciliation query: `SELECT u.id FROM users u WHERE NOT EXISTS (SELECT 1 FROM ...)` (checked via a lightweight `GetBalance` gRPC call to Wallet Service for each candidate). For each orphan, either retry `InitializeWallet` or delete the user row. Additionally, during registration's duplicate-email check: if a matching user exists but was created very recently (within a configurable window, e.g. 5 minutes) and has no active refresh tokens, treat it as a likely orphan — delete and proceed with fresh registration rather than returning `409`.
+*If `InitializeWallet` fails, the gRPC client will retry with exponential backoff before returning the final error to the client.*
 
 ## 9. JWT Strategy
 
@@ -236,9 +247,15 @@ Short access-token lifetime limits the damage window if one leaks; the refresh t
 
 ## 10. Shared JWT Validation Logic
 
-The JWT Validation Flow ([Section 3](#3-jwt-validation-flow)) and the API Gateway's JWT middleware step must be the same shared library/package, not two independent implementations. If they diverged, a token accepted by the gateway but rejected by Authentication Service (or vice versa) would be a real, hard-to-diagnose bug.
+The JWT Validation Flow ([Section 3](#3-jwt-validation-flow)) and the API Gateway's JWT middleware step must be the same shared library/package, not two independent implementations.
 
-> **Decision (V1):** JWT verification (signature check, expiry check, Redis revocation check) lives in one internal shared package, imported by both the API Gateway and Authentication Service. Authentication Service is authoritative for issuing and revoking tokens; the shared package is just the verification logic, built once and reused. The API Gateway validates tokens **locally** using this shared package — no gRPC round-trip to Authentication Service on every authenticated request. This requires the Gateway to have access to (1) the JWT signing key / public key and (2) Redis for blacklist checks.
+> **Decision (V1):** JWT verification (signature check, expiry check, token version match, JTI blacklist check) lives in `platform/jwt`, imported by the API Gateway and downstream services. The API Gateway validates tokens **locally** via `RedisValidator.Validate()`. 
+>
+> To remain decoupled from the SQL storage details, the validator defines the `AuthProvider` interface:
+> - `GetTokenVersion(ctx, user_id)` (fetches active token version)
+> - `IsTokenBlacklisted(ctx, jti)` (verifies JTI blacklist status)
+>
+> On a Redis cache miss or a cold restart, the validator falls back to query PostgreSQL through the microservice's `AuthProvider` implementation. Negative caching caches both `"valid"` and `"revoked"` states in Redis to prevent subsequent DB hits for non-revoked active tokens.
 
 ## 11. Security
 
@@ -258,27 +275,52 @@ The JWT Validation Flow ([Section 3](#3-jwt-validation-flow)) and the API Gatewa
 
 ```sql
 users(
-  id UUID PRIMARY KEY,          -- UUIDv7, generated by Authentication Service
-  email, username,
-  password_hash,
-  status,                        -- ACTIVE | SUSPENDED | BANNED
-  failed_login_attempts INT,     -- tracks password failure count
-  locked_until TIMESTAMPTZ,      -- locked until this time on lockout
-  created_at, updated_at, last_login_at, last_login_ip, last_login_ua
+  id UUID PRIMARY KEY,
+  email VARCHAR(255) UNIQUE NOT NULL,
+  username VARCHAR(50) UNIQUE NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  token_version INTEGER NOT NULL DEFAULT 1,
+  status VARCHAR(20) NOT NULL DEFAULT 'PENDING_VERIFICATION',
+  failed_login_attempts INT NOT NULL DEFAULT 0,
+  locked_until TIMESTAMPTZ,
+  last_login_at TIMESTAMPTZ,
+  email_verified_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL
 )
 
 refresh_tokens(
   id UUID PRIMARY KEY,
-  user_id UUID,
-  token_hash,
-  status,                        -- ACTIVE | ROTATED | REVOKED
-  expires_at, created_at
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  token_hash VARCHAR(255) UNIQUE NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  ip_address INET,
+  user_agent TEXT,
+  device_name VARCHAR(100),
+  last_used_at TIMESTAMPTZ,
+  rotated_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL
 )
 
 blacklisted_tokens(
   jti UUID PRIMARY KEY,
-  user_id UUID,
-  expires_at TIMESTAMPTZ
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL
+)
+
+outbox(
+  id UUID PRIMARY KEY,
+  aggregate_type VARCHAR(255) NOT NULL,
+  aggregate_id UUID NOT NULL,
+  event_type VARCHAR(255) NOT NULL,
+  payload JSONB NOT NULL,
+  status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+  failed_reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL,
+  published_at TIMESTAMPTZ,
+  UNIQUE (aggregate_type, aggregate_id, event_type)
 )
 ```
 

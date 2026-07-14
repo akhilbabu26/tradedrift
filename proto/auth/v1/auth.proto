@@ -176,8 +176,9 @@ message ResetPasswordResponse {
 // Logout / LogoutAll
 // ==========================================
 
-// Empty body since session is identified by the authenticated access token.
-message LogoutRequest {}
+message LogoutRequest {
+    string refresh_token = 1;
+}
 
 message LogoutResponse {
     bool success = 1;

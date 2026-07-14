@@ -13,14 +13,15 @@ import (
 
 // IssueAccessToken creates and signs a new JWT access token with HS256.
 // It returns the signed token string, the generated JTI string, and any error.
-func IssueAccessToken(userID, email string, secret []byte, ttl time.Duration) (string, string, error) {
+func IssueAccessToken(userID, email string, tokenVersion int, secret []byte, ttl time.Duration) (string, string, error) {
 	jti := uuid.NewString() // Generate a unique identifier for this specific token instance
 
 	now := time.Now().UTC()
 	claims := Claims{
-		UserID: userID,
-		Email:  email,
-		JTI:    jti,
+		UserID:       userID,
+		Email:        email,
+		JTI:          jti,
+		TokenVersion: tokenVersion,
 		RegisteredClaims: golangjwt.RegisteredClaims{
 			Subject:   userID,
 			Issuer:    jwtIssuer,

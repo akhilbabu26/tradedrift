@@ -10,6 +10,14 @@ const (
 	CodeTokenExpired       = "AUTH_TOKEN_EXPIRED"
 	CodeInvalidCredentials = "AUTH_INVALID_CREDENTIALS"
 	CodeTokenRevoked       = "AUTH_TOKEN_REVOKED"
+	CodeAccountNotActive   = "AUTH_ACCOUNT_NOT_ACTIVE"
+
+	CodeInvalidArgument    = "INVALID_ARGUMENT"
+	CodeAlreadyExists      = "ALREADY_EXISTS"
+	CodeNotFound           = "NOT_FOUND"
+	CodeInternal           = "INTERNAL"
+	CodePermissionDenied   = "PERMISSION_DENIED"
+	CodeFailedPrecondition = "FAILED_PRECONDITION"
 )
 
 // PlatformError represents a structured, code-carrying error.

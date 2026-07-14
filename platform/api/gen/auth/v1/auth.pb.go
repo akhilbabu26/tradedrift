@@ -860,9 +860,9 @@ func (x *ResetPasswordResponse) GetSuccess() bool {
 	return false
 }
 
-// Empty body since session is identified by the authenticated access token.
 type LogoutRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	RefreshToken  string                 `protobuf:"bytes,1,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -895,6 +895,13 @@ func (x *LogoutRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use LogoutRequest.ProtoReflect.Descriptor instead.
 func (*LogoutRequest) Descriptor() ([]byte, []int) {
 	return file_auth_v1_auth_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *LogoutRequest) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
 }
 
 type LogoutResponse struct {
@@ -1176,8 +1183,9 @@ const file_auth_v1_auth_proto_rawDesc = "" +
 	"\x04code\x18\x02 \x01(\tR\x04code\x12!\n" +
 	"\fnew_password\x18\x03 \x01(\tR\vnewPassword\"1\n" +
 	"\x15ResetPasswordResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\"\x0f\n" +
-	"\rLogoutRequest\"*\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"4\n" +
+	"\rLogoutRequest\x12#\n" +
+	"\rrefresh_token\x18\x01 \x01(\tR\frefreshToken\"*\n" +
 	"\x0eLogoutResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\"\x12\n" +
 	"\x10LogoutAllRequest\"-\n" +

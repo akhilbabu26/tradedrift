@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
+	"go.uber.org/zap"
 
 	platformerrors "tradedrift/platform/errors"
 )
@@ -28,7 +28,7 @@ func (s *Service) Login(ctx context.Context, identifier, password string) (*User
 	}
 
 	// Verify Password Hash
-	err = bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password))
+	err = s.compareBcrypt(u.PasswordHash, password)
 	if err != nil {
 		// Update failed login counter
 		failedCount := u.FailedLoginAttempts + 1
@@ -37,7 +37,9 @@ func (s *Service) Login(ctx context.Context, identifier, password string) (*User
 			lockTime := time.Now().UTC().Add(15 * time.Minute)
 			lockUntil = &lockTime
 		}
-		_ = s.userRepo.TrackFailedLogin(ctx, u.ID, failedCount, lockUntil)
+		if trackErr := s.userRepo.TrackFailedLogin(ctx, u.ID, failedCount, lockUntil); trackErr != nil {
+			s.log.Warn("failed to track failed login attempt", zap.String("userID", u.ID), zap.Error(trackErr))
+		}
 
 		return nil, nil, platformerrors.New(platformerrors.CodeInvalidCredentials, "invalid email/username or password")
 	}
@@ -51,7 +53,9 @@ func (s *Service) Login(ctx context.Context, identifier, password string) (*User
 	}
 
 	// Reset failed attempts and update last_login_at
-	_ = s.userRepo.ResetFailedLogin(ctx, u.ID, time.Now().UTC())
+	if resetErr := s.userRepo.ResetFailedLogin(ctx, u.ID, time.Now().UTC()); resetErr != nil {
+		s.log.Warn("failed to reset login attempt counter", zap.String("userID", u.ID), zap.Error(resetErr))
+	}
 
 	// Issue token pair
 	tp, err := s.issueTokenPair(ctx, u.ID, u.Email, u.TokenVersion)

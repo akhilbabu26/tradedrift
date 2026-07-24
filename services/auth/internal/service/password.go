@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 
-	"golang.org/x/crypto/bcrypt"
-
 	platformerrors "tradedrift/platform/errors"
 	"tradedrift/services/auth/internal/otp"
 )
@@ -61,7 +59,7 @@ func (s *Service) ResetPassword(ctx context.Context, email, code, newPassword st
 	}
 
 	// 2. Hash new password
-	hashBytes, err := bcrypt.GenerateFromPassword([]byte(newPassword), 10)
+	hashBytes, err := s.hashBcrypt(newPassword)
 	if err != nil {
 		return err
 	}
@@ -72,8 +70,9 @@ func (s *Service) ResetPassword(ctx context.Context, email, code, newPassword st
 		return err
 	}
 
-	// 4. Revoke sessions and evict cache
+	// 4. Revoke sessions, bump token version, and evict cache
 	_ = s.tokenRepo.RevokeAll(ctx, u.ID)
+	_ = s.userRepo.IncrementTokenVersion(ctx, u.ID)
 	cacheKey := "auth:token_version:" + u.ID
 	_ = s.rdb.Del(ctx, cacheKey).Err()
 
@@ -95,13 +94,13 @@ func (s *Service) ChangePassword(ctx context.Context, userID, oldPassword, newPa
 	}
 
 	// Verify old password
-	err = bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(oldPassword))
+	err = s.compareBcrypt(u.PasswordHash, oldPassword)
 	if err != nil {
 		return platformerrors.New(platformerrors.CodeInvalidCredentials, "incorrect current password")
 	}
 
 	// Hash new password
-	hashBytes, err := bcrypt.GenerateFromPassword([]byte(newPassword), 10)
+	hashBytes, err := s.hashBcrypt(newPassword)
 	if err != nil {
 		return err
 	}

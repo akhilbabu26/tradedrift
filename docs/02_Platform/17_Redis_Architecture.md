@@ -97,28 +97,28 @@ The following tables describe all Redis keys, data structures, expiration detail
   ```
 * **Fallback Strategy:** If Redis is down, fall back directly to PostgreSQL for token version lookup. Do not skip the check — this is a security invariant.
 
-#### 2.2.3 `otp:{user_id}`
+#### 2.2.3 `otp:code:{flow}:{email}`
 * **Data Type:** String
 * **Owner Service:** Authentication Service
 * **TTL Policy:** `300` seconds (5 minutes). Deleted immediately on successful verification.
 * **Value:** The 6-digit OTP code (e.g. `"482910"`)
-* **Purpose:** Stores the time-limited one-time password issued during email verification, password reset, and re-verification flows. Redis TTL provides automatic expiry without requiring a cleanup job.
+* **Purpose:** Stores the time-limited one-time password issued during email verification (`register:{email}`) or password reset (`reset:{email}`). Redis TTL provides automatic expiry without requiring a cleanup job.
 * **Fallback Strategy:** If Redis is down, OTP issuance and verification are unavailable. Return `503 Service Unavailable`. Do not fall back to PostgreSQL — OTPs must not be persisted to durable storage.
 
-#### 2.2.4 `otp:attempts:{user_id}`
+#### 2.2.4 `otp:attempts:{flow}:{email}`
 * **Data Type:** String (integer counter)
 * **Owner Service:** Authentication Service
-* **TTL Policy:** Matches the TTL of the corresponding `otp:{user_id}` key (5 minutes).
+* **TTL Policy:** Matches the TTL of the corresponding `otp:code:{flow}:{email}` key (5 minutes).
 * **Value:** Number of failed verification attempts (e.g. `"3"`)
-* **Purpose:** Brute-force protection. Incremented on every failed OTP attempt. When the counter reaches 5, the `otp:{user_id}` key is deleted immediately — invalidating the OTP and forcing the user to request a new one.
+* **Purpose:** Brute-force protection. Incremented on every failed OTP attempt. When the counter reaches 5, the `otp:code:{flow}:{email}` and `otp:attempts:{flow}:{email}` keys are deleted immediately — invalidating the code and forcing the user to request a new one.
 * **Command Sequence:**
   ```redis
-  INCR otp:attempts:{user_id}
+  INCR otp:attempts:register:user@example.com
   -- If result >= 5:
-  DEL otp:{user_id}
-  DEL otp:attempts:{user_id}
+  DEL otp:code:register:user@example.com
+  DEL otp:attempts:register:user@example.com
   ```
-* **Fallback Strategy:** Same as `otp:{user_id}` — OTP operations unavailable when Redis is down.
+* **Fallback Strategy:** Same as `otp:code:{flow}:{email}` — OTP operations unavailable when Redis is down.
 
 #### 2.2.5 `ratelimit:{user_id | ip_address}:{minute_timestamp}`
 * **Data Type:** String (Integer counter)

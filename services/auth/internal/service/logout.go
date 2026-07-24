@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 // Logout terminates a single active session durably.
@@ -16,7 +18,9 @@ func (s *Service) Logout(ctx context.Context, rawRefreshToken, accessJTI, userID
 		return err
 	}
 	if t != nil && t.UserID == userID {
-		_ = s.tokenRepo.Revoke(ctx, t.ID)
+		if revokeErr := s.tokenRepo.Revoke(ctx, t.ID); revokeErr != nil {
+			s.log.Warn("failed to revoke refresh token during logout", zap.String("tokenID", t.ID), zap.Error(revokeErr))
+		}
 	}
 
 	// 2. Blacklist access token JTI durably in Postgres and cache in Redis
@@ -27,7 +31,7 @@ func (s *Service) Logout(ctx context.Context, rawRefreshToken, accessJTI, userID
 
 	ttl := time.Until(accessExpiresAt)
 	if ttl > time.Second {
-		cacheKey := "token:blacklist:" + accessJTI
+		cacheKey := "jwt:blacklist:" + accessJTI
 		_ = s.rdb.Set(ctx, cacheKey, "revoked", ttl).Err()
 	}
 

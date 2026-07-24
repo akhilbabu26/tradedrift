@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"golang.org/x/crypto/bcrypt"
 
 	platformerrors "tradedrift/platform/errors"
 	"tradedrift/services/auth/internal/repository"
@@ -26,13 +25,14 @@ func (s *Service) Register(ctx context.Context, email, username, password string
 	}
 
 	// 2. Hash password
-	hashBytes, err := bcrypt.GenerateFromPassword([]byte(password), 10)
+	hashBytes, err := s.hashBcrypt(password)
 	if err != nil {
 		return "", fmt.Errorf("failed to hash password: %w", err)
 	}
 
 	// 3. Create user record in PENDING_VERIFICATION state
 	userID := uuid.NewString()
+	now := time.Now().UTC()
 	user := &repository.User{
 		ID:           userID,
 		Email:        email,
@@ -40,8 +40,8 @@ func (s *Service) Register(ctx context.Context, email, username, password string
 		PasswordHash: string(hashBytes),
 		TokenVersion: 1,
 		Status:       "PENDING_VERIFICATION",
-		CreatedAt:    time.Now().UTC(),
-		UpdatedAt:    time.Now().UTC(),
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 
 	err = s.userRepo.Create(ctx, user)

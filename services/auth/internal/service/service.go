@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
+	"runtime"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,6 +14,8 @@ import (
 	"go.uber.org/zap"
 
 	platformjwt "tradedrift/platform/jwt"
+	"golang.org/x/crypto/bcrypt"
+
 	"tradedrift/services/auth/internal/mail"
 	"tradedrift/services/auth/internal/otp"
 	"tradedrift/services/auth/internal/repository"
@@ -20,6 +23,7 @@ import (
 
 var (
 	emailRegex = regexp.MustCompile(`^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,4}$`)
+	bcryptSem  = make(chan struct{}, runtime.NumCPU())
 )
 
 // WalletClient defines the interface for communicating with the Wallet Service.
@@ -146,3 +150,18 @@ func (s *Service) GetTokenVersion(ctx context.Context, userID string) (int, erro
 func (s *Service) IsTokenBlacklisted(ctx context.Context, jti string) (bool, error) {
 	return s.tokenRepo.IsTokenBlacklisted(ctx, jti)
 }
+
+// compareBcrypt runs bcrypt comparison with CPU-bounded concurrency.
+func (s *Service) compareBcrypt(hash, password string) error {
+	bcryptSem <- struct{}{}
+	defer func() { <-bcryptSem }()
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+}
+
+// hashBcrypt runs bcrypt hashing with CPU-bounded concurrency.
+func (s *Service) hashBcrypt(password string) ([]byte, error) {
+	bcryptSem <- struct{}{}
+	defer func() { <-bcryptSem }()
+	return bcrypt.GenerateFromPassword([]byte(password), 10)
+}
+

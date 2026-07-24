@@ -83,7 +83,44 @@ The following tables describe all Redis keys, data structures, expiration detail
 * **Value:** `"1"`
 * **Fallback Strategy:** If Redis is down, the API Gateway operates a **fail-closed** policy for JWT verification, returning a `500 Internal Server Error` to prevent potentially revoked access tokens from breaching security boundaries.
 
-#### 2.2.2 `ratelimit:{user_id | ip_address}:{minute_timestamp}`
+#### 2.2.2 `auth:token_version:{user_id}`
+* **Data Type:** String (integer)
+* **Owner Service:** Authentication Service (writes on password change / logout-all), API Gateway (reads on every authenticated request)
+* **TTL Policy:** `86400` seconds (24 hours). Refreshed from PostgreSQL on cache miss.
+* **Value:** Current integer token version (e.g. `"3"`)
+* **Purpose:** Every JWT access token embeds the `token_version` at issuance time. On each request, the API Gateway compares the token's embedded version against this Redis value. A mismatch (e.g. after a password change) immediately invalidates all previously issued tokens for that user without requiring a database query on every request.
+* **Cache-Aside Flow:**
+  ```
+  1. Read Redis key auth:token_version:{user_id}
+  2. HIT  → compare with JWT claim → pass or reject
+  3. MISS → query PostgreSQL users.token_version → write to Redis (TTL 24h) → compare
+  ```
+* **Fallback Strategy:** If Redis is down, fall back directly to PostgreSQL for token version lookup. Do not skip the check — this is a security invariant.
+
+#### 2.2.3 `otp:{user_id}`
+* **Data Type:** String
+* **Owner Service:** Authentication Service
+* **TTL Policy:** `300` seconds (5 minutes). Deleted immediately on successful verification.
+* **Value:** The 6-digit OTP code (e.g. `"482910"`)
+* **Purpose:** Stores the time-limited one-time password issued during email verification, password reset, and re-verification flows. Redis TTL provides automatic expiry without requiring a cleanup job.
+* **Fallback Strategy:** If Redis is down, OTP issuance and verification are unavailable. Return `503 Service Unavailable`. Do not fall back to PostgreSQL — OTPs must not be persisted to durable storage.
+
+#### 2.2.4 `otp:attempts:{user_id}`
+* **Data Type:** String (integer counter)
+* **Owner Service:** Authentication Service
+* **TTL Policy:** Matches the TTL of the corresponding `otp:{user_id}` key (5 minutes).
+* **Value:** Number of failed verification attempts (e.g. `"3"`)
+* **Purpose:** Brute-force protection. Incremented on every failed OTP attempt. When the counter reaches 5, the `otp:{user_id}` key is deleted immediately — invalidating the OTP and forcing the user to request a new one.
+* **Command Sequence:**
+  ```redis
+  INCR otp:attempts:{user_id}
+  -- If result >= 5:
+  DEL otp:{user_id}
+  DEL otp:attempts:{user_id}
+  ```
+* **Fallback Strategy:** Same as `otp:{user_id}` — OTP operations unavailable when Redis is down.
+
+#### 2.2.5 `ratelimit:{user_id | ip_address}:{minute_timestamp}`
 * **Data Type:** String (Integer counter)
 * **Owner Service:** API Gateway
 * **TTL Policy:** `60` seconds (Expired automatically)
@@ -165,3 +202,152 @@ To maintain high performance and low CPU overhead:
 - **RED-1 (Fail-Closed Token Verification):** The API Gateway must treat Redis connection timeouts or unreachability during JWT blacklist checks as validation failures, rejecting requests with status `500`.
 - **RED-2 (Atomic Rate Limit Increment):** Rate limiters must use atomic increments (`INCR`) and set expirations to prevent race conditions from inflating limits or creating permanent locks.
 - **RED-3 (Redis Subscription Cleanup):** API WebSocket nodes must clean up and unsubscribe from unused Redis channels immediately upon socket closure to prevent subscription leaks.
+
+---
+
+## 6. Architectural Principle — Shared Redis, Separate PostgreSQL
+
+Every microservice in TradeDrift owns its own **private PostgreSQL database**. No service ever reads another service's database directly. This is the microservices data ownership rule.
+
+However, all services connect to the **same shared Redis cluster**. This is intentional and correct because Redis serves a different purpose — it is a performance layer and communication backplane, not a source of truth.
+
+```
+Matching Engine ──────────────┐
+Market Service ───────────────┤
+Auth Service ─────────────────┤──► Same Redis Sentinel Cluster
+API Gateway ──────────────────┤
+Portfolio Service ────────────┤
+Notification Service ─────────┘
+
+Each service has its OWN PostgreSQL:
+  auth_db        ← Auth Service only
+  order_db       ← Order Service only
+  wallet_db      ← Wallet Service only
+  market_db      ← Market Service only
+  portfolio_db   ← Portfolio Service only
+```
+
+**Why Redis can be shared but PostgreSQL cannot:**
+
+PostgreSQL holds permanent, authoritative business data (user accounts, balances, orders, trades). Sharing it would create tight coupling and allow one service to corrupt another's data.
+
+Redis holds derived, temporary, or cacheable data (snapshots, cache entries, pub/sub channels). If Redis loses all its data, every piece of it can be rebuilt from PostgreSQL. No permanent data is ever lost.
+
+> **PostgreSQL is the source of truth. Redis is the performance layer.**
+
+---
+
+## 7. Key Name Convention — The Shared Contract Between Services
+
+Services communicate through Redis using a simple convention: a **fixed, agreed-upon key name**. No service passes a pointer or ID to another service. Both sides simply know the key pattern from the start.
+
+Example — Matching Engine and Market Service share the order book:
+
+```go
+// Matching Engine writes (after every match):
+redis.Set(ctx, "orderbook:BTC_USDT", snapshot, 0)
+
+// Market Service reads (on every API request):
+val := redis.Get(ctx, "orderbook:BTC_USDT")
+```
+
+No gRPC call. No Kafka message. No ID exchanged. The key name `orderbook:{market_id}` is the contract — both services know it from the architecture definition.
+
+### Complete Key Name Registry
+
+| Key Pattern | Writer | Readers |
+|---|---|---|
+| `orderbook:{market_id}` | Matching Engine | Market Service |
+| `ticker:{market_id}` | Market Service cron | Market Service API, Portfolio Service |
+| `jwt:blacklist:{jti}` | Auth Service | API Gateway |
+| `auth:token_version:{user_id}` | Auth Service | API Gateway |
+| `otp:{user_id}` | Auth Service | Auth Service |
+| `otp:attempts:{user_id}` | Auth Service | Auth Service |
+| `ratelimit:{id}:{timestamp}` | API Gateway | API Gateway |
+| `dedup:trades:{trade_id}` | Notification Service | Notification Service |
+| `market:trades:{market_id}` (Pub/Sub) | Notification Service | WebSocket nodes |
+| `user:notifications:{user_id}` (Pub/Sub) | Notification Service | WebSocket nodes |
+
+---
+
+## 8. Redis Failure & Recovery Strategy
+
+### 8.1 Primary Protection — Redis Sentinel Failover
+
+TradeDrift deploys Redis in **Sentinel mode** (1 master + 2 replicas + 3 sentinel monitors). If the Redis master crashes, Sentinel automatically elects a replica as the new master within approximately 5–10 seconds. All services reconnect automatically via the Sentinel client library. Most failures are handled transparently with only a brief pause.
+
+### 8.2 If Redis is Completely Unavailable — Per-Feature Behaviour
+
+Each Redis use case has an independently defined fallback to prevent total system failure:
+
+| Feature | Redis Down → Behaviour |
+|---|---|
+| **Order book** (`orderbook:`) | Market Service returns `503 Service Unavailable`. Trading continues. |
+| **Ticker** (`ticker:`) | Market Service falls back to PostgreSQL query using `singleflight` coalescing. Slightly slower, fully functional. |
+| **JWT blacklist** (`jwt:blacklist:`) | API Gateway **fails closed** — returns `500`. All requests blocked. Security is preserved over availability. |
+| **Token version** (`auth:token_version:`) | Falls back to PostgreSQL directly. Correct but slower. |
+| **Rate limiting** (`ratelimit:`) | Falls back to local in-memory rate limiter per pod. Still protected, not globally coordinated. |
+| **OTP codes** (`otp:`) | OTP issuance and verification return `503`. Users cannot verify email until Redis recovers. |
+| **WebSocket Pub/Sub** | Live feeds pause. No data loss — events remain in Kafka for replay when recovered. |
+| **Trade deduplication** (`dedup:`) | Deduplication bypassed. Duplicate feeds may appear briefly on visual tickers; ledger balances are unaffected. |
+
+### 8.3 After Redis Restarts — Data Recovery
+
+Redis is never the source of truth. Every key can be rebuilt from PostgreSQL or from the owning service's own state.
+
+```
+Redis restarts (empty memory)
+      │
+      ├── orderbook:{market_id}
+      │     Recovery: Matching Engine writes a fresh snapshot after the
+      │     very next order event. Recovered automatically in seconds.
+      │
+      ├── ticker:{market_id}
+      │     Recovery: Market Service cron queries PostgreSQL trades table
+      │     for all trades in the last 24 hours and recalculates all
+      │     ticker fields on startup. Fully recovered in one query.
+      │
+      │     SELECT price, qty, executed_at FROM trades
+      │     WHERE market_id = 'BTC_USDT'
+      │       AND executed_at > NOW() - INTERVAL '24 hours'
+      │     ORDER BY executed_at ASC
+      │     → recalculate last_price, high_24h, low_24h, volume_24h, open_24h
+      │     → HSET ticker:BTC_USDT ...
+      │
+      ├── jwt:blacklist:{jti}
+      │     Recovery: AOF (Append Only File) is enabled. Redis replays
+      │     the AOF log on startup and restores all blacklist keys
+      │     automatically. No manual intervention needed.
+      │
+      ├── auth:token_version:{user_id}
+      │     Recovery: Cache-aside pattern. Each user's version is fetched
+      │     from PostgreSQL on their first request after restart and written
+      │     back to Redis (TTL 24h). Repopulates organically under traffic.
+      │
+      ├── ratelimit:{id}:{timestamp}
+      │     Recovery: Not needed. Counters reset to zero is acceptable.
+      │     A brief window of unenforced rate limits is tolerable.
+      │
+      ├── otp:{user_id}
+      │     Recovery: Not needed. OTPs are short-lived (5 minutes).
+      │     Users request a new OTP if theirs expired during the outage.
+      │
+      └── Pub/Sub channels
+            Recovery: Notification Service re-subscribes automatically
+            on reconnect. No historical messages are lost — they remain
+            in Kafka and will be processed when consumers resume.
+```
+
+### 8.4 The AOF Exception — JWT Blacklist Must Survive Restarts
+
+All Redis data is considered ephemeral **except the JWT blacklist**. A revoked token must remain revoked even if Redis crashes and restarts. A user who logged out must not be able to log back in using their old access token.
+
+This is why TradeDrift enables AOF persistence specifically for this requirement:
+
+```
+appendonly yes
+appendfsync everysec
+```
+
+AOF writes every Redis operation to disk. On restart, Redis replays the log and restores the blacklist state before accepting any connections. This is the only Redis data that is not fully reconstructible from PostgreSQL alone.
+

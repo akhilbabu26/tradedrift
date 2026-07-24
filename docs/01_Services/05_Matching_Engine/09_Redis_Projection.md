@@ -16,6 +16,21 @@ Redis here is a **projection**, not a source of truth. The Order Book itself rem
 
 ---
 
+## 1.1 Why Redis and Not Kafka or gRPC
+
+Three alternatives were considered for publishing the order book to other services. Redis is the only correct choice for this specific use case.
+
+| Alternative | Problem |
+|---|---|
+| **gRPC call to ME** | The ME runs a single goroutine per market. Handling inbound gRPC calls would require locking the order book or a separate goroutine with shared state — both break the lock-free concurrency model that makes ME fast. |
+| **Kafka event per change** | Consumers would need to replay and reconstruct the entire book from every historical event to compute the current depth. This is complex, slow, and wastes Kafka storage on data that is only useful in its latest form. |
+| **PostgreSQL** | The order book changes hundreds of times per second. Writing to a relational database on every change would be catastrophically slow and would require a consumer to query across many rows to reconstruct depth. |
+| **Redis `SET` (chosen)** | ME writes one JSON snapshot per event in a single `SET` call. Market Service reads it in a single `GET`. Sub-millisecond. No locks. No reconstruction. No shared state between services. ✅ |
+
+The key insight: the order book is **overwrite-only**. Consumers never need previous versions — they only ever need the current state. Redis `SET` with no TTL is the perfect fit for this access pattern.
+
+---
+
 # 2. What Gets Written
 
 The payload is exactly the `DepthSnapshot` produced by `GetDepth` (`04_Data_Structures/07_Algorithms.md §7`):

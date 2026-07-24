@@ -8,7 +8,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/redis/go-redis/v9"
+	platformredis "tradedrift/platform/redis"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
@@ -49,6 +49,7 @@ func main() {
 	// 2. Load configurations using platform config
 	dbDSN := config.GetEnv("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/tradedrift?sslmode=disable")
 	redisAddr := config.GetEnv("REDIS_ADDR", "localhost:6379")
+	redisSentinelMaster := config.GetEnv("REDIS_SENTINEL_MASTER", "")
 	grpcPort := config.GetEnv("PORT", ":50051")
 	migrationDir := config.GetEnv("MIGRATIONS_DIR", "migrations")
 
@@ -79,15 +80,15 @@ func main() {
 	defer dbPool.Close()
 	appLogger.Info("Successfully connected to PostgreSQL")
 
-	// 5. Initialize Redis Client
-	rdb := redis.NewClient(&redis.Options{
-		Addr: redisAddr,
+	// 5. Initialize Redis Client (supports standalone and Sentinel HA)
+	rdb, err := platformredis.NewClient(ctx, platformredis.Config{
+		Addr:           redisAddr,
+		SentinelMaster: redisSentinelMaster,
 	})
-	defer rdb.Close()
-
-	if err := rdb.Ping(ctx).Err(); err != nil {
+	if err != nil {
 		appLogger.Fatal("Redis cache is unreachable", zap.Error(err))
 	}
+	defer rdb.Close()
 	appLogger.Info("Successfully connected to Redis")
 
 	// 6. Instantiate Repository Adapters

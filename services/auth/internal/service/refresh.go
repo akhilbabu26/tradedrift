@@ -27,7 +27,7 @@ func (s *Service) RefreshToken(ctx context.Context, rawRefreshToken string) (*To
 	}
 
 	// Reuse Hijack Detection
-	if t.Status == "ROTATED" {
+	if t.Status == repository.TokenStatusRotated {
 		// Log potential hijack and immediately revoke all sessions for this user!
 		s.log.Warn("Potentially hijacked token detected! Revoking all sessions for user",
 			zap.String("tokenID", t.ID),
@@ -40,7 +40,7 @@ func (s *Service) RefreshToken(ctx context.Context, rawRefreshToken string) (*To
 		return nil, platformerrors.New(platformerrors.CodePermissionDenied, "session security breach detected. Please log in again.")
 	}
 
-	if t.Status == "REVOKED" {
+	if t.Status == repository.TokenStatusRevoked {
 		return nil, platformerrors.New(platformerrors.CodeInvalidCredentials, "session has been revoked")
 	}
 
@@ -67,7 +67,7 @@ func (s *Service) RefreshToken(ctx context.Context, rawRefreshToken string) (*To
 		ID:         uuid.NewString(),
 		UserID:     t.UserID,
 		TokenHash:  newHash,
-		Status:     "ACTIVE",
+		Status:     repository.TokenStatusActive,
 		IPAddress:  t.IPAddress,
 		UserAgent:  t.UserAgent,
 		DeviceName: t.DeviceName,

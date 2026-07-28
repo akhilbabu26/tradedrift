@@ -8,6 +8,38 @@ import (
 	"time"
 )
 
+// LoadEnv reads one or more .env files and populates unset environment variables.
+// It silently ignores missing files.
+func LoadEnv(filenames ...string) {
+	if len(filenames) == 0 {
+		filenames = []string{".env", "services/auth/.env"}
+	}
+	for _, filename := range filenames {
+		data, err := os.ReadFile(filename)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			parts := strings.SplitN(line, "=", 2)
+			if len(parts) == 2 {
+				key := strings.TrimSpace(parts[0])
+				val := strings.TrimSpace(parts[1])
+				if len(val) >= 2 && ((val[0] == '"' && val[len(val)-1] == '"') || (val[0] == '\'' && val[len(val)-1] == '\'')) {
+					val = val[1 : len(val)-1]
+				}
+				if key != "" {
+					_ = os.Setenv(key, val)
+				}
+			}
+		}
+	}
+}
+
 // GetEnv retrieves the environment variable or returns the default value if it is not set or is only whitespace.
 // Unlike the other helpers, this never fails — absence just means default.
 func GetEnv(key, defaultValue string) string {

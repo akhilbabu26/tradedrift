@@ -6,4 +6,5 @@ go 1.26.3
 use (
     ./platform
     ./services/auth
+    ./services/wallet
 )

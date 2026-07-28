@@ -111,7 +111,7 @@ func (s *Service) issueTokenPair(ctx context.Context, userID, email string, toke
 		ID:        uuid.NewString(),
 		UserID:    userID,
 		TokenHash: hashRefresh,
-		Status:    "ACTIVE",
+		Status:    repository.TokenStatusActive,
 		ExpiresAt: now.Add(s.refreshTTL),
 		CreatedAt: now,
 	}

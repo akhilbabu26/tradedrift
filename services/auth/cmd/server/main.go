@@ -36,6 +36,9 @@ func (m *mockWalletClient) InitializeWallet(ctx context.Context, userID string) 
 }
 
 func main() {
+	// 0. Auto-load .env configuration file if present
+	config.LoadEnv()
+
 	// 1. Initialize Logger
 	logLevel := config.GetEnv("LOG_LEVEL", "info")
 	if err := config.ValidateLogLevel(logLevel); err != nil {
@@ -51,7 +54,14 @@ func main() {
 	redisAddr := config.GetEnv("REDIS_ADDR", "localhost:6379")
 	redisSentinelMaster := config.GetEnv("REDIS_SENTINEL_MASTER", "")
 	grpcPort := config.GetEnv("PORT", ":50051")
-	migrationDir := config.GetEnv("MIGRATIONS_DIR", "migrations")
+	migrationDir := config.GetEnv("MIGRATIONS_DIR", "services/auth/migrations")
+	if _, err := os.Stat(migrationDir); os.IsNotExist(err) {
+		if _, err := os.Stat("services/auth/migrations"); err == nil {
+			migrationDir = "services/auth/migrations"
+		} else if _, err := os.Stat("migrations"); err == nil {
+			migrationDir = "migrations"
+		}
+	}
 
 	// Critical configuration: JWT_SECRET must never silently default in production
 	jwtSecretStr, err := config.GetEnvOrError("JWT_SECRET")

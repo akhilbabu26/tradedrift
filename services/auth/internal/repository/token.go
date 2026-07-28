@@ -5,12 +5,20 @@ import (
 	"time"
 )
 
+// Token status constants — used when reading/writing the Status field of RefreshToken.
+// These must match the CHECK constraint in the refresh_tokens table migration.
+const (
+	TokenStatusActive  = "ACTIVE"
+	TokenStatusRotated = "ROTATED"
+	TokenStatusRevoked = "REVOKED"
+)
+
 // RefreshToken represents the database model for active sessions.
 type RefreshToken struct {
 	ID          string
 	UserID      string
 	TokenHash   string
-	Status      string // ACTIVE, ROTATED, REVOKED
+	Status      string // one of TokenStatusActive, TokenStatusRotated, TokenStatusRevoked
 	IPAddress   *string
 	UserAgent   *string
 	DeviceName  *string

@@ -1,0 +1,113 @@
+syntax = "proto3";
+
+package tradedrift.wallet.v1;
+
+option go_package = "tradedrift/platform/api/gen/wallet/v1;walletv1";
+
+// ─────────────────────────────────────────────
+// Shared message types
+// ─────────────────────────────────────────────
+
+message AssetBalance {
+    string asset             = 1;
+    string available_balance = 2;
+    string reserved_balance  = 3;
+}
+
+message AssetInfo {
+    string asset_code    = 1;
+    string asset_name    = 2;
+    int32  decimals      = 3;
+    bool   is_enabled    = 4;
+    string seed_amount   = 5;
+    int32  display_order = 6;
+}
+
+// ─────────────────────────────────────────────
+// InitializeWallet
+// ─────────────────────────────────────────────
+
+message InitializeWalletRequest  { string user_id = 1; }
+message InitializeWalletResponse { bool success   = 1; }
+
+// ─────────────────────────────────────────────
+// ReserveFunds
+// ─────────────────────────────────────────────
+
+message ReserveFundsRequest {
+    string user_id  = 1;
+    string order_id = 2;
+    string asset    = 3;
+    string amount   = 4;
+}
+
+message ReserveFundsResponse {
+    string reservation_id    = 1;
+    string reserved_amount   = 2;
+    bool   already_existed   = 3;
+}
+
+// ─────────────────────────────────────────────
+// ReleaseFunds
+// ─────────────────────────────────────────────
+
+message ReleaseFundsRequest  { string order_id = 1; }
+message ReleaseFundsResponse { bool success    = 1; }
+
+// ─────────────────────────────────────────────
+// SettleTrade
+// ─────────────────────────────────────────────
+
+message SettleTradeRequest {
+    string trade_id      = 1;
+    string buyer_id      = 2;
+    string seller_id     = 3;
+    string buy_order_id  = 4;
+    string sell_order_id = 5;
+    string base_asset    = 6;
+    string quote_asset   = 7;
+    string price         = 8;
+    string quantity      = 9;
+    string market_id     = 10;
+}
+
+message SettleTradeResponse { bool success = 1; }
+
+// ─────────────────────────────────────────────
+// GetBalance / GetBalances
+// ─────────────────────────────────────────────
+
+message GetBalanceRequest  { string user_id = 1; string asset = 2; }
+message GetBalanceResponse { AssetBalance balance = 1; }
+
+message GetBalancesRequest  { string user_id = 1; }
+message GetBalancesResponse { repeated AssetBalance balances = 1; }
+
+// ─────────────────────────────────────────────
+// GetSupportedAssets
+// ─────────────────────────────────────────────
+
+message GetSupportedAssetsRequest  {}
+message GetSupportedAssetsResponse { repeated AssetInfo assets = 1; }
+
+// ─────────────────────────────────────────────
+// Health
+// ─────────────────────────────────────────────
+
+message HealthRequest  {}
+message HealthResponse { bool ok = 1; }
+
+// ─────────────────────────────────────────────
+// Service
+// ─────────────────────────────────────────────
+
+service WalletService {
+    rpc InitializeWallet   (InitializeWalletRequest)   returns (InitializeWalletResponse);
+    rpc ReserveFunds       (ReserveFundsRequest)        returns (ReserveFundsResponse);
+    rpc ReleaseFunds       (ReleaseFundsRequest)        returns (ReleaseFundsResponse);
+    rpc SettleTrade        (SettleTradeRequest)         returns (SettleTradeResponse);
+    rpc GetBalance         (GetBalanceRequest)          returns (GetBalanceResponse);
+    rpc GetBalances        (GetBalancesRequest)         returns (GetBalancesResponse);
+    rpc GetSupportedAssets (GetSupportedAssetsRequest)  returns (GetSupportedAssetsResponse);
+    rpc Health             (HealthRequest)              returns (HealthResponse);
+}

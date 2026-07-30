@@ -23,7 +23,7 @@ func (r *WalletRepository) GetByUserAndAsset(ctx context.Context, userID, asset 
 	query := `
 		SELECT id, user_id, asset, available_balance, reserved_balance,
 		       is_frozen, frozen_at, frozen_by, freeze_reason,
-		       initial_balance, total_balance, updated_at
+		       initial_balance, total_balance, created_at, updated_at
 		FROM wallets
 		WHERE user_id = $1 AND asset = $2
 	`
@@ -31,7 +31,7 @@ func (r *WalletRepository) GetByUserAndAsset(ctx context.Context, userID, asset 
 	err := r.db.QueryRow(ctx, query, userID, asset).Scan(
 		&w.ID, &w.UserID, &w.Asset, &w.AvailableBalance, &w.ReservedBalance,
 		&w.IsFrozen, &w.FrozenAt, &w.FrozenBy, &w.FreezeReason,
-		&w.InitialBalance, &w.TotalBalance, &w.UpdatedAt,
+		&w.InitialBalance, &w.TotalBalance, &w.CreatedAt, &w.UpdatedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -46,7 +46,7 @@ func (r *WalletRepository) GetAllByUser(ctx context.Context, userID string) ([]*
 	query := `
 		SELECT id, user_id, asset, available_balance, reserved_balance,
 		       is_frozen, frozen_at, frozen_by, freeze_reason,
-		       initial_balance, total_balance, updated_at
+		       initial_balance, total_balance, created_at, updated_at
 		FROM wallets
 		WHERE user_id = $1
 		ORDER BY (SELECT display_order FROM supported_assets WHERE asset_code = wallets.asset)
@@ -63,7 +63,7 @@ func (r *WalletRepository) GetAllByUser(ctx context.Context, userID string) ([]*
 		if err := rows.Scan(
 			&w.ID, &w.UserID, &w.Asset, &w.AvailableBalance, &w.ReservedBalance,
 			&w.IsFrozen, &w.FrozenAt, &w.FrozenBy, &w.FreezeReason,
-			&w.InitialBalance, &w.TotalBalance, &w.UpdatedAt,
+			&w.InitialBalance, &w.TotalBalance, &w.CreatedAt, &w.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan wallet row: %w", err)
 		}
@@ -174,6 +174,46 @@ func (r *WalletRepository) DebitReserved(ctx context.Context, walletID, amount s
 	res, err := r.db.Exec(ctx, query, amount, walletID)
 	if err != nil {
 		return fmt.Errorf("failed to debit reserved balance: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("wallet not found: %s", walletID)
+	}
+	return nil
+}
+
+func (r *WalletRepository) FreezeWallet(ctx context.Context, walletID, frozenBy, reason string) error {
+	query := `
+		UPDATE wallets
+		SET is_frozen     = true,
+		    frozen_at     = NOW(),
+		    frozen_by     = $2,
+		    freeze_reason = $3,
+		    updated_at    = NOW()
+		WHERE id = $1
+	`
+	res, err := r.db.Exec(ctx, query, walletID, frozenBy, reason)
+	if err != nil {
+		return fmt.Errorf("failed to freeze wallet: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("wallet not found: %s", walletID)
+	}
+	return nil
+}
+
+func (r *WalletRepository) UnfreezeWallet(ctx context.Context, walletID string) error {
+	query := `
+		UPDATE wallets
+		SET is_frozen     = false,
+		    frozen_at     = NULL,
+		    frozen_by     = NULL,
+		    freeze_reason = NULL,
+		    updated_at    = NOW()
+		WHERE id = $1
+	`
+	res, err := r.db.Exec(ctx, query, walletID)
+	if err != nil {
+		return fmt.Errorf("failed to unfreeze wallet: %w", err)
 	}
 	if res.RowsAffected() == 0 {
 		return fmt.Errorf("wallet not found: %s", walletID)

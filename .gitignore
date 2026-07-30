@@ -1,4 +1,16 @@
+# Compiled binaries
 /bin/
+*.exe
+*.test
+
+# Environment files
 *.env
 .env.*
+
+# Generated files
 platform/gen/
+
+# Temp and OS files
+tmp/
+.DS_Store
+*.log

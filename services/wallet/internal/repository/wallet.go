@@ -18,6 +18,7 @@ type Wallet struct{
 	FreezeReason     *string
 	InitialBalance   string
 	TotalBalance     string
+	CreatedAt        time.Time
 	UpdatedAt        time.Time
 }
 
@@ -28,6 +29,10 @@ type WalletRepository interface{
 	GetByUserAndAsset(ctx context.Context, userID, asset string) (*Wallet, error)
 	// GetAllByUser retrieves all wallets owned by a user.
 	GetAllByUser(ctx context.Context, userID string) ([]*Wallet, error)
+	// FreezeWallet marks a wallet as frozen, blocking all balance changes.
+	FreezeWallet(ctx context.Context, walletID, frozenBy, reason string) error
+	// UnfreezeWallet removes the freeze from a wallet.
+	UnfreezeWallet(ctx context.Context, walletID string) error
 	// Create inserts a new wallet row.
 	Create(ctx context.Context, w *Wallet) error
 	// CreditAvailable adds amount to available_balance and updates total_balance.

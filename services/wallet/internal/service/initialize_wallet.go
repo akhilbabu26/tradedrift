@@ -58,17 +58,17 @@ func (s *Service) InitializeWallet(ctx context.Context, userID string) error {
 		}
 
 		// 4. If seed amount > 0, write an INITIAL_ALLOCATION transaction (ledger entry)
-		txnID, err := platformuuid.New()
-		if err != nil {
-    		return fmt.Errorf("failed to generate transaction ID: %w", err)
-		}
 		if asset.SeedAmount != "0" && asset.SeedAmount != "0.0000000000" {
+			txnID, err := platformuuid.New()
+			if err != nil {
+				return fmt.Errorf("failed to generate transaction ID: %w", err)
+			}
 			txn := &repository.WalletTransaction{
 				ID:              txnID,
 				WalletID:        walletID,
 				ReferenceID:     userID,
-				ReferenceType:   "INITIAL_ALLOCATION",
-				TransactionType: "CREDIT",
+				ReferenceType:   repository.RefInitialAllocation,
+				TransactionType: repository.TxnTypeCredit,
 				Asset:           asset.AssetCode,
 				Amount:          asset.SeedAmount,
 				CreatedAt:       now,

@@ -16,6 +16,8 @@ Each file owns exactly one domain concept. They don't overlap:
 | `transaction.go` | Immutable ledger entries | `wallet_transactions` |
 | `asset.go` | Platform asset configuration | `supported_assets` |
 | `outbox.go` | Pending Kafka events | `outbox` |
+| `errors.go` | Domain sentinel errors | — (no table, shared by all) |
+| `constants.go` | Typed string constants | — (no table, shared by all) |
 
 **Why not one big file?**
 - Each file can be read, tested, and modified independently.
@@ -78,6 +80,8 @@ Using `string` (e.g. `"10000.0000000000"`) means the service layer passes the ex
 | `MoveToReserved` | `available -= X`, `reserved += X` | Reserve funds atomically — one operation, not two |
 | `MoveFromReserved` | `reserved -= X`, `available += X` | Release funds — return locked money |
 | `DebitReserved` | `reserved -= X` | Settlement — consumed funds leave the account |
+| `FreezeWallet` | Sets `is_frozen = true` with reason | Admin/risk system blocks a suspicious wallet |
+| `UnfreezeWallet` | Sets `is_frozen = false`, clears reason | Admin lifts the freeze |
 
 **Why `MoveToReserved` instead of separate `DebitAvailable` + `CreditReserved`?**
 
@@ -130,7 +134,6 @@ The `remaining_amount = reserved_amount - consumed_amount` calculation happens i
 ```go
 type WalletTransaction struct { ... }
 type TransactionRepository interface { ... }
-var ErrDuplicate = fmt.Errorf("duplicate transaction: already processed")
 ```
 
 **The `WalletTransaction` struct** is a permanent, never-deleted record of every balance change.
@@ -166,7 +169,62 @@ Clean, readable, database-agnostic.
 
 ---
 
-### `asset.go` — Platform Asset Config
+### `errors.go` — Domain Sentinel Errors
+
+```go
+var (
+    ErrDuplicate           = errors.New("duplicate: already processed")
+    ErrNotFound            = errors.New("not found")
+    ErrInsufficientBalance = errors.New("insufficient balance")
+    ErrWalletFrozen        = errors.New("wallet is frozen")
+)
+```
+
+**Why a dedicated errors file?**
+
+Sentinel errors are used with `errors.Is()` — the idiomatic Go way to check error type without inspecting raw Postgres error codes. The handler layer uses them to map domain failures to gRPC status codes:
+
+| Sentinel error | gRPC status code | Meaning to the caller |
+|---|---|---|
+| `ErrNotFound` | `codes.NotFound` | Wallet or reservation doesn't exist |
+| `ErrInsufficientBalance` | `codes.FailedPrecondition` | Not enough available balance |
+| `ErrWalletFrozen` | `codes.FailedPrecondition` | Account is under a freeze |
+| `ErrDuplicate` | `codes.AlreadyExists` | Already processed (idempotent) |
+
+**Why not in `platform/errors`?**
+
+`platform/errors` contains HTTP/gRPC-level structured errors (the `PlatformError` type) used by handlers to send codes to clients. These wallet sentinel errors are **database-layer domain errors** — they tell the service what went wrong in Postgres. Putting wallet-specific concepts like `ErrInsufficientBalance` in platform would make the platform package aware of wallet-domain concepts, breaking the dependency direction.
+
+---
+
+### `constants.go` — Typed String Constants
+
+```go
+const (
+    ReservationActive            = "ACTIVE"
+    ReservationPartiallyConsumed = "PARTIALLY_CONSUMED"
+    ReservationConsumed          = "CONSUMED"
+    ReservationReleased          = "RELEASED"
+
+    TxnTypeCredit = "CREDIT"
+    TxnTypeDebit  = "DEBIT"
+
+    RefInitialAllocation = "INITIAL_ALLOCATION"
+    RefReservation       = "RESERVATION"
+    RefRelease           = "RELEASE"
+    RefSettlement        = "SETTLEMENT"
+    RefDeposit           = "DEPOSIT"
+    RefWithdrawal        = "WITHDRAWAL"
+)
+```
+
+**Why typed constants instead of plain strings?**
+
+Without constants, every file that sets a reservation status would write `"ACTIVE"`, `"RELEASED"` etc. as magic strings. A typo like `"RELASED"` compiles fine but writes corrupt data to the database silently. With constants, `repository.ReservationReleased` is a compile-time-checked reference — the compiler catches the typo.
+
+**Why in `repository/` not `service/`?**
+
+These strings are values that map directly to database column values (`status`, `reference_type`, `transaction_type`). They belong in the repository package because they represent the vocabulary of the data layer. Both the service layer and the postgres implementations import them from here.
 
 ```go
 type SupportedAsset struct { ... }

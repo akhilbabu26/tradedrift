@@ -3,7 +3,6 @@ package repository
 import (
 	"context"
 	"time"
-	"fmt"
 )
 
 // WalletTransaction is an immutable ledger entry for a balance change.
@@ -32,7 +31,3 @@ type TransactionRepository interface {
 	// Used by SettleTrade to insert buyer + seller rows atomically.
 	CreateBatch(ctx context.Context, txns []*WalletTransaction) error
 }
-
-// ErrDuplicate is returned when a UNIQUE constraint is violated on wallet_transactions.
-// Callers must treat this as a success signal (idempotent replay), not a real error.
-var ErrDuplicate = fmt.Errorf("duplicate transaction: already processed")

@@ -34,7 +34,7 @@ func main() {
 	appLogger.Info("Starting Wallet Service...")
 
 	// 2. Config
-	dbDSN    := config.GetEnv("WALLET_POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/tradedrift_wallet?sslmode=disable")
+	dbDSN    := config.GetEnv("WALLET_POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/tradedrift?sslmode=disable")
 	grpcPort := config.GetEnv("WALLET_PORT", ":50052")
 	migrationDir := config.GetEnv("WALLET_MIGRATIONS_DIR", "services/wallet/migration")
 	if _, err := os.Stat(migrationDir); os.IsNotExist(err) {

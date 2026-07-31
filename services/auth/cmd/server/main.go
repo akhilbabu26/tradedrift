@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"os/signal"
@@ -11,8 +12,10 @@ import (
 	platformredis "tradedrift/platform/redis"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 
 	authv1 "tradedrift/platform/api/gen/auth/v1"
+	walletv1 "tradedrift/platform/api/gen/wallet/v1"
 	"tradedrift/platform/config"
 	"tradedrift/platform/logger"
 	"tradedrift/platform/postgres"
@@ -25,13 +28,16 @@ import (
 	"tradedrift/services/auth/internal/service"
 )
 
-// mockWalletClient satisfies service.WalletClient for bootstrapping.
-type mockWalletClient struct {
-	log *zap.Logger
+// realWalletClient wraps the wallet gRPC stub to satisfy service.WalletClient.
+type realWalletClient struct {
+	client walletv1.WalletServiceClient
 }
 
-func (m *mockWalletClient) InitializeWallet(ctx context.Context, userID string) error {
-	m.log.Info("Initialized simulator wallets successfully for user", zap.String("userID", userID))
+func (r *realWalletClient) InitializeWallet(ctx context.Context, userID string) error {
+	_, err := r.client.InitializeWallet(ctx, &walletv1.InitializeWalletRequest{UserId: userID})
+	if err != nil {
+		return fmt.Errorf("wallet service InitializeWallet failed: %w", err)
+	}
 	return nil
 }
 
@@ -108,7 +114,16 @@ func main() {
 	// 7. Instantiate Domain Core Services
 	otpMgr := otp.NewManager(rdb, 5*time.Minute)
 	mailer := mail.NewLogMailer()
-	walletCl := &mockWalletClient{log: appLogger}
+
+	// Connect to Wallet Service gRPC
+	walletAddr := config.GetEnv("WALLET_ADDR", "localhost:50052")
+	walletConn, err := grpc.NewClient(walletAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		appLogger.Fatal("Failed to connect to Wallet Service", zap.String("addr", walletAddr), zap.Error(err))
+	}
+	defer walletConn.Close()
+	appLogger.Info("Connected to Wallet Service", zap.String("addr", walletAddr))
+	walletCl := &realWalletClient{client: walletv1.NewWalletServiceClient(walletConn)}
 
 	authService := service.NewService(
 		userRepo,

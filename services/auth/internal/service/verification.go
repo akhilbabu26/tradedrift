@@ -77,24 +77,31 @@ func (s *Service) VerifyEmail(ctx context.Context, email, code string) (*UserDTO
 
 // ResendVerificationCode generates and emails a new OTP code if the account is still pending.
 func (s *Service) ResendVerificationCode(ctx context.Context, email string) error {
+	s.log.Info("ResendVerificationCode requested", zap.String("email", email))
+
 	u, err := s.userRepo.GetByIdentifier(ctx, email)
 	if err != nil {
+		s.log.Error("Failed to look up user for resend", zap.String("email", email), zap.Error(err))
 		return err
 	}
 	if u == nil {
 		// Silent safety: do not reveal that the email doesn't exist
+		s.log.Warn("ResendVerificationCode: user not found, silently ignoring", zap.String("email", email))
 		return nil
 	}
 
 	if u.Status != "PENDING_VERIFICATION" {
+		s.log.Warn("ResendVerificationCode: account not in pending state", zap.String("email", email), zap.String("status", u.Status))
 		return platformerrors.New(platformerrors.CodeInvalidArgument, "email is already verified")
 	}
 
 	code, err := s.otpMgr.Generate(ctx, "register:"+email)
 	if err != nil {
+		s.log.Error("Failed to generate OTP for resend", zap.String("email", email), zap.Error(err))
 		return err
 	}
 
 	_ = s.mailer.SendVerificationCode(ctx, email, code)
+	s.log.Info("Verification code resent successfully", zap.String("email", email))
 	return nil
 }

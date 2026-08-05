@@ -134,9 +134,21 @@ Every service, API contract, event schema, database model, recovery strategy, an
 * **Event Broker Topology:** Kafka partition key constraints, dead-letter topic structures, and idempotent producer requirements.
 * **In-Memory Memory Layouts:** Matching Engine order book red-black trees and price level structures.
 
-### 3. In Progress
-* **Go Codebase Bootstrap:** Writing the `/platform` shared SDK modules for tracing, outbox publishing, and connection pools.
-* **Container Orchestration:** Deploying services into local Kubernetes clusters using Helm.
+### 3. In Progress — Service Build Order
+
+| # | Service | Status | Notes |
+|---|---|---|---|
+| 1 | `auth` | ✅ Complete | JWT sessions, OTP verification, brute-force protection |
+| 2 | `wallet` | ✅ Complete | Double-entry ledger, reservations, idempotency |
+| 3 | `market` | ⬜ Next | Market pairs, tickers — foundational data for order & matching |
+| 4 | `order` | ⬜ Pending | Order lifecycle, validation, status tracking |
+| 5 | `matching` | ⬜ Pending | In-memory FIFO order book, trade execution |
+| 6 | `settlement` | ⬜ Pending | Trade settlement across buyer/seller wallets via Kafka |
+| 7 | `trade` | ⬜ Pending | Trade history & public feed (read-side projector) |
+| 8 | `portfolio` | ⬜ Pending | Portfolio positions & PnL projector |
+| 9 | `notification` | ⬜ Pending | Real-time WebSocket push for order & trade events |
+| 10 | `admin` | ⬜ Pending | Admin control plane (suspend/freeze/halt) |
+| 11 | `gateway` | ⬜ Last | REST API Gateway — built after all internal services are ready |
 
 ---
 
@@ -151,17 +163,17 @@ Every service, API contract, event schema, database model, recovery strategy, an
 │   ├── 05_Database/           # Database standards, indices, and SQL schemas
 │   └── 06_APIs/               # Versioned REST contracts, sockets, and standard error catalog
 ├── services/                  # Microservices Source Code (Go Modules)
-│   ├── gateway/               # API Gateway Service
-│   ├── auth/                  # Authentication Service
-│   ├── wallet/                # Wallet & Ledger Service
-│   ├── order/                 # Order Lifecycle Service
-│   ├── matching/              # In-Memory Matching Engine
-│   ├── settlement/            # Trade Settlement Orchestrator
-│   ├── market/                # Market Metadata & Ticker Service
-│   ├── portfolio/             # Portfolio & PnL Projector
-│   ├── notification/          # Real-Time Notification (WebSocket)
-│   ├── trade/                 # Trade History & Public Feed (read-side projector)
-│   └── admin/                 # Admin Control Plane (suspend/freeze/halt)
+│   ├── auth/                  # [1] ✅ Authentication Service
+│   ├── wallet/                # [2] ✅ Wallet & Ledger Service
+│   ├── market/                # [3] ⬜ Market Metadata & Ticker Service
+│   ├── order/                 # [4] ⬜ Order Lifecycle Service
+│   ├── matching/              # [5] ⬜ In-Memory Matching Engine
+│   ├── settlement/            # [6] ⬜ Trade Settlement Orchestrator
+│   ├── trade/                 # [7] ⬜ Trade History & Public Feed
+│   ├── portfolio/             # [8] ⬜ Portfolio & PnL Projector
+│   ├── notification/          # [9] ⬜ Real-Time Notification (WebSocket)
+│   ├── admin/                 # [10] ⬜ Admin Control Plane (suspend/freeze/halt)
+│   └── gateway/               # [11] ⬜ API Gateway — built last
 ├── deployments/               # Infrastructure deployment files (Docker Compose, K8s manifests)
 ├── diagrams/                  # Compiled visual layouts (.svg flowcharts, ER diagrams)
 ├── scripts/                   # DB migrations, seed triggers, and build scripts

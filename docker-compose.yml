@@ -1,0 +1,56 @@
+services:
+
+  # ─── Infrastructure ───────────────────────────────────────────────────────────
+
+  redis:
+    image: redis:7-alpine
+    container_name: tradedrift-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── Services ─────────────────────────────────────────────────────────────────
+  # Both services connect to PostgreSQL running on the host laptop via
+  # host.docker.internal — a special hostname Docker resolves to the host machine.
+  # The databases tradedrift_auth and tradedrift_wallet must already exist locally.
+
+  wallet:
+    build:
+      context: .                   # build context is project root (workspace needs all modules)
+      dockerfile: services/wallet/Dockerfile
+    container_name: tradedrift-wallet
+    restart: unless-stopped
+    environment:
+      WALLET_POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_wallet?sslmode=disable
+      WALLET_PORT: ":50052"
+      WALLET_MIGRATIONS_DIR: services/wallet/migration
+      LOG_LEVEL: info
+    ports:
+      - "50052:50052"
+
+  auth:
+    build:
+      context: .                   # build context is project root (workspace needs all modules)
+      dockerfile: services/auth/Dockerfile
+    container_name: tradedrift-auth
+    restart: unless-stopped
+    environment:
+      POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_auth?sslmode=disable
+      REDIS_ADDR: redis:6379
+      JWT_SECRET: super-secret-jwt-key-tradedrift-dev-32bytes
+      PORT: ":50051"
+      MIGRATIONS_DIR: services/auth/migrations
+      WALLET_ADDR: wallet:50052    # auth dials wallet by Docker service name
+      LOG_LEVEL: info
+    ports:
+      - "50051:50051"
+    depends_on:
+      redis:
+        condition: service_healthy
+      wallet:
+        condition: service_started

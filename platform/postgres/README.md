@@ -84,6 +84,65 @@ The pool is created **after** and lives for the entire lifetime of the service.
 
 ---
 
+## Why pgx + Goose Instead of GORM AutoMigrate?
+
+This package deliberately avoids [GORM](https://gorm.io/) and its `AutoMigrate` feature. Here's why.
+
+### What GORM AutoMigrate does
+
+GORM's `AutoMigrate` inspects your **Go struct definitions** at runtime and generates SQL to make the database schema match them:
+
+```go
+// GORM approach — schema lives inside Go structs
+type User struct {
+    gorm.Model
+    Email string `gorm:"uniqueIndex"`
+}
+db.AutoMigrate(&User{}) // generates and runs SQL on the fly
+```
+
+This feels convenient but introduces serious problems in production.
+
+### Why we don't use it
+
+| Concern | GORM AutoMigrate | pgx + Goose (this project) |
+|---|---|---|
+| **SQL control** | Generated for you — you don't see it | You write exact, reviewed SQL |
+| **Dropping columns** | ⚠️ Silently skipped by default — schema drifts | Explicit `DROP COLUMN` in your migration file |
+| **Rollback** | No built-in rollback mechanism | `-- +goose Down` block per migration |
+| **Version history** | None — no audit trail | Numbered files committed to git |
+| **Complex migrations** | Very hard (data backfills, partial indexes, renaming columns) | Any valid SQL — no restrictions |
+| **Per-request overhead** | ORM reflection + struct scanning on every query | Direct wire protocol, zero reflection |
+| **Startup introspection** | Schema diffing on every startup | Single `SELECT` on `goose_db_version` |
+
+### AutoMigrate is a prototype tool
+
+AutoMigrate is designed for **development convenience**, not production correctness. Specific failure modes:
+
+- **Renaming a column** — AutoMigrate adds the new column and leaves the old one populated with stale data. It does not rename.
+- **Data migrations** — impossible. You cannot backfill a new column from existing data with AutoMigrate.
+- **Custom index types** — `GIN`, `BRIN`, partial indexes, and expression indexes cannot be expressed via struct tags.
+- **Silent drift** — if your struct and your actual database diverge (e.g. a manual hotfix was applied in prod), AutoMigrate may silently miss it.
+
+### Does pgx + Goose add latency?
+
+**No.** Goose runs **once at startup**, before the server accepts any requests. By the time your service is live, migrations are already done. There is zero migration overhead per request.
+
+For query execution, **pgx is faster than GORM** — not slower:
+
+```
+Without pool:  [request] → GORM reflection + ORM overhead + query → slower
+With pgxpool:  [request] → borrow connection → raw SQL → return → faster
+```
+
+pgx talks directly to PostgreSQL's wire protocol with no ORM layer in the way.
+
+### The trade-off
+
+The only real cost of pgx + Goose is **developer verbosity** — you write raw SQL queries and manage migration files manually. This is a deliberate choice: explicit, reviewable SQL is safer and faster than generated SQL you don't control.
+
+---
+
 ## Why Does PostgreSQL Need a Connection?
 
 PostgreSQL is a **separate process** — it runs on its own server or container, completely outside your Go application. Your code cannot directly read or write to it. It must first establish a **connection** — a dedicated communication pipe — before it can send any SQL queries.

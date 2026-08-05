@@ -30,6 +30,7 @@ CREATE TABLE wallets(
     freeze_reason TEXT,
     initial_balance DECIMAL(30,10) NOT NULL DEFAULT 0,
     total_balance DECIMAL(30,10) NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (user_id, asset)
 );

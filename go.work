@@ -7,4 +7,5 @@ use (
     ./platform
     ./services/auth
     ./services/wallet
+    ./services/gateway
 )

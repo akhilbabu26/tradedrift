@@ -6,10 +6,11 @@ WORKDIR /workspace
 # Copy the entire Go workspace
 COPY go.work go.work.sum ./
 
-# Copy all modules the workspace uses
-COPY platform/      ./platform/
-COPY services/auth/ ./services/auth/
+# Copy all modules the workspace references (go.work requires all go.mod files to be present)
+COPY platform/        ./platform/
+COPY services/auth/   ./services/auth/
 COPY services/wallet/ ./services/wallet/
+COPY services/gateway/ ./services/gateway/
 
 # Download dependencies for the auth service
 WORKDIR /workspace/services/auth

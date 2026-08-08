@@ -54,3 +54,24 @@ services:
         condition: service_healthy
       wallet:
         condition: service_started
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    container_name: tradedrift-gateway
+    restart: unless-stopped
+    environment:
+      GATEWAY_PORT: ":8080"
+      AUTH_ADDR:    "auth:50051"
+      WALLET_ADDR:  "wallet:50052"
+      JWT_SECRET:   "super-secret-jwt-key-tradedrift-dev-32bytes"
+      CORS_ORIGIN:  "http://localhost:3000"
+      LOG_LEVEL:    "info"
+    ports:
+      - "8080:8080"
+    depends_on:
+      auth:
+        condition: service_started
+      wallet:
+        condition: service_started

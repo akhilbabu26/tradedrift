@@ -38,7 +38,7 @@ func main() {
 	authAddr   := config.GetEnv("AUTH_ADDR",    "localhost:50051")
 	walletAddr := config.GetEnv("WALLET_ADDR",  "localhost:50052")
 	allowedOrigins := []string{
-		config.GetEnv("CORS_ORIGIN", "http://localhost:3000"),
+		config.GetEnv("CORS_ORIGIN", "http://localhost:5173"),
 	}
 
 	jwtSecretStr, err := config.GetEnvOrError("JWT_SECRET")

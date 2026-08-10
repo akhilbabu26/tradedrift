@@ -9,7 +9,9 @@ import (
 // Sentinel Errors
 var (
 	ErrOrderNotFound           = errors.New("order not found")
+	ErrOrderNotCancellable     = errors.New("order cannot be cancelled in its current status")
 	ErrDuplicateIdempotencyKey = errors.New("idempotency key already exists")
+	ErrInvalidPaginationCursor = errors.New("invalid pagination cursor")
 )
 
 type OrderSide string
@@ -17,10 +19,10 @@ type OrderType string
 type OrderStatus string
 
 const (
-	SideBuy OrderSide = "BUY"
+	SideBuy  OrderSide = "BUY"
 	SideSell OrderSide = "SELL"
 
-	TypeLimit OrderType = "LIMIT"
+	TypeLimit  OrderType = "LIMIT"
 	TypeMarket OrderType = "MARKET"
 
 	StatusOpen            OrderStatus = "OPEN"
@@ -37,7 +39,7 @@ type Order struct {
 	MarketID          string
 	Side              OrderSide
 	OrderType         OrderType
-	Price             *string // nil for MARKET orders
+	Price             *string // nil for MARKET orders without price cap
 	Quantity          string
 	FilledQuantity    string
 	RemainingQuantity string
@@ -49,14 +51,18 @@ type Order struct {
 
 // OrderRepository defines the database operations for Order Service.
 type OrderRepository interface {
-	// FindByIdempotencyKey looks up an order by client-supplied idempotency key.
+	// FindByIdempotencyKey looks up an order by client-supplied idempotency key. Returns (nil, nil) if not found.
 	FindByIdempotencyKey(ctx context.Context, key string) (*Order, error)
+
 	// CreateOrder inserts the order and outbox record atomically in one transaction.
 	CreateOrder(ctx context.Context, o *Order, outboxPayload []byte) error
+
 	// GetByID retrieves a single order by order ID and user ID.
 	GetByID(ctx context.Context, orderID, userID string) (*Order, error)
+
 	// UpdateStatusToCancelling marks order status as CANCELLING and adds Outbox event.
 	UpdateStatusToCancelling(ctx context.Context, o *Order, outboxPayload []byte) error
+
 	// ListOrders returns a paginated list of orders matching filters.
 	ListOrders(ctx context.Context, userID, marketID, cursor string, side OrderSide, status OrderStatus, limit int32) ([]*Order, error)
 }

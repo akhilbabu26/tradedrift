@@ -2,11 +2,15 @@ package postgres
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
@@ -33,7 +37,14 @@ func (r *orderRepository) FindByIdempotencyKey(ctx context.Context, key string) 
 		FROM orders WHERE idempotency_key = $1`
 
 	row := r.db.QueryRow(ctx, query, key)
-	return scanOrder(row)
+	order, err := scanOrder(row)
+	if err != nil {
+		if errors.Is(err, repository.ErrOrderNotFound) {
+			return nil, nil // Return (nil, nil) when key does not exist!
+		}
+		return nil, err
+	}
+	return order, nil
 }
 
 func (r *orderRepository) CreateOrder(ctx context.Context, o *repository.Order, outboxPayload []byte) error {
@@ -55,6 +66,10 @@ func (r *orderRepository) CreateOrder(ctx context.Context, o *repository.Order, 
 		string(o.Status), o.IdempotencyKey, o.CreatedAt, o.UpdatedAt,
 	)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "orders_idempotency_key_key" {
+			return repository.ErrDuplicateIdempotencyKey
+		}
 		return fmt.Errorf("failed to insert order: %w", err)
 	}
 
@@ -99,7 +114,14 @@ func (r *orderRepository) UpdateStatusToCancelling(ctx context.Context, o *repos
 	if err != nil {
 		return fmt.Errorf("failed to update order status: %w", err)
 	}
+
+	// Distinguish whether order does not exist vs already in a non-cancellable state (CANCELLING, CANCELLED, FILLED)
 	if res.RowsAffected() == 0 {
+		var exists bool
+		checkQuery := `SELECT EXISTS(SELECT 1 FROM orders WHERE id = $1 AND user_id = $2)`
+		if err := tx.QueryRow(ctx, checkQuery, o.ID, o.UserID).Scan(&exists); err == nil && exists {
+			return repository.ErrOrderNotCancellable
+		}
 		return repository.ErrOrderNotFound
 	}
 
@@ -115,7 +137,7 @@ func (r *orderRepository) UpdateStatusToCancelling(ctx context.Context, o *repos
 	return tx.Commit(ctx)
 }
 
-func (r *orderRepository) ListOrders(ctx context.Context, userID, marketID, cursor string, side repository.OrderSide, status repository.OrderStatus, limit int32) ([]*repository.Order, error) {
+func (r *orderRepository) ListOrders(ctx context.Context, userID, marketID, cursorStr string, side repository.OrderSide, status repository.OrderStatus, limit int32) ([]*repository.Order, error) {
 	query := `
 		SELECT id, user_id, market_id, side, order_type, price, quantity,
 		       filled_quantity, remaining_quantity, status, idempotency_key,
@@ -141,10 +163,16 @@ func (r *orderRepository) ListOrders(ctx context.Context, userID, marketID, curs
 		args = append(args, string(status))
 		paramIdx++
 	}
-	if cursor != "" {
-		query += ` AND id < $` + strconv.Itoa(paramIdx)
-		args = append(args, cursor)
-		paramIdx++
+
+	// Keyset Pagination: decode (created_at, id) cursor. Return error if invalid!
+	if cursorStr != "" {
+		cursorTime, cursorID, err := decodeCursor(cursorStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid pagination cursor: %w", err)
+		}
+		query += ` AND (created_at, id) < ($` + strconv.Itoa(paramIdx) + `, $` + strconv.Itoa(paramIdx+1) + `)`
+		args = append(args, cursorTime, cursorID)
+		paramIdx += 2
 	}
 
 	if limit <= 0 || limit > 100 {
@@ -168,7 +196,29 @@ func (r *orderRepository) ListOrders(ctx context.Context, userID, marketID, curs
 		}
 		orders = append(orders, o)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("row iteration error: %w", err)
+	}
 	return orders, nil
+}
+
+func decodeCursor(cursorStr string) (time.Time, string, error) {
+	if cursorStr == "" {
+		return time.Time{}, "", nil
+	}
+	data, err := base64.URLEncoding.DecodeString(cursorStr)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("%w: %v", repository.ErrInvalidPaginationCursor, err)
+	}
+	parts := strings.Split(string(data), "|")
+	if len(parts) != 2 {
+		return time.Time{}, "", fmt.Errorf("%w: invalid format", repository.ErrInvalidPaginationCursor)
+	}
+	t, err := time.Parse(time.RFC3339Nano, parts[0])
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("%w: invalid timestamp", repository.ErrInvalidPaginationCursor)
+	}
+	return t, parts[1], nil
 }
 
 func scanOrder(row pgx.Row) (*repository.Order, error) {

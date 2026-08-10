@@ -8,4 +8,5 @@ use (
     ./services/auth
     ./services/wallet
     ./services/gateway
+    ./services/order
 )

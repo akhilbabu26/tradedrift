@@ -1,9 +1,10 @@
 # TradeDrift V1 — Final Design Readiness Audit
 
-> **Status:** 🔍 Completed Audit (V1.0)
+> **Status:** 🔍 Completed Audit (V1.1 — Implementation In Progress)
 > **Document:** 09_Final_Design_Readiness_Audit.md
 > **Directory:** docs/04_Audits/
-> **Last Updated:** July 2026
+> **Last Updated:** August 2026
+> Revision notes: V1.1 — Marked §3.1 and §3.2 wallet schema issues as ✅ RESOLVED (implemented in Auth/Wallet services). Updated §13 Required Fixes to reflect completion. Implementation is underway: Auth ✅, Wallet ✅, Order 🔄 in progress.
 
 ---
 
@@ -43,13 +44,18 @@ An audit of terms, event structures, and schemas reveals the following inconsist
 
 ### 3.1 `wallet_transactions.reference_type` Check Constraint Mismatch
 * **Severity:** **Critical**
-* **Inconsistency:** The DDL schema `wallet.sql` restricts `reference_type` to `('INITIAL_ALLOCATION', 'RESERVATION', 'SETTLEMENT', 'TRANSFER')`. However, the Wallet Service design (`07_Wallet_Service.md` lines 370 and 408) explicitly calls for inserting transactions with `reference_type = 'DEPOSIT'` and `reference_type = 'WITHDRAWAL'`.
-* **Impact:** Inserting deposit or withdrawal transactions will fail database check constraints, blocking funding actions.
+* **Status:** ✅ **RESOLVED** — Fixed during Wallet Service implementation (August 2026).
+* **Original Issue:** The DDL schema `wallet.sql` restricted `reference_type` to `('INITIAL_ALLOCATION', 'RESERVATION', 'SETTLEMENT', 'TRANSFER')`. The Wallet Service design (`07_Wallet_Service.md` lines 370 and 408) required inserting transactions with `reference_type = 'DEPOSIT'` and `reference_type = 'WITHDRAWAL'`.
+* **Resolution:** The `wallet_transactions` check constraint was updated to include all valid types:
+  ```sql
+  CHECK (reference_type IN ('INITIAL_ALLOCATION', 'RESERVATION', 'SETTLEMENT', 'RELEASE', 'DEPOSIT', 'WITHDRAWAL'))
+  ```
 
 ### 3.2 Missing `wallet_transfers` Schema in DDL
 * **Severity:** **Critical**
-* **Inconsistency:** Section 10.1 of `07_Wallet_Service.md` specifies the schema for `wallet_transfers` (with enums `transfer_type` and `transfer_status`). However, this table is completely absent from the DDL file `wallet.sql`.
-* **Impact:** Executing deposit or withdrawal APIs will crash at the database layer due to missing tables.
+* **Status:** ✅ **RESOLVED** — Fixed during Wallet Service implementation (August 2026).
+* **Original Issue:** Section 10.1 of `07_Wallet_Service.md` specified the schema for `wallet_transfers`, but this table was completely absent from the DDL file `wallet.sql`.
+* **Resolution:** The `wallet_transfers` table (with `transfer_type` and `transfer_status` enums) was added to the Wallet Service database during implementation. The `tradedrift_wallet` database is live and verified.
 
 ### 3.3 Order Type Casing & Property Name Mismatch
 * **Severity:** **Medium**
@@ -152,20 +158,28 @@ Service boundaries conform to strict single-owner patterns, preventing duplicate
 
 ## 13. Required Fixes Before Implementation
 
-1. **Add `wallet_transfers` to `wallet.sql`:** Create the missing `wallet_transfers` table along with its `transfer_type` and `transfer_status` enum types.
-2. **Update Check Constraints in `wallet.sql`:** Modify the `wallet_transactions` table check constraint to explicitly include `'DEPOSIT'` and `'WITHDRAWAL'` as allowed reference types:
-   ```sql
-   CHECK (reference_type IN ('INITIAL_ALLOCATION', 'RESERVATION', 'SETTLEMENT', 'RELEASE', 'DEPOSIT', 'WITHDRAWAL'))
-   ```
-3. **Add Seed Inserts to `wallet.sql`:** Populate the `supported_assets` table with the default supported assets (`USDT`, `BTC`, `ETH`, `SOL`):
-   ```sql
-   INSERT INTO supported_assets (asset_code, asset_name, decimals, is_enabled, seed_amount, display_order) VALUES
-   ('USDT', 'Tether USD', 10, true, 10000.0000000000, 1),
-   ('BTC', 'Bitcoin', 10, true, 0.0000000000, 2),
-   ('ETH', 'Ethereum', 10, true, 0.0000000000, 3),
-   ('SOL', 'Solana', 10, true, 0.0000000000, 4)
-   ON CONFLICT DO NOTHING;
-   ```
+1. ~~**Add `wallet_transfers` to `wallet.sql`:** Create the missing `wallet_transfers` table along with its `transfer_type` and `transfer_status` enum types.~~ ✅ **DONE** — Wallet Service fully implemented and deployed (August 2026).
+
+2. ~~**Update Check Constraints in `wallet.sql`:** Modify the `wallet_transactions` table check constraint to explicitly include `'DEPOSIT'` and `'WITHDRAWAL'` as allowed reference types.~~ ✅ **DONE** — Fixed during Wallet Service implementation.
+
+3. ~~**Add Seed Inserts to `wallet.sql`:** Populate the `supported_assets` table with the default supported assets (`USDT`, `BTC`, `ETH`, `SOL`).~~ ✅ **DONE** — Assets seeded via migration during Auth/Wallet service implementation.
+
+---
+
+## 13.1 Implementation Progress Tracker
+
+| Service | Status | Database |
+|:---|:---:|:---:|
+| Auth Service | ✅ Complete | `tradedrift_auth` |
+| Wallet Service | ✅ Complete | `tradedrift_wallet` |
+| Order Service | 🔄 In Progress | `tradedrift_order` |
+| Matching Engine | 🔲 Not Started | — (in-memory + Redis) |
+| Market Service | 🔲 Not Started | `tradedrift_market` |
+| Settlement Service | 🔲 Not Started | `tradedrift_settlement` |
+| Trade Service | 🔲 Not Started | `tradedrift_trade` |
+| Portfolio Service | 🔲 Not Started | `tradedrift_portfolio` |
+| Notification Service | 🔲 Not Started | — (WebSocket, no DB) |
+| Admin Service | 🔲 Not Started | `tradedrift_admin` |
 
 ---
 

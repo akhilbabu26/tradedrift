@@ -22,4 +22,13 @@ compile:
 		--go-grpc_opt=paths=source_relative \
 		wallet/v1/wallet.proto
 
+	@echo "Compiling order protos..."
+	protoc \
+		--proto_path=$(PROTO_ROOT) \
+		--go_out=$(OUT_ROOT) \
+		--go_opt=paths=source_relative \
+		--go-grpc_out=$(OUT_ROOT) \
+		--go-grpc_opt=paths=source_relative \
+		order/v1/order.proto
+
 	@echo "Done."

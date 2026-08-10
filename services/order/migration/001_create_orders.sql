@@ -1,3 +1,4 @@
+-- +goose Up
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 CREATE TABLE IF NOT EXISTS orders (
@@ -28,9 +29,16 @@ CREATE TABLE IF NOT EXISTS outbox (
     event_type      VARCHAR(50) NOT NULL,
     payload         JSONB       NOT NULL,
     partition_key   VARCHAR(20) NOT NULL,
+    processing_at   TIMESTAMPTZ,
     published_at    TIMESTAMPTZ,
+    attempts        INT         NOT NULL DEFAULT 0,
+    last_error      TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_outbox_unpublished
     ON outbox(created_at) WHERE published_at IS NULL;
+
+-- +goose Down
+DROP TABLE IF EXISTS outbox;
+DROP TABLE IF EXISTS orders;

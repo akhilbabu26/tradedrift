@@ -41,8 +41,14 @@ message Order {
   string market_id = 3;              // e.g. "BTC-USDT"
   OrderSide side = 4;
   OrderType order_type = 5;
-  string price = 6;                  // Decimal string, empty for MARKET orders
-  string quantity = 7;               // Decimal string
+
+  // Decimal string.
+  // Required for LIMIT orders.
+  // Required for MARKET BUY as maximum acceptable price.
+  // Empty for MARKET SELL.
+  string price = 6;
+
+  string quantity = 7;               // Decimal string (ALWAYS base asset quantity)
   string filled_quantity = 8;        // Decimal string
   string remaining_quantity = 9;     // Decimal string
   OrderStatus status = 10;
@@ -56,8 +62,14 @@ message CreateOrderRequest {
   string market_id = 2;
   OrderSide side = 3;
   OrderType order_type = 4;
-  string price = 5;                  // Decimal string
-  string quantity = 6;               // Decimal string
+
+  // Decimal string.
+  // Required for LIMIT orders.
+  // Required for MARKET BUY as maximum acceptable price.
+  // Empty for MARKET SELL.
+  string price = 5;
+
+  string quantity = 6;               // Decimal string (ALWAYS base asset quantity)
   string idempotency_key = 7;
 }
 
@@ -99,6 +111,7 @@ message ListOrdersResponse {
   string next_cursor = 2;
 }
 
+// Internal/admin operation used during market halt or system reset.
 message CancelAllOrdersRequest {
   string market_id = 1;
 }

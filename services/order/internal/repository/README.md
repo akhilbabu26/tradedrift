@@ -2,18 +2,18 @@
 
 > **Package:** `tradedrift/services/order/internal/repository`  
 > **Directory:** `services/order/internal/repository/`  
-> **Role:** Persistence Contracts, Domain Models, Sentinel Errors, and Database Access Implementations
+> **Role:** Persistence Contracts, Domain Models, Outbox Models, Sentinel Errors, and Database Access Implementations
 
 ---
 
 ## 1. Purpose & Architectural Role
 
-The `repository` package owns the **domain entities**, **sentinel error definitions**, and **persistence interfaces** for the Order Service. 
+The `repository` package owns the **domain entities**, **outbox models**, **sentinel error definitions**, and **persistence interfaces** for the Order Service. 
 
 It implements the **Repository Pattern**:
-- **Abstraction**: Defines the `OrderRepository` interface so higher layers (`service` package) never execute SQL directly or depend on PostgreSQL driver types.
+- **Abstraction**: Defines `OrderRepository` and `OutboxRepository` interfaces so higher layers (`service` and `kafka` packages) never execute SQL directly or depend on PostgreSQL driver types.
 - **Encapsulation**: Keeps database-specific models, SQL queries, and transaction management inside `repository/postgres/`.
-- **Decoupling**: Enables unit testing by mocking the `OrderRepository` interface without needing a live PostgreSQL database.
+- **Decoupling**: Enables unit testing by mocking repository interfaces without needing a live PostgreSQL database.
 
 ---
 
@@ -23,8 +23,10 @@ It implements the **Repository Pattern**:
 services/order/internal/repository/
 ├── README.md                            <-- This documentation file
 ├── order.go                             <-- Domain Structs, Enums, Errors, & Interface contract
+├── outbox.go                            <-- Outbox Entity Model & OutboxRepository interface
 └── postgres/
-    └── order_repository.go              <-- PostgreSQL (pgxpool) implementation
+    ├── order_repository.go              <-- PostgreSQL order CRUD queries & transactions
+    └── outbox_repository.go             <-- PostgreSQL outbox worker atomic claims & backoff retries
 ```
 
 ---
@@ -35,7 +37,7 @@ services/order/internal/repository/
 | :--- | :--- |
 | `context` | Manages request cancellation signals and timeouts during database operations. |
 | `errors` | Standard library package for defining immutable sentinel errors (`errors.New`). |
-| `time` | Timestamps for `created_at` and `updated_at` domain fields. |
+| `time` | Timestamps for `created_at`, `updated_at`, `published_at`, and `processing_at` fields. |
 | `encoding/base64` | Encodes/decodes URL-safe Base64 strings for keyset pagination cursors. |
 | `strconv` | Formats dynamic SQL positional parameters (`$1`, `$2`, `$3`). |
 | `strings` | Splitting and parsing cursor token strings (`timestamp|id`). |
@@ -57,14 +59,14 @@ services/order/internal/repository/
 
 ---
 
-## 5. Domain Models & Enums (`order.go`)
+## 5. Domain & Outbox Models (`order.go`, `outbox.go`)
 
-### 5.1 Enums
+### 5.1 Enums (`order.go`)
 * **`OrderSide`**: `SideBuy` (`"BUY"`), `SideSell` (`"SELL"`).
 * **`OrderType`**: `TypeLimit` (`"LIMIT"`), `TypeMarket` (`"MARKET"`).
 * **`OrderStatus`**: `StatusOpen` (`"OPEN"`), `StatusPartiallyFilled` (`"PARTIALLY_FILLED"`), `StatusFilled` (`"FILLED"`), `StatusCancelling` (`"CANCELLING"`), `StatusCancelled` (`"CANCELLED"`).
 
-### 5.2 Struct `Order`
+### 5.2 Struct `Order` (`order.go`)
 ```go
 type Order struct {
     ID                string      // UUIDv7 Primary Key
@@ -83,12 +85,40 @@ type Order struct {
 }
 ```
 
+### 5.3 Struct `OutboxEvent` (`outbox.go`)
+```go
+type OutboxEvent struct {
+    ID           string     // UUID Primary Key
+    AggregateID  string     // Order ID
+    EventType    string     // "OrderCreated" or "OrderCancelRequested"
+    Payload      []byte     // JSON payload
+    PartitionKey string     // market_id (e.g. "BTC-USDT")
+    PublishedAt  *time.Time // Timestamp when Kafka ACK is received
+    ProcessingAt *time.Time // Lease timestamp set during worker claims
+    Attempts     int        // Number of retry attempts
+    LastError    *string    // Failure error message
+    CreatedAt    time.Time  // Outbox creation timestamp
+}
+```
+
 ---
 
-## 6. Repository Interface Contract (`order.go`)
+## 6. Repository Interface Contracts
 
+### 6.1 `OutboxRepository` (`outbox.go`)
+```go
+type OutboxRepository interface {
+    GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]*OutboxEvent, error)
+    MarkOutboxEventAsPublished(ctx context.Context, id string) error
+    RecordOutboxPublishError(ctx context.Context, id string, errMsg string) error
+}
+```
+
+### 6.2 `OrderRepository` (`order.go`)
 ```go
 type OrderRepository interface {
+    OutboxRepository
+
     FindByIdempotencyKey(ctx context.Context, key string) (*Order, error)
     CreateOrder(ctx context.Context, o *Order, outboxPayload []byte) error
     GetByID(ctx context.Context, orderID, userID string) (*Order, error)
@@ -99,34 +129,42 @@ type OrderRepository interface {
 
 ---
 
-## 7. Function-by-Function Method Analysis (`postgres/order_repository.go`)
+## 7. Function-by-Function Method Analysis (`postgres/order_repository.go` & `postgres/outbox_repository.go`)
 
-### 7.1 `FindByIdempotencyKey(ctx, key)`
-* **Purpose**: Looks up an existing order by `idempotency_key`.
-* **Behavior**: Runs `SELECT ... FROM orders WHERE idempotency_key = $1`.
-* **Special Handling**: If no row matches (`pgx.ErrNoRows`), returns `(nil, nil)` — allowing the caller to distinguish "not found" from actual database connection errors.
+### 7.1 `FindByIdempotencyKey(ctx, key)` (`order_repository.go`)
+* **Purpose**: Looks up an existing order by `idempotency_key`. Returns `(nil, nil)` if no row matches.
 
-### 7.2 `CreateOrder(ctx, order, outboxPayload)`
+### 7.2 `CreateOrder(ctx, order, outboxPayload)` (`order_repository.go`)
 * **Purpose**: Atomically persists an order row AND an outbox message row inside a single PostgreSQL transaction (`BEGIN ... COMMIT`).
-* **Problem Solved (Transactional Outbox Pattern)**: Guarantees that an order event (`OrderCreated`) cannot be published to Kafka unless the order row is committed to the database.
-* **Race Condition Guard**: Catches PostgreSQL `*pgconn.PgError` with code `23505` and constraint name `orders_idempotency_key_key`. If two concurrent requests race past `FindByIdempotencyKey`, PostgreSQL rejects the second INSERT, returning `ErrDuplicateIdempotencyKey`.
 
-### 7.3 `GetByID(ctx, orderID, userID)`
+### 7.3 `GetByID(ctx, orderID, userID)` (`order_repository.go`)
 * **Purpose**: Retrieves a single order filtered by both `id` AND `user_id`.
-* **Security & Isolation**: Multi-tenant protection ensuring User A cannot read User B's order details.
 
-### 7.4 `UpdateStatusToCancelling(ctx, order, outboxPayload)`
-* **Purpose**: Transitions order status from `OPEN` / `PARTIALLY_FILLED` $\rightarrow$ `CANCELLING` and inserts an `OrderCancelRequested` outbox event in one atomic transaction.
-* **Semantic Error Distinction**: If `res.RowsAffected() == 0`, executes a secondary check `SELECT EXISTS(SELECT 1 FROM orders WHERE id = $1 AND user_id = $2)`:
-  - If the order exists (e.g. status is `CANCELLED` or `FILLED`), returns `ErrOrderNotCancellable`.
-  - If the order does not exist at all, returns `ErrOrderNotFound`.
+### 7.4 `UpdateStatusToCancelling(ctx, order, outboxPayload)` (`order_repository.go`)
+* **Purpose**: Transitions order status from `OPEN` / `PARTIALLY_FILLED` $\rightarrow$ `CANCELLING` and inserts an `OrderCancelRequested` outbox event atomically.
 
-### 7.5 `ListOrders(ctx, userID, marketID, cursorStr, side, status, limit)`
+### 7.5 `ListOrders(ctx, userID, marketID, cursorStr, side, status, limit)` (`order_repository.go`)
 * **Purpose**: Serves paginated user order history using **Keyset Cursor Pagination**.
-* **Query Pattern**: Constructs dynamic SQL queries filtering by `user_id`, optional `market_id`, `side`, and `status`.
-* **Cursor Mechanics**: Decodes the Base64 cursor string into `(created_at, id)`. Appends `AND (created_at, id) < ($N, $N+1)` with `ORDER BY created_at DESC, id DESC LIMIT $M`.
-* **Row Check**: Validates `rows.Err()` after scanning to ensure query stream errors are not swallowed.
 
-### 7.6 Helper `decodeCursor(cursorStr)`
-* **Purpose**: Decodes a Base64 string formatted as `"2026-08-10T12:00:00Z|order-uuid"`.
-* **Error Handling**: Returns `ErrInvalidPaginationCursor` if decoding, delimiter splitting, or RFC3339Nano timestamp parsing fails.
+### 7.6 `GetUnpublishedOutboxEvents(ctx, limit)` (`outbox_repository.go`)
+* **Purpose**: Claims up to `limit` unpublished outbox events for worker delivery using an **atomic claim query**:
+  ```sql
+  UPDATE outbox
+  SET processing_at = NOW(), attempts = attempts + 1
+  WHERE id IN (
+      SELECT id FROM outbox
+      WHERE published_at IS NULL
+        AND (processing_at IS NULL OR processing_at < NOW())
+      ORDER BY created_at ASC
+      LIMIT $1
+      FOR UPDATE SKIP LOCKED
+  )
+  RETURNING id, aggregate_id, event_type, payload, partition_key, published_at, processing_at, attempts, last_error, created_at
+  ```
+* **Multi-Instance Safety**: Uses `FOR UPDATE SKIP LOCKED` inside the `UPDATE` subquery so concurrent replicas never claim the same events. Stale leases (`processing_at < NOW()`) are automatically reclaimed.
+
+### 7.7 `MarkOutboxEventAsPublished(ctx, id)` (`outbox_repository.go`)
+* **Purpose**: Updates `published_at = NOW()`, `processing_at = NULL`, and `last_error = NULL` after receiving Kafka delivery ACK.
+
+### 7.8 `RecordOutboxPublishError(ctx, id, errMsg)` (`outbox_repository.go`)
+* **Purpose**: Records `last_error = errMsg` and sets `processing_at = NOW() + (INTERVAL '1 second' * LEAST(attempts, 60))`, enforcing **linear retry backoff** (1s, 2s, 3s... up to 60s max).

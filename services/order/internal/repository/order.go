@@ -51,6 +51,8 @@ type Order struct {
 
 // OrderRepository defines the database operations for Order Service.
 type OrderRepository interface {
+	OutboxRepository
+
 	// FindByIdempotencyKey looks up an order by client-supplied idempotency key. Returns (nil, nil) if not found.
 	FindByIdempotencyKey(ctx context.Context, key string) (*Order, error)
 
@@ -64,5 +66,5 @@ type OrderRepository interface {
 	UpdateStatusToCancelling(ctx context.Context, o *Order, outboxPayload []byte) error
 
 	// ListOrders returns a paginated list of orders matching filters.
-	ListOrders(ctx context.Context, userID, marketID, cursor string, side OrderSide, status OrderStatus, limit int32) ([]*Order, error)
+	ListOrders(ctx context.Context, userID, marketID, cursor string, side OrderSide, status OrderStatus, fromTime, toTime *time.Time, limit int32) ([]*Order, error)
 }

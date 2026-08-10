@@ -2,18 +2,15 @@ package handler
 
 import (
 	"context"
-	"errors"
 
+	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
-	platformerrors "tradedrift/platform/errors"
-	platformjwt "tradedrift/platform/jwt"
 	authv1 "tradedrift/platform/api/gen/auth/v1"
+	platformjwt "tradedrift/platform/jwt"
 	"tradedrift/services/auth/internal/service"
-
-	"go.uber.org/zap"
 )
 
 type GRPCHandler struct {
@@ -172,40 +169,4 @@ func (h *GRPCHandler) ChangePassword(ctx context.Context, req *authv1.ChangePass
 	return &authv1.ChangePasswordResponse{
 		Success: true,
 	}, nil
-}
-
-// mapToGRPCError converts a structured platform error to standard gRPC statuses.
-func mapToGRPCError(err error) error {
-	if err == nil {
-		return nil
-	}
-
-	var pErr *platformerrors.PlatformError
-	if errors.As(err, &pErr) {
-		switch pErr.Code {
-		case platformerrors.CodeInvalidArgument:
-			return status.Error(codes.InvalidArgument, pErr.Message)
-		case platformerrors.CodeInvalidCredentials:
-			return status.Error(codes.Unauthenticated, pErr.Message)
-		case platformerrors.CodeTokenExpired:
-			return status.Error(codes.Unauthenticated, pErr.Message)
-		case platformerrors.CodeTokenRevoked:
-			return status.Error(codes.Unauthenticated, pErr.Message)
-		case platformerrors.CodeAccountNotActive:
-			return status.Error(codes.FailedPrecondition, pErr.Message)
-		case platformerrors.CodeAlreadyExists:
-			return status.Error(codes.AlreadyExists, pErr.Message)
-		case platformerrors.CodeNotFound:
-			return status.Error(codes.NotFound, pErr.Message)
-		case platformerrors.CodePermissionDenied:
-			return status.Error(codes.PermissionDenied, pErr.Message)
-		case platformerrors.CodeFailedPrecondition:
-			return status.Error(codes.FailedPrecondition, pErr.Message)
-		default:
-			return status.Error(codes.Internal, pErr.Message)
-		}
-	}
-
-	// Fallback for default errors
-	return status.Errorf(codes.Internal, "internal server error: %v", err)
 }

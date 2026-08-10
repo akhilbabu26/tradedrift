@@ -137,7 +137,7 @@ func (r *orderRepository) UpdateStatusToCancelling(ctx context.Context, o *repos
 	return tx.Commit(ctx)
 }
 
-func (r *orderRepository) ListOrders(ctx context.Context, userID, marketID, cursorStr string, side repository.OrderSide, status repository.OrderStatus, limit int32) ([]*repository.Order, error) {
+func (r *orderRepository) ListOrders(ctx context.Context, userID, marketID, cursorStr string, side repository.OrderSide, status repository.OrderStatus, fromTime, toTime *time.Time, limit int32) ([]*repository.Order, error) {
 	query := `
 		SELECT id, user_id, market_id, side, order_type, price, quantity,
 		       filled_quantity, remaining_quantity, status, idempotency_key,
@@ -161,6 +161,16 @@ func (r *orderRepository) ListOrders(ctx context.Context, userID, marketID, curs
 	if status != "" {
 		query += ` AND status = $` + strconv.Itoa(paramIdx)
 		args = append(args, string(status))
+		paramIdx++
+	}
+	if fromTime != nil {
+		query += ` AND created_at >= $` + strconv.Itoa(paramIdx)
+		args = append(args, *fromTime)
+		paramIdx++
+	}
+	if toTime != nil {
+		query += ` AND created_at <= $` + strconv.Itoa(paramIdx)
+		args = append(args, *toTime)
 		paramIdx++
 	}
 

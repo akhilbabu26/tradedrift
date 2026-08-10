@@ -22,7 +22,8 @@ Key responsibilities:
 
 | File | Role |
 | :--- | :--- |
-| [`grpc.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/order/internal/handler/grpc.go) | Implements `GRPCHandler`, gRPC endpoint methods, enum mapping, and error translation |
+| [`grpc.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/order/internal/handler/grpc.go) | Implements `GRPCHandler` struct and RPC endpoint server methods |
+| [`mapper.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/order/internal/handler/mapper.go) | Error status mapping (`mapServiceError`), Base64 cursor encoding (`encodeCursor`), and Protobuf $\leftrightarrow$ Domain entity converters |
 
 ---
 
@@ -43,49 +44,49 @@ Key responsibilities:
 
 ---
 
-## 4. Function & Method Analysis (`grpc.go`)
+## 4. Function & Method Analysis (`grpc.go` & `mapper.go`)
 
-### 4.1 `NewGRPCHandler(svc, logger)`
+### 4.1 `NewGRPCHandler(svc, logger)` (`grpc.go`)
 * **Signature:** `func NewGRPCHandler(svc service.Service, logger *zap.Logger) *GRPCHandler`
 * **Purpose:** Constructs the `GRPCHandler` instance.
 
 ---
 
-### 4.2 `CreateOrder(ctx, req)`
+### 4.2 `CreateOrder(ctx, req)` (`grpc.go`)
 * **Signature:** `(h *GRPCHandler) CreateOrder(ctx context.Context, req *orderv1.CreateOrderRequest) (*orderv1.CreateOrderResponse, error)`
 * **Boundary Checks**: Validates `req != nil`, `req.UserId != ""`, `req.MarketId != ""`, and `req.Quantity != ""`.
 * **Flow**: Maps proto enums, invokes `h.svc.CreateOrder(ctx, params)`, maps response struct to proto via `toProtoOrder`, and maps errors via `mapServiceError`.
 
 ---
 
-### 4.3 `CancelOrder(ctx, req)`
+### 4.3 `CancelOrder(ctx, req)` (`grpc.go`)
 * **Signature:** `(h *GRPCHandler) CancelOrder(ctx context.Context, req *orderv1.CancelOrderRequest) (*orderv1.CancelOrderResponse, error)`
 * **Boundary Checks**: Validates `req != nil`, `req.OrderId != ""`, `req.UserId != ""`.
 * **Flow**: Invokes `h.svc.CancelOrder`, returns `orderv1.CancelOrderResponse` with order status set to `CANCELLING`.
 
 ---
 
-### 4.4 `GetOrder(ctx, req)`
+### 4.4 `GetOrder(ctx, req)` (`grpc.go`)
 * **Signature:** `(h *GRPCHandler) GetOrder(ctx context.Context, req *orderv1.GetOrderRequest) (*orderv1.GetOrderResponse, error)`
 * **Boundary Checks**: Validates `req != nil`, `req.OrderId != ""`, `req.UserId != ""`.
 * **Flow**: Retrieves order metadata and converts it to `orderv1.GetOrderResponse`.
 
 ---
 
-### 4.5 `ListOrders(ctx, req)`
+### 4.5 `ListOrders(ctx, req)` (`grpc.go`)
 * **Signature:** `(h *GRPCHandler) ListOrders(ctx context.Context, req *orderv1.ListOrdersRequest) (*orderv1.ListOrdersResponse, error)`
 * **Boundary Checks**: Validates `req != nil`, `req.UserId != ""`.
-* **Cursor Encoding**: If `orders` slice is non-empty, reads the last order (`orders[len-1]`) and calls `encodeCursor(last.CreatedAt, last.ID)` to generate the `next_cursor` token.
+* **Cursor & Timestamp Extraction**: Converts `req.From` and `req.To` timestamps to `*time.Time`. Encodes the last order's `(CreatedAt, ID)` into `next_cursor`.
 
 ---
 
-### 4.6 `CancelAllOrders(ctx, req)`
+### 4.6 `CancelAllOrders(ctx, req)` (`grpc.go`)
 * **Signature:** `(h *GRPCHandler) CancelAllOrders(ctx context.Context, req *orderv1.CancelAllOrdersRequest) (*orderv1.CancelAllOrdersResponse, error)`
 * **Status**: Returns `codes.Unimplemented` (`"bulk cancel all orders is not implemented yet"`).
 
 ---
 
-## 5. Error Mapping Rules (`mapServiceError`)
+## 5. Error Mapping Rules (`mapper.go`)
 
 ```
 ──────────────────────────────────────────────────────────────────────────────────────────
@@ -115,7 +116,7 @@ Any unknown or internal database error              | codes.Internal (500)
 
 ---
 
-## 6. Helper Functions Breakdown
+## 6. Helper Functions Breakdown (`mapper.go`)
 
 ### 6.1 `encodeCursor(createdAt, id)`
 * **Signature:** `func encodeCursor(createdAt time.Time, id string) string`

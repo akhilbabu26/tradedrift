@@ -1,0 +1,118 @@
+syntax = "proto3";
+
+package tradedrift.market.v1;
+
+option go_package = "tradedrift/platform/api/gen/market/v1;marketv1";
+
+import "google/protobuf/timestamp.proto";
+
+// ─────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────
+
+enum MarketStatus {
+  MARKET_STATUS_UNSPECIFIED = 0;
+  MARKET_STATUS_ACTIVE = 1;
+  MARKET_STATUS_HALTED = 2;
+  MARKET_STATUS_MAINTENANCE = 3;
+}
+
+enum CandleResolution {
+  CANDLE_RESOLUTION_UNSPECIFIED = 0;
+  CANDLE_RESOLUTION_1M = 1;
+  CANDLE_RESOLUTION_5M = 2;
+  CANDLE_RESOLUTION_15M = 3;
+  CANDLE_RESOLUTION_1H = 4;
+  CANDLE_RESOLUTION_1D = 5;
+}
+
+// ─────────────────────────────────────────────
+// Messages
+// ─────────────────────────────────────────────
+
+message Market {
+  string id = 1;                        // Canonical pair, e.g. "BTC-USDT"
+  string base_asset = 2;                // e.g. "BTC"
+  string quote_asset = 3;               // e.g. "USDT"
+
+  // Decimal string. Minimum price step increment (e.g. "0.01").
+  string tick_size = 4;
+
+  // Decimal string. Minimum base asset quantity step increment (e.g. "0.0001").
+  string lot_size = 5;
+
+  MarketStatus status = 6;              // ACTIVE, HALTED, MAINTENANCE
+
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+
+  // Decimal string. Minimum total order quantity threshold (e.g. "0.0001").
+  string min_quantity = 9;
+}
+
+message GetMarketRequest {
+  string market_id = 1;                 // e.g. "BTC-USDT"
+}
+
+message GetMarketResponse {
+  Market market = 1;
+}
+
+message ListMarketsRequest {}
+
+message ListMarketsResponse {
+  repeated Market markets = 1;
+}
+
+message Ticker24h {
+  string market_id = 1;
+  string last_price = 2;                // Decimal string
+  string high_24h = 3;                  // Decimal string
+  string low_24h = 4;                   // Decimal string
+  string volume_24h = 5;                // Base asset traded volume
+  string quote_volume_24h = 6;          // Quote asset traded volume
+  string price_change_24h_percent = 7; // e.g. "2.45"
+}
+
+message GetTickerRequest {
+  string market_id = 1;
+}
+
+message GetTickerResponse {
+  Ticker24h ticker = 1;
+}
+
+message Candle {
+  google.protobuf.Timestamp start_time = 1;
+  string open = 2;                      // Decimal string
+  string high = 3;                      // Decimal string
+  string low = 4;                       // Decimal string
+  string close = 5;                     // Decimal string
+  string volume = 6;                    // Base asset volume
+  string quote_volume = 7;              // Quote asset volume
+}
+
+message GetCandlesRequest {
+  string market_id = 1;                // e.g. "BTC-USDT"
+  CandleResolution resolution = 2;     // Required resolution
+
+  google.protobuf.Timestamp from = 3;  // Optional inclusive start time
+  google.protobuf.Timestamp to = 4;    // Optional exclusive end time
+
+  int32 limit = 5;                     // Default 100, maximum 500
+}
+
+message GetCandlesResponse {
+  repeated Candle candles = 1;
+}
+
+// ─────────────────────────────────────────────
+// Service Interface
+// ─────────────────────────────────────────────
+
+service MarketService {
+  rpc GetMarket(GetMarketRequest) returns (GetMarketResponse);
+  rpc ListMarkets(ListMarketsRequest) returns (ListMarketsResponse);
+  rpc GetTicker(GetTickerRequest) returns (GetTickerResponse);
+  rpc GetCandles(GetCandlesRequest) returns (GetCandlesResponse);
+}

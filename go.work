@@ -9,4 +9,5 @@ use (
     ./services/wallet
     ./services/gateway
     ./services/order
+    ./services/market
 )

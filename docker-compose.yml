@@ -14,14 +14,33 @@ services:
       timeout: 3s
       retries: 10
 
-  # ─── Services ─────────────────────────────────────────────────────────────────
-  # Both services connect to PostgreSQL running on the host laptop via
-  # host.docker.internal — a special hostname Docker resolves to the host machine.
-  # The databases tradedrift_auth and tradedrift_wallet must already exist locally.
+  # ─── Microservices ─────────────────────────────────────────────────────────────
+
+  auth:
+    build:
+      context: .
+      dockerfile: services/auth/Dockerfile
+    container_name: tradedrift-auth
+    restart: unless-stopped
+    environment:
+      POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_auth?sslmode=disable
+      REDIS_ADDR: redis:6379
+      JWT_SECRET: super-secret-jwt-key-tradedrift-dev-32bytes
+      PORT: ":50051"
+      MIGRATIONS_DIR: services/auth/migrations
+      WALLET_ADDR: wallet:50052
+      LOG_LEVEL: info
+    ports:
+      - "50051:50051"
+    depends_on:
+      redis:
+        condition: service_healthy
+      wallet:
+        condition: service_started
 
   wallet:
     build:
-      context: .                   # build context is project root (workspace needs all modules)
+      context: .
       dockerfile: services/wallet/Dockerfile
     container_name: tradedrift-wallet
     restart: unless-stopped
@@ -33,27 +52,41 @@ services:
     ports:
       - "50052:50052"
 
-  auth:
+  order:
     build:
-      context: .                   # build context is project root (workspace needs all modules)
-      dockerfile: services/auth/Dockerfile
-    container_name: tradedrift-auth
+      context: .
+      dockerfile: services/order/Dockerfile
+    container_name: tradedrift-order
     restart: unless-stopped
     environment:
-      POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_auth?sslmode=disable
-      REDIS_ADDR: redis:6379
-      JWT_SECRET: super-secret-jwt-key-tradedrift-dev-32bytes
-      PORT: ":50051"
-      MIGRATIONS_DIR: services/auth/migrations
-      WALLET_ADDR: wallet:50052    # auth dials wallet by Docker service name
+      ORDER_POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_order?sslmode=disable
+      ORDER_GRPC_PORT: ":50053"
+      ORDER_MIGRATIONS_DIR: services/order/migration
+      WALLET_GRPC_ADDR: wallet:50052
+      KAFKA_BROKERS: localhost:9092
       LOG_LEVEL: info
     ports:
-      - "50051:50051"
+      - "50053:50053"
     depends_on:
-      redis:
-        condition: service_healthy
       wallet:
         condition: service_started
+
+  market:
+    build:
+      context: .
+      dockerfile: services/market/Dockerfile
+    container_name: tradedrift-market
+    restart: unless-stopped
+    environment:
+      MARKET_POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_market?sslmode=disable
+      MARKET_GRPC_PORT: ":50054"
+      MARKET_MIGRATIONS_DIR: services/market/migration
+      KAFKA_BROKERS: localhost:9092
+      KAFKA_GROUP_ID: market-service-group
+      KAFKA_TOPIC_TRADE_EXECUTED: trade.executed.v1
+      LOG_LEVEL: info
+    ports:
+      - "50054:50054"
 
   gateway:
     build:
@@ -65,6 +98,8 @@ services:
       GATEWAY_PORT: ":8080"
       AUTH_ADDR:    "auth:50051"
       WALLET_ADDR:  "wallet:50052"
+      ORDER_ADDR:   "order:50053"
+      MARKET_ADDR:  "market:50054"
       JWT_SECRET:   "super-secret-jwt-key-tradedrift-dev-32bytes"
       CORS_ORIGIN:  "http://localhost:5173"
       LOG_LEVEL:    "info"
@@ -74,4 +109,8 @@ services:
       auth:
         condition: service_started
       wallet:
+        condition: service_started
+      order:
+        condition: service_started
+      market:
         condition: service_started

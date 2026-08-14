@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"tradedrift/platform/postgres"
 	marketconfig "tradedrift/services/market/internal/config"
 	"tradedrift/services/market/internal/handler"
+	marketkafka "tradedrift/services/market/internal/kafka"
 	postgresrepo "tradedrift/services/market/internal/repository/postgres"
 	"tradedrift/services/market/internal/service"
 )
@@ -58,7 +60,19 @@ func main() {
 	candleRepo := postgresrepo.NewCandleRepository(dbPool)
 	marketSvc := service.NewMarketService(marketRepo, candleRepo)
 
-	// 5. Wire gRPC Server & Handler
+	// 5. Start Kafka Consumer for TradeExecuted Events
+	rawBrokers := strings.Split(cfg.KafkaBrokers, ",")
+	brokers := make([]string, 0, len(rawBrokers))
+	for _, b := range rawBrokers {
+		if trimmed := strings.TrimSpace(b); trimmed != "" {
+			brokers = append(brokers, trimmed)
+		}
+	}
+
+	consumer := marketkafka.NewConsumer(brokers, cfg.KafkaGroupID, cfg.KafkaTopic, marketSvc, appLogger)
+	go consumer.Start(ctx)
+
+	// 6. Wire gRPC Server & Handler
 	grpcHandler := handler.NewGRPCHandler(marketSvc, appLogger)
 	grpcServer := grpc.NewServer()
 	marketv1.RegisterMarketServiceServer(grpcServer, grpcHandler)
@@ -68,7 +82,7 @@ func main() {
 		appLogger.Fatal("Failed to bind gRPC listener", zap.String("port", cfg.GRPCPort), zap.Error(err))
 	}
 
-	// 6. Start gRPC Listener with Error Channel
+	// 7. Start gRPC Listener with Error Channel
 	serverErrCh := make(chan error, 1)
 	go func() {
 		appLogger.Info("Market Service gRPC listening", zap.String("port", cfg.GRPCPort))
@@ -77,14 +91,22 @@ func main() {
 		}
 	}()
 
-	// 7. Wait for shutdown signal or unexpected server failure
+		// 8. Wait for shutdown signal or unexpected server failure
 	select {
 	case <-ctx.Done():
 		appLogger.Info("Shutdown signal received, gracefully stopping Market Service...")
 	case err := <-serverErrCh:
-		appLogger.Error("gRPC server encountered unexpected error", zap.Error(err))
+		appLogger.Error("gRPC server encountered unexpected error, triggering shutdown...", zap.Error(err))
+		stop() // Explicitly cancel context to stop the Kafka consumer
 	}
 
+
+	// 9. Explicit graceful shutdown lifecycle
 	grpcServer.GracefulStop()
+
+	if err := consumer.Close(); err != nil {
+		appLogger.Error("Failed to close Kafka consumer cleanly", zap.Error(err))
+	}
+
 	appLogger.Info("Market Service stopped cleanly")
 }

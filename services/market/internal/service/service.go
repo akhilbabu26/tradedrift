@@ -131,6 +131,14 @@ func (s *marketService) ProcessTradeEvent(ctx context.Context, payload *TradeEve
 		return false, ErrInvalidTradeEvent
 	}
 
+	// Verify market exists before attempting trade insertion (prevents FK violation loop)
+	if _, err := s.marketRepo.GetMarket(ctx, marketID); err != nil {
+		if errors.Is(err, repository.ErrMarketNotFound) {
+			return false, ErrMarketNotFound
+		}
+		return false, fmt.Errorf("verify market in trade event: %w", err)
+	}
+
 	trade := &repository.MarketTrade{
 		ID:         payload.TradeID,
 		MarketID:   marketID,
@@ -146,3 +154,4 @@ func (s *marketService) ProcessTradeEvent(ctx context.Context, payload *TradeEve
 
 	return processed, nil
 }
+

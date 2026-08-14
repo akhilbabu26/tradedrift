@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -10,6 +12,14 @@ import (
 
 	"tradedrift/services/market/internal/repository"
 )
+
+var validCandleResolutions = map[string]struct{}{
+	"1m":  {},
+	"5m":  {},
+	"15m": {},
+	"1h":  {},
+	"1d":  {},
+}
 
 type TradeEventPayload struct {
 	TradeID    uuid.UUID
@@ -40,12 +50,16 @@ func NewMarketService(marketRepo repository.MarketRepository, candleRepo reposit
 }
 
 func (s *marketService) GetMarket(ctx context.Context, id string) (*repository.Market, error) {
+	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, ErrInvalidMarketID
 	}
 	m, err := s.marketRepo.GetMarket(ctx, id)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, repository.ErrMarketNotFound) {
+			return nil, ErrMarketNotFound
+		}
+		return nil, fmt.Errorf("get market: %w", err)
 	}
 	return m, nil
 }
@@ -55,46 +69,71 @@ func (s *marketService) ListMarkets(ctx context.Context) ([]*repository.Market, 
 }
 
 func (s *marketService) GetTicker(ctx context.Context, marketID string) (*repository.Ticker24h, error) {
+	marketID = strings.TrimSpace(marketID)
 	if marketID == "" {
 		return nil, ErrInvalidMarketID
 	}
-	return s.marketRepo.GetTicker24h(ctx, marketID)
+	ticker, err := s.marketRepo.GetTicker24h(ctx, marketID)
+	if err != nil {
+		if errors.Is(err, repository.ErrMarketNotFound) {
+			return nil, ErrMarketNotFound
+		}
+		return nil, fmt.Errorf("get ticker: %w", err)
+	}
+	return ticker, nil
 }
 
 func (s *marketService) GetCandles(ctx context.Context, marketID string, resolution string, from, to *time.Time, limit int) ([]*repository.OHLCCandle, error) {
+	marketID = strings.TrimSpace(marketID)
 	if marketID == "" {
 		return nil, ErrInvalidMarketID
 	}
-
-	validResolutions := map[string]bool{
-		"1m": true, "5m": true, "15m": true, "1h": true, "1d": true,
-	}
-	if !validResolutions[resolution] {
+	if _, ok := validCandleResolutions[resolution]; !ok {
 		return nil, ErrInvalidResolution
 	}
-
 	if from != nil && to != nil && !from.Before(*to) {
 		return nil, ErrInvalidTimeRange
 	}
-
-	if limit <= 0 {
-		limit = 100
-	}
-	if limit > 500 {
+	// Reject negative numbers and limits above 500
+	if limit < 0 || limit > 500 {
 		return nil, ErrInvalidLimit
 	}
-
+	// Default to 100 when unspecified (0)
+	if limit == 0 {
+		limit = 100
+	}
+	// Verify market exists
+	if _, err := s.marketRepo.GetMarket(ctx, marketID); err != nil {
+		if errors.Is(err, repository.ErrMarketNotFound) {
+			return nil, ErrMarketNotFound
+		}
+		return nil, fmt.Errorf("verify market: %w", err)
+	}
 	return s.candleRepo.GetCandles(ctx, marketID, resolution, from, to, limit)
 }
 
 func (s *marketService) ProcessTradeEvent(ctx context.Context, payload *TradeEventPayload) (bool, error) {
-	if payload == nil || payload.MarketID == "" || payload.TradeID == uuid.Nil {
+	if payload == nil {
+		return false, ErrInvalidTradeEvent
+	}
+	if payload.TradeID == uuid.Nil {
+		return false, ErrInvalidTradeEvent
+	}
+
+	marketID := strings.TrimSpace(payload.MarketID)
+	if marketID == "" {
 		return false, ErrInvalidMarketID
+	}
+	if payload.Price.LessThanOrEqual(decimal.Zero) || payload.Quantity.LessThanOrEqual(decimal.Zero) {
+		return false, ErrInvalidTradeEvent
+	}
+	if payload.ExecutedAt.IsZero() {
+		return false, ErrInvalidTradeEvent
 	}
 
 	trade := &repository.MarketTrade{
 		ID:         payload.TradeID,
-		MarketID:   payload.MarketID,
+		MarketID:   marketID,
 		Price:      payload.Price,
 		Quantity:   payload.Quantity,
 		ExecutedAt: payload.ExecutedAt.UTC(),

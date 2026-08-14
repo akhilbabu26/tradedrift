@@ -46,7 +46,7 @@ func main() {
 		appLogger.Fatal("JWT_SECRET is required", zap.Error(err))
 	}
 
-	// 3. gRPC — Auth service
+	// 3. gRPC — Auth service and Instantiate Reverse Proxy Handlers
 	authConn, err := grpc.NewClient(authAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		appLogger.Fatal("Failed to connect to Auth service", zap.String("addr", authAddr), zap.Error(err))
@@ -91,7 +91,7 @@ func main() {
 		return h
 	}
 
-	// 7. Router
+	// 7. Bind Public HTTP REST Routes to gRPC Proxy Handlers
 	mux := http.NewServeMux()
 
 	// Auth — public

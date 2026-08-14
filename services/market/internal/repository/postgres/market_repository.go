@@ -13,8 +13,6 @@ import (
 	"tradedrift/services/market/internal/repository"
 )
 
-var ErrMarketNotFound = errors.New("market not found")
-
 type MarketRepository struct {
 	pool *pgxpool.Pool
 }
@@ -36,7 +34,7 @@ func (r *MarketRepository) GetMarket(ctx context.Context, id string) (*repositor
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrMarketNotFound
+			return nil, repository.ErrMarketNotFound
 		}
 		return nil, fmt.Errorf("query market: %w", err)
 	}
@@ -69,9 +67,6 @@ func (r *MarketRepository) ListMarkets(ctx context.Context) ([]*repository.Marke
 	return markets, rows.Err()
 }
 
-// ProcessTrade atomically inserts market trade and updates 1m, 5m, 15m, 1h, 1d candles inside ONE transaction.
-// Guarantees open/close accuracy even if trades arrive out-of-order.
-// Returns (processed = true) if new trade, or (processed = false) if duplicate trade_id.
 func (r *MarketRepository) ProcessTrade(ctx context.Context, trade *repository.MarketTrade) (bool, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
@@ -79,7 +74,6 @@ func (r *MarketRepository) ProcessTrade(ctx context.Context, trade *repository.M
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Insert trade into market_trades with ON CONFLICT DO NOTHING
 	insertTradeQuery := `
 		INSERT INTO market_trades (id, market_id, price, quantity, executed_at)
 		VALUES ($1, $2, $3, $4, $5)
@@ -90,12 +84,10 @@ func (r *MarketRepository) ProcessTrade(ctx context.Context, trade *repository.M
 		return false, fmt.Errorf("insert market trade: %w", err)
 	}
 
-	// Deduplication Check: If 0 rows affected, this trade_id was ALREADY processed!
 	if tag.RowsAffected() == 0 {
 		return false, nil // Duplicate trade event absorbed cleanly
 	}
 
-	// 2. Calculate candle windows (1m, 5m, 15m, 1h, 1d) & UPSERT candles with out-of-order protection
 	quoteVolume := trade.Price.Mul(trade.Quantity)
 	resolutions := []struct {
 		res      string
@@ -154,7 +146,10 @@ func (r *MarketRepository) ProcessTrade(ctx context.Context, trade *repository.M
 
 func (r *MarketRepository) GetTicker24h(ctx context.Context, marketID string) (*repository.Ticker24h, error) {
 	query := `
-		WITH trades_24h AS (
+		WITH target_market AS (
+			SELECT id FROM markets WHERE id = $1
+		),
+		trades_24h AS (
 			SELECT price, quantity, executed_at
 			FROM market_trades
 			WHERE market_id = $1 AND executed_at >= NOW() - INTERVAL '24 hours'
@@ -173,20 +168,28 @@ func (r *MarketRepository) GetTicker24h(ctx context.Context, marketID string) (*
 			LIMIT 1
 		)
 		SELECT 
+			m.id,
 			COALESCE((SELECT last_price FROM latest_trade), 0) AS last_price,
 			COALESCE(MAX(t.price), 0) AS high_24h,
 			COALESCE(MIN(t.price), 0) AS low_24h,
 			COALESCE(SUM(t.quantity), 0) AS volume_24h,
 			COALESCE(SUM(t.price * t.quantity), 0) AS quote_volume_24h,
 			COALESCE((SELECT first_price FROM first_trade_24h), 0) AS first_price_24h
-		FROM trades_24h t
+		FROM target_market m
+		LEFT JOIN trades_24h t ON TRUE
+		GROUP BY m.id
 	`
 
+	var id string
 	var lastPrice, high24h, low24h, volume24h, quoteVolume24h, firstPrice24h decimal.Decimal
+
 	err := r.pool.QueryRow(ctx, query, marketID).Scan(
-		&lastPrice, &high24h, &low24h, &volume24h, &quoteVolume24h, &firstPrice24h,
+		&id, &lastPrice, &high24h, &low24h, &volume24h, &quoteVolume24h, &firstPrice24h,
 	)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, repository.ErrMarketNotFound
+		}
 		return nil, fmt.Errorf("query ticker 24h: %w", err)
 	}
 
@@ -205,6 +208,7 @@ func (r *MarketRepository) GetTicker24h(ctx context.Context, marketID string) (*
 		PriceChange24hPercent: priceChangePct,
 	}, nil
 }
+
 
 func (r *MarketRepository) DeleteOldTrades(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().Add(-olderThan)

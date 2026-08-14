@@ -158,11 +158,27 @@ The OrderBook is never persisted directly. See `08_Recovery_Strategy.md`.
 
 ---
 
-# 9. References
+# 9. Why an Order Book & B-Tree Structure?
+
+### Why an Order Book is Necessary
+1. **Deterministic Price-Time Matching:** Ensures highest bids match lowest asks in FIFO order without race conditions.
+2. **Sub-Millisecond Speed:** Operating in-memory eliminates database I/O bottlenecks during high-volume trading surges.
+3. **Market Depth Transparency:** Provides live order book depth and spread calculation for traders.
+
+### Why a B-Tree / Self-Balancing Tree Structure
+- **$O(\log N)$ Time Complexity:** Keeps price level lookups, insertions, and deletions logarithmic rather than scanning an $O(N)$ unsorted list.
+- **CPU Cache Locality:** A B-Tree packs contiguous keys into cache lines, minimizing CPU cache misses and Go GC allocation overhead compared to node-pointer trees.
+
+---
+
+# 10. References
 
 - `01_Overview.md` — hybrid architecture overview
 - `05_Side.md` — Side struct
 - `06_Order_Index.md` — orderIndex detail
 - `07_Algorithms.md` — Insert, Cancel, Match pseudocode
 - `08_Memory_Model.md` — ownership and pointer graph
+- `10_Design_Decisions.md` — ADR for data structure selection
+- `11_Future_Evolution.md` — B-Tree upgrade path
+
 

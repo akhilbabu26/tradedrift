@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,6 +28,14 @@ import (
 	"tradedrift/services/gateway/internal/middleware"
 )
 
+func formatTarget(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if strings.HasPrefix(addr, ":") {
+		return "127.0.0.1" + addr
+	}
+	return addr
+}
+
 func main() {
 	// 0. Load .env if present
 	config.LoadEnv()
@@ -40,10 +49,10 @@ func main() {
 
 	// 2. Config
 	httpPort   := config.GetEnv("GATEWAY_PORT", ":8080")
-	authAddr   := config.GetEnv("AUTH_ADDR",    "localhost:50051")
-	walletAddr := config.GetEnv("WALLET_ADDR",  "localhost:50052")
-	orderAddr  := config.GetEnv("ORDER_ADDR",   "localhost:50053")
-	marketAddr := config.GetEnv("MARKET_ADDR",  "localhost:50054")
+	authAddr   := formatTarget(config.GetEnv("AUTH_ADDR",    "127.0.0.1:50051"))
+	walletAddr := formatTarget(config.GetEnv("WALLET_ADDR",  "127.0.0.1:50052"))
+	orderAddr  := formatTarget(config.GetEnv("ORDER_ADDR",   "127.0.0.1:50053"))
+	marketAddr := formatTarget(config.GetEnv("MARKET_ADDR",  "127.0.0.1:50054"))
 	allowedOrigins := []string{
 		config.GetEnv("CORS_ORIGIN", "http://localhost:5173"),
 	}

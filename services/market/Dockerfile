@@ -14,13 +14,10 @@ COPY services/gateway/ ./services/gateway/
 COPY services/order/   ./services/order/
 COPY services/market/  ./services/market/
 
-# Download dependencies for the market service
-WORKDIR /workspace/services/market
-RUN go mod download
-
-# Build the market service binary
-WORKDIR /workspace
-RUN CGO_ENABLED=0 GOOS=linux go build -o /market-server ./services/market/cmd/server
+# Build using Go module cache mount to share downloads across parallel builds
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -o /market-server ./services/market/cmd/server
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM alpine:3.20

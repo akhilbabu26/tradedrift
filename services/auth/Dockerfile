@@ -6,19 +6,18 @@ WORKDIR /workspace
 # Copy the entire Go workspace
 COPY go.work go.work.sum ./
 
-# Copy all modules the workspace references (go.work requires all go.mod files to be present)
-COPY platform/        ./platform/
-COPY services/auth/   ./services/auth/
-COPY services/wallet/ ./services/wallet/
+# Copy all modules the workspace references
+COPY platform/         ./platform/
+COPY services/auth/    ./services/auth/
+COPY services/wallet/  ./services/wallet/
 COPY services/gateway/ ./services/gateway/
+COPY services/order/   ./services/order/
+COPY services/market/  ./services/market/
 
-# Download dependencies for the auth service
-WORKDIR /workspace/services/auth
-RUN go mod download
-
-# Build the auth service binary using the workspace
-WORKDIR /workspace
-RUN CGO_ENABLED=0 GOOS=linux go build -o /auth-server ./services/auth/cmd/server
+# Build using Go module cache mount to share downloads across parallel builds
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -o /auth-server ./services/auth/cmd/server
 
 # ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM alpine:3.20

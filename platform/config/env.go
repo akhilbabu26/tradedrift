@@ -9,6 +9,7 @@ import (
 )
 
 // LoadEnv reads one or more .env files and populates unset environment variables.
+// Existing environment variables (e.g. from Docker) are preserved and never overwritten.
 // It silently ignores missing files.
 func LoadEnv(filenames ...string) {
 	if len(filenames) == 0 {
@@ -33,7 +34,9 @@ func LoadEnv(filenames ...string) {
 					val = val[1 : len(val)-1]
 				}
 				if key != "" {
-					_ = os.Setenv(key, val)
+					if _, exists := os.LookupEnv(key); !exists {
+						_ = os.Setenv(key, val)
+					}
 				}
 			}
 		}

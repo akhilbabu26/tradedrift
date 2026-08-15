@@ -14,6 +14,25 @@ services:
       timeout: 3s
       retries: 10
 
+  kafka:
+    image: apache/kafka:latest
+    container_name: tradedrift-kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
   # ─── Microservices ─────────────────────────────────────────────────────────────
 
   auth:
@@ -63,12 +82,14 @@ services:
       ORDER_GRPC_PORT: ":50053"
       ORDER_MIGRATIONS_DIR: services/order/migration
       WALLET_GRPC_ADDR: wallet:50052
-      KAFKA_BROKERS: localhost:9092
+      KAFKA_BROKERS: kafka:29092
       LOG_LEVEL: info
     ports:
       - "50053:50053"
     depends_on:
       wallet:
+        condition: service_started
+      kafka:
         condition: service_started
 
   market:
@@ -81,12 +102,15 @@ services:
       MARKET_POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_market?sslmode=disable
       MARKET_GRPC_PORT: ":50054"
       MARKET_MIGRATIONS_DIR: services/market/migration
-      KAFKA_BROKERS: localhost:9092
+      KAFKA_BROKERS: kafka:29092
       KAFKA_GROUP_ID: market-service-group
       KAFKA_TOPIC_TRADE_EXECUTED: trade.executed.v1
       LOG_LEVEL: info
     ports:
       - "50054:50054"
+    depends_on:
+      kafka:
+        condition: service_started
 
   gateway:
     build:

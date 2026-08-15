@@ -3,7 +3,9 @@
 > **Directory:** `services/market/migration/`  
 > **Database:** PostgreSQL (`tradedrift_market`)  
 > **Migration Tool:** `golang-migrate` / `goose` compatible SQL DDL  
-> **Primary File:** `00001_create_market_tables.sql`
+> **Primary Files:**  
+> - `00001_create_market_tables.sql` (Core tables, constraints, initial seeds)  
+> - `00002_add_open_close_trade_at_columns.sql` (Safeguard migration for candlestick timestamp ordering)  
 
 ---
 
@@ -157,9 +159,26 @@ The migrations are automatically executed at application boot time via `postgres
 
 To run or rollback manually via goose:
 ```powershell
-# Apply migration
+# Apply all pending migrations
 goose -dir services/market/migration postgres "$MARKET_DB_URL" up
 
-# Rollback migration
+# Rollback latest migration
 goose -dir services/market/migration postgres "$MARKET_DB_URL" down
 ```
+
+---
+
+## 6. Migration History & Append-Only Strategy
+
+Database migrations follow an **append-only** strategy to guarantee zero-downtime schema evolution across developer machines, staging, and production environments:
+
+| Version | File | Description | Purpose |
+| :--- | :--- | :--- | :--- |
+| **`00001`** | `00001_create_market_tables.sql` | Baseline Schema | Creates `markets`, `market_trades`, and `ohlc_candles` tables, indexes, and default market seed data. |
+| **`00002`** | `00002_add_open_close_trade_at_columns.sql` | Column Safeguard | Safely adds `open_trade_at` and `close_trade_at` to `ohlc_candles` with `IF NOT EXISTS` for seamless backward compatibility with existing databases. |
+
+### Why `00002` is necessary:
+* Goose records executed migration versions in the `goose_db_version` table.
+* Once migration `00001` has been executed on an environment, Goose will **never** re-run `00001`.
+* Adding `00002_...` ensures that any existing database instance automatically upgrades to include all necessary columns without requiring manual SQL interventions or dropping existing data.
+

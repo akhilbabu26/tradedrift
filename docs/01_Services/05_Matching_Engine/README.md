@@ -20,8 +20,11 @@ The Matching Engine (ME) is the high-performance, single-threaded execution core
 ---
 
 ## 3. Current Status
-* **Status**: 🟢 **Design Phase Complete / Implementation Pending**
-* **Version**: V1.0 (July 2026)
+* **Status**: 🔨 **Implementation Starting — August 2026**
+* **Version**: V1.0 (July 2026 Design → August 2026 Implementation)
+* **Design**: 18 specification documents fully complete
+* **All upstream services complete**: API Gateway, Auth, Wallet, Order, Market — all running in Docker, fully tested via Postman
+* **Next**: Scaffold `services/matching-engine/` starting with `orderbook/` package
 
 ---
 

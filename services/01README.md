@@ -188,16 +188,19 @@ TradeDrift combines **synchronous gRPC** for low-latency command/query operation
 
 ## 4. Operational & Deployment Matrix
 
+> **Last Updated:** August 15, 2026
+
 | Service | Port | Protocol | Target Database | Docker Container Name | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`gateway`** | `:8080` | HTTP REST | Stateless (Redis client) | `tradedrift-gateway` | ✅ Operational |
-| **`auth`** | `:50051` | gRPC | `tradedrift_auth` | `tradedrift-auth` | ✅ Operational |
-| **`wallet`** | `:50052` | gRPC | `tradedrift_wallet` | `tradedrift-wallet` | ✅ Operational |
-| **`order`** | `:50053` | gRPC | `tradedrift_order` | `tradedrift-order` | ✅ Operational |
-| **`market`** | `:50054` | gRPC | `tradedrift_market` | `tradedrift-market` | ✅ Operational |
-| **`matching`** | `:50055` | gRPC / Kafka | In-Memory / Redis | `tradedrift-matching` | 🏗️ In Planning |
-| **`settlement`**| `:50056` | Kafka | `tradedrift_settlement` | `tradedrift-settlement`| 🏗️ In Planning |
-| **`trade`** | `:50057` | gRPC / Kafka | `tradedrift_trade` | `tradedrift-trade` | 🏗️ In Planning |
-| **`portfolio`** | `:50058` | gRPC / Kafka | `tradedrift_portfolio` | `tradedrift-portfolio` | 🏗️ In Planning |
-| **`notification`**| `:8081` | WebSockets | `tradedrift_notification`| `tradedrift-notification`| 🏗️ In Planning |
-| **`admin`** | `:50059` | gRPC | `tradedrift_admin` | `tradedrift-admin` | 🏗️ In Planning |
+| **`gateway`** | `:8080` | HTTP REST | Stateless | `tradedrift-gateway` | ✅ Live & Tested |
+| **`auth`** | `:50051` | gRPC | `tradedrift_auth` | `tradedrift-auth` | ✅ Live & Tested |
+| **`wallet`** | `:50052` | gRPC | `tradedrift_wallet` | `tradedrift-wallet` | ✅ Live & Tested |
+| **`order`** | `:50053` | gRPC | `tradedrift_order` | `tradedrift-order` | ✅ Live & Tested |
+| **`market`** | `:50054` | gRPC | `tradedrift_market` | `tradedrift-market` | ✅ Live & Tested |
+| **`matching`** | `:50055` | gRPC / Kafka | In-Memory / Redis | `tradedrift-matching` | 🔨 **Implementation Next** |
+| **`settlement`**| `:50056` | Kafka | `tradedrift_settlement` | `tradedrift-settlement`| ⏳ After Matching Engine |
+| **`trade`** | `:50057` | gRPC / Kafka | `tradedrift_trade` | `tradedrift-trade` | ⏳ After Settlement |
+| **`portfolio`** | `:50058` | gRPC / Kafka | `tradedrift_portfolio` | `tradedrift-portfolio` | ⏳ After Settlement |
+| **`notification`**| `:8081` | WebSockets | `tradedrift_notification`| `tradedrift-notification`| ⏳ After Trade/Portfolio |
+| **`admin`** | `:50059` | gRPC | `tradedrift_admin` | `tradedrift-admin` | ⏳ After core stable |
+

@@ -1,6 +1,7 @@
 # TradeDrift
 
-> **Status:** 🚧 In Design (V1)
+> **Status:** 🔨 In Development — V1 (Phase 2 of 3)  
+> **Last Updated:** August 2026
 >
 > A production-inspired cryptocurrency exchange simulator built to demonstrate how real exchanges work internally through a microservices architecture.
 
@@ -337,50 +338,139 @@ AI Intelligence
 
 # Current Status
 
-### 1. Service Architectures (Design Phase)
-* [x] **API Gateway:** ✅ Designed
-* [x] **Authentication Service:** ✅ Designed
-* [x] **Wallet Service:** ✅ Designed
-* [x] **Order Service:** ✅ Designed
-* [x] **Matching Engine:** ✅ Designed
-* [x] **Settlement Service:** ✅ Designed
-* [x] **Trade Service:** ✅ Designed
-* [x] **Portfolio Service:** ✅ Designed
-* [x] **Market Service:** ✅ Designed
-* [x] **Notification Service:** ✅ Designed
+> **Last Updated:** August 15, 2026  
+> Overall: Phase 1 (Design) ✅ Complete · Phase 2 (Core Services) 🔨 In Progress · Phase 3 (Matching Engine + Settlement) ⏳ Up Next
 
-### 2. Platform & Standards (Design Phase)
-* [x] **Distributed Tracing & Correlation:** ✅ Designed
-* [x] **Shared SDK Foundation:** ✅ Designed
-* [x] **Database Outbox Engine:** ✅ Designed
-* [x] **Kafka Topic Topology:** ✅ Designed
+---
 
-### 3. Database Architecture (Design Phase)
-* [x] **Unified DB Standards:** ✅ Designed
-* [x] **8 Service Schema Definitions (DDL SQL):** ✅ Designed & Created
-* [x] **Composite Index Strategy:** ✅ Designed
-* [x] **Migration Dependency Sequence:** ✅ Designed
-* [x] **Vector Database ER / Flow Diagrams:** ✅ Generated (SVGs)
+## Phase 1 — Design (Complete ✅)
 
-### 4. API Design (Design Phase)
-* [x] **REST Contract Standards:** ✅ Designed
-* [x] **Idempotency & Rate Limit Catalog:** ✅ Designed
-* [x] **API Error Codes Registry:** ✅ Designed
-* [x] **Kubernetes Health Probe Spec:** ✅ Designed
-* [x] **WebSocket Streaming Frame Spec:** ✅ Designed
-* [x] **Vector API Routing Diagrams:** ✅ Generated (SVGs)
+### 1.1 Service Architecture Design
+| Service | Design Status |
+| :--- | :--- |
+| API Gateway | ✅ Complete |
+| Authentication Service | ✅ Complete |
+| Wallet Service | ✅ Complete |
+| Order Service | ✅ Complete |
+| Matching Engine | ✅ Complete (18 docs) |
+| Market Service | ✅ Complete |
+| Settlement Service | ✅ Complete |
+| Trade Service | ✅ Complete |
+| Portfolio Service | ✅ Complete |
+| Notification Service | ✅ Complete |
+| Admin Service | ✅ Complete |
 
-### 5. Development Guidelines (Design Phase)
-* [x] **Multi-Module Monorepo Layout:** ✅ Designed
-* [x] **Linter & Coding Standards:** ✅ Designed
-* [x] **Git Branch & Review Strategy:** ✅ Designed
-* [x] **Mocking & Integration Testing Strategy:** ✅ Designed
-* [x] **Architecture Change Request (ACR) Governance:** ✅ Designed
+### 1.2 Platform & Standards Design
+| Area | Design Status |
+| :--- | :--- |
+| Distributed Tracing & Correlation IDs | ✅ Complete |
+| Shared Platform SDK Design | ✅ Complete |
+| Kafka Topic Topology | ✅ Complete |
+| Database Schema Definitions (all 8 services) | ✅ Complete |
+| Composite Index Strategy | ✅ Complete |
+| gRPC Contract Specifications | ✅ Complete |
+| REST API Contracts | ✅ Complete |
+| WebSocket Streaming Spec | ✅ Complete |
+| Trading Lifecycle & Data Consistency Audits | ✅ Complete |
+| Security & Operational Readiness Audits | ✅ Complete |
 
-### 6. Source Implementation Phase
-* [ ] **Phase 1: Must Fix Before Code (Shared SDK / Wallet ordering):** ⏳ Pending Code
-* [ ] **Phase 2: Local Deployment Execution:** ⏳ Pending Code
-* [ ] **Phase 3: Production Hardening:** ⏳ Pending Code
+---
+
+## Phase 2 — Core Services Implementation (In Progress 🔨)
+
+### 2.1 Platform / Shared SDK (`platform/`)
+| Package | Status | What It Provides |
+| :--- | :--- | :--- |
+| `platform/config` | ✅ Implemented | `.env` loader, `GetEnv`, `GetEnvOrError` |
+| `platform/logger` | ✅ Implemented | Structured Zap logger |
+| `platform/postgres` | ✅ Implemented | `pgxpool` connection factory, Goose migrations runner |
+| `platform/redis` | ✅ Implemented | Redis client wrapper |
+| `platform/jwt` | ✅ Implemented | HMAC JWT sign/validate, context helpers |
+| `platform/errors` | ✅ Implemented | gRPC error mapping utilities |
+| `platform/uuid` | ✅ Implemented | UUIDv7 generator |
+| `platform/api/gen` | ✅ Implemented | Generated gRPC stubs for auth, wallet, order, market |
+
+### 2.2 Auth Service (`services/auth/`)
+| Component | Status | Notes |
+| :--- | :--- | :--- |
+| gRPC Handler | ✅ Implemented | Register, Login, Logout, Refresh, Verify, Resend, ForgotPassword, ResetPassword, ChangePassword |
+| Service Layer | ✅ Implemented | Full session lifecycle, JWT rotation, OTP flows |
+| Repository Layer | ✅ Implemented | Users, sessions, OTP tables |
+| Mail Integration | ✅ Implemented | Verification + password reset email flows |
+| OTP System | ✅ Implemented | Time-bounded OTP generation and validation |
+| Database Migrations | ✅ Implemented | Goose-managed schema |
+| Docker Deployment | ✅ Running | `tradedrift-auth` container live |
+
+### 2.3 Wallet Service (`services/wallet/`)
+| Component | Status | Notes |
+| :--- | :--- | :--- |
+| gRPC Handler | ✅ Implemented | GetBalance, GetBalances, GetSupportedAssets, ReserveFunds, ReleaseFunds, SettleTrade, InitializeWallet |
+| Service Layer | ✅ Implemented | Reserve/release, settlement, wallet init |
+| Repository Layer | ✅ Implemented | Balances, reservations, outbox |
+| Transactional Outbox | ✅ Implemented | `settle_trade.go` — atomic balance update + outbox write |
+| Database Migrations | ✅ Implemented | Goose-managed schema |
+| Docker Deployment | ✅ Running | `tradedrift-wallet` container live |
+
+### 2.4 Order Service (`services/order/`)
+| Component | Status | Notes |
+| :--- | :--- | :--- |
+| gRPC Handler | ✅ Implemented | CreateOrder, GetOrder, ListOrders, CancelOrder |
+| Service Layer | ✅ Implemented | Validation, fund reservation via Wallet gRPC, idempotency |
+| Kafka Publisher | ✅ Implemented | Outbox publisher for `order.created.v1` topic |
+| Repository Layer | ✅ Implemented | Orders, outbox tables |
+| Database Migrations | ✅ Implemented | Goose-managed schema |
+| Docker Deployment | ✅ Running | `tradedrift-order` container live |
+| Postman Tested | ✅ Tested | CreateOrder, GetOrder, ListOrders, CancelOrder verified |
+
+### 2.5 Market Service (`services/market/`)
+| Component | Status | Notes |
+| :--- | :--- | :--- |
+| gRPC Handler | ✅ Implemented | ListMarkets, GetMarket, GetTicker, GetCandles |
+| Service Layer | ✅ Implemented | Market config, ticker aggregation, candle queries |
+| Kafka Consumer | ✅ Implemented | Consumes `trade.executed.v1` to build candles & tickers |
+| Repository Layer | ✅ Implemented | Markets, market_trades, ohlc_candles tables |
+| Database Migrations | ✅ Implemented | `00001` (base schema) + `00002` (open/close trade columns) |
+| Docker Deployment | ✅ Running | `tradedrift-market` container live, Kafka connected on `kafka:29092` |
+| Postman Tested | ✅ Tested | ListMarkets, GetMarket, GetTicker, GetCandles verified |
+
+### 2.6 API Gateway (`services/gateway/`)
+| Component | Status | Notes |
+| :--- | :--- | :--- |
+| HTTP Router | ✅ Implemented | Go 1.22 `net/http` ServeMux with method+path routing |
+| Auth Middleware | ✅ Implemented | JWT Bearer token validation |
+| Rate Limiter | ✅ Implemented | Token bucket — 20 req/s per IP |
+| CORS Middleware | ✅ Implemented | Configurable origin allowlist |
+| Request ID | ✅ Implemented | UUID per request injected into context |
+| Logger Middleware | ✅ Implemented | Structured request/response logging |
+| Recovery Middleware | ✅ Implemented | Panic recovery with 500 response |
+| Auth Routes | ✅ Implemented | 10 endpoints (public + protected) |
+| Wallet Routes | ✅ Implemented | 3 endpoints (public + protected) |
+| Order Routes | ✅ Implemented | 4 endpoints (all protected) |
+| Market Routes | ✅ Implemented | 4 endpoints (all public) |
+| Docker Deployment | ✅ Running | `tradedrift-gateway` on port 8080 |
+| End-to-End Tested | ✅ Tested | All routes verified through Postman |
+
+### 2.7 Infrastructure
+| Component | Status | Notes |
+| :--- | :--- | :--- |
+| Docker Compose | ✅ Running | All 5 services + Redis + Kafka orchestrated |
+| Kafka (KRaft mode) | ✅ Running | Dual listeners: `kafka:29092` (internal), `localhost:9092` (host) |
+| Redis | ✅ Running | Auth session store |
+| PostgreSQL | ✅ Running | 4 separate databases (auth, wallet, order, market) on host |
+
+---
+
+## Phase 3 — Matching Engine + Downstream Services (⏳ Up Next)
+
+| Service | Status | Planned Start |
+| :--- | :--- | :--- |
+| **Matching Engine** | ⏳ Implementation Pending | **Next** |
+| Settlement Service | ⏳ Pending | After Matching Engine |
+| Trade Service | ⏳ Pending | After Settlement |
+| Portfolio Service | ⏳ Pending | After Settlement |
+| Notification Service | ⏳ Pending | After Trade/Portfolio |
+| Admin Service | ⏳ Pending | After core is stable |
+| WebSocket Gateway | ⏳ Pending | After Notification |
 
 ---
 

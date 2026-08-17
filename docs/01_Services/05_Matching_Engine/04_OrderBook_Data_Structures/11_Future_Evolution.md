@@ -72,32 +72,118 @@ Replace `priceLevels` hash map + `sortedPrices` slice with a single skip list pr
 
 **Trigger:** Kafka replay time on restart grows too long as the topic accumulates events.
 
-**Current (V1):**
+---
+
+## 5.1 The Core Problem
+
+The V1 recovery strategy replays every `OrderCreated` and `OrderCancelRequested` event from **Kafka offset 0** on every restart. This is correct and simple — but recovery time grows linearly with the total number of events ever written to the topic.
+
 ```
-Read checkpoint offset from Postgres
-    │
-    ▼
-Replay OrderCreated + OrderCancelRequested from that offset
-    │
-    ▼
-Book reconstructed
+Kafka topic after 6 months of trading:
+
+[event 1 .... event 2,000,000 .... event 4,999,900 .... event 5,000,000]
+ ▲                                        ▲                    ▲
+ replay starts here (offset 0)       checkpoint          crash point
+
+Recovery: replay all 5 million events → minutes of downtime
 ```
 
-**Upgrade target:**
+On an active exchange, the topic grows continuously. Every restart forces the engine to walk the entire history, which takes longer every day.
+
+---
+
+## 5.2 The Fix: Snapshot + WAL
+
+Instead of replaying from the beginning every time, the engine periodically **serialises its entire in-memory book state** to durable storage (the snapshot). On restart, it loads the snapshot and replays only the small gap of events written **after** the snapshot was taken (the WAL — Write-Ahead Log equivalent).
+
 ```
-Periodic snapshot
-    │
-    ▼
-Serialise OrderBook state to snapshot store (S3 / Postgres / Redis AOF)
-Record snapshot timestamp + Kafka offset
-    │
-    ▼
+Kafka topic:
+
+[event 1 ... event 4,999,900] [event 4,999,901 ... event 5,000,000]
+                    ▲                                    ▲
+              Snapshot saved                       crash point
+              (seq = 4,999,900)              WAL = last 100 events only
+
+Recovery:
+    1. Load snapshot  (instant — deserialise book state)
+    2. Replay only 100 events (WAL)  →  milliseconds
+```
+
+**Recovery invariant:**
+
+```
+Snapshot(seq = N)  +  WAL events(seq > N)  =  exact pre-crash engine state
+```
+
+---
+
+## 5.3 V1 vs Snapshot + WAL Comparison
+
+| Property | V1 (replay from 0) | Snapshot + WAL |
+| --- | --- | --- |
+| Recovery time | Grows with total history | Always fast (fixed WAL gap) |
+| Downtime on crash | Minutes at scale | Seconds |
+| Implementation complexity | Simple | Serialisation + snapshot store |
+| Extra storage needed | None | Snapshot storage (S3 / Postgres) |
+| Correct for V1 volumes? | ✅ Yes | Overkill |
+| Required at production scale? | ❌ Too slow | ✅ Required |
+
+---
+
+## 5.4 Real-World Scale Example
+
+A busy exchange processes millions of orders per day. After 1 year of operation:
+
+- **V1 approach:** replay ~365 million events on every restart → hours of downtime per crash
+- **Snapshot + WAL:** load last snapshot (e.g. taken every 10 minutes) + replay at most a few thousand events → seconds
+
+The V1 approach is perfectly safe when the Kafka topic is young and small. The Snapshot + WAL upgrade is needed only when measured replay time becomes operationally unacceptable.
+
+---
+
+## 5.5 Current V1 State (explicit scope boundary)
+
+V1 does **not** implement snapshotting. Every recovery is a full replay from Kafka offset 0 up to the checkpoint offset. This is documented explicitly in `08_Recovery_Strategy.md §11`.
+
+The V1 recovery sequence:
+
+```
+1. Read checkpoint offset C from Postgres
+        │
+        ▼
+2. Seek Kafka partition to offset 0
+        │
+        ▼
+3. Replay all OrderCreated + OrderCancelRequested
+   from offset 0 → C   (RECOVERY mode, output suppressed)
+        │
+        ▼
+4. Transition to LIVE mode at offset C
+        │
+        ▼
+5. Book reconstructed — ready
+```
+
+---
+
+## 5.6 Upgrade Target
+
+```
+Normal operation (periodic snapshot every N minutes or M events):
+        │
+        ▼
+Serialise OrderBook state → snapshot store (S3 / Postgres / Redis AOF)
+Record snapshot Kafka offset S
+        │
+        ▼
 On restart:
-    Load latest snapshot
-    Replay only events after snapshot Kafka offset
+        1. Read latest snapshot from store
+        2. Deserialise OrderBook, Side, PriceLevel, OrderNode
+        3. Replay only Kafka events with offset > S   (WAL)
+        4. Transition to LIVE
 ```
 
-**Scope:** Add serialisation/deserialisation for OrderBook, Side, PriceLevel, OrderNode. Add snapshot storage + retrieval. Modify startup recovery sequence. No changes to matching algorithms or event contracts.
+**Scope of change:** Add serialisation/deserialisation for `OrderBook`, `Side`, `PriceLevel`, `OrderNode`. Add snapshot storage and retrieval layer. Modify startup recovery sequence in `08_Recovery_Strategy.md`. No changes to matching algorithms, event contracts, or the Publisher layer.
 
 ---
 

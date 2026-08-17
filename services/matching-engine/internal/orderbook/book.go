@@ -1,6 +1,9 @@
 package orderbook
 
-import "github.com/google/uuid"
+import (
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
+)
 
 // OrderBook holds all resting orders for a single trading pair.
 // It is exclusively owned by one MarketEngine's Event Loop goroutine.
@@ -20,12 +23,14 @@ func NewOrderBook(marketID string) *OrderBook {
 	return &OrderBook{
 		MarketID: marketID,
 		Bids: Side{
-			IsBid:       true,
-			PriceLevels: make(map[string]*PriceLevel),
+			IsBid:        true,
+			SortedPrices: make([]decimal.Decimal, 0), // ← explicit init
+			PriceLevels:  make(map[string]*PriceLevel),
 		},
 		Asks: Side{
-			IsBid:       false,
-			PriceLevels: make(map[string]*PriceLevel),
+			IsBid:        false,
+			SortedPrices: make([]decimal.Decimal, 0), // ← explicit init
+			PriceLevels:  make(map[string]*PriceLevel),
 		},
 		OrderIndex: make(map[uuid.UUID]*OrderNode),
 	}

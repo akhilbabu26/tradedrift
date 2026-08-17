@@ -10,4 +10,5 @@ use (
     ./services/gateway
     ./services/order
     ./services/market
+    ./services/matching-engine
 )

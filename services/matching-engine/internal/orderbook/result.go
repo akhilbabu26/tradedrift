@@ -12,6 +12,7 @@ import (
 // Each Fill gets its own TradeID (UUIDv7 generated in-memory at match time).
 type Fill struct {
 	TradeID      uuid.UUID
+	MarketID     string          // market this trade occurred in (e.g. "BTC-USDT")
 	MakerOrderID uuid.UUID       // the resting order that was consumed
 	TakerOrderID uuid.UUID       // the incoming order that triggered the match
 	BuyOrderID   uuid.UUID       // whichever of maker/taker had side == BUY

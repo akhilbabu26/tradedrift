@@ -183,6 +183,7 @@ func Match(book *orderbook.OrderBook, incoming *orderbook.OrderNode, mode Mode) 
 
 		fills = append(fills, orderbook.Fill{
 			TradeID:      tradeID,
+			MarketID:     book.MarketID, // ← authoritative market identifier
 			MakerOrderID: best.OrderID,
 			TakerOrderID: incoming.OrderID,
 			BuyOrderID:   buyOrderOf(incoming, best),

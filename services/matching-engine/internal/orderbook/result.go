@@ -50,12 +50,19 @@ type DepthSnapshot struct {
 	SnapshotAt time.Time
 }
 
+// KafkaPosition uniquely identifies one message's position in Kafka.
+// Topic + Partition + Offset together form the global checkpoint key.
+// Offset alone is NOT globally unique — it is only unique within one partition.
+type KafkaPosition struct {
+	Topic     string
+	Partition int
+	Offset    int64
+}
+
 // MatchResult is produced for every single Kafka input event (one-in one-out).
-// It bundles all fills + any cancel + the depth snapshot + the source Kafka offset.
-// SourceOffset is used by the Publisher to write exactly one checkpoint per event.
 type MatchResult struct {
-	Fills         []Fill
-	CancelResult  *CancelledOrder // non-nil for cancels, rejects, or IOC expiry
-	DepthSnapshot DepthSnapshot
-	SourceOffset  int64           // Kafka offset of the input event
+	Fills          []Fill
+	CancelResult   *CancelledOrder
+	DepthSnapshot  DepthSnapshot
+	SourcePosition KafkaPosition   // ← replaces SourceOffset int64
 }

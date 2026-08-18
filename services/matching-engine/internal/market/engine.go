@@ -27,6 +27,8 @@ type InputEvent struct {
 	Type         EventType
 	OrderCreated *OrderCreatedPayload     // non-nil when Type == EventOrderCreated
 	OrderCancel  *OrderCancelPayload      // non-nil when Type == EventOrderCancel
+	Topic        string
+	Partition    int
 	Offset       int64                    // Kafka offset — used for checkpoint
 }
 

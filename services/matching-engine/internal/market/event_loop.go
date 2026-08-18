@@ -55,7 +55,11 @@ func (m *MarketEngine) processEvent(event InputEvent) {
 					CancelledAt:       time.Now(),
 				},
 				DepthSnapshot: matcher.GetDepth(m.book, 20),
-				SourceOffset:  event.Offset,
+				SourcePosition: orderbook.KafkaPosition{
+					Topic:     event.Topic,
+					Partition: event.Partition,
+					Offset:    event.Offset,
+				},
 			}
 			return
 		}
@@ -80,7 +84,11 @@ func (m *MarketEngine) processEvent(event InputEvent) {
 			Fills:         fills,
 			CancelResult:  cancel,
 			DepthSnapshot: matcher.GetDepth(m.book, 20),
-			SourceOffset:  event.Offset,
+			SourcePosition: orderbook.KafkaPosition{
+				Topic:     event.Topic,
+				Partition: event.Partition,
+				Offset:    event.Offset,
+			},
 		}
 
 	case EventOrderCancel:
@@ -103,7 +111,11 @@ func (m *MarketEngine) processEvent(event InputEvent) {
 		m.OutputQueue <- orderbook.MatchResult{
 			CancelResult:  cancel,
 			DepthSnapshot: matcher.GetDepth(m.book, 20),
-			SourceOffset:  event.Offset,
+			SourcePosition: orderbook.KafkaPosition{
+				Topic:     event.Topic,
+				Partition: event.Partition,
+				Offset:    event.Offset,
+			},
 		}
 	}
 }

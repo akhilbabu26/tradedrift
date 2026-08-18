@@ -231,9 +231,21 @@ func (p *Publisher) pushDepth(ctx context.Context, snap orderbook.DepthSnapshot)
 	return p.redis.Set(ctx, "depth:"+snap.MarketID, b, 0)
 }
 
-// writeCheckpoint writes the Kafka position to Postgres using UPSERT.
-// Each (topic, partition) pair has exactly one row.
-// updated_at is refreshed on every UPSERT for operational checkpoint freshness monitoring.
+// writeCheckpoint writes the Kafka position to Postgres using a MONOTONIC UPSERT.
+// Each (topic, partition) pair has exactly one row — the latest processed offset.
+//
+// MONOTONIC GUARANTEE: The WHERE guard ensures the checkpoint can only advance
+// forward, never backwards. Multiple MarketEngine publishers write to the same
+// (topic, partition) row. Without this guard, a slower publisher processing an
+// earlier offset could move the checkpoint backwards, causing duplicate replays on
+// restart.
+//
+// Example race without the guard:
+//
+//	ETH writes checkpoint=101  (fast publisher, higher offset)
+//	BTC writes checkpoint=100  (slow publisher, lower offset) ← regression
+//
+// With the WHERE guard, BTC's write is silently ignored — correct behavior.
 func (p *Publisher) writeCheckpoint(ctx context.Context, pos orderbook.KafkaPosition) error {
 	const query = `
 		INSERT INTO kafka_checkpoints (topic, partition, offset, updated_at)
@@ -241,7 +253,8 @@ func (p *Publisher) writeCheckpoint(ctx context.Context, pos orderbook.KafkaPosi
 		ON CONFLICT (topic, partition)
 		DO UPDATE SET
 			offset     = EXCLUDED.offset,
-			updated_at = NOW()`
+			updated_at = NOW()
+		WHERE kafka_checkpoints.offset < EXCLUDED.offset`
 
 	_, err := p.db.Exec(ctx, query, pos.Topic, pos.Partition, pos.Offset)
 	return err

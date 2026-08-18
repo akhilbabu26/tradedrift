@@ -1,6 +1,7 @@
 package market
 
 import (
+	"context"
 	"time"
 	"github.com/shopspring/decimal"
 
@@ -12,10 +13,18 @@ import (
 // It processes one InputEvent at a time and sends exactly one MatchResult
 // per event to OutputQueue (one-in one-out invariant).
 //
-// Blocks until InputQueue is closed (graceful shutdown).
-func (m *MarketEngine) Run() {
-	for event := range m.InputQueue {
-		m.processEvent(event)
+// Exits cleanly when ctx is cancelled.
+// InputQueue is intentionally never closed — the ctx cancellation is the
+// shutdown signal. Closing InputQueue would risk a "send on closed channel"
+// panic if a Consumer goroutine races with the close during shutdown.
+func (m *MarketEngine) Run(ctx context.Context) {
+	for {
+		select {
+		case event := <-m.InputQueue:
+			m.processEvent(event)
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 

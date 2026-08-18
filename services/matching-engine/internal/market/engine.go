@@ -4,6 +4,7 @@ import (
     "github.com/google/uuid"
     "github.com/shopspring/decimal"
 
+    "tradedrift/services/matching-engine/internal/matcher"
     "tradedrift/services/matching-engine/internal/orderbook"
 )
 
@@ -89,4 +90,12 @@ func NewMarketEngine(config MarketConfig) *MarketEngine {
 // Called by the recovery package after replay reaches the checkpoint offset.
 func (m *MarketEngine) SetLive() {
 	m.mode = ModeLive
+}
+
+// GetDepth returns the current Top-N depth snapshot from the in-memory book.
+// Used by the Replayer after replay completes to push a fresh snapshot to Redis
+// before going live. Safe to call from the Replayer because it runs before
+// engine.Run() handles any live events.
+func (m *MarketEngine) GetDepth(n int) orderbook.DepthSnapshot {
+	return matcher.GetDepth(m.book, n)
 }

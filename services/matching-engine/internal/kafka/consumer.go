@@ -141,7 +141,7 @@ func (c *Consumer) consume(
 // handleOrderCreated is the Consumer's method wrapper — delegates to the
 // package-level function with a route derived from MarketManager.
 func (c *Consumer) handleOrderCreated(msg kafkago.Message) error {
-	return handleOrderCreated(msg, func(marketID string) chan market.InputEvent {
+	return HandleOrderCreated(msg, func(marketID string) chan market.InputEvent {
 		engine := c.manager.Get(marketID)
 		if engine == nil {
 			return nil
@@ -153,7 +153,7 @@ func (c *Consumer) handleOrderCreated(msg kafkago.Message) error {
 // handleOrderCancel is the Consumer's method wrapper — delegates to the
 // package-level function with a route derived from MarketManager.
 func (c *Consumer) handleOrderCancel(msg kafkago.Message) error {
-	return handleOrderCancel(msg, func(marketID string) chan market.InputEvent {
+	return HandleOrderCancel(msg, func(marketID string) chan market.InputEvent {
 		engine := c.manager.Get(marketID)
 		if engine == nil {
 			return nil
@@ -164,10 +164,11 @@ func (c *Consumer) handleOrderCancel(msg kafkago.Message) error {
 
 // ─── Package-level handlers (testable without a real Kafka connection) ────────
 
-// handleOrderCreated deserialises an OrderCreated Kafka message, validates all
+// HandleOrderCreated deserialises an OrderCreated Kafka message, validates all
 // fields, and sends an InputEvent to the correct engine's InputQueue.
 // Returns an error for any parse/validation failure. Unknown markets are skipped.
-func handleOrderCreated(msg kafkago.Message, route routeFunc) error {
+// Exported so the recovery Replayer can reuse the same logic during event replay.
+func HandleOrderCreated(msg kafkago.Message, route routeFunc) error {
 	var payload orderCreatedMessage
 	if err := json.Unmarshal(msg.Value, &payload); err != nil {
 		return fmt.Errorf("unmarshal OrderCreated: %w", err)
@@ -224,9 +225,10 @@ func handleOrderCreated(msg kafkago.Message, route routeFunc) error {
 	return nil
 }
 
-// handleOrderCancel deserialises an OrderCancelRequested Kafka message and
+// HandleOrderCancel deserialises an OrderCancelRequested Kafka message and
 // sends an InputEvent to the correct engine's InputQueue.
-func handleOrderCancel(msg kafkago.Message, route routeFunc) error {
+// Exported so the recovery Replayer can reuse the same logic during event replay.
+func HandleOrderCancel(msg kafkago.Message, route routeFunc) error {
 	var payload orderCancelMessage
 	if err := json.Unmarshal(msg.Value, &payload); err != nil {
 		return fmt.Errorf("unmarshal OrderCancelRequested: %w", err)
@@ -303,10 +305,10 @@ func NewTestableConsumer(route routeFunc) *TestableConsumer {
 
 // HandleOrderCreated exposes the order-created handler for unit testing.
 func (c *TestableConsumer) HandleOrderCreated(msg kafkago.Message) error {
-	return handleOrderCreated(msg, c.route)
+	return HandleOrderCreated(msg, c.route)
 }
 
 // HandleOrderCancel exposes the order-cancel handler for unit testing.
 func (c *TestableConsumer) HandleOrderCancel(msg kafkago.Message) error {
-	return handleOrderCancel(msg, c.route)
+	return HandleOrderCancel(msg, c.route)
 }

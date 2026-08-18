@@ -308,3 +308,155 @@ func TestProcess_Sequential_CheckpointAlwaysAdvances(t *testing.T) {
 		}
 	}
 }
+
+// ─── Checkpoint Monotonicity Tests ───────────────────────────────────────────
+//
+// These tests verify the core correctness invariant:
+//   A checkpoint must only advance forward (monotonic).
+//   An incoming offset that is ≤ the current checkpoint must be silently ignored.
+//
+// This mirrors the Postgres UPSERT guard in publisher.go:
+//   WHERE kafka_checkpoints.offset < EXCLUDED.offset
+//
+// The invariant matters because multiple MarketEngine publishers write to the
+// same (topic, partition) checkpoint row. Without the guard, a slower publisher
+// processing an earlier offset can move the checkpoint backwards, causing
+// duplicate event replay on restart.
+
+// fakeMonotonicDB mirrors the Postgres UPSERT monotonic guard in memory.
+// It only advances the stored offset — never retreats — matching:
+//
+//	ON CONFLICT (topic, partition)
+//	DO UPDATE SET offset = EXCLUDED.offset, updated_at = NOW()
+//	WHERE kafka_checkpoints.offset < EXCLUDED.offset
+type fakeMonotonicDB struct {
+	// checkpoints maps "topic:partition" → last written offset.
+	// -1 means no checkpoint written yet.
+	checkpoints map[string]int64
+	// calls records every Exec() invocation (including those the WHERE guard ignores).
+	calls []orderbook.KafkaPosition
+}
+
+func newFakeMonotonicDB() *fakeMonotonicDB {
+	return &fakeMonotonicDB{checkpoints: make(map[string]int64)}
+}
+
+func (f *fakeMonotonicDB) Exec(_ context.Context, _ string, args ...any) (pgconn.CommandTag, error) {
+	if len(args) < 3 {
+		return pgconn.CommandTag{}, nil
+	}
+	topic := args[0].(string)
+	partition := args[1].(int)
+	offset := args[2].(int64)
+
+	pos := orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: offset}
+	f.calls = append(f.calls, pos)
+
+	// Enforce the monotonic WHERE guard: only advance, never retreat.
+	key := topic + ":" + string(rune('0'+partition))
+	current, exists := f.checkpoints[key]
+	if !exists || offset > current {
+		f.checkpoints[key] = offset // advance
+	}
+	// If offset <= current: silently ignore — matches Postgres WHERE guard behaviour.
+	return pgconn.CommandTag{}, nil
+}
+
+// currentCheckpoint returns the last persisted offset for a topic+partition,
+// or -1 if nothing has been written yet.
+func (f *fakeMonotonicDB) currentCheckpoint(topic string, partition int) int64 {
+	key := topic + ":" + string(rune('0'+partition))
+	v, ok := f.checkpoints[key]
+	if !ok {
+		return -1
+	}
+	return v
+}
+
+// TestCheckpointMonotonicity_DoesNotRegressWhenLowerOffsetArrives verifies that
+// an incoming offset LOWER than the current checkpoint is silently ignored.
+//
+// Scenario:
+//
+//	ETH publisher (fast): writes checkpoint = 101
+//	BTC publisher (slow): writes checkpoint = 100  ← must be ignored
+//	Expected final checkpoint: 101
+func TestCheckpointMonotonicity_DoesNotRegressWhenLowerOffsetArrives(t *testing.T) {
+	db := newFakeMonotonicDB()
+	p := publisher.NewTestable(
+		&fakeKafka{},
+		&fakeRedis{stored: make(map[string][]byte)},
+		db,
+	)
+	ctx := context.Background()
+	topic := "orders.submitted"
+	const partition = 0
+
+	// Step 1: ETH publisher commits offset 101 (higher offset — fast path).
+	result101 := makeResult(nil, "ETH-USDT", topic, partition, 101)
+	if err := p.Process(ctx, result101); err != nil {
+		t.Fatalf("process offset 101: %v", err)
+	}
+
+	if got := db.currentCheckpoint(topic, partition); got != 101 {
+		t.Fatalf("after offset 101: expected checkpoint=101, got=%d", got)
+	}
+
+	// Step 2: BTC publisher commits offset 100 (lower offset — slow path).
+	// The WHERE guard must silently ignore this — checkpoint stays at 101.
+	result100 := makeResult(nil, "BTC-USDT", topic, partition, 100)
+	if err := p.Process(ctx, result100); err != nil {
+		t.Fatalf("process offset 100: %v", err)
+	}
+
+	got := db.currentCheckpoint(topic, partition)
+	if got != 101 {
+		t.Fatalf("checkpoint regression: expected 101 after lower-offset write, got %d", got)
+	}
+
+	// Both calls reached Exec() — the guard is enforced at the DB layer, not by skipping Exec.
+	if len(db.calls) != 2 {
+		t.Fatalf("expected 2 Exec calls, got %d", len(db.calls))
+	}
+}
+
+// TestCheckpointMonotonicity_AdvancesWhenHigherOffsetArrives verifies that
+// an incoming offset HIGHER than the current checkpoint is correctly applied.
+//
+// Scenario:
+//
+//	Current checkpoint: 100
+//	Incoming:           102
+//	Expected:           102  (advanced)
+func TestCheckpointMonotonicity_AdvancesWhenHigherOffsetArrives(t *testing.T) {
+	db := newFakeMonotonicDB()
+	p := publisher.NewTestable(
+		&fakeKafka{},
+		&fakeRedis{stored: make(map[string][]byte)},
+		db,
+	)
+	ctx := context.Background()
+	topic := "orders.submitted"
+	const partition = 0
+
+	// Establish a baseline checkpoint at offset 100.
+	result100 := makeResult(nil, "BTC-USDT", topic, partition, 100)
+	if err := p.Process(ctx, result100); err != nil {
+		t.Fatalf("process offset 100: %v", err)
+	}
+	if got := db.currentCheckpoint(topic, partition); got != 100 {
+		t.Fatalf("baseline: expected checkpoint=100, got=%d", got)
+	}
+
+	// Submit offset 102 — must advance the checkpoint.
+	result102 := makeResult(nil, "BTC-USDT", topic, partition, 102)
+	if err := p.Process(ctx, result102); err != nil {
+		t.Fatalf("process offset 102: %v", err)
+	}
+
+	got := db.currentCheckpoint(topic, partition)
+	if got != 102 {
+		t.Fatalf("expected checkpoint to advance to 102, got %d", got)
+	}
+}
+

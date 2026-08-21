@@ -114,23 +114,35 @@ Every `orderbook.MatchResult` is processed via `Publisher.process()` in a strict
 MatchResult
     │
     ▼
-[Step 1: Publish Fills to Kafka]
+[Step 1: Publish Fills to Kafka]          ← DURABLE EVENT BOUNDARY
     ├── Iterate result.Fills
     ├── Marshal tradeExecutedMessage (including fill.MarketID)
     ├── Write to "trades.executed" with partition key = BuyOrderID
     └── Error? ──► Return immediately. (Checkpoint NOT written)
     │
     ▼
-[Step 2: Push Depth to Redis]
+[Step 2: Push Depth to Redis]             ← NON-CRITICAL PROJECTION
     ├── Marshal result.DepthSnapshot
     ├── SET "depth:{market_id}" (TTL = 0)
-    └── Error? ──► Return immediately. (Checkpoint NOT written)
+    └── Error? ──► Log warning + CONTINUE. (Checkpoint still written)
+              Redis is a cache — not a durable boundary. A failed write
+              is self-healing: the next successful event overwrites it.
+              Blocking the checkpoint here would cause duplicate Kafka
+              trade events for the entire Redis outage window on restart.
     │
     ▼
-[Step 3: Advance Postgres Checkpoint]
+[Step 3: Advance Postgres Checkpoint]     ← CONSUMER PROGRESS MARKER
     ├── UPSERT kafka_checkpoints (topic, partition, offset, updated_at = NOW())
     └── Error? ──► Return error.
 ```
+
+### Delivery Semantics — Three Distinct Layers
+
+| Layer | Role | Durability | Failure Effect |
+| :--- | :--- | :--- | :--- |
+| `trades.executed` (Kafka) | **Durable event log** — source of truth for downstream services | Persistent, replicated | Blocks checkpoint; event replayed on restart |
+| `depth:{market_id}` (Redis) | **Eventually-consistent projection cache** — read-only replica | Volatile, overwrite-only | Logged, non-blocking; self-heals on next event |
+| `kafka_checkpoints` (Postgres) | **Consumer progress marker** — recovery resume point | Persistent | Blocks next event; Kafka event re-processed (at-least-once) |
 
 ---
 
@@ -211,9 +223,9 @@ DO UPDATE SET
 
 | Failure Point | What Happens | On Engine Restart |
 | :--- | :--- | :--- |
-| **Kafka publish fails** | Error returned; Redis push & Checkpoint are skipped | Replays from previous checkpoint offset in `ModeRecovery`. Re-attempts match. |
-| **Redis push fails** | Error returned; Checkpoint is skipped | Replays from previous checkpoint offset. Order book rebuilt. |
-| **Postgres checkpoint fails** | Error returned; offset is not saved | Replays from previous checkpoint offset. |
+| **Kafka publish fails** | Error returned; Checkpoint NOT written | Replays from previous checkpoint offset in `ModeRecovery`. Re-attempts match. |
+| **Redis push fails** | Warning logged; processing **continues**; Checkpoint IS written | No replay needed — checkpoint advanced. Redis self-heals on next successful event. |
+| **Postgres checkpoint fails** | Error returned; Kafka already written | Replays from previous checkpoint offset — at-least-once Kafka delivery. |
 | **No fills generated (e.g. Cancel)** | Kafka publish is skipped; Redis & Checkpoint proceed normally | Checkpoint advances smoothly. |
 
 ### Why Duplicate Trades Are Prevented:
@@ -223,7 +235,7 @@ During recovery replay, the `MarketEngine` operates in `ModeRecovery`. In `ModeR
 
 ## 9. Unit Test Coverage
 
-The package has 11 automated unit tests in `publisher_test.go`:
+The package has **13 automated unit tests** in `publisher_test.go`:
 
 | Test Name | Verification Goal |
 | :--- | :--- |
@@ -234,10 +246,12 @@ The package has 11 automated unit tests in `publisher_test.go`:
 | `TestProcess_DepthSnapshot_WrittenToRedis` | Verifies Top-N depth snapshot is serialized and written to Redis |
 | `TestProcess_CheckpointWritten_AfterSuccess` | Verifies Postgres checkpoint UPSERT on complete success |
 | `TestProcess_KafkaFailure_CheckpointNotWritten` | Kafka failure stops pipeline before checkpoint write |
-| `TestProcess_RedisFailure_CheckpointNotWritten` | Redis failure stops pipeline before checkpoint write |
+| `TestProcess_RedisFailure_CheckpointStillWritten` | Redis failure is non-blocking — checkpoint still advances |
 | `TestProcess_CheckpointFailure_ReturnsError` | DB error returns cleanly to caller |
 | `TestProcess_NoFills_SkipsKafka_StillWritesDepthAndCheckpoint` | Cancel / resting order skips Kafka but writes Redis & checkpoint |
 | `TestProcess_Sequential_CheckpointAlwaysAdvances` | Verifies monotonic checkpoint advancement across 5 consecutive events |
+| `TestCheckpointMonotonicity_DoesNotRegressWhenLowerOffsetArrives` | Slow publisher cannot regress checkpoint with a lower offset |
+| `TestCheckpointMonotonicity_AdvancesWhenHigherOffsetArrives` | Higher offset correctly advances the checkpoint |
 
 ---
 

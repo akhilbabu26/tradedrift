@@ -70,7 +70,8 @@ func main() {
 
 	orderSvc := service.NewService(orderRepo, walletClient, appLogger)
 	grpcHandler := handler.NewGRPCHandler(orderSvc, appLogger)
-	kafkaProducer := publisher.NewLogProducer(appLogger)
+	kafkaProducer := publisher.NewKafkaProducer(cfg.KafkaBrokers, appLogger)
+	defer kafkaProducer.Close()
 
 	// 5. Background Outbox Worker Lifecycle Context with WaitGroup Sync
 	outboxCtx, cancelOutbox := context.WithCancel(context.Background())

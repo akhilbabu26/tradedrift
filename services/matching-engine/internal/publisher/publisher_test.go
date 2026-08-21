@@ -237,7 +237,11 @@ func TestProcess_KafkaFailure_CheckpointNotWritten(t *testing.T) {
 	}
 }
 
-func TestProcess_RedisFailure_CheckpointNotWritten(t *testing.T) {
+func TestProcess_RedisFailure_CheckpointStillWritten(t *testing.T) {
+	// Redis is a non-critical projection cache.
+	// A Redis failure must NOT block the Postgres checkpoint from advancing.
+	// The checkpoint represents Kafka consumer progress, not Redis state.
+	// On restart, the next successful event will overwrite the stale Redis snapshot.
 	k, db := &fakeKafka{}, &fakeDB{}
 	r := &fakeRedis{failErr: errors.New("redis timeout")}
 	p := newTestPublisher(k, r, db)
@@ -245,11 +249,14 @@ func TestProcess_RedisFailure_CheckpointNotWritten(t *testing.T) {
 	result := makeResult(nil, "BTC-USDT", "orders.submitted", 0, 50)
 
 	err := p.Process(context.Background(), result)
-	if err == nil {
-		t.Fatal("expected error when Redis fails")
+	if err != nil {
+		t.Fatalf("expected no error when Redis fails (non-critical), got: %v", err)
 	}
-	if len(db.written) != 0 {
-		t.Fatalf("checkpoint must NOT be written when Redis fails, got %d writes", len(db.written))
+	if len(db.written) != 1 {
+		t.Fatalf("checkpoint MUST still be written even when Redis fails, got %d writes", len(db.written))
+	}
+	if db.written[0].Offset != 50 {
+		t.Fatalf("expected checkpoint offset 50, got %d", db.written[0].Offset)
 	}
 }
 

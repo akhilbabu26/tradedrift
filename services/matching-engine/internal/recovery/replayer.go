@@ -246,8 +246,8 @@ func (r *Replayer) routeMessage(msg kafkago.Message, engine *market.MarketEngine
 // loadCheckpoint reads the last saved Kafka offset for a topic+partition from Postgres.
 // Returns -1 if no checkpoint exists (meaning: replay from the very beginning, offset 0).
 func (r *Replayer) loadCheckpoint(ctx context.Context, topic string, partition int) (int64, error) {
-	const query = `
-		SELECT offset FROM kafka_checkpoints
+	query := `
+		SELECT "offset" FROM kafka_checkpoints
 		WHERE topic = $1 AND partition = $2`
 
 	var offset int64

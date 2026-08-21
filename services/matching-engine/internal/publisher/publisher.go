@@ -103,11 +103,12 @@ func NewPublisher(brokers []string, rdb *redis.Client, db dbWriter) *Publisher {
 		redis: &redisClientAdapter{client: rdb},
 		db:    db,
 		writer: &kafkago.Writer{
-			Addr:         kafkago.TCP(brokers...),
-			Topic:        TopicTradeExecuted,
-			Balancer:     &kafkago.LeastBytes{},
-			RequiredAcks: kafkago.RequireAll, // all replicas — correctness > throughput
-			Async:        false,              // synchronous — confirm before checkpointing
+			Addr:                   kafkago.TCP(brokers...),
+			Topic:                  TopicTradeExecuted,
+			Balancer:               &kafkago.LeastBytes{},
+			RequiredAcks:           kafkago.RequireOne,          // RequireAll needs replication factor > 1; dev only has 1 broker
+			Async:                  false,                        // synchronous — confirm before checkpointing
+			AllowAutoTopicCreation: true,                         // auto-create topic if it doesn't exist yet
 		},
 	}
 }
@@ -143,21 +144,53 @@ func (p *Publisher) Run(ctx context.Context, engine *market.MarketEngine) {
 }
 
 // process handles one MatchResult in strict order.
-// A failure at any step prevents the checkpoint from advancing.
+//
+// Failure semantics:
+//   - Kafka publish failure  → return error → checkpoint NOT written → event replayed on restart.
+//   - Redis push failure     → log and continue → checkpoint IS written → Redis self-heals on next event.
+//   - Checkpoint failure     → return error → Kafka already written → at-least-once delivery on restart.
+//
+// Redis is a read-only projection/cache, NOT a durable event boundary.
+// Blocking the checkpoint on a Redis failure would cause duplicate Kafka trade events
+// for the entire Redis outage window upon restart — a worse outcome than a stale snapshot.
+// The next successful event always overwrites the missed Redis snapshot.
 func (p *Publisher) process(ctx context.Context, result orderbook.MatchResult) error {
-	// Step 1: Publish TradeExecuted for every Fill
+	// Step 1: Publish TradeExecuted for every Fill.
+	// Kafka IS the durable event boundary — failure here must block the checkpoint.
 	if len(result.Fills) > 0 {
 		if err := p.publishFills(ctx, result.Fills); err != nil {
 			return fmt.Errorf("publish fills: %w", err)
 		}
+		// Log each fill so trades are visible in console output.
+		for _, f := range result.Fills {
+			log.Printf("[trade] ✅ MATCH  market=%s  price=%s  qty=%s  buy=%s  sell=%s",
+				f.MarketID, f.Price.String(), f.Quantity.String(),
+				f.BuyOrderID.String()[:8], f.SellOrderID.String()[:8],
+			)
+		}
+	} else {
+		// No fills — order was rested in the book.
+		log.Printf("[book]  📋 RESTED market=%s  offset=%d",
+			result.DepthSnapshot.MarketID, result.SourcePosition.Offset,
+		)
 	}
 
-	// Step 2: Push DepthSnapshot to Redis
+	// Step 2: Push DepthSnapshot to Redis (non-critical projection — log and continue).
+	// Redis is a cache, not a source of truth. A failed write is self-healing:
+	// the next successful event overwrites with a fresh snapshot.
+	// Returning an error here would prevent the Postgres checkpoint from advancing,
+	// causing duplicate Kafka trade events for the full Redis outage window on restart.
 	if err := p.pushDepth(ctx, result.DepthSnapshot); err != nil {
-		return fmt.Errorf("push depth: %w", err)
+		log.Printf("[publisher] redis depth push failed (non-critical, market=%s offset=%d): %v",
+			result.DepthSnapshot.MarketID,
+			result.SourcePosition.Offset,
+			err,
+		)
+		// intentionally continue — do not return
 	}
 
-	// Step 3: Write checkpoint — ONLY after steps 1 and 2 succeed
+	// Step 3: Write Postgres checkpoint — ONLY after Kafka succeeds.
+	// Redis failure above does NOT prevent checkpoint advancement.
 	if err := p.writeCheckpoint(ctx, result.SourcePosition); err != nil {
 		return fmt.Errorf("write checkpoint: %w", err)
 	}
@@ -247,14 +280,15 @@ func (p *Publisher) pushDepth(ctx context.Context, snap orderbook.DepthSnapshot)
 //
 // With the WHERE guard, BTC's write is silently ignored — correct behavior.
 func (p *Publisher) writeCheckpoint(ctx context.Context, pos orderbook.KafkaPosition) error {
-	const query = `
-		INSERT INTO kafka_checkpoints (topic, partition, offset, updated_at)
+		const query = `
+		INSERT INTO kafka_checkpoints (topic, partition, "offset", updated_at)
 		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (topic, partition)
 		DO UPDATE SET
-			offset     = EXCLUDED.offset,
+			"offset"     = EXCLUDED."offset",
 			updated_at = NOW()
-		WHERE kafka_checkpoints.offset < EXCLUDED.offset`
+		WHERE kafka_checkpoints."offset" < EXCLUDED."offset"`
+
 
 	_, err := p.db.Exec(ctx, query, pos.Topic, pos.Partition, pos.Offset)
 	return err

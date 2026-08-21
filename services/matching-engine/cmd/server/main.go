@@ -137,6 +137,19 @@ func run() error {
 	}
 	log.Println("[server] postgres connected")
 
+	// Ensure checkpoint table exists
+	createTableSQL := `
+	CREATE TABLE IF NOT EXISTS kafka_checkpoints (
+		topic      VARCHAR(255) NOT NULL,
+		partition  INTEGER      NOT NULL,
+		"offset"     BIGINT       NOT NULL,
+		updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (topic, partition)
+	);`
+	if _, err := db.Exec(opCtx, createTableSQL); err != nil {
+		return fmt.Errorf("init kafka_checkpoints table: %w", err)
+	}
+
 	// ── 4. Connect to Redis ────────────────────────────────────────────────────
 	rdb := redis.NewClient(&redis.Options{
 		Addr:         cfg.RedisAddr,

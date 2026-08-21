@@ -104,13 +104,31 @@ services:
       MARKET_MIGRATIONS_DIR: services/market/migration
       KAFKA_BROKERS: kafka:29092
       KAFKA_GROUP_ID: market-service-group
-      KAFKA_TOPIC_TRADE_EXECUTED: trade.executed.v1
+      KAFKA_TOPIC_TRADE_EXECUTED: trades.executed
       LOG_LEVEL: info
     ports:
       - "50054:50054"
     depends_on:
       kafka:
         condition: service_started
+
+  matching-engine:
+    build:
+      context: .
+      dockerfile: services/matching-engine/Dockerfile
+    container_name: tradedrift-matching-engine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_matching?sslmode=disable
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: matching-engine
+      REDIS_ADDR: redis:6379
+      LOG_LEVEL: info
+    depends_on:
+      kafka:
+        condition: service_started
+      redis:
+        condition: service_healthy
 
   gateway:
     build:
@@ -137,4 +155,6 @@ services:
       order:
         condition: service_started
       market:
+        condition: service_started
+      matching-engine:
         condition: service_started

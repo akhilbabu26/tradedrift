@@ -188,17 +188,17 @@ TradeDrift combines **synchronous gRPC** for low-latency command/query operation
 
 ## 4. Operational & Deployment Matrix
 
-> **Last Updated:** August 15, 2026
+> **Last Updated:** August 21, 2026
 
 | Service | Port | Protocol | Target Database | Docker Container Name | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **`gateway`** | `:8080` | HTTP REST | Stateless | `tradedrift-gateway` | ✅ Live & Tested |
 | **`auth`** | `:50051` | gRPC | `tradedrift_auth` | `tradedrift-auth` | ✅ Live & Tested |
 | **`wallet`** | `:50052` | gRPC | `tradedrift_wallet` | `tradedrift-wallet` | ✅ Live & Tested |
-| **`order`** | `:50053` | gRPC | `tradedrift_order` | `tradedrift-order` | ✅ Live & Tested |
-| **`market`** | `:50054` | gRPC | `tradedrift_market` | `tradedrift-market` | ✅ Live & Tested |
-| **`matching`** | `:50055` | gRPC / Kafka | In-Memory / Redis | `tradedrift-matching` | 🔨 **Implementation Next** |
-| **`settlement`**| `:50056` | Kafka | `tradedrift_settlement` | `tradedrift-settlement`| ⏳ After Matching Engine |
+| **`order`** | `:50053` | gRPC + Kafka | `tradedrift_order` | `tradedrift-order` | ✅ Live & Tested |
+| **`market`** | `:50054` | gRPC + Kafka | `tradedrift_market` | `tradedrift-market` | ✅ Live & Tested |
+| **`matching-engine`** | — | Kafka In/Out | In-Memory + Redis + PG checkpoint | `tradedrift-matching-engine` | ✅ Live & Tested |
+| **`settlement`**| `:50056` | Kafka consumer + gRPC | `tradedrift_settlement` | `tradedrift-settlement`| 🔨 **Implementation Next** |
 | **`trade`** | `:50057` | gRPC / Kafka | `tradedrift_trade` | `tradedrift-trade` | ⏳ After Settlement |
 | **`portfolio`** | `:50058` | gRPC / Kafka | `tradedrift_portfolio` | `tradedrift-portfolio` | ⏳ After Settlement |
 | **`notification`**| `:8081` | WebSockets | `tradedrift_notification`| `tradedrift-notification`| ⏳ After Trade/Portfolio |

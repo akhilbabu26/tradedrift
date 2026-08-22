@@ -4,7 +4,7 @@
 > **Directory:** `services/market/cmd/`  
 > **Executable Source:** `services/market/cmd/server/main.go`  
 > **Network Bind:** gRPC TCP `:50054`  
-> **Message Bus:** Apache Kafka (Consumer on `trade.executed.v1`)  
+> **Message Bus:** Apache Kafka (Consumer on `trades.executed`)  
 > **Role:** Bootstrapping, database migration execution, connection pooling, dual-engine runtime orchestration (gRPC Server + Kafka Event Consumer), and zero-data-loss graceful shutdown.
 
 ---
@@ -14,7 +14,7 @@
 The `cmd/server/main.go` file is the central runtime orchestrator for the **Market Service**. Unlike single-protocol services, the Market Service operates as a **Dual-Engine Microservice**:
 
 1. **Synchronous Query Server (gRPC on `:50054`):** Responds in sub-milliseconds to API Gateway queries for market pair specifications (`BTC-USDT`), 24h rolling tickers, and historical OHLC candlestick chart data.
-2. **Asynchronous Event Worker (Kafka Consumer):** Continuously listens on the Kafka topic `trade.executed.v1` in the background, ingests trade matches from the Matching Engine, and updates candlestick aggregations atomically in PostgreSQL.
+2. **Asynchronous Event Worker (Kafka Consumer):** Continuously listens on the Kafka topic `trades.executed` in the background, ingests trade matches from the Matching Engine, and updates candlestick aggregations atomically in PostgreSQL.
 
 ---
 
@@ -166,7 +166,7 @@ if err := consumer.Close(); err != nil {
 | `MARKET_DB_URL` | `postgres://.../tradedrift_market` | PostgreSQL connection DSN |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated list of Kafka broker endpoints |
 | `KAFKA_GROUP_ID` | `market-service-group` | Consumer group identifier |
-| `KAFKA_TOPIC` | `trade.executed.v1` | Kafka topic name for trade execution events |
+| `KAFKA_TOPIC_TRADE_EXECUTED` | `trades.executed` | Kafka topic name for trade execution events |
 | `LOG_LEVEL` | `info` | Verbosity level (`debug`, `info`, `warn`, `error`) |
 
 ---

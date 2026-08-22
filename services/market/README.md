@@ -4,7 +4,7 @@
 > **Directory:** `services/market/`  
 > **gRPC Port:** `:50054`  
 > **Database:** PostgreSQL (`tradedrift_market`)  
-> **Message Bus:** Apache Kafka (Consumer on topic `trade.executed.v1`)  
+> **Message Bus:** Apache Kafka (Consumer on topic `trades.executed`)  
 > **Role:** Master catalog for trading pair rules (`BTC-USDT`), rolling 24-hour ticker statistics, and multi-resolution OHLC candlestick chart aggregations.
 
 ---
@@ -13,7 +13,7 @@
 
 In a high-speed cryptocurrency and financial exchange, the **Market Service** serves two vital roles:
 1. **The Exchange Rule Authority (gRPC):** Stores authoritative trading rules per currency pair — base/quote assets, price `tick_size` (minimum price increment, e.g., `$0.01`), order `lot_size` (minimum quantity increment, e.g., `0.0001 BTC`), minimum order quantities, and market operational status (`ACTIVE`, `HALTED`, `MAINTENANCE`).
-2. **The Read-Side Market Analytics Engine (Kafka + SQL):** Continuously consumes executed trade events (`trade.executed.v1`) published by the matching engine, persists them with strict idempotency, and dynamically calculates **24-hour rolling price/volume stats** and **historical OHLC candlestick bars** (`1m`, `5m`, `15m`, `1h`, `1d`).
+2. **The Read-Side Market Analytics Engine (Kafka + SQL):** Continuously consumes executed trade events (`trades.executed`) published by the matching engine, persists them with strict idempotency, and dynamically calculates **24-hour rolling price/volume stats** and **historical OHLC candlestick bars** (`1m`, `5m`, `15m`, `1h`, `1d`).
 
 ---
 
@@ -28,7 +28,7 @@ In a high-speed cryptocurrency and financial exchange, the **Market Service** se
                                   ▼
    ┌─────────────────────────────────────────────────────────────┐
    │                  Apache Kafka Cluster                       │
-   │               Topic: "trade.executed.v1"                    │
+   │               Topic: "trades.executed"                      │
    └──────────────────────────────┬──────────────────────────────┘
                                   │ Consumes message batch
                                   ▼
@@ -134,7 +134,7 @@ services/market/
 * **Purpose:** Loads and validates all runtime environment variables with sensible production defaults:
   * `GRPCPort` (default `:50054`)
   * `DatabaseURL` (PostgreSQL connection string)
-  * `KafkaBrokers`, `KafkaGroupID`, `KafkaTopic` (`trade.executed.v1`)
+  * `KafkaBrokers`, `KafkaGroupID`, `KafkaTopic` (`trades.executed`)
   * `LogLevel` (`info`, `debug`)
 
 ---
@@ -187,7 +187,7 @@ services/market/
 ---
 
 ### 📄 9. `internal/kafka/consumer.go`
-* **Purpose:** Reliable, high-throughput consumer for `trade.executed.v1` events.
+* **Purpose:** Reliable, high-throughput consumer for `trades.executed` events.
 * **Key Reliability Features:**
   1. **Explicit Data Type Validation:** Parses UUIDs and Decimals explicitly. Malformed data is logged as an error and skipped.
   2. **Poison-Pill Message Skipping:** If an unparseable payload or invalid UUID arrives on the Kafka topic, `consumer.go` logs the poison message and commits its offset immediately. This prevents the partition consumer from getting stuck in an infinite retry loop.
@@ -216,7 +216,7 @@ services/market/
 | `MARKET_DB_URL` | `postgres://user:pass@localhost:5432/tradedrift_market?sslmode=disable` | PostgreSQL connection string |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated list of Apache Kafka brokers |
 | `KAFKA_GROUP_ID` | `market-service-group` | Kafka consumer group ID |
-| `KAFKA_TOPIC` | `trade.executed.v1` | Kafka topic for executed trades |
+| `KAFKA_TOPIC_TRADE_EXECUTED` | `trades.executed` | Kafka topic for executed trades |
 | `LOG_LEVEL` | `info` | Logging verbosity (`debug`, `info`, `warn`, `error`) |
 
 ---

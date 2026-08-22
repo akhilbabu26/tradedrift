@@ -11,7 +11,9 @@
 The `kafka` package contains the **Transactional Outbox Publisher worker** for the Order Service. It is responsible for polling pending outbox events committed to the `tradedrift_order` PostgreSQL database, routing them to target Kafka topics, and guaranteeing **at-least-once delivery** to downstream consumers (such as the Matching Engine).
 
 Key responsibilities:
-1. **Producer Abstraction**: Defines a clean `Producer` interface (`Publish`, `Close`), allowing local development to use a `LogProducer` stub while production seamlessly injects a live KRaft Kafka producer.
+1. **Producer Abstraction**: Defines a clean `Producer` interface (`Publish`, `Close`). Two implementations exist:
+   - `LogProducer` — dev-only stub, prints to stdout, no Kafka needed.
+   - `KafkaProducer` — real production implementation using `github.com/segmentio/kafka-go`. Wired in `main.go` via `KAFKA_BROKERS` env var.
 2. **Topic Routing**: Resolves domain event types (`OrderCreated`, `OrderCancelRequested`) to target Kafka topics (`orders.submitted`, `orders.cancel-requested`). Rejects unknown event types to prevent misdirected events.
 3. **Delivery ACK Verification**: Marks an outbox event as `PUBLISHED` **only after** receiving successful delivery confirmation from the Kafka broker.
 4. **Linear Retry Backoff**: If publishing fails, calls `RecordOutboxPublishError` to store the error message and apply progressive linear backoff (`1s, 2s, 3s... capped at 60s max`) to prevent retry spam.
@@ -26,7 +28,8 @@ services/order/internal/kafka/
 ├── README.md                            <-- This documentation file
 └── publisher/
     ├── outbox_publisher.go             <-- Background polling loop & topic routing logic
-    └── producer.go                     <-- Producer interface & LogProducer dev implementation
+    ├── producer.go                     <-- Producer interface & LogProducer (dev stub only)
+    └── kafka_producer.go               <-- Real KafkaProducer (segmentio/kafka-go) — used in production & Docker
 ```
 
 ---
@@ -58,14 +61,33 @@ type Producer interface {
 
 ---
 
-### 4.2 Struct `LogProducer` (`producer.go`)
+### 4.2 Struct `LogProducer` (`producer.go`) — Dev Stub Only
 
 ```go
 type LogProducer struct {
     logger *zap.Logger
 }
 ```
-* **Purpose**: Local development & testing implementation of `Producer`. Logs event publications without needing a live Kafka cluster running.
+* **Purpose**: Local development implementation of `Producer`. Logs event publications to stdout without needing a live Kafka broker. **NOT used in Docker/production.**
+
+---
+
+### 4.3 Struct `KafkaProducer` (`kafka_producer.go`) — Production
+
+```go
+type KafkaProducer struct {
+    writer *kafkago.Writer
+    logger *zap.Logger
+}
+```
+* **Purpose**: Real Kafka producer using `segmentio/kafka-go` Writer. Wired in `cmd/server/main.go` via:
+  ```go
+  kafkaProducer := publisher.NewKafkaProducer(cfg.KafkaBrokers, appLogger)
+  ```
+* **Key Config**:
+  - `AllowAutoTopicCreation: true` — topics created automatically on first publish.
+  - `RequiredAcks: RequireOne` — waits for leader broker ACK before returning.
+  - `Balancer: Hash{}` — routes same `market_id` to same partition (ordering guarantee).
 
 ---
 

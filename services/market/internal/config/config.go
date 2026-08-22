@@ -30,7 +30,7 @@ func Load() Config {
 		MigrationsDir: dir,
 		KafkaBrokers:  config.GetEnv("KAFKA_BROKERS", "localhost:9092"),
 		KafkaGroupID:  config.GetEnv("KAFKA_GROUP_ID", "market-service-group"),
-		KafkaTopic:    config.GetEnv("KAFKA_TOPIC_TRADE_EXECUTED", "trade.executed.v1"),
+		KafkaTopic:    config.GetEnv("KAFKA_TOPIC_TRADE_EXECUTED", "trades.executed"),
 		LogLevel:      config.GetEnv("LOG_LEVEL", "info"),
 	}
 }

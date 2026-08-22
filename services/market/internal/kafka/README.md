@@ -2,7 +2,7 @@
 
 > **Package:** `tradedrift/services/market/internal/kafka`  
 > **Directory:** `services/market/internal/kafka/`  
-> **Topic Consumed:** `trade.executed.v1`  
+> **Topic Consumed:** `trades.executed`  
 > **Consumer Group:** `market-service-group`  
 > **Primary Design Patterns:** Event-Driven Consumer, Dead-Letter / Poison Skip Pattern, Commit-after-DB Invariant
 

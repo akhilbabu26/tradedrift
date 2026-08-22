@@ -23,7 +23,7 @@ The `config` package provides a centralized, type-safe struct representation of 
       MigrationsDir string // Default: "migration"
       KafkaBrokers  string // Default: "localhost:9092"
       KafkaGroupID  string // Default: "market-service-group"
-      KafkaTopic    string // Default: "trade.executed.v1"
+      KafkaTopic    string // Default: "trades.executed"
       LogLevel      string // Default: "info"
   }
   ```

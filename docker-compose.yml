@@ -130,6 +130,28 @@ services:
       redis:
         condition: service_healthy
 
+  settlement:
+    build:
+      context: .
+      dockerfile: services/settlement/Dockerfile
+    container_name: tradedrift-settlement
+    restart: unless-stopped
+    environment:
+      SETTLEMENT_POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_settlement?sslmode=disable
+      SETTLEMENT_MIGRATIONS_DIR: services/settlement/migration
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: settlement-service-group
+      KAFKA_TOPIC_TRADE_EXECUTED: trades.executed
+      WALLET_GRPC_ADDR: wallet:50052
+      WALLET_GRPC_TIMEOUT: 5s
+      LOG_LEVEL: info
+    depends_on:
+      kafka:
+        condition: service_started
+      wallet:
+        condition: service_started
+
+
   gateway:
     build:
       context: .

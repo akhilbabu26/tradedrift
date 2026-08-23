@@ -11,4 +11,5 @@ use (
     ./services/order
     ./services/market
     ./services/matching-engine
+    ./services/settlement
 )

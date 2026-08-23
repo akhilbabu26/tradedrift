@@ -133,13 +133,16 @@ func (r *Repository) FindStalePending(ctx context.Context, olderThan time.Durati
 		       status, executed_at, settled_at
 		FROM settled_trades
 		WHERE status = $1
-		  AND created_at < NOW() - ($2 || ' seconds')::INTERVAL
+		  AND created_at < $2
 		ORDER BY created_at ASC
 		LIMIT $3
 		FOR UPDATE SKIP LOCKED`
 
-	seconds := int(olderThan.Seconds())
-	rows, err := r.db.Query(ctx, q, repository.StatusPending, seconds, limit)
+	// Compute the cutoff in Go and pass it as a TIMESTAMPTZ parameter.
+	// This avoids the ($2 || ' seconds')::INTERVAL pattern which requires pgx
+	// to encode an int as text — a type pgx cannot implicitly convert.
+	cutoff := time.Now().Add(-olderThan)
+	rows, err := r.db.Query(ctx, q, repository.StatusPending, cutoff, limit)
 	if err != nil {
 		return nil, fmt.Errorf("find stale pending: %w", err)
 	}

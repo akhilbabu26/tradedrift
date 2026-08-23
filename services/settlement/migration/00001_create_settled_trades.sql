@@ -24,13 +24,13 @@ CREATE TABLE IF NOT EXISTS settled_trades (
 );
 
 -- Support audit queries: all trades by buyer or seller
-CREATE INDEX idx_settled_trades_buyer   ON settled_trades(buyer_id);
-CREATE INDEX idx_settled_trades_seller  ON settled_trades(seller_id);
+CREATE INDEX IF NOT EXISTS idx_settled_trades_buyer   ON settled_trades(buyer_id);
+CREATE INDEX IF NOT EXISTS idx_settled_trades_seller  ON settled_trades(seller_id);
 
 -- Recovery goroutine: fast scan for stale PENDING rows.
 -- Partial index only covers PENDING rows — stays tiny even at high volume.
 -- Uses created_at (not executed_at) to avoid false positives from delayed Kafka delivery.
-CREATE INDEX idx_settled_trades_pending ON settled_trades(created_at)
+CREATE INDEX IF NOT EXISTS idx_settled_trades_pending ON settled_trades(created_at)
     WHERE status = 'PENDING';
 
 -- +goose Down

@@ -28,8 +28,8 @@ func NewOutboxPublisher(repo repository.OutboxRepository, producer Producer, log
 		logger:   logger,
 		interval: interval,
 		topicMap: map[string]string{
-			"OrderCreated":         "orders.submitted",
-			"OrderCancelRequested": "orders.cancel-requested",
+			"OrderCreated":         "orders.commands",
+			"OrderCancelRequested": "orders.commands",
 		},
 	}
 }

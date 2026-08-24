@@ -2,11 +2,13 @@ package checkpoint_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
 	kafkago "github.com/segmentio/kafka-go"
 	"tradedrift/services/matching-engine/internal/checkpoint"
+	intkafka "tradedrift/services/matching-engine/internal/kafka"
 	"tradedrift/services/matching-engine/internal/orderbook"
 )
 
@@ -23,11 +25,31 @@ func (f *fakeDB) Exec(_ context.Context, _ string, args ...any) (pgconn.CommandT
 	return pgconn.CommandTag{}, nil
 }
 
+type fakeTx struct {
+	db *fakeDB
+}
+
+func (t *fakeTx) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
+	return t.db.Exec(ctx, query, args...)
+}
+
+func (t *fakeTx) Commit(ctx context.Context) error {
+	return nil
+}
+
+func (t *fakeTx) Rollback(ctx context.Context) error {
+	return nil
+}
+
+func (f *fakeDB) Begin(ctx context.Context) (checkpoint.Tx, error) {
+	return &fakeTx{db: f}, nil
+}
+
 func TestCoordinator_ContiguousAdvancement(t *testing.T) {
 	db := &fakeDB{}
 	coord := checkpoint.NewCoordinator(db)
 	ctx := context.Background()
-	topic := "orders.submitted"
+	topic := intkafka.TopicOrderCommands
 	const partition = 0
 
 	coord.InitBaseline(topic, partition, 99)
@@ -82,7 +104,7 @@ func TestCoordinator_MultiGapResolution(t *testing.T) {
 	db := &fakeDB{}
 	coord := checkpoint.NewCoordinator(db)
 	ctx := context.Background()
-	topic := "orders.submitted"
+	topic := intkafka.TopicOrderCommands
 	const partition = 0
 
 	coord.InitBaseline(topic, partition, 99)
@@ -127,7 +149,7 @@ func TestCoordinator_KafkaConsumerGroupCommitted(t *testing.T) {
 	db := &fakeDB{}
 	coord := checkpoint.NewCoordinator(db)
 	committer := &fakeKafkaCommitter{}
-	topic := "orders.submitted"
+	topic := intkafka.TopicOrderCommands
 	const partition = 0
 
 	coord.RegisterCommitter(topic, committer)
@@ -152,7 +174,7 @@ func TestCoordinator_KafkaConsumerGroupCommitted(t *testing.T) {
 func TestCoordinator_SkippedUnknownMarketAdvancesCheckpoint(t *testing.T) {
 	db := &fakeDB{}
 	coord := checkpoint.NewCoordinator(db)
-	topic := "orders.submitted"
+	topic := intkafka.TopicOrderCommands
 	const partition = 0
 
 	coord.InitBaseline(topic, partition, 99)
@@ -174,5 +196,85 @@ func TestCoordinator_SkippedUnknownMarketAdvancesCheckpoint(t *testing.T) {
 	committed, _ := coord.GetCommittedOffset(topic, partition)
 	if committed != 101 {
 		t.Fatalf("expected checkpoint to advance to 101 across skipped message, got %d", committed)
+	}
+}
+
+type failOnceDB struct {
+	failNext bool
+	commits  []int64
+}
+
+func (f *failOnceDB) Exec(_ context.Context, _ string, args ...any) (pgconn.CommandTag, error) {
+	if f.failNext {
+		f.failNext = false
+		return pgconn.CommandTag{}, errors.New("postgres connection timeout")
+	}
+	if len(args) >= 3 {
+		if offset, ok := args[2].(int64); ok {
+			f.commits = append(f.commits, offset)
+		}
+	}
+	return pgconn.CommandTag{}, nil
+}
+
+type failOnceTx struct {
+	db *failOnceDB
+}
+
+func (t *failOnceTx) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
+	return t.db.Exec(ctx, query, args...)
+}
+
+func (t *failOnceTx) Commit(ctx context.Context) error {
+	return nil
+}
+
+func (t *failOnceTx) Rollback(ctx context.Context) error {
+	return nil
+}
+
+func (f *failOnceDB) Begin(ctx context.Context) (checkpoint.Tx, error) {
+	if f.failNext {
+		f.failNext = false
+		return nil, errors.New("postgres connection timeout")
+	}
+	return &failOnceTx{db: f}, nil
+}
+
+func TestCoordinator_PostgresFailure_PreservesInMemoryStateForRetry(t *testing.T) {
+	db := &failOnceDB{failNext: true}
+	coord := checkpoint.NewCoordinator(db)
+	topic := intkafka.TopicOrderCommands
+	const partition = 0
+
+	coord.InitBaseline(topic, partition, 99)
+	ctx := context.Background()
+
+	coord.Track(orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 100})
+
+	// First attempt fails at DB layer
+	err := coord.MarkDone(ctx, orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 100})
+	if err == nil {
+		t.Fatal("expected error on DB failure")
+	}
+
+	// Invariant 1: In-memory lastCommitted must STILL be 99, NOT 100!
+	committed, _ := coord.GetCommittedOffset(topic, partition)
+	if committed != 99 {
+		t.Fatalf("in-memory state corrupted after DB failure: expected 99, got %d", committed)
+	}
+
+	// Second attempt succeeds
+	if err := coord.MarkDone(ctx, orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 100}); err != nil {
+		t.Fatalf("retry MarkDone: %v", err)
+	}
+
+	// Invariant 2: After DB succeeds, lastCommitted advances to 100!
+	committed, _ = coord.GetCommittedOffset(topic, partition)
+	if committed != 100 {
+		t.Fatalf("expected committed offset to advance to 100 on retry, got %d", committed)
+	}
+	if len(db.commits) != 1 || db.commits[0] != 100 {
+		t.Fatalf("expected 1 DB commit with offset 100, got %+v", db.commits)
 	}
 }

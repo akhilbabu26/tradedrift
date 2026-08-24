@@ -2,18 +2,28 @@ package checkpoint
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
-	"log"
 	"sync"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 	kafkago "github.com/segmentio/kafka-go"
 	"tradedrift/services/matching-engine/internal/orderbook"
 )
 
-// DB abstracts Postgres Exec for production and test fakes.
+// DB abstracts Postgres Exec/Begin for production and test fakes.
 type DB interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Begin(ctx context.Context) (Tx, error)
+}
+
+// Tx abstracts a Postgres transaction.
+type Tx interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Commit(ctx context.Context) error
+	Rollback(ctx context.Context) error
 }
 
 // KafkaCommitter allows committing contiguous offsets back to the Kafka consumer group.
@@ -21,12 +31,20 @@ type KafkaCommitter interface {
 	CommitMessages(ctx context.Context, msgs ...kafkago.Message) error
 }
 
+type CompletedEvent struct {
+	Pos      orderbook.KafkaPosition
+	MarketID string
+	Sequence uint64
+	Snapshot *orderbook.BookSnapshot
+	Checksum []byte
+}
+
 type partitionTracker struct {
 	mu            sync.Mutex
-	lastCommitted int64          // highest contiguous offset committed to Postgres
-	hasCommitted  bool           // whether lastCommitted is valid
-	inFlight      map[int64]bool // offsets dispatched to an engine
-	completed     map[int64]bool // offsets processed but waiting for contiguous boundary
+	lastCommitted int64                    // highest contiguous offset committed to Postgres
+	hasCommitted  bool                     // whether lastCommitted is valid
+	inFlight      map[int64]bool           // offsets dispatched to an engine
+	completed     map[int64]*CompletedEvent // offsets processed but waiting for contiguous boundary
 }
 
 // Coordinator ensures that Postgres checkpoints for each (topic, partition)
@@ -73,7 +91,7 @@ func (c *Coordinator) getTracker(topic string, partition int) *partitionTracker 
 
 	pt = &partitionTracker{
 		inFlight:  make(map[int64]bool),
-		completed: make(map[int64]bool),
+		completed: make(map[int64]*CompletedEvent),
 	}
 	c.trackers[key] = pt
 	return pt
@@ -101,31 +119,38 @@ func (c *Coordinator) Track(pos orderbook.KafkaPosition) {
 // MarkDone marks an offset as completed by its MarketEngine/Publisher.
 // It computes the highest contiguous processed offset and commits it to Postgres.
 func (c *Coordinator) MarkDone(ctx context.Context, pos orderbook.KafkaPosition) error {
-	pt := c.getTracker(pos.Topic, pos.Partition)
+	return c.MarkDoneWithSequence(ctx, CompletedEvent{
+		Pos: pos,
+	})
+}
+
+// MarkDoneWithSequence performs atomic updates for checkpoint, sequence, and optional snapshot.
+func (c *Coordinator) MarkDoneWithSequence(ctx context.Context, event CompletedEvent) error {
+	pt := c.getTracker(event.Pos.Topic, event.Pos.Partition)
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
 
 	// If no baseline was initialized, use pos.Offset-1 on first message
 	if !pt.hasCommitted {
-		pt.lastCommitted = pos.Offset - 1
+		pt.lastCommitted = event.Pos.Offset - 1
 		pt.hasCommitted = true
 	}
 
 	// If this offset is already <= lastCommitted, ignore it (idempotent duplicate)
-	if pos.Offset <= pt.lastCommitted {
-		delete(pt.inFlight, pos.Offset)
+	if event.Pos.Offset <= pt.lastCommitted {
+		delete(pt.inFlight, event.Pos.Offset)
 		return nil
 	}
 
-	pt.completed[pos.Offset] = true
+	pt.completed[event.Pos.Offset] = &event
 
-	// Advance contiguous watermark
+	// Determine candidate contiguous watermark
 	var toCommit int64 = -1
 	curr := pt.lastCommitted + 1
-	for pt.completed[curr] {
+	var eventsToCommit []CompletedEvent
+	for pt.completed[curr] != nil {
 		toCommit = curr
-		delete(pt.completed, curr)
-		delete(pt.inFlight, curr)
+		eventsToCommit = append(eventsToCommit, *pt.completed[curr])
 		curr++
 	}
 
@@ -134,10 +159,53 @@ func (c *Coordinator) MarkDone(ctx context.Context, pos orderbook.KafkaPosition)
 		return nil
 	}
 
-	pt.lastCommitted = toCommit
-
+	// 1. Write to Postgres in a single transaction
 	if c.db != nil {
-		const query = `
+		tx, err := c.db.Begin(ctx)
+		if err != nil {
+			return fmt.Errorf("begin tx: %w", err)
+		}
+		defer tx.Rollback(ctx)
+
+		// A. Persist sequence and snapshots for contiguous completed events
+		for _, ev := range eventsToCommit {
+			if ev.MarketID != "" {
+				const seqQuery = `
+					INSERT INTO market_sequences (market_id, sequence, updated_at)
+					VALUES ($1, $2, NOW())
+					ON CONFLICT (market_id)
+					DO UPDATE SET
+						sequence   = EXCLUDED.sequence,
+						updated_at = NOW()`
+				if _, err := tx.Exec(ctx, seqQuery, ev.MarketID, ev.Sequence); err != nil {
+					return fmt.Errorf("persist market sequence for %s: %w", ev.MarketID, err)
+				}
+			}
+
+			if ev.Snapshot != nil {
+				const snapQuery = `
+					INSERT INTO market_snapshots (market_id, sequence, partition, "offset", schema_version, snapshot, checksum, created_at)
+					VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+					ON CONFLICT (market_id, sequence)
+					DO UPDATE SET
+						partition      = EXCLUDED.partition,
+						"offset"       = EXCLUDED."offset",
+						schema_version = EXCLUDED.schema_version,
+						snapshot       = EXCLUDED.snapshot,
+						checksum       = EXCLUDED.checksum,
+						created_at     = NOW()`
+				snapJSON, err := json.Marshal(ev.Snapshot)
+				if err != nil {
+					return fmt.Errorf("marshal snapshot struct: %w", err)
+				}
+				if _, err := tx.Exec(ctx, snapQuery, ev.MarketID, ev.Sequence, ev.Pos.Partition, ev.Pos.Offset, ev.Snapshot.SchemaVersion, snapJSON, ev.Checksum); err != nil {
+					return fmt.Errorf("persist snapshot for %s: %w", ev.MarketID, err)
+				}
+			}
+		}
+
+		// B. Commit partition checkpoint
+		const checkQuery = `
 			INSERT INTO kafka_checkpoints (topic, partition, "offset", updated_at)
 			VALUES ($1, $2, $3, NOW())
 			ON CONFLICT (topic, partition)
@@ -145,24 +213,34 @@ func (c *Coordinator) MarkDone(ctx context.Context, pos orderbook.KafkaPosition)
 				"offset"   = EXCLUDED."offset",
 				updated_at = NOW()
 			WHERE kafka_checkpoints."offset" < EXCLUDED."offset"`
+		if _, err := tx.Exec(ctx, checkQuery, event.Pos.Topic, event.Pos.Partition, toCommit); err != nil {
+			return fmt.Errorf("persist contiguous checkpoint offset=%d to postgres: %w", toCommit, err)
+		}
 
-		if _, err := c.db.Exec(ctx, query, pos.Topic, pos.Partition, toCommit); err != nil {
-			return err
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit tx: %w", err)
 		}
 	}
 
-	// Synchronize consumer group offset with Kafka broker
+	// 2. Advance in-memory state strictly AFTER Postgres succeeds
+	prevCommitted := pt.lastCommitted
+	pt.lastCommitted = toCommit
+	for i := prevCommitted + 1; i <= toCommit; i++ {
+		delete(pt.completed, i)
+		delete(pt.inFlight, i)
+	}
+
+	// 3. Synchronize consumer group offset with Kafka broker
 	c.mu.RLock()
-	committer, hasCommitter := c.committers[pos.Topic]
+	committer, hasCommitter := c.committers[event.Pos.Topic]
 	c.mu.RUnlock()
 	if hasCommitter && committer != nil {
 		if err := committer.CommitMessages(ctx, kafkago.Message{
-			Topic:     pos.Topic,
-			Partition: pos.Partition,
+			Topic:     event.Pos.Topic,
+			Partition: event.Pos.Partition,
 			Offset:    toCommit,
 		}); err != nil {
-			log.Printf("[checkpoint] warning: kafka commit offset %d failed (topic=%s partition=%d): %v",
-				toCommit, pos.Topic, pos.Partition, err)
+			return fmt.Errorf("kafka commit messages (offset=%d): %w", toCommit, err)
 		}
 	}
 
@@ -175,4 +253,41 @@ func (c *Coordinator) GetCommittedOffset(topic string, partition int) (int64, bo
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
 	return pt.lastCommitted, pt.hasCommitted
+}
+
+type pgxPoolWrapper struct {
+	pool *pgxpool.Pool
+}
+
+func (w *pgxPoolWrapper) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
+	return w.pool.Exec(ctx, sql, arguments...)
+}
+
+func (w *pgxPoolWrapper) Begin(ctx context.Context) (Tx, error) {
+	tx, err := w.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &pgxTxWrapper{tx: tx}, nil
+}
+
+type pgxTxWrapper struct {
+	tx pgx.Tx
+}
+
+func (w *pgxTxWrapper) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
+	return w.tx.Exec(ctx, sql, arguments...)
+}
+
+func (w *pgxTxWrapper) Commit(ctx context.Context) error {
+	return w.tx.Commit(ctx)
+}
+
+func (w *pgxTxWrapper) Rollback(ctx context.Context) error {
+	return w.tx.Rollback(ctx)
+}
+
+// WrapPGXPool wraps a *pgxpool.Pool in the DB interface.
+func WrapPGXPool(pool *pgxpool.Pool) DB {
+	return &pgxPoolWrapper{pool: pool}
 }

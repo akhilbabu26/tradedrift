@@ -35,3 +35,11 @@ func (mm *MarketManager) All() []*MarketEngine {
 	}
 	return result
 }
+
+// CloseInputQueues closes the InputQueue channel of every registered MarketEngine.
+// MUST be called ONLY AFTER the Kafka Consumer has been completely stopped.
+func (mm *MarketManager) CloseInputQueues() {
+	for _, engine := range mm.engines {
+		close(engine.InputQueue)
+	}
+}

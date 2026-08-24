@@ -49,15 +49,17 @@ func (f *fakeRedis) Set(_ context.Context, key string, value []byte, _ time.Dura
 }
 
 type fakeCoordinator struct {
-	done    []orderbook.KafkaPosition
-	failErr error
+	done            []orderbook.KafkaPosition
+	completedEvents []checkpoint.CompletedEvent
+	failErr         error
 }
 
-func (f *fakeCoordinator) MarkDone(_ context.Context, pos orderbook.KafkaPosition) error {
+func (f *fakeCoordinator) MarkDoneWithSequence(_ context.Context, event checkpoint.CompletedEvent) error {
 	if f.failErr != nil {
 		return f.failErr
 	}
-	f.done = append(f.done, pos)
+	f.done = append(f.done, event.Pos)
+	f.completedEvents = append(f.completedEvents, event)
 	return nil
 }
 
@@ -72,6 +74,26 @@ func (f *fakeDBForCoord) Exec(_ context.Context, _ string, args ...any) (pgconn.
 		}
 	}
 	return pgconn.CommandTag{}, nil
+}
+
+type fakeTxForCoord struct {
+	db *fakeDBForCoord
+}
+
+func (t *fakeTxForCoord) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
+	return t.db.Exec(ctx, query, args...)
+}
+
+func (t *fakeTxForCoord) Commit(ctx context.Context) error {
+	return nil
+}
+
+func (t *fakeTxForCoord) Rollback(ctx context.Context) error {
+	return nil
+}
+
+func (f *fakeDBForCoord) Begin(ctx context.Context) (checkpoint.Tx, error) {
+	return &fakeTxForCoord{db: f}, nil
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -228,7 +250,7 @@ func TestProcess_KafkaFailure_CoordinatorNotCalled(t *testing.T) {
 	}
 }
 
-func TestProcess_RedisFailure_BufferedForRetry_AndCheckpointStillAdvances(t *testing.T) {
+func TestProcess_RedisFailure_FailsCheckpoint(t *testing.T) {
 	k, coord := &fakeKafka{}, &fakeCoordinator{}
 	r := &fakeRedis{failErr: errors.New("redis timeout")}
 	p := newTestPublisher(k, r, coord)
@@ -236,14 +258,11 @@ func TestProcess_RedisFailure_BufferedForRetry_AndCheckpointStillAdvances(t *tes
 	result := makeResult(nil, "BTC-USDT", "orders.submitted", 0, 50)
 
 	err := p.Process(context.Background(), result)
-	if err != nil {
-		t.Fatalf("expected no error when Redis fails (non-critical), got: %v", err)
+	if err == nil {
+		t.Fatal("expected error when Redis fails")
 	}
-	if len(coord.done) != 1 {
-		t.Fatalf("MarkDone MUST still be called even when Redis fails, got %d calls", len(coord.done))
-	}
-	if coord.done[0].Offset != 50 {
-		t.Fatalf("expected checkpoint offset 50, got %d", coord.done[0].Offset)
+	if len(coord.done) != 0 {
+		t.Fatalf("MarkDone must NOT be called when Redis fails, got %d calls", len(coord.done))
 	}
 }
 

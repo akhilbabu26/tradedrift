@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	kafkago "github.com/segmentio/kafka-go"
 	"github.com/shopspring/decimal"
 
 	"tradedrift/services/matching-engine/internal/checkpoint"
@@ -22,10 +23,6 @@ import (
 	"tradedrift/services/matching-engine/internal/recovery"
 )
 
-// ─── Entrypoint ───────────────────────────────────────────────────────────────
-
-// main delegates to run() so all startup errors funnel to a single exit point.
-// This avoids scattered log.Fatal() calls and makes the shutdown path explicit.
 func main() {
 	if err := run(); err != nil {
 		log.Printf("[server] fatal: %v", err)
@@ -33,13 +30,11 @@ func main() {
 	}
 }
 
-// ─── Config ───────────────────────────────────────────────────────────────────
-
 type config struct {
-	KafkaBrokers []string // e.g. ["localhost:9092"]
-	KafkaGroupID string   // e.g. "matching-engine"
-	PostgresDSN  string   // e.g. "postgres://user:pass@localhost/tradedrift_matching"
-	RedisAddr    string   // e.g. "localhost:6379"
+	KafkaBrokers []string
+	KafkaGroupID string
+	PostgresDSN  string
+	RedisAddr    string
 }
 
 func loadConfig() (config, error) {
@@ -63,34 +58,35 @@ func getEnv(key, defaultVal string) string {
 	return defaultVal
 }
 
-// ─── Market Configs (V1 hardcoded) ───────────────────────────────────────────
-//
-// V1: market configs are hardcoded here.
-// V2: fetch from Market Service API on startup so configs are data-driven.
-
 func marketConfigs() []market.MarketConfig {
 	return []market.MarketConfig{
 		{
-			MarketID: "BTC-USDT",
-			TickSize: decimal.RequireFromString("0.01"),    // minimum price increment: $0.01
-			LotSize:  decimal.RequireFromString("0.00001"), // minimum qty increment: 0.00001 BTC
+			MarketID:         "BTC-USDT",
+			TickSize:         decimal.RequireFromString("0.01"),
+			LotSize:          decimal.RequireFromString("0.00001"),
+			Partition:        0,
+			SnapshotInterval: 10000,
+			SnapshotDuration: 60 * time.Second,
 		},
 		{
-			MarketID: "ETH-USDT",
-			TickSize: decimal.RequireFromString("0.01"),
-			LotSize:  decimal.RequireFromString("0.0001"),
+			MarketID:         "ETH-USDT",
+			TickSize:         decimal.RequireFromString("0.01"),
+			LotSize:          decimal.RequireFromString("0.0001"),
+			Partition:        0,
+			SnapshotInterval: 10000,
+			SnapshotDuration: 60 * time.Second,
 		},
 		{
-			MarketID: "SOL-USDT",
-			TickSize: decimal.RequireFromString("0.001"),
-			LotSize:  decimal.RequireFromString("0.01"),
+			MarketID:         "SOL-USDT",
+			TickSize:         decimal.RequireFromString("0.001"),
+			LotSize:          decimal.RequireFromString("0.01"),
+			Partition:        0,
+			SnapshotInterval: 10000,
+			SnapshotDuration: 60 * time.Second,
 		},
 	}
 }
 
-// validateMarketConfigs ensures no market has a zero TickSize or LotSize.
-// An engine started with zero TickSize or LotSize skips all validation,
-// which silently allows any price or quantity through the matcher.
 func validateMarketConfigs(configs []market.MarketConfig) error {
 	for _, mc := range configs {
 		if mc.TickSize.LessThanOrEqual(decimal.Zero) {
@@ -103,30 +99,49 @@ func validateMarketConfigs(configs []market.MarketConfig) error {
 	return nil
 }
 
-// ─── run ──────────────────────────────────────────────────────────────────────
-
 func run() error {
-	// ── 1. Operational context — cancelled on SIGTERM or SIGINT ───────────────
-	//
-	// This context drives all live goroutines (engines, publishers, consumer).
-	// When this cancels, goroutines stop accepting new work.
 	opCtx, opCancel := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer opCancel()
 
 	log.Println("[server] starting TradeDrift Matching Engine")
 
-	// ── 2. Load and validate config ────────────────────────────────────────────
 	cfg, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 
+	// Dynamic partition assignment based on Kafka balancer (Issue #4)
+	var partitionList []kafkago.Partition
+	{
+		kConn, err := kafkago.Dial("tcp", cfg.KafkaBrokers[0])
+		if err != nil {
+			return fmt.Errorf("dial kafka for partition discovery: %w", err)
+		}
+		parts, err := kConn.ReadPartitions(intkafka.TopicOrderCommands)
+		kConn.Close()
+		if err != nil {
+			return fmt.Errorf("read partitions for TopicOrderCommands: %w", err)
+		}
+		partitionList = parts
+	}
+
 	configs := marketConfigs()
+	balancer := &kafkago.Hash{}
+	partitionIDs := make([]int, len(partitionList))
+	for i, p := range partitionList {
+		partitionIDs[i] = p.ID
+	}
+	for i := range configs {
+		msg := kafkago.Message{Key: []byte(configs[i].MarketID)}
+		pID := balancer.Balance(msg, partitionIDs...)
+		configs[i].Partition = pID
+		log.Printf("[server] dynamically mapped market %s to partition %d", configs[i].MarketID, pID)
+	}
+
 	if err := validateMarketConfigs(configs); err != nil {
 		return fmt.Errorf("validate market configs: %w", err)
 	}
 
-	// ── 3. Connect to PostgreSQL ───────────────────────────────────────────────
 	db, err := pgxpool.New(opCtx, cfg.PostgresDSN)
 	if err != nil {
 		return fmt.Errorf("postgres connect: %w", err)
@@ -138,7 +153,7 @@ func run() error {
 	}
 	log.Println("[server] postgres connected")
 
-	// Ensure checkpoint table exists
+	// Create tables
 	createTableSQL := `
 	CREATE TABLE IF NOT EXISTS kafka_checkpoints (
 		topic      VARCHAR(255) NOT NULL,
@@ -151,7 +166,40 @@ func run() error {
 		return fmt.Errorf("init kafka_checkpoints table: %w", err)
 	}
 
-	// ── 4. Connect to Redis ────────────────────────────────────────────────────
+	createSeqTableSQL := `
+	CREATE TABLE IF NOT EXISTS market_sequences (
+		market_id  VARCHAR(64)  NOT NULL,
+		sequence   BIGINT       NOT NULL DEFAULT 0,
+		updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (market_id)
+	);`
+	if _, err := db.Exec(opCtx, createSeqTableSQL); err != nil {
+		return fmt.Errorf("init market_sequences table: %w", err)
+	}
+
+	// Schema creation for market_snapshots (Issue #9)
+	createSnapTableSQL := `
+	CREATE TABLE IF NOT EXISTS market_snapshots (
+		market_id      VARCHAR(64)  NOT NULL,
+		sequence       BIGINT       NOT NULL,
+		partition      INTEGER      NOT NULL,
+		"offset"       BIGINT       NOT NULL,
+		schema_version INTEGER      NOT NULL,
+		snapshot       JSONB        NOT NULL,
+		checksum       BYTEA        NOT NULL,
+		created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (market_id, sequence)
+	);`
+	if _, err := db.Exec(opCtx, createSnapTableSQL); err != nil {
+		return fmt.Errorf("init market_snapshots table: %w", err)
+	}
+
+	createSnapIndexSQL := `
+	CREATE INDEX IF NOT EXISTS idx_market_snapshots_market_sequence ON market_snapshots (market_id, sequence DESC);`
+	if _, err := db.Exec(opCtx, createSnapIndexSQL); err != nil {
+		return fmt.Errorf("init market_snapshots index: %w", err)
+	}
+
 	rdb := redis.NewClient(&redis.Options{
 		Addr:         cfg.RedisAddr,
 		DialTimeout:  5 * time.Second,
@@ -165,112 +213,101 @@ func run() error {
 	}
 	log.Println("[server] redis connected")
 
-	// ── 5. Create MarketManager and register all engines ──────────────────────
-	//
-	// All engines start in ModeRecovery by default (set in NewMarketEngine).
-	// They will transition to ModeLive after ReplayAll() completes.
 	manager := market.NewMarketManager()
 	for _, mc := range configs {
-		manager.Add(mc)
+		engine := manager.Add(mc)
+		// Set fail-stop HaltCallback (Issue #1 & #10)
+		engine.HaltCallback = func() {
+			log.Printf("[server] market engine %s triggered fail-stop halt", mc.MarketID)
+			opCancel()
+		}
 		log.Printf("[server] registered market: %s", mc.MarketID)
 	}
 
-	// ── 6. RECOVERY PHASE ─────────────────────────────────────────────────────
-	//
-	// ReplayAll:
-	//   - Reads kafka_checkpoints from Postgres for each topic/partition
-	//   - Creates dedicated Kafka readers from savedOffset+1 to HWM
-	//   - Starts engine.Run(opCtx) goroutines (they persist into LIVE mode)
-	//   - Feeds events through each engine's Event Loop in ModeRecovery
-	//   - Drains OutputQueue (publisher not running — results discarded)
-	//   - Pushes fresh depth snapshot to Redis
-	//   - Calls engine.SetLive() for each engine
-	//
-	// Consumer.Start() MUST NOT be called until ReplayAll returns.
+	var engineWg sync.WaitGroup
 	log.Println("[server] starting recovery phase...")
-
-	replayer := recovery.NewReplayer(cfg.KafkaBrokers, db, rdb, manager)
-	if err := replayer.ReplayAll(opCtx); err != nil {
+	replayer := recovery.NewReplayer(cfg.KafkaBrokers, cfg.KafkaGroupID, db, rdb, manager)
+	if err := replayer.ReplayAll(opCtx, &engineWg); err != nil {
 		return fmt.Errorf("recovery failed: %w", err)
 	}
-
 	log.Printf("[server] recovery complete — %d markets in LIVE mode", len(manager.All()))
 
-	// ── 7. Start Publisher goroutines (one per MarketEngine) ──────────────────
-	//
-	// Publisher reads MatchResults from each engine's OutputQueue and:
-	//   1. Writes TradeExecuted events to Kafka (trades.executed, partitioned by MarketID)
-	//   2. Pushes depth snapshots to Redis (depth:{market_id})
-	//   3. Advances contiguous Kafka checkpoint via CheckpointCoordinator
-	//
-	// Starts AFTER ReplayAll so the Publisher doesn't consume OutputQueue
-	// results that belong to the recovery drain phase.
-	coord := checkpoint.NewCoordinator(db)
-	for _, topic := range []string{intkafka.TopicOrderCreated, intkafka.TopicOrderCancel} {
-		var savedOffset int64
-		err := db.QueryRow(opCtx, `SELECT "offset" FROM kafka_checkpoints WHERE topic = $1 AND partition = $2`, topic, 0).Scan(&savedOffset)
-		if err == nil {
-			coord.InitBaseline(topic, 0, savedOffset)
-			log.Printf("[server] checkpoint baseline initialized for %s/0 @ offset=%d", topic, savedOffset)
+	coord := checkpoint.NewCoordinator(checkpoint.WrapPGXPool(db))
+
+	// Discover and initialize partition baselines
+	{
+		kConn, err := kafkago.Dial("tcp", cfg.KafkaBrokers[0])
+		if err != nil {
+			return fmt.Errorf("dial kafka for partition discovery: %w", err)
+		}
+		parts, err := kConn.ReadPartitions(intkafka.TopicOrderCommands)
+		kConn.Close()
+		if err != nil {
+			return fmt.Errorf("read partitions for checkpoint baseline: %w", err)
+		}
+		for _, p := range parts {
+			var savedOffset int64
+			err := db.QueryRow(opCtx,
+				`SELECT "offset" FROM kafka_checkpoints WHERE topic = $1 AND partition = $2`,
+				intkafka.TopicOrderCommands, p.ID,
+			).Scan(&savedOffset)
+			if err == nil {
+				coord.InitBaseline(intkafka.TopicOrderCommands, p.ID, savedOffset)
+				log.Printf("[server] checkpoint baseline: %s/partition=%d @ offset=%d",
+					intkafka.TopicOrderCommands, p.ID, savedOffset)
+			}
 		}
 	}
-	pub := publisher.NewPublisher(cfg.KafkaBrokers, rdb, coord)
+
+	pub := publisher.NewPublisher(cfg.KafkaBrokers, rdb, coord, db)
+	pub.HaltCallback = func() {
+		log.Println("[server] publisher initiated fail-stop halt due to fatal side-effect failure")
+		opCancel()
+	}
 	defer pub.Close()
 
-	var wg sync.WaitGroup
+	pubCtx, cancelPub := context.WithCancel(context.Background())
+	defer cancelPub()
 
+	var wg sync.WaitGroup
 	for _, engine := range manager.All() {
 		wg.Add(1)
-		e := engine // capture loop variable
+		e := engine
 		go func() {
 			defer wg.Done()
-			pub.Run(opCtx, e)
+			pub.Run(pubCtx, e)
 		}()
 		log.Printf("[server] publisher started for market: %s", e.MarketID)
 	}
 
-	// ── 8. Start Kafka Consumer (live event ingestion) ─────────────────────────
-	//
-	// Consumer routes live Kafka events to MarketEngine InputQueues.
-	// Starts AFTER all engines are in ModeLive — ensures no live events
-	// are routed to engines still replaying historical data.
 	consumer := intkafka.NewConsumer(intkafka.Config{
 		Brokers: cfg.KafkaBrokers,
 		GroupID: cfg.KafkaGroupID,
 	}, manager, coord)
 	defer consumer.Close()
 
-	consumer.Start(opCtx)
+	consumerCtx, cancelConsumer := context.WithCancel(context.Background())
+	defer cancelConsumer()
+
+	// Consumer Start takes cancel function for fail-closed graceful shutdown (Issue #10)
+	consumer.Start(consumerCtx, cancelConsumer)
 	log.Println("[server] kafka consumer started")
 	log.Println("[server] ✓ all systems live — matching engine ready")
 
-	// ── 9. Block until shutdown signal ────────────────────────────────────────
 	<-opCtx.Done()
 
-	log.Println("[server] shutdown signal received — draining in-flight events...")
-
-	// ── 10. GRACEFUL SHUTDOWN ─────────────────────────────────────────────────
-	//
-	// Two-context shutdown pattern:
-	//
-	//   opCtx (cancelled)         — goroutines stop accepting NEW work
-	//        ↓
-	//   consumer.Close()          — Kafka readers closed; no new events enter InputQueues
-	//        ↓
-	//   wg.Wait() with 15s limit  — wait for in-flight Publisher results to complete
-	//        ↓
-	//   deferred db/redis Close() — infrastructure torn down last
-	//
-	// We use a fresh context for the drain phase because opCtx is already cancelled.
-	// Publisher.Run() already has:
-	//   select { case result := <-engine.OutputQueue: ... case <-ctx.Done(): return }
-	// so after opCtx cancels, publishers will exit on their next select iteration.
-	// The WaitGroup ensures we don't tear down Postgres/Redis until they finish.
-
-	// Stop accepting new events. Kafka reader goroutines exit on opCtx cancellation.
+	// DETERMINISTIC STAGED GRACEFUL SHUTDOWN (Issue #6)
+	log.Println("[server] [shutdown phase 1/4] stopping consumer intake...")
+	cancelConsumer()
 	consumer.Close()
 
-	// Wait for publisher goroutines and engine event loops to finish.
+	log.Println("[server] [shutdown phase 2/4] closing engine input queues...")
+	manager.CloseInputQueues()
+
+	log.Println("[server] [shutdown phase 3/4] waiting for engines to exit...")
+	engineWg.Wait()
+
+	log.Println("[server] [shutdown phase 4/4] waiting for publisher drain...")
 	done := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -280,8 +317,9 @@ func run() error {
 	select {
 	case <-done:
 		log.Println("[server] graceful shutdown complete")
-	case <-time.After(15 * time.Second):
-		log.Println("[server] drain timeout (15s) — forcing shutdown")
+	case <-time.After(30 * time.Second): // Graceful shutdown timeout (Issue #8)
+		log.Println("[server] shutdown timeout expired (30s) — forcing process termination")
+		os.Exit(1)
 	}
 
 	return nil

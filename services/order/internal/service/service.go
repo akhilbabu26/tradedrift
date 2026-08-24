@@ -158,19 +158,28 @@ func (s *orderService) CreateOrder(ctx context.Context, p *CreateOrderParams) (*
 		UpdatedAt:         now,
 	}
 
-	payloadBytes, err := json.Marshal(map[string]any{
+	orderPayloadBytes, err := json.Marshal(map[string]any{
 		"order_id":   order.ID,
 		"user_id":    order.UserID,
-		"market_id":  order.MarketID,
 		"side":       order.Side,
 		"order_type": order.OrderType,
 		"price":      order.Price,
 		"quantity":   order.Quantity,
-		"status":     order.Status,
-		"created_at": order.CreatedAt,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal outbox payload: %w", err)
+		return nil, fmt.Errorf("failed to marshal order payload: %w", err)
+	}
+
+	envelopeBytes, err := json.Marshal(map[string]any{
+		"event_id":      uuid.NewString(),
+		"event_type":    "OrderCreated",
+		"event_version": 1,
+		"market_id":     order.MarketID,
+		"occurred_at":   now.UTC(),
+		"payload":       json.RawMessage(orderPayloadBytes),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal outbox envelope: %w", err)
 	}
 
 	// 8. Reserve Funds in Wallet Service (Network Call)
@@ -190,7 +199,7 @@ func (s *orderService) CreateOrder(ctx context.Context, p *CreateOrderParams) (*
 	}
 
 	// 9. Persist Order + Outbox Atomically (With SAGA ReleaseFunds Compensation on DB Failure)
-	if err := s.repo.CreateOrder(ctx, order, payloadBytes); err != nil {
+	if err := s.repo.CreateOrder(ctx, order, envelopeBytes); err != nil {
 		s.logger.Error("PostgreSQL CreateOrder failed post-fund reservation. Triggering Saga ReleaseFunds compensation",
 			zap.String("order_id", orderID.String()),
 			zap.Error(err),
@@ -224,17 +233,27 @@ func (s *orderService) CancelOrder(ctx context.Context, orderID, userID string) 
 		return nil, ErrOrderNotCancellable
 	}
 
-	payloadBytes, err := json.Marshal(map[string]any{
-		"order_id":  order.ID,
-		"user_id":   order.UserID,
-		"market_id": order.MarketID,
-		"status":    repository.StatusCancelling,
+	cancelPayloadBytes, err := json.Marshal(map[string]any{
+		"order_id": order.ID,
+		"user_id":  order.UserID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal cancel payload: %w", err)
 	}
 
-	if err := s.repo.UpdateStatusToCancelling(ctx, order, payloadBytes); err != nil {
+	envelopeBytes, err := json.Marshal(map[string]any{
+		"event_id":      uuid.NewString(),
+		"event_type":    "OrderCancelRequested",
+		"event_version": 1,
+		"market_id":     order.MarketID,
+		"occurred_at":   time.Now().UTC(),
+		"payload":       json.RawMessage(cancelPayloadBytes),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal cancel envelope: %w", err)
+	}
+
+	if err := s.repo.UpdateStatusToCancelling(ctx, order, envelopeBytes); err != nil {
 		if errors.Is(err, repository.ErrOrderNotFound) {
 			return nil, ErrOrderNotFound
 		}

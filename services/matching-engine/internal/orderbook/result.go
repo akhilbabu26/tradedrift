@@ -69,4 +69,6 @@ type MatchResult struct {
 	CancelResult   *CancelledOrder
 	DepthSnapshot  DepthSnapshot
 	SourcePosition KafkaPosition // ← replaces SourceOffset int64
+	Snapshot       *BookSnapshot // optional serialized order book state
+	BarrierReached bool          // true when EventRecoveryBarrier is processed
 }

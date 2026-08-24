@@ -17,38 +17,35 @@ import (
 
 // Topics the ME consumes from — published by Order Service outbox.
 const (
-	TopicOrderCreated = "orders.submitted"
-	TopicOrderCancel  = "orders.cancel-requested"
+	TopicOrderCommands = "orders.commands"
 )
 
-// orderCreatedMessage matches the JSON payload published by Order Service
-// for the "OrderCreated" outbox event.
-// Fields match exactly: services/order/internal/service/service.go lines 161–171
-type orderCreatedMessage struct {
+// CommandEnvelope represents the standard envelope for all messages on orders.commands.
+type CommandEnvelope struct {
+	EventID      string          `json:"event_id"`
+	EventType    string          `json:"event_type"`
+	EventVersion int             `json:"event_version"`
+	MarketID     string          `json:"market_id"`
+	OccurredAt   time.Time       `json:"occurred_at"`
+	Payload      json.RawMessage `json:"payload"`
+}
+
+type orderCreatedPayload struct {
 	OrderID   string `json:"order_id"`
 	UserID    string `json:"user_id"`
-	MarketID  string `json:"market_id"`
 	Side      string `json:"side"`
 	OrderType string `json:"order_type"`
-	Price     string `json:"price"`    // decimal serialised as string
-	Quantity  string `json:"quantity"` // decimal serialised as string
+	Price     string `json:"price"`
+	Quantity  string `json:"quantity"`
 }
 
-// orderCancelMessage matches the JSON payload published by Order Service
-// for the "OrderCancelRequested" outbox event.
-// Fields match exactly: services/order/internal/service/service.go lines 227–232
-type orderCancelMessage struct {
-	OrderID  string `json:"order_id"`
-	UserID   string `json:"user_id"`
-	MarketID string `json:"market_id"`
+type orderCancelPayload struct {
+	OrderID string `json:"order_id"`
+	UserID  string `json:"user_id"`
 }
 
-// routeFunc is a function that returns the InputQueue channel for a given
-// market ID, or nil if the market is unknown. Used to decouple routing from
-// MarketManager so handlers can be tested without a real manager.
 type routeFunc func(marketID string) chan market.InputEvent
 
-// offsetTracker tracks in-flight Kafka offsets for contiguous checkpointing.
 type offsetTracker interface {
 	Track(pos orderbook.KafkaPosition)
 	MarkDone(ctx context.Context, pos orderbook.KafkaPosition) error
@@ -58,40 +55,26 @@ type kafkaCommitter interface {
 	CommitMessages(ctx context.Context, msgs ...kafkago.Message) error
 }
 
-// ─── Consumer ─────────────────────────────────────────────────────────────────
-
-// Consumer reads from both Kafka topics and routes InputEvents to the correct
-// MarketEngine via MarketManager.
+// Consumer reads from the orders.commands Kafka topic and routes InputEvents.
 type Consumer struct {
-	createdReader *kafkago.Reader
-	cancelReader  *kafkago.Reader
+	commandReader *kafkago.Reader
 	manager       *market.MarketManager
 	tracker       offsetTracker
+	cancelCtx     context.CancelFunc // context cancel func to fail closed gracefully (Issue #10)
 }
 
-// Config holds Kafka connection settings for the consumer.
 type Config struct {
 	Brokers []string
 	GroupID string
 }
 
-// NewConsumer creates a Consumer connected to both Kafka topics.
 func NewConsumer(cfg Config, manager *market.MarketManager, tracker offsetTracker) *Consumer {
 	c := &Consumer{
 		manager: manager,
 		tracker: tracker,
-		createdReader: kafkago.NewReader(kafkago.ReaderConfig{
+		commandReader: kafkago.NewReader(kafkago.ReaderConfig{
 			Brokers:        cfg.Brokers,
-			Topic:          TopicOrderCreated,
-			GroupID:        cfg.GroupID,
-			MinBytes:       1,
-			MaxBytes:       10e6, // 10 MB
-			MaxWait:        1 * time.Second,
-			CommitInterval: 0,
-		}),
-		cancelReader: kafkago.NewReader(kafkago.ReaderConfig{
-			Brokers:        cfg.Brokers,
-			Topic:          TopicOrderCancel,
+			Topic:          TopicOrderCommands,
 			GroupID:        cfg.GroupID,
 			MinBytes:       1,
 			MaxBytes:       10e6,
@@ -103,32 +86,22 @@ func NewConsumer(cfg Config, manager *market.MarketManager, tracker offsetTracke
 	if committerReg, ok := tracker.(interface {
 		RegisterCommitter(topic string, committer kafkaCommitter)
 	}); ok {
-		committerReg.RegisterCommitter(TopicOrderCreated, c.createdReader)
-		committerReg.RegisterCommitter(TopicOrderCancel, c.cancelReader)
+		committerReg.RegisterCommitter(TopicOrderCommands, c.commandReader)
 	}
 
 	return c
 }
 
-// Start launches two goroutines — one per topic — that block until ctx is cancelled.
-// MUST be called only AFTER all MarketEngines have completed recovery and are in ModeLive.
-func (c *Consumer) Start(ctx context.Context) {
-	go c.consume(ctx, c.createdReader, c.handleOrderCreated)
-	go c.consume(ctx, c.cancelReader, c.handleOrderCancel)
+// Start launches the consumer read loop.
+func (c *Consumer) Start(ctx context.Context, cancel context.CancelFunc) {
+	c.cancelCtx = cancel
+	go c.consume(ctx, c.commandReader, c.handleOrderCommand)
 }
 
-// Close shuts down both Kafka readers cleanly.
 func (c *Consumer) Close() error {
-	err1 := c.createdReader.Close()
-	err2 := c.cancelReader.Close()
-	if err1 != nil {
-		return err1
-	}
-	return err2
+	return c.commandReader.Close()
 }
 
-// consume is the generic read loop. Calls handler for each message.
-// Exits cleanly when ctx is cancelled.
 func (c *Consumer) consume(
 	ctx context.Context,
 	reader *kafkago.Reader,
@@ -151,32 +124,34 @@ func (c *Consumer) consume(
 			Offset:    msg.Offset,
 		}
 
-		// Register in-flight offset in coordinator before routing
 		if c.tracker != nil {
 			c.tracker.Track(pos)
 		}
 
 		routed, err := handler(msg)
 		if err != nil {
-			log.Printf("[kafka] handle message error (topic=%s partition=%d offset=%d): %v",
+			// INVARIANT (Issue #10): Fail-Closed policy on live malformed command.
+			// Trigger graceful shutdown immediately to prevent divergence or CPU spin loops.
+			log.Printf("[kafka] FATAL: malformed command (topic=%s partition=%d offset=%d): %v — initiating fail-closed graceful shutdown",
 				msg.Topic, msg.Partition, msg.Offset, err)
+			if c.cancelCtx != nil {
+				c.cancelCtx()
+			}
+			return
 		}
 
-		// If the message was NOT dispatched to a MarketEngine (e.g. unknown market or malformed/poison event),
-		// immediately acknowledge it so the contiguous checkpoint coordinator does NOT stall forever!
+		// INTENTIONAL SKIP: unknown market_id.
 		if !routed && c.tracker != nil {
 			if err := c.tracker.MarkDone(ctx, pos); err != nil {
-				log.Printf("[kafka] checkpoint auto-acknowledgment error (topic=%s partition=%d offset=%d): %v",
+				log.Printf("[kafka] checkpoint skip-acknowledgment error (topic=%s partition=%d offset=%d): %v",
 					pos.Topic, pos.Partition, pos.Offset, err)
 			}
 		}
 	}
 }
 
-// handleOrderCreated is the Consumer's method wrapper — delegates to the
-// package-level function with a route derived from MarketManager.
-func (c *Consumer) handleOrderCreated(msg kafkago.Message) (bool, error) {
-	return HandleOrderCreated(msg, func(marketID string) chan market.InputEvent {
+func (c *Consumer) handleOrderCommand(msg kafkago.Message) (bool, error) {
+	return HandleOrderCommand(msg, func(marketID string) chan market.InputEvent {
 		engine := c.manager.Get(marketID)
 		if engine == nil {
 			return nil
@@ -185,121 +160,119 @@ func (c *Consumer) handleOrderCreated(msg kafkago.Message) (bool, error) {
 	})
 }
 
-// handleOrderCancel is the Consumer's method wrapper — delegates to the
-// package-level function with a route derived from MarketManager.
-func (c *Consumer) handleOrderCancel(msg kafkago.Message) (bool, error) {
-	return HandleOrderCancel(msg, func(marketID string) chan market.InputEvent {
-		engine := c.manager.Get(marketID)
-		if engine == nil {
-			return nil
+func HandleOrderCommand(msg kafkago.Message, route routeFunc) (bool, error) {
+	var env CommandEnvelope
+	if err := json.Unmarshal(msg.Value, &env); err != nil {
+		return false, fmt.Errorf("unmarshal CommandEnvelope: %w", err)
+	}
+
+	// 1. Partition key invariant:
+	if len(msg.Key) == 0 {
+		return false, fmt.Errorf("missing partition key: all orders.commands messages must carry key=market_id")
+	}
+	if string(msg.Key) != env.MarketID {
+		return false, fmt.Errorf("partition key mismatch: key=%q envelope.market_id=%q", string(msg.Key), env.MarketID)
+	}
+
+	// 2. Event ID validation
+	eventUUID, err := uuid.Parse(env.EventID)
+	if err != nil || env.EventID == "" {
+		return false, fmt.Errorf("invalid event_id %q: %w", env.EventID, err)
+	}
+
+	// 3. Schema version check
+	if env.EventVersion != 1 {
+		return false, fmt.Errorf("unsupported event_version %d (expected 1)", env.EventVersion)
+	}
+
+	queue := route(env.MarketID)
+	if queue == nil {
+		return false, fmt.Errorf("unknown market_id %q — command rejected", env.MarketID)
+	}
+
+	switch env.EventType {
+	case "OrderCreated":
+		var p orderCreatedPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return false, fmt.Errorf("unmarshal OrderCreated payload: %w", err)
 		}
-		return engine.InputQueue
-	})
+
+		orderID, err := uuid.Parse(p.OrderID)
+		if err != nil {
+			return false, fmt.Errorf("invalid order_id %q: %w", p.OrderID, err)
+		}
+		userID, err := uuid.Parse(p.UserID)
+		if err != nil {
+			return false, fmt.Errorf("invalid user_id %q: %w", p.UserID, err)
+		}
+		price, err := decimal.NewFromString(p.Price)
+		if err != nil {
+			return false, fmt.Errorf("invalid price %q: %w", p.Price, err)
+		}
+		quantity, err := decimal.NewFromString(p.Quantity)
+		if err != nil {
+			return false, fmt.Errorf("invalid quantity %q: %w", p.Quantity, err)
+		}
+		side, err := parseSide(p.Side)
+		if err != nil {
+			return false, err
+		}
+		orderType, err := parseOrderType(p.OrderType)
+		if err != nil {
+			return false, err
+		}
+
+		queue <- market.InputEvent{
+			EventID: eventUUID,
+			Type:    market.EventOrderCreated,
+			OrderCreated: &market.OrderCreatedPayload{
+				OrderID:   orderID,
+				UserID:    userID,
+				MarketID:  env.MarketID,
+				Side:      side,
+				OrderType: orderType,
+				Price:     price,
+				Quantity:  quantity,
+			},
+			Topic:     msg.Topic,
+			Partition: msg.Partition,
+			Offset:    msg.Offset,
+		}
+		return true, nil
+
+	case "OrderCancelRequested":
+		var p orderCancelPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return false, fmt.Errorf("unmarshal OrderCancelRequested payload: %w", err)
+		}
+
+		orderID, err := uuid.Parse(p.OrderID)
+		if err != nil {
+			return false, fmt.Errorf("invalid order_id %q: %w", p.OrderID, err)
+		}
+		userID, err := uuid.Parse(p.UserID)
+		if err != nil {
+			return false, fmt.Errorf("invalid user_id %q: %w", p.UserID, err)
+		}
+
+		queue <- market.InputEvent{
+			EventID: eventUUID,
+			Type:    market.EventOrderCancel,
+			OrderCancel: &market.OrderCancelPayload{
+				OrderID:  orderID,
+				UserID:   userID,
+				MarketID: env.MarketID,
+			},
+			Topic:     msg.Topic,
+			Partition: msg.Partition,
+			Offset:    msg.Offset,
+		}
+		return true, nil
+
+	default:
+		return false, fmt.Errorf("unknown event_type %q", env.EventType)
+	}
 }
-
-// ─── Package-level handlers (testable without a real Kafka connection) ────────
-
-// HandleOrderCreated deserialises an OrderCreated Kafka message, validates all
-// fields, and sends an InputEvent to the correct engine's InputQueue.
-// Returns (routed bool, err error).
-// Exported so the recovery Replayer can reuse the same logic during event replay.
-func HandleOrderCreated(msg kafkago.Message, route routeFunc) (bool, error) {
-	var payload orderCreatedMessage
-	if err := json.Unmarshal(msg.Value, &payload); err != nil {
-		return false, fmt.Errorf("unmarshal OrderCreated: %w", err)
-	}
-
-	orderID, err := uuid.Parse(payload.OrderID)
-	if err != nil {
-		return false, fmt.Errorf("invalid order_id %q: %w", payload.OrderID, err)
-	}
-	userID, err := uuid.Parse(payload.UserID)
-	if err != nil {
-		return false, fmt.Errorf("invalid user_id %q: %w", payload.UserID, err)
-	}
-	price, err := decimal.NewFromString(payload.Price)
-	if err != nil {
-		return false, fmt.Errorf("invalid price %q: %w", payload.Price, err)
-	}
-	quantity, err := decimal.NewFromString(payload.Quantity)
-	if err != nil {
-		return false, fmt.Errorf("invalid quantity %q: %w", payload.Quantity, err)
-	}
-	side, err := parseSide(payload.Side)
-	if err != nil {
-		return false, err
-	}
-	orderType, err := parseOrderType(payload.OrderType)
-	if err != nil {
-		return false, err
-	}
-
-	queue := route(payload.MarketID)
-	if queue == nil {
-		// Unknown market — skip silently.
-		log.Printf("[kafka] unknown market_id %q — skipping order %s", payload.MarketID, payload.OrderID)
-		return false, nil
-	}
-
-	queue <- market.InputEvent{
-		Type: market.EventOrderCreated,
-		OrderCreated: &market.OrderCreatedPayload{
-			OrderID:   orderID,
-			UserID:    userID,
-			MarketID:  payload.MarketID,
-			Side:      side,
-			OrderType: orderType,
-			Price:     price,
-			Quantity:  quantity,
-		},
-		Topic:     msg.Topic,
-		Partition: msg.Partition,
-		Offset:    msg.Offset,
-	}
-
-	return true, nil
-}
-
-// HandleOrderCancel deserialises an OrderCancelRequested Kafka message and
-// sends an InputEvent to the correct engine's InputQueue.
-// Exported so the recovery Replayer can reuse the same logic during event replay.
-func HandleOrderCancel(msg kafkago.Message, route routeFunc) (bool, error) {
-	var payload orderCancelMessage
-	if err := json.Unmarshal(msg.Value, &payload); err != nil {
-		return false, fmt.Errorf("unmarshal OrderCancelRequested: %w", err)
-	}
-
-	orderID, err := uuid.Parse(payload.OrderID)
-	if err != nil {
-		return false, fmt.Errorf("invalid order_id %q: %w", payload.OrderID, err)
-	}
-	userID, err := uuid.Parse(payload.UserID)
-	if err != nil {
-		return false, fmt.Errorf("invalid user_id %q: %w", payload.UserID, err)
-	}
-
-	queue := route(payload.MarketID)
-	if queue == nil {
-		log.Printf("[kafka] unknown market_id %q — skipping cancel %s", payload.MarketID, payload.OrderID)
-		return false, nil
-	}
-
-	queue <- market.InputEvent{
-		Type: market.EventOrderCancel,
-		OrderCancel: &market.OrderCancelPayload{
-			OrderID:  orderID,
-			UserID:   userID,
-			MarketID: payload.MarketID,
-		},
-		Topic:     msg.Topic,
-		Partition: msg.Partition,
-		Offset:    msg.Offset,
-	}
-
-	return true, nil
-}
-
-// ─── Parsers ──────────────────────────────────────────────────────────────────
 
 func parseSide(s string) (orderbook.SideType, error) {
 	switch s {
@@ -323,24 +296,14 @@ func parseOrderType(s string) (orderbook.OrderType, error) {
 	}
 }
 
-// ─── TestableConsumer (unit tests only) ───────────────────────────────────────
-
-// TestableConsumer wraps the package-level handlers with an injectable routeFunc.
 type TestableConsumer struct {
 	route routeFunc
 }
 
-// NewTestableConsumer creates a TestableConsumer with the given routing function.
 func NewTestableConsumer(route routeFunc) *TestableConsumer {
 	return &TestableConsumer{route: route}
 }
 
-// HandleOrderCreated exposes the order-created handler for unit testing.
-func (c *TestableConsumer) HandleOrderCreated(msg kafkago.Message) (bool, error) {
-	return HandleOrderCreated(msg, c.route)
-}
-
-// HandleOrderCancel exposes the order-cancel handler for unit testing.
-func (c *TestableConsumer) HandleOrderCancel(msg kafkago.Message) (bool, error) {
-	return HandleOrderCancel(msg, c.route)
+func (c *TestableConsumer) HandleOrderCommand(msg kafkago.Message) (bool, error) {
+	return HandleOrderCommand(msg, c.route)
 }

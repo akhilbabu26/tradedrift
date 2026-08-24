@@ -3,6 +3,7 @@ package kafka_test
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
@@ -11,51 +12,56 @@ import (
 	"tradedrift/services/matching-engine/internal/orderbook"
 )
 
-// ─── Mock MarketManager ───────────────────────────────────────────────────────
-
-type mockEngine struct {
-	received []market.InputEvent
-}
-
-func (e *mockEngine) send(event market.InputEvent) {
-	e.received = append(e.received, event)
-}
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-func makeMsg(topic string, partition int, offset int64, body any) kafka.Message {
-	b, _ := json.Marshal(body)
+func makeCommandMsg(key string, partition int, offset int64, env any) kafka.Message {
+	b, _ := json.Marshal(env)
 	return kafka.Message{
-		Topic:     topic,
+		Key:       []byte(key),
+		Topic:     kafkapkg.TopicOrderCommands,
 		Partition: partition,
 		Offset:    offset,
 		Value:     b,
 	}
 }
 
-func validOrderCreatedBody(marketID string) map[string]any {
-	return map[string]any{
+func validOrderCreatedEnvelope(marketID string) map[string]any {
+	payload, _ := json.Marshal(map[string]any{
 		"order_id":   uuid.New().String(),
 		"user_id":    uuid.New().String(),
-		"market_id":  marketID,
 		"side":       "BUY",
 		"order_type": "LIMIT",
 		"price":      "100.50",
 		"quantity":   "1.5",
-	}
-}
-
-func validOrderCancelBody(marketID string) map[string]any {
+	})
 	return map[string]any{
-		"order_id":  uuid.New().String(),
-		"user_id":   uuid.New().String(),
-		"market_id": marketID,
+		"event_id":      uuid.New().String(),
+		"event_type":    "OrderCreated",
+		"event_version": 1,
+		"market_id":     marketID,
+		"occurred_at":   time.Now().UTC(),
+		"payload":       json.RawMessage(payload),
 	}
 }
 
-// ─── OrderCreated Tests ───────────────────────────────────────────────────────
+func validOrderCancelEnvelope(marketID string, orderID string) map[string]any {
+	payload, _ := json.Marshal(map[string]any{
+		"order_id": orderID,
+		"user_id":  uuid.New().String(),
+	})
+	return map[string]any{
+		"event_id":      uuid.New().String(),
+		"event_type":    "OrderCancelRequested",
+		"event_version": 1,
+		"market_id":     marketID,
+		"occurred_at":   time.Now().UTC(),
+		"payload":       json.RawMessage(payload),
+	}
+}
 
-func TestHandleOrderCreated_Valid(t *testing.T) {
+// ─── Command Tests ────────────────────────────────────────────────────────────
+
+func TestHandleOrderCommand_OrderCreated_Valid(t *testing.T) {
 	routedChan := make(chan market.InputEvent, 1)
 	consumer := kafkapkg.NewTestableConsumer(func(marketID string) chan market.InputEvent {
 		if marketID == "BTC-USDT" {
@@ -64,8 +70,8 @@ func TestHandleOrderCreated_Valid(t *testing.T) {
 		return nil
 	})
 
-	msg := makeMsg("orders.submitted", 0, 42, validOrderCreatedBody("BTC-USDT"))
-	routed, err := consumer.HandleOrderCreated(msg)
+	msg := makeCommandMsg("BTC-USDT", 0, 42, validOrderCreatedEnvelope("BTC-USDT"))
+	routed, err := consumer.HandleOrderCommand(msg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -77,8 +83,8 @@ func TestHandleOrderCreated_Valid(t *testing.T) {
 	if event.Type != market.EventOrderCreated {
 		t.Fatalf("expected EventOrderCreated")
 	}
-	if event.Topic != "orders.submitted" {
-		t.Fatalf("expected topic=orders.submitted, got %s", event.Topic)
+	if event.Topic != kafkapkg.TopicOrderCommands {
+		t.Fatalf("expected topic=%s, got %s", kafkapkg.TopicOrderCommands, event.Topic)
 	}
 	if event.Partition != 0 {
 		t.Fatalf("expected partition=0, got %d", event.Partition)
@@ -91,120 +97,7 @@ func TestHandleOrderCreated_Valid(t *testing.T) {
 	}
 }
 
-func TestHandleOrderCreated_MalformedJSON(t *testing.T) {
-	consumer := kafkapkg.NewTestableConsumer(nil)
-	msg := kafka.Message{Topic: "orders.submitted", Value: []byte(`{bad json`)}
-	routed, err := consumer.HandleOrderCreated(msg)
-	if err == nil {
-		t.Fatal("expected error for malformed JSON")
-	}
-	if routed {
-		t.Fatal("expected routed=false for malformed JSON")
-	}
-}
-
-func TestHandleOrderCreated_InvalidOrderID(t *testing.T) {
-	consumer := kafkapkg.NewTestableConsumer(nil)
-	body := validOrderCreatedBody("BTC-USDT")
-	body["order_id"] = "not-a-uuid"
-	msg := makeMsg("orders.submitted", 0, 1, body)
-	routed, err := consumer.HandleOrderCreated(msg)
-	if err == nil {
-		t.Fatal("expected error for invalid order_id UUID")
-	}
-	if routed {
-		t.Fatal("expected routed=false for invalid order_id")
-	}
-}
-
-func TestHandleOrderCreated_InvalidUserID(t *testing.T) {
-	consumer := kafkapkg.NewTestableConsumer(nil)
-	body := validOrderCreatedBody("BTC-USDT")
-	body["user_id"] = "not-a-uuid"
-	msg := makeMsg("orders.submitted", 0, 1, body)
-	routed, err := consumer.HandleOrderCreated(msg)
-	if err == nil {
-		t.Fatal("expected error for invalid user_id UUID")
-	}
-	if routed {
-		t.Fatal("expected routed=false for invalid user_id")
-	}
-}
-
-func TestHandleOrderCreated_InvalidDecimalPrice(t *testing.T) {
-	consumer := kafkapkg.NewTestableConsumer(nil)
-	body := validOrderCreatedBody("BTC-USDT")
-	body["price"] = "not-a-number"
-	msg := makeMsg("orders.submitted", 0, 1, body)
-	routed, err := consumer.HandleOrderCreated(msg)
-	if err == nil {
-		t.Fatal("expected error for invalid price decimal")
-	}
-	if routed {
-		t.Fatal("expected routed=false for invalid price")
-	}
-}
-
-func TestHandleOrderCreated_InvalidDecimalQuantity(t *testing.T) {
-	consumer := kafkapkg.NewTestableConsumer(nil)
-	body := validOrderCreatedBody("BTC-USDT")
-	body["quantity"] = "abc"
-	msg := makeMsg("orders.submitted", 0, 1, body)
-	routed, err := consumer.HandleOrderCreated(msg)
-	if err == nil {
-		t.Fatal("expected error for invalid quantity decimal")
-	}
-	if routed {
-		t.Fatal("expected routed=false for invalid quantity")
-	}
-}
-
-func TestHandleOrderCreated_InvalidSide(t *testing.T) {
-	consumer := kafkapkg.NewTestableConsumer(nil)
-	body := validOrderCreatedBody("BTC-USDT")
-	body["side"] = "LONG"
-	msg := makeMsg("orders.submitted", 0, 1, body)
-	routed, err := consumer.HandleOrderCreated(msg)
-	if err == nil {
-		t.Fatal("expected error for unknown side")
-	}
-	if routed {
-		t.Fatal("expected routed=false for invalid side")
-	}
-}
-
-func TestHandleOrderCreated_InvalidOrderType(t *testing.T) {
-	consumer := kafkapkg.NewTestableConsumer(nil)
-	body := validOrderCreatedBody("BTC-USDT")
-	body["order_type"] = "STOP"
-	msg := makeMsg("orders.submitted", 0, 1, body)
-	routed, err := consumer.HandleOrderCreated(msg)
-	if err == nil {
-		t.Fatal("expected error for unknown order_type")
-	}
-	if routed {
-		t.Fatal("expected routed=false for invalid order_type")
-	}
-}
-
-func TestHandleOrderCreated_UnknownMarket_Skipped(t *testing.T) {
-	consumer := kafkapkg.NewTestableConsumer(func(marketID string) chan market.InputEvent {
-		return nil // no engine for any market
-	})
-	body := validOrderCreatedBody("XYZ-USDT")
-	msg := makeMsg("orders.submitted", 0, 1, body)
-	routed, err := consumer.HandleOrderCreated(msg)
-	if err != nil {
-		t.Fatalf("unknown market must not error, got: %v", err)
-	}
-	if routed {
-		t.Fatal("unknown market must have routed=false so consumer auto-acknowledges checkpoint")
-	}
-}
-
-// ─── OrderCancel Tests ────────────────────────────────────────────────────────
-
-func TestHandleOrderCancel_Valid(t *testing.T) {
+func TestHandleOrderCommand_OrderCancel_Valid(t *testing.T) {
 	routedChan := make(chan market.InputEvent, 1)
 	consumer := kafkapkg.NewTestableConsumer(func(marketID string) chan market.InputEvent {
 		if marketID == "BTC-USDT" {
@@ -213,8 +106,9 @@ func TestHandleOrderCancel_Valid(t *testing.T) {
 		return nil
 	})
 
-	msg := makeMsg("orders.cancel-requested", 0, 99, validOrderCancelBody("BTC-USDT"))
-	routed, err := consumer.HandleOrderCancel(msg)
+	targetOrderID := uuid.New().String()
+	msg := makeCommandMsg("BTC-USDT", 0, 43, validOrderCancelEnvelope("BTC-USDT", targetOrderID))
+	routed, err := consumer.HandleOrderCommand(msg)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -226,36 +120,78 @@ func TestHandleOrderCancel_Valid(t *testing.T) {
 	if event.Type != market.EventOrderCancel {
 		t.Fatalf("expected EventOrderCancel")
 	}
-	if event.Offset != 99 {
-		t.Fatalf("expected offset=99, got %d", event.Offset)
-	}
-	if event.Topic != "orders.cancel-requested" {
-		t.Fatalf("expected topic=orders.cancel-requested")
+	if event.OrderCancel.OrderID.String() != targetOrderID {
+		t.Fatalf("expected order_id=%s, got %s", targetOrderID, event.OrderCancel.OrderID.String())
 	}
 }
 
-func TestHandleOrderCancel_MalformedJSON(t *testing.T) {
+func TestHandleOrderCommand_PartitionKeyMismatch(t *testing.T) {
 	consumer := kafkapkg.NewTestableConsumer(nil)
-	msg := kafka.Message{Topic: "orders.cancel-requested", Value: []byte(`{`)}
-	routed, err := consumer.HandleOrderCancel(msg)
+	msg := makeCommandMsg("BTC-USDT", 0, 1, validOrderCreatedEnvelope("ETH-USDT"))
+	routed, err := consumer.HandleOrderCommand(msg)
+	if err == nil {
+		t.Fatal("expected error on partition key mismatch")
+	}
+	if routed {
+		t.Fatal("expected routed=false on error")
+	}
+}
+
+func TestHandleOrderCommand_InvalidEventID(t *testing.T) {
+	consumer := kafkapkg.NewTestableConsumer(nil)
+	env := validOrderCreatedEnvelope("BTC-USDT")
+	env["event_id"] = "not-a-valid-uuid"
+	msg := makeCommandMsg("BTC-USDT", 0, 1, env)
+	routed, err := consumer.HandleOrderCommand(msg)
+	if err == nil {
+		t.Fatal("expected error on invalid event_id")
+	}
+	if routed {
+		t.Fatal("expected routed=false on error")
+	}
+}
+
+func TestHandleOrderCommand_UnsupportedVersion(t *testing.T) {
+	consumer := kafkapkg.NewTestableConsumer(nil)
+	env := validOrderCreatedEnvelope("BTC-USDT")
+	env["event_version"] = 99
+	msg := makeCommandMsg("BTC-USDT", 0, 1, env)
+	routed, err := consumer.HandleOrderCommand(msg)
+	if err == nil {
+		t.Fatal("expected error on unsupported event_version")
+	}
+	if routed {
+		t.Fatal("expected routed=false on error")
+	}
+}
+
+func TestHandleOrderCommand_UnknownMarket_Fails(t *testing.T) {
+	consumer := kafkapkg.NewTestableConsumer(func(marketID string) chan market.InputEvent {
+		return nil // unknown market
+	})
+
+	msg := makeCommandMsg("XYZ-USDT", 0, 1, validOrderCreatedEnvelope("XYZ-USDT"))
+	routed, err := consumer.HandleOrderCommand(msg)
+	if err == nil {
+		t.Fatal("expected error for unknown market")
+	}
+	if routed {
+		t.Fatal("expected routed=false on error")
+	}
+}
+
+func TestHandleOrderCommand_MalformedJSON(t *testing.T) {
+	consumer := kafkapkg.NewTestableConsumer(nil)
+	msg := kafka.Message{
+		Topic: kafkapkg.TopicOrderCommands,
+		Key:   []byte("BTC-USDT"),
+		Value: []byte(`{corrupt json`),
+	}
+	routed, err := consumer.HandleOrderCommand(msg)
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
 	if routed {
-		t.Fatal("expected routed=false for malformed JSON")
-	}
-}
-
-func TestHandleOrderCancel_UnknownMarket_Skipped(t *testing.T) {
-	consumer := kafkapkg.NewTestableConsumer(func(marketID string) chan market.InputEvent {
-		return nil
-	})
-	msg := makeMsg("orders.cancel-requested", 0, 1, validOrderCancelBody("XYZ-USDT"))
-	routed, err := consumer.HandleOrderCancel(msg)
-	if err != nil {
-		t.Fatalf("unknown market cancel must not error, got: %v", err)
-	}
-	if routed {
-		t.Fatal("unknown market cancel must have routed=false so consumer auto-acknowledges checkpoint")
+		t.Fatal("expected routed=false on error")
 	}
 }

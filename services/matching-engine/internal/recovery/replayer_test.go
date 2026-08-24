@@ -20,6 +20,7 @@ import (
 	"tradedrift/services/matching-engine/internal/market"
 	"tradedrift/services/matching-engine/internal/recovery"
 	"tradedrift/services/matching-engine/internal/orderbook"
+	"tradedrift/services/matching-engine/internal/matcher"
 )
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
@@ -68,11 +69,23 @@ func (m *mockDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row 
 	}
 
 	// C. loadLatestSnapshot
-	if sql == "\n\t\tSELECT snapshot, checksum FROM market_snapshots\n\t\tWHERE market_id = $1 AND \"offset\" <= $2\n\t\tORDER BY sequence DESC LIMIT 1" {
+	if sql == "\n\t\tSELECT market_id, sequence, partition, \"offset\", schema_version, snapshot, checksum FROM market_snapshots\n\t\tWHERE market_id = $1 AND \"offset\" <= $2\n\t\tORDER BY \"offset\" DESC, sequence DESC LIMIT 1" {
 		marketID := args[0].(string)
 		if snapBytes, ok := m.snapshots[marketID]; ok {
 			checksum := m.snapshotsCheck[marketID]
-			return &customRow{vals: []any{snapBytes, checksum}}
+			var snap orderbook.BookSnapshot
+			if err := json.Unmarshal(snapBytes, &snap); err != nil {
+				return &customRow{err: err}
+			}
+			return &customRow{vals: []any{
+				snap.MarketID,
+				int64(snap.Sequence),
+				snap.Partition,
+				snap.Offset,
+				int(snap.SchemaVersion),
+				snapBytes,
+				checksum,
+			}}
 		}
 		return &customRow{err: pgx.ErrNoRows}
 	}
@@ -109,6 +122,10 @@ func (r *customRow) Scan(dest ...any) error {
 			*d = val.(uint64)
 		case *[]byte:
 			*d = val.([]byte)
+		case *string:
+			*d = val.(string)
+		case *int:
+			*d = val.(int)
 		}
 	}
 	return nil
@@ -232,6 +249,9 @@ func TestRecovery_MissingSnapshotReplay(t *testing.T) {
 		func(brokers []string, topic string, partition int) recovery.KafkaReader {
 			return readerMock
 		},
+		func(ctx context.Context, topic string, partition int) (int64, error) {
+			return 1000, nil // HWM is always high enough to pass check
+		},
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -280,6 +300,9 @@ func TestRecovery_PartitionGaps(t *testing.T) {
 		func(brokers []string, topic string, partition int) recovery.KafkaReader {
 			return readerMock
 		},
+		func(ctx context.Context, topic string, partition int) (int64, error) {
+			return 1000, nil // HWM is always high enough to pass check
+		},
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -300,3 +323,253 @@ func TestRecovery_PartitionGaps(t *testing.T) {
 func containsSubstring(s, sub string) bool {
 	return len(s) >= len(sub) && (s == sub || len(s) > len(sub) && (s[0:len(sub)] == sub || containsSubstring(s[1:], sub)))
 }
+
+func TestRecovery_EmptyPartition(t *testing.T) {
+	manager := market.NewMarketManager()
+	_ = manager.Add(market.MarketConfig{
+		MarketID:  "MARKET-A",
+		Partition: 0,
+		TickSize:  decimal.NewFromInt(1),
+		LotSize:   decimal.NewFromInt(1),
+	})
+
+	db := newMockDB()
+	// Set checkpoint to -1 (empty/unprocessed partition)
+	db.checkpoints["orders.commands/0"] = -1
+	db.marketSequences["MARKET-A"] = 0
+
+	readerMock := &mockKafkaReader{
+		messages: []kafkago.Message{},
+	}
+
+	replayer := recovery.NewReplayer([]string{"localhost:9092"}, "", db, newMockRedis(), manager)
+	replayer.OverrideDiscoveryAndReader(
+		func(topic string) ([]int, error) {
+			return []int{0}, nil
+		},
+		func(brokers []string, topic string, partition int) recovery.KafkaReader {
+			return readerMock
+		},
+		func(ctx context.Context, topic string, partition int) (int64, error) {
+			return 0, nil // HWM is 0 (log-end offset is 0)
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var engineWg sync.WaitGroup
+	err := replayer.ReplayAll(ctx, &engineWg)
+	if err != nil {
+		t.Fatalf("expected recovery to succeed on empty partition, got err: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	engine := manager.Get("MARKET-A")
+	if engine == nil {
+		t.Fatal("expected MARKET-A engine to be registered")
+	}
+
+	if engine.GetSequence() != 0 {
+		t.Errorf("expected sequence 0, got %d", engine.GetSequence())
+	}
+	if engine.GetLastAppliedOffset() != -1 {
+		t.Errorf("expected lastAppliedOffset -1, got %d", engine.GetLastAppliedOffset())
+	}
+	if engine.Mode() != market.ModeLive {
+		t.Errorf("expected engine mode LIVE, got %v", engine.Mode())
+	}
+}
+
+func TestRecovery_CrashAfterTradePublish(t *testing.T) {
+	sellOrderID := uuid.New()
+	buyOrderID := uuid.New()
+	eventID := uuid.New()
+
+	// 1. Original Execution before crash
+	book1 := orderbook.NewOrderBook("BTC-USDT")
+	sell1 := &orderbook.OrderNode{
+		OrderID:      sellOrderID,
+		MarketID:     "BTC-USDT",
+		Side:         orderbook.SideSell,
+		OrderType:    orderbook.OrderTypeLimit,
+		Price:        decimal.RequireFromString("100"),
+		OriginalQty:  decimal.RequireFromString("1"),
+		RemainingQty: decimal.RequireFromString("1"),
+	}
+	matcher.Insert(book1, sell1)
+
+	buy1 := &orderbook.OrderNode{
+		OrderID:      buyOrderID,
+		MarketID:     "BTC-USDT",
+		Side:         orderbook.SideBuy,
+		OrderType:    orderbook.OrderTypeLimit,
+		Price:        decimal.RequireFromString("100"),
+		OriginalQty:  decimal.RequireFromString("1"),
+		RemainingQty: decimal.RequireFromString("1"),
+	}
+	fills1 := matcher.Match(book1, buy1, matcher.ModeLive, eventID)
+	if len(fills1) != 1 {
+		t.Fatalf("expected 1 fill in original execution")
+	}
+	originalTradeID := fills1[0].TradeID
+
+	// 2. Simulated Crash & Replay (restart recovers same inputs at offset 100)
+	book2 := orderbook.NewOrderBook("BTC-USDT")
+	sell2 := &orderbook.OrderNode{
+		OrderID:      sellOrderID,
+		MarketID:     "BTC-USDT",
+		Side:         orderbook.SideSell,
+		OrderType:    orderbook.OrderTypeLimit,
+		Price:        decimal.RequireFromString("100"),
+		OriginalQty:  decimal.RequireFromString("1"),
+		RemainingQty: decimal.RequireFromString("1"),
+	}
+	matcher.Insert(book2, sell2)
+
+	buy2 := &orderbook.OrderNode{
+		OrderID:      buyOrderID,
+		MarketID:     "BTC-USDT",
+		Side:         orderbook.SideBuy,
+		OrderType:    orderbook.OrderTypeLimit,
+		Price:        decimal.RequireFromString("100"),
+		OriginalQty:  decimal.RequireFromString("1"),
+		RemainingQty: decimal.RequireFromString("1"),
+	}
+	fills2 := matcher.Match(book2, buy2, matcher.ModeLive, eventID)
+	if len(fills2) != 1 {
+		t.Fatalf("expected 1 fill in replay execution")
+	}
+	replayTradeID := fills2[0].TradeID
+
+	if originalTradeID != replayTradeID {
+		t.Errorf("expected trade ID on replay to match original trade ID: %s vs %s", originalTradeID, replayTradeID)
+	}
+}
+
+func TestRecovery_MultiMarketBarrier(t *testing.T) {
+	manager := market.NewMarketManager()
+	_ = manager.Add(market.MarketConfig{
+		MarketID:  "MARKET-A",
+		Partition: 0,
+		TickSize:  decimal.NewFromInt(1),
+		LotSize:   decimal.NewFromInt(1),
+	})
+	_ = manager.Add(market.MarketConfig{
+		MarketID:  "MARKET-B",
+		Partition: 0,
+		TickSize:  decimal.NewFromInt(1),
+		LotSize:   decimal.NewFromInt(1),
+	})
+	_ = manager.Add(market.MarketConfig{
+		MarketID:  "MARKET-C",
+		Partition: 0,
+		TickSize:  decimal.NewFromInt(1),
+		LotSize:   decimal.NewFromInt(1),
+	})
+
+	db := newMockDB()
+	db.checkpoints["orders.commands/0"] = 2
+	db.marketSequences["MARKET-A"] = 1
+	db.marketSequences["MARKET-B"] = 1
+	db.marketSequences["MARKET-C"] = 1
+
+	readerMock := &mockKafkaReader{
+		messages: []kafkago.Message{
+			makeRecoveryMsg(0, "MARKET-A", "BUY"),
+			makeRecoveryMsg(1, "MARKET-B", "BUY"),
+			makeRecoveryMsg(2, "MARKET-C", "BUY"),
+		},
+	}
+
+	replayer := recovery.NewReplayer([]string{"localhost:9092"}, "", db, newMockRedis(), manager)
+	replayer.OverrideDiscoveryAndReader(
+		func(topic string) ([]int, error) {
+			return []int{0}, nil
+		},
+		func(brokers []string, topic string, partition int) recovery.KafkaReader {
+			return readerMock
+		},
+		func(ctx context.Context, topic string, partition int) (int64, error) {
+			return 1000, nil
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var engineWg sync.WaitGroup
+	err := replayer.ReplayAll(ctx, &engineWg)
+	if err != nil {
+		t.Fatalf("expected successful recovery replay: %v", err)
+	}
+
+	engineWg.Wait()
+
+	for _, mID := range []string{"MARKET-A", "MARKET-B", "MARKET-C"} {
+		engine := manager.Get(mID)
+		if engine == nil {
+			t.Fatalf("expected %s engine to exist", mID)
+		}
+		if engine.Mode() != market.ModeLive {
+			t.Errorf("expected engine %s mode LIVE, got %v", mID, engine.Mode())
+		}
+	}
+}
+
+func TestRecovery_OutputQueueBackpressure(t *testing.T) {
+	manager := market.NewMarketManager()
+	_ = manager.Add(market.MarketConfig{
+		MarketID:  "MARKET-A",
+		Partition: 0,
+		TickSize:  decimal.NewFromInt(1),
+		LotSize:   decimal.NewFromInt(1),
+	})
+
+	db := newMockDB()
+	db.checkpoints["orders.commands/0"] = 1500
+	db.marketSequences["MARKET-A"] = 1501 // 1501 processed messages
+
+	var messages []kafkago.Message
+	for i := int64(0); i <= 1500; i++ {
+		messages = append(messages, makeRecoveryMsg(i, "MARKET-A", "BUY"))
+	}
+
+	readerMock := &mockKafkaReader{
+		messages: messages,
+	}
+
+	replayer := recovery.NewReplayer([]string{"localhost:9092"}, "", db, newMockRedis(), manager)
+	replayer.OverrideDiscoveryAndReader(
+		func(topic string) ([]int, error) {
+			return []int{0}, nil
+		},
+		func(brokers []string, topic string, partition int) recovery.KafkaReader {
+			return readerMock
+		},
+		func(ctx context.Context, topic string, partition int) (int64, error) {
+			return 2000, nil // HWM > checkpoint
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var engineWg sync.WaitGroup
+	err := replayer.ReplayAll(ctx, &engineWg)
+	if err != nil {
+		t.Fatalf("expected successful recovery under backpressure: %v", err)
+	}
+
+	engineWg.Wait()
+
+	engine := manager.Get("MARKET-A")
+	if engine.Mode() != market.ModeLive {
+		t.Errorf("expected engine mode LIVE, got %v", engine.Mode())
+	}
+}
+
+
+
+

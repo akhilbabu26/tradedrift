@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
+	"sort"
 	"sync"
 	"time"
 
@@ -44,6 +44,7 @@ type Replayer struct {
 	manager                *market.MarketManager
 	newReaderFunc          func(brokers []string, topic string, partition int) KafkaReader
 	discoverPartitionsFunc func(topic string) ([]int, error)
+	queryHWMFunc           func(ctx context.Context, topic string, partition int) (int64, error)
 }
 
 // NewReplayer creates a Replayer.
@@ -86,27 +87,46 @@ func NewReplayer(brokers []string, groupID string, db ReplayerDB, rdb ReplayerRe
 		return ids, nil
 	}
 
+	r.queryHWMFunc = func(ctx context.Context, topic string, partition int) (int64, error) {
+		conn, err := kafkago.DialLeader(ctx, "tcp", brokers[0], topic, partition)
+		if err != nil {
+			return 0, err
+		}
+		defer conn.Close()
+		return conn.ReadLastOffset()
+	}
+
 	return r
 }
 
-// OverrideDiscoveryAndReader overrides partition discovery and reader creation for testing.
+// OverrideDiscoveryAndReader overrides partition discovery, reader creation, and HWM querying for testing.
 func (r *Replayer) OverrideDiscoveryAndReader(
 	discover func(topic string) ([]int, error),
 	newReader func(brokers []string, topic string, partition int) KafkaReader,
+	queryHWM func(ctx context.Context, topic string, partition int) (int64, error),
 ) {
 	r.discoverPartitionsFunc = discover
 	r.newReaderFunc = newReader
+	r.queryHWMFunc = queryHWM
 }
 
 // ReplayAll recovers all MarketEngines across all Kafka partitions up to their checkpoints.
 func (r *Replayer) ReplayAll(ctx context.Context, engineWg *sync.WaitGroup) error {
 	topic := intkafka.TopicOrderCommands
+	log.Printf("[recovery] starting recovery for topic=%s...", topic)
 
-	partitions, err := r.discoverPartitionsFunc(topic)
-	if err != nil {
-		return fmt.Errorf("discover partitions for topic %s: %w", topic, err)
+	// Recover only the partitions assigned to the market engines on this instance (Issue 1)
+	partitionsMap := make(map[int]bool)
+	for _, engine := range r.manager.All() {
+		partitionsMap[engine.Partition()] = true
 	}
-	log.Printf("[recovery] discovered %d partition(s) for topic=%s: %v", len(partitions), topic, partitions)
+	partitions := make([]int, 0, len(partitionsMap))
+	for p := range partitionsMap {
+		partitions = append(partitions, p)
+	}
+	sort.Ints(partitions)
+
+	log.Printf("[recovery] recovering partition(s) assigned to this instance: %v", partitions)
 
 	for _, engine := range r.manager.All() {
 		engineWg.Add(1)
@@ -122,25 +142,12 @@ func (r *Replayer) ReplayAll(ctx context.Context, engineWg *sync.WaitGroup) erro
 		checkpoint int64
 	}
 	boundaries := make([]partitionBoundary, 0, len(partitions))
+	marketLastSeenOffset := make(map[string]int64)
 
 	for _, partition := range partitions {
 		checkpointOffset, err := r.loadCheckpoint(ctx, topic, partition)
 		if err != nil {
 			return fmt.Errorf("load checkpoint (partition=%d): %w", partition, err)
-		}
-
-		err = r.replayPartition(ctx, topic, partition, checkpointOffset)
-		if err != nil {
-			return fmt.Errorf("replay partition %d: %w", partition, err)
-		}
-
-		// Push recovery barrier to all engines on this partition (Issue #1)
-		for _, engine := range r.manager.All() {
-			if engine.Partition() == partition {
-				engine.InputQueue <- market.InputEvent{
-					Type: market.EventRecoveryBarrier,
-				}
-			}
 		}
 
 		boundaries = append(boundaries, partitionBoundary{
@@ -149,20 +156,80 @@ func (r *Replayer) ReplayAll(ctx context.Context, engineWg *sync.WaitGroup) erro
 		})
 	}
 
-	// Drain all engines until their respective recovery barriers are reached (Issue #1)
+	partitionToCheckpoint := make(map[int]int64)
+	for _, b := range boundaries {
+		partitionToCheckpoint[b.partition] = b.checkpoint
+	}
+
+	// 1. Start concurrent OutputQueue draining goroutines for all engines (Issue #1 & v9.6 Deadlock Resolution)
+	barrierErrChan := make(chan error, len(r.manager.All()))
+	var barrierWg sync.WaitGroup
+
 	for _, engine := range r.manager.All() {
-		for {
-			select {
-			case res := <-engine.OutputQueue:
-				if res.BarrierReached {
-					goto engineDone
+		barrierWg.Add(1)
+		go func(e *market.MarketEngine) {
+			defer barrierWg.Done()
+			expectedCheckpoint := partitionToCheckpoint[e.Partition()]
+			for {
+				select {
+				case res, ok := <-e.OutputQueue:
+					if !ok {
+						barrierErrChan <- fmt.Errorf("OutputQueue closed unexpectedly for market %s", e.MarketID)
+						return
+					}
+					if res.BarrierReached {
+						if res.SourcePosition.Topic != topic || res.SourcePosition.Partition != e.Partition() || res.BarrierOffset != expectedCheckpoint {
+							barrierErrChan <- fmt.Errorf("recovery barrier partition/offset mismatch for market %s: expected %s/%d@%d, got %s/%d@%d",
+								e.MarketID, topic, e.Partition(), expectedCheckpoint,
+								res.SourcePosition.Topic, res.SourcePosition.Partition, res.BarrierOffset)
+						}
+						log.Printf("[recovery] drained and reached recovery barrier for market=%s", e.MarketID)
+						return
+					}
+				case <-ctx.Done():
+					return
 				}
-			case <-ctx.Done():
-				return ctx.Err()
+			}
+		}(engine)
+	}
+
+	// 2. Replay all partitions
+	for _, b := range boundaries {
+		err := r.replayPartition(ctx, topic, b.partition, b.checkpoint, marketLastSeenOffset)
+		if err != nil {
+			return fmt.Errorf("replay partition %d: %w", b.partition, err)
+		}
+
+		// Push recovery barrier to all engines on this partition (Issue #1)
+		for _, engine := range r.manager.All() {
+			if engine.Partition() == b.partition {
+				engine.InputQueue <- market.InputEvent{
+					Type:      market.EventRecoveryBarrier,
+					Topic:     topic,
+					Partition: b.partition,
+					Offset:    b.checkpoint,
+				}
 			}
 		}
-	engineDone:
-		log.Printf("[recovery] drained and reached recovery barrier for market=%s", engine.MarketID)
+	}
+
+	// 3. Wait for all engines to reach their recovery barriers
+	barrierWg.Wait()
+
+	// Check if any goroutine reported an error
+	select {
+	case err := <-barrierErrChan:
+		return err
+	default:
+	}
+
+	// 5. Verify assertions (Issue #6: Offset alignment assertion after barrier drain)
+	for _, engine := range r.manager.All() {
+		lastSeen := marketLastSeenOffset[engine.MarketID]
+		if engine.GetLastAppliedOffset() != lastSeen {
+			return fmt.Errorf("recovery offset mismatch for market %s: engine offset %d != last seen offset %d",
+				engine.MarketID, engine.GetLastAppliedOffset(), lastSeen)
+		}
 	}
 
 
@@ -177,10 +244,6 @@ func (r *Replayer) ReplayAll(ctx context.Context, engineWg *sync.WaitGroup) erro
 				engine.MarketID, engine.GetSequence(), dbSeq)
 		}
 		log.Printf("[recovery] asserted sequence consistency sequence=%d for market=%s", dbSeq, engine.MarketID)
-
-		if err := r.pushFreshDepth(ctx, engine); err != nil {
-			return fmt.Errorf("push fresh depth for %s: %w", engine.MarketID, err)
-		}
 
 		engine.SetLive()
 		log.Printf("[recovery] market=%s recovered — now LIVE", engine.MarketID)
@@ -201,12 +264,7 @@ func (r *Replayer) ReplayAll(ctx context.Context, engineWg *sync.WaitGroup) erro
 }
 
 // replayPartition replays a partition from startOffset to checkpointOffset.
-func (r *Replayer) replayPartition(ctx context.Context, topic string, partition int, checkpointOffset int64) error {
-	if checkpointOffset < 0 {
-		log.Printf("[recovery] partition=%d — no checkpoint exists, nothing to replay", partition)
-		return nil
-	}
-
+func (r *Replayer) replayPartition(ctx context.Context, topic string, partition int, checkpointOffset int64, marketLastSeenOffset map[string]int64) error {
 	// 1. Find all registered markets on this partition
 	var marketsOnPartition []*market.MarketEngine
 	for _, engine := range r.manager.All() {
@@ -218,6 +276,24 @@ func (r *Replayer) replayPartition(ctx context.Context, topic string, partition 
 	if len(marketsOnPartition) == 0 {
 		log.Printf("[recovery] partition=%d — no markets registered on this partition", partition)
 		return nil
+	}
+
+	if checkpointOffset < 0 {
+		log.Printf("[recovery] partition=%d — no checkpoint exists, nothing to replay", partition)
+		for _, engine := range marketsOnPartition {
+			marketLastSeenOffset[engine.MarketID] = -1
+		}
+		return nil
+	}
+
+	// Pre-flight HWM validation (Issue #3)
+	logEndOffset, err := r.queryHWMFunc(ctx, topic, partition)
+	if err != nil {
+		return fmt.Errorf("query partition HWM (partition=%d): %w", partition, err)
+	}
+	if checkpointOffset >= logEndOffset {
+		return fmt.Errorf("checkpoint offset %d is at or beyond Kafka log-end offset %d (partition=%d) — recovery aborted",
+			checkpointOffset, logEndOffset, partition)
 	}
 
 	// 2. Load latest snapshots for each market
@@ -246,6 +322,9 @@ func (r *Replayer) replayPartition(ctx context.Context, topic string, partition 
 			}
 			log.Printf("[recovery] market=%s restored from snapshot sequence=%d offset=%d", engine.MarketID, snap.Sequence, snap.Offset)
 
+			// Invariant (Issue B): Initialize marketLastSeenOffset to snapshot.offset
+			marketLastSeenOffset[engine.MarketID] = snap.Offset
+
 			if minSnapshotOffset == -1 || snap.Offset < minSnapshotOffset {
 				minSnapshotOffset = snap.Offset
 			}
@@ -259,6 +338,13 @@ func (r *Replayer) replayPartition(ctx context.Context, topic string, partition 
 	} else {
 		log.Printf("[recovery] partition=%d has market(s) missing snapshots. Replaying from offset 0", partition)
 		startOffset = 0
+	}
+
+	// Invariant (Issue C): If no snapshot exists, initialize marketLastSeenOffset to startOffset - 1
+	for _, engine := range marketsOnPartition {
+		if _, ok := marketLastSeenOffset[engine.MarketID]; !ok {
+			marketLastSeenOffset[engine.MarketID] = startOffset - 1
+		}
 	}
 
 	if startOffset > checkpointOffset {
@@ -291,10 +377,13 @@ func (r *Replayer) replayPartition(ctx context.Context, topic string, partition 
 		}
 		expectedOffset++
 
-		_, _, err = r.routeMessage(msg)
+		marketID, routed, err := r.routeMessage(msg)
 		if err != nil {
 			return fmt.Errorf("corrupt event during recovery (partition=%d offset=%d): %w",
 				partition, msg.Offset, err)
+		}
+		if routed && marketID != "" {
+			marketLastSeenOffset[marketID] = msg.Offset
 		}
 
 		if msg.Offset >= checkpointOffset {
@@ -368,13 +457,21 @@ func (r *Replayer) loadCheckpoint(ctx context.Context, topic string, partition i
 
 func (r *Replayer) loadLatestSnapshot(ctx context.Context, marketID string, checkpoint int64) (*orderbook.BookSnapshot, []byte, error) {
 	query := `
-		SELECT snapshot, checksum FROM market_snapshots
+		SELECT market_id, sequence, partition, "offset", schema_version, snapshot, checksum FROM market_snapshots
 		WHERE market_id = $1 AND "offset" <= $2
-		ORDER BY sequence DESC LIMIT 1`
+		ORDER BY "offset" DESC, sequence DESC LIMIT 1`
 
+	var dbMarketID string
+	var dbSequence int64
+	var dbPartition int
+	var dbOffset int64
+	var dbSchemaVersion int
 	var snapJSON []byte
 	var checksum []byte
-	err := r.db.QueryRow(ctx, query, marketID, checkpoint).Scan(&snapJSON, &checksum)
+
+	err := r.db.QueryRow(ctx, query, marketID, checkpoint).Scan(
+		&dbMarketID, &dbSequence, &dbPartition, &dbOffset, &dbSchemaVersion, &snapJSON, &checksum,
+	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil, nil
@@ -386,6 +483,18 @@ func (r *Replayer) loadLatestSnapshot(ctx context.Context, marketID string, chec
 	if err := json.Unmarshal(snapJSON, &snap); err != nil {
 		return nil, nil, fmt.Errorf("unmarshal snapshot struct: %w", err)
 	}
+
+	// Validate DB columns against snapshot payload properties to guard against row corruption (Issue 5)
+	if dbMarketID != snap.MarketID ||
+		dbSequence != int64(snap.Sequence) ||
+		dbPartition != snap.Partition ||
+		dbOffset != snap.Offset ||
+		dbSchemaVersion != int(snap.SchemaVersion) {
+		return nil, nil, fmt.Errorf("snapshot metadata corruption: DB columns (market=%s, seq=%d, partition=%d, offset=%d, version=%d) do not match JSON snapshot content (market=%s, seq=%d, partition=%d, offset=%d, version=%d)",
+			dbMarketID, dbSequence, dbPartition, dbOffset, dbSchemaVersion,
+			snap.MarketID, snap.Sequence, snap.Partition, snap.Offset, snap.SchemaVersion)
+	}
+
 	return &snap, checksum, nil
 }
 
@@ -402,66 +511,6 @@ func (r *Replayer) loadMarketSequence(ctx context.Context, marketID string) (uin
 	return seq, nil
 }
 
-func (r *Replayer) highWatermark(topic string, partition int) (int64, error) {
-	addr := r.brokers[0]
-	conn, err := kafkago.DialLeader(context.Background(), "tcp", addr, topic, partition)
-	if err != nil {
-		rawConn, dialErr := net.Dial("tcp", addr)
-		if dialErr != nil {
-			return 0, fmt.Errorf("dial leader (topic=%s partition=%d): %w", topic, partition, err)
-		}
-		rawConn.Close()
-		return 0, fmt.Errorf("dial leader (topic=%s partition=%d): %w", topic, partition, err)
-	}
-	conn.Close()
 
-	last, err := conn.ReadLastOffset()
-	if err != nil {
-		return 0, fmt.Errorf("read last offset (topic=%s partition=%d): %w", topic, partition, err)
-	}
-	return last, nil
-}
 
-func (r *Replayer) pushFreshDepth(ctx context.Context, engine *market.MarketEngine) error {
-	snap := engine.GetDepth(20)
 
-	type depthLevel struct {
-		Price    string `json:"price"`
-		Quantity string `json:"quantity"`
-	}
-	type depthMsg struct {
-		MarketID   string       `json:"market_id"`
-		Sequence   uint64       `json:"sequence"`
-		Bids       []depthLevel `json:"bids"`
-		Asks       []depthLevel `json:"asks"`
-		SnapshotAt string       `json:"snapshot_at"`
-	}
-
-	bids := make([]depthLevel, len(snap.Bids))
-	asks := make([]depthLevel, len(snap.Asks))
-	for i, b := range snap.Bids {
-		bids[i] = depthLevel{Price: b.Price.String(), Quantity: b.Quantity.String()}
-	}
-	for i, a := range snap.Asks {
-		asks[i] = depthLevel{Price: a.Price.String(), Quantity: a.Quantity.String()}
-	}
-
-	msg := depthMsg{
-		MarketID:   snap.MarketID,
-		Sequence:   snap.Sequence,
-		Bids:       bids,
-		Asks:       asks,
-		SnapshotAt: snap.SnapshotAt.UTC().Format(time.RFC3339Nano),
-	}
-
-	b, err := json.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal depth: %w", err)
-	}
-
-	res := r.redis.Set(ctx, "depth:"+snap.MarketID, b, 0)
-	if res == nil {
-		return fmt.Errorf("redis set returned nil cmd")
-	}
-	return res.Err()
-}

@@ -16,6 +16,10 @@ func newBook() *orderbook.OrderBook {
 	return orderbook.NewOrderBook("BTC-USDT")
 }
 
+func match(book *orderbook.OrderBook, incoming *orderbook.OrderNode, mode matcher.Mode) []orderbook.Fill {
+	return matcher.Match(book, incoming, mode, uuid.New())
+}
+
 func limitNode(side orderbook.SideType, price, qty string) *orderbook.OrderNode {
 	return &orderbook.OrderNode{
 		OrderID:      uuid.New(),
@@ -200,7 +204,7 @@ func TestMatch_LimitBuyVsSellLimit_FullFill(t *testing.T) {
 
 	// Incoming BUY @ 100, qty 1
 	buy := limitNode(orderbook.SideBuy, "100", "1")
-	fills := matcher.Match(book, buy, matcher.ModeLive)
+	fills := match(book, buy, matcher.ModeLive)
 
 	if len(fills) != 1 {
 		t.Fatalf("expected 1 fill, got %d", len(fills))
@@ -230,7 +234,7 @@ func TestMatch_LimitSellVsBuyLimit_FullFill(t *testing.T) {
 
 	// Incoming SELL @ 100
 	sell := limitNode(orderbook.SideSell, "100", "2")
-	fills := matcher.Match(book, sell, matcher.ModeLive)
+	fills := match(book, sell, matcher.ModeLive)
 
 	if len(fills) != 1 {
 		t.Fatalf("expected 1 fill, got %d", len(fills))
@@ -248,7 +252,7 @@ func TestMatch_NoMatch_PricesDoNotOverlap(t *testing.T) {
 
 	// Incoming BUY @ 100 — cannot cross 101
 	buy := limitNode(orderbook.SideBuy, "100", "1")
-	fills := matcher.Match(book, buy, matcher.ModeLive)
+	fills := match(book, buy, matcher.ModeLive)
 
 	if len(fills) != 0 {
 		t.Fatalf("expected 0 fills, got %d", len(fills))
@@ -268,7 +272,7 @@ func TestMatch_PartialFill_MakerPartiallyConsumed(t *testing.T) {
 
 	// Incoming BUY @ 100, qty 2 — only 2 filled, maker stays with 3 remaining
 	buy := limitNode(orderbook.SideBuy, "100", "2")
-	fills := matcher.Match(book, buy, matcher.ModeLive)
+	fills := match(book, buy, matcher.ModeLive)
 
 	if len(fills) != 1 {
 		t.Fatalf("expected 1 fill, got %d", len(fills))
@@ -299,7 +303,7 @@ func TestMatch_PartialFill_TakerPartiallyFills_RemainsRests(t *testing.T) {
 
 	// Incoming BUY @ 100, qty 3 — only 1 filled, 2 remains and rests
 	buy := limitNode(orderbook.SideBuy, "100", "3")
-	fills := matcher.Match(book, buy, matcher.ModeLive)
+	fills := match(book, buy, matcher.ModeLive)
 
 	if len(fills) != 1 {
 		t.Fatalf("expected 1 fill, got %d", len(fills))
@@ -325,7 +329,7 @@ func TestMatch_MultiLevelSweep(t *testing.T) {
 
 	// Incoming BUY @ 102 — sweeps both levels
 	buy := limitNode(orderbook.SideBuy, "102", "2")
-	fills := matcher.Match(book, buy, matcher.ModeLive)
+	fills := match(book, buy, matcher.ModeLive)
 
 	if len(fills) != 2 {
 		t.Fatalf("expected 2 fills (one per level), got %d", len(fills))
@@ -351,7 +355,7 @@ func TestMatch_Market_FullFill(t *testing.T) {
 
 	// MARKET BUY qty 2
 	buy := marketNode(orderbook.SideBuy, "2")
-	fills := matcher.Match(book, buy, matcher.ModeLive)
+	fills := match(book, buy, matcher.ModeLive)
 
 	if len(fills) != 1 {
 		t.Fatalf("expected 1 fill, got %d", len(fills))
@@ -372,7 +376,7 @@ func TestMatch_Market_IOC_PartialFill(t *testing.T) {
 
 	// MARKET BUY qty 3 — only 1 fills, remainder is IOC (not inserted)
 	buy := marketNode(orderbook.SideBuy, "3")
-	fills := matcher.Match(book, buy, matcher.ModeLive)
+	fills := match(book, buy, matcher.ModeLive)
 
 	if len(fills) != 1 {
 		t.Fatalf("expected 1 fill, got %d", len(fills))
@@ -392,7 +396,7 @@ func TestMatch_Market_NoLiquidity(t *testing.T) {
 
 	// Empty book — nothing to match against
 	buy := marketNode(orderbook.SideBuy, "1")
-	fills := matcher.Match(book, buy, matcher.ModeLive)
+	fills := match(book, buy, matcher.ModeLive)
 
 	if len(fills) != 0 {
 		t.Fatalf("expected 0 fills, got %d", len(fills))
@@ -408,7 +412,7 @@ func TestMatch_RecoveryMode_ReturnsNil(t *testing.T) {
 	matcher.Insert(book, limitNode(orderbook.SideSell, "100", "1"))
 
 	buy := limitNode(orderbook.SideBuy, "100", "1")
-	fills := matcher.Match(book, buy, matcher.ModeRecovery)
+	fills := match(book, buy, matcher.ModeRecovery)
 
 	// RECOVERY mode must always return nil — output suppressed
 	if fills != nil {
@@ -437,7 +441,7 @@ func TestMatch_TimePriority_EarlierOrderFillsFirst(t *testing.T) {
 
 	// BUY fills only 1 — must fill sellA (earlier) first
 	buy := limitNode(orderbook.SideBuy, "100", "1")
-	fills := matcher.Match(book, buy, matcher.ModeLive)
+	fills := match(book, buy, matcher.ModeLive)
 
 	if len(fills) != 1 {
 		t.Fatalf("expected 1 fill, got %d", len(fills))
@@ -460,7 +464,7 @@ func TestMatch_MakerPrice_AlwaysUsed(t *testing.T) {
 
 	// Incoming BUY @ 105 (taker willing to pay more)
 	buy := limitNode(orderbook.SideBuy, "105", "1")
-	fills := matcher.Match(book, buy, matcher.ModeLive)
+	fills := match(book, buy, matcher.ModeLive)
 
 	if len(fills) != 1 {
 		t.Fatalf("expected 1 fill")
@@ -478,7 +482,7 @@ func TestMatch_FillIDs_BuyerSeller_Correct(t *testing.T) {
 	matcher.Insert(book, sell)
 
 	buy := limitNode(orderbook.SideBuy, "100", "1")
-	fills := matcher.Match(book, buy, matcher.ModeLive)
+	fills := match(book, buy, matcher.ModeLive)
 
 	if len(fills) != 1 {
 		t.Fatalf("expected 1 fill")
@@ -555,3 +559,62 @@ func TestGetDepth_TotalQtyCorrect(t *testing.T) {
 		t.Fatalf("expected quantity=4, got %s", snap.Asks[0].Quantity)
 	}
 }
+
+func TestMatch_DeterministicTradeIDs(t *testing.T) {
+	sellOrderID := uuid.New()
+	buyOrderID := uuid.New()
+	eventID1 := uuid.New()
+
+	// First match execution (eventID1)
+	book1 := newBook()
+	sell1 := limitNode(orderbook.SideSell, "100", "1")
+	sell1.OrderID = sellOrderID
+	matcher.Insert(book1, sell1)
+	buy1 := limitNode(orderbook.SideBuy, "100", "1")
+	buy1.OrderID = buyOrderID
+	fills1 := matcher.Match(book1, buy1, matcher.ModeLive, eventID1)
+
+	if len(fills1) != 1 {
+		t.Fatalf("expected 1 fill in first match run")
+	}
+
+	// Second match execution with identical inputs and identical eventID1 (represents crash replay)
+	book2 := newBook()
+	sell2 := limitNode(orderbook.SideSell, "100", "1")
+	sell2.OrderID = sellOrderID
+	matcher.Insert(book2, sell2)
+	buy2 := limitNode(orderbook.SideBuy, "100", "1")
+	buy2.OrderID = buyOrderID
+	fills2 := matcher.Match(book2, buy2, matcher.ModeLive, eventID1)
+
+	if len(fills2) != 1 {
+		t.Fatalf("expected 1 fill in second match run")
+	}
+
+	// Third match execution with identical orders but a different eventID2
+	eventID2 := uuid.New()
+	book3 := newBook()
+	sell3 := limitNode(orderbook.SideSell, "100", "1")
+	sell3.OrderID = sellOrderID
+	matcher.Insert(book3, sell3)
+	buy3 := limitNode(orderbook.SideBuy, "100", "1")
+	buy3.OrderID = buyOrderID
+	fills3 := matcher.Match(book3, buy3, matcher.ModeLive, eventID2)
+
+	if len(fills3) != 1 {
+		t.Fatalf("expected 1 fill in third match run")
+	}
+
+	id1 := fills1[0].TradeID
+	id2 := fills2[0].TradeID
+	id3 := fills3[0].TradeID
+
+	if id1 != id2 {
+		t.Errorf("expected deterministic trade IDs to match for identical eventID: %s vs %s", id1, id2)
+	}
+
+	if id1 == id3 {
+		t.Errorf("expected trade IDs to differ for different eventIDs: %s vs %s", id1, id3)
+	}
+}
+

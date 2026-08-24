@@ -151,7 +151,7 @@ func (m *MarketEngine) SetSequence(seq uint64) {
 
 // RestoreFromSnapshot validates metadata, resets the book structures, and restores book order nodes.
 func (m *MarketEngine) RestoreFromSnapshot(snap orderbook.BookSnapshot, expectedChecksum []byte, checkpoint int64) error {
-	if err := orderbook.Restore(m.book, snap, m.MarketID, m.config.Partition, checkpoint, expectedChecksum); err != nil {
+	if err := orderbook.Restore(m.book, snap, m.MarketID, m.config.Partition, checkpoint, expectedChecksum, m.config.TickSize, m.config.LotSize); err != nil {
 		return err
 	}
 	m.book.Sequence = snap.Sequence
@@ -167,4 +167,9 @@ func (m *MarketEngine) GetLastAppliedOffset() int64 {
 // Partition returns the Kafka partition ID assigned to this market.
 func (m *MarketEngine) Partition() int {
 	return m.config.Partition
+}
+
+// Mode returns the current engine mode.
+func (m *MarketEngine) Mode() Mode {
+	return m.mode
 }

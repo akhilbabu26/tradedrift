@@ -2,6 +2,7 @@ package matcher
 
 import (
 	"container/list"
+	"fmt"
 	"sort"
 	"time"
 
@@ -157,15 +158,21 @@ func GetDepth(book *orderbook.OrderBook, depth int) orderbook.DepthSnapshot {
 	}
 }
 
+// TradeID generates a deterministic Trade ID (UUID v5) from the matching variables (Issue 1)
+func TradeID(eventID uuid.UUID, makerID uuid.UUID, takerID uuid.UUID, fillIndex int) uuid.UUID {
+	return uuid.NewSHA1(uuid.NameSpaceDNS, []byte(fmt.Sprintf("%s:%s:%s:%d", eventID, makerID, takerID, fillIndex)))
+}
+
 // Match is the core matching loop.
 // Processes one incoming order against the opposite side of the book.
 // Returns []Fill — one Fill per individual trade.
 // One incoming order can produce multiple Fills (multi-level sweep).
 // In ModeRecovery, the algorithm runs identically but returns nil.
-func Match(book *orderbook.OrderBook, incoming *orderbook.OrderNode, mode Mode) []orderbook.Fill {
+func Match(book *orderbook.OrderBook, incoming *orderbook.OrderNode, mode Mode, eventID uuid.UUID) []orderbook.Fill {
 	fills := make([]orderbook.Fill, 0)
 	oppSide := getOppositeSide(book, incoming.Side)
 
+	fillIndex := 0
 	for incoming.RemainingQty.GreaterThan(decimal.Zero) {
 
 		best := ExecuteBest(oppSide)
@@ -179,9 +186,9 @@ func Match(book *orderbook.OrderBook, incoming *orderbook.OrderNode, mode Mode) 
 
 		fillQty := decimal.Min(incoming.RemainingQty, best.RemainingQty)
 
-		// Generate trade_id in-memory — no DB round-trip
-		// TODO: replace uuid.New() with UUIDv7 from platform/uuid
-		tradeID := uuid.New()
+		// Generate tradeID deterministically (Issue #2: Trade ID Determinism)
+		tradeID := TradeID(eventID, best.OrderID, incoming.OrderID, fillIndex)
+		fillIndex++
 
 		// Advance authoritative monotonically increasing trade execution sequence
 		book.Sequence++

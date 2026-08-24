@@ -71,4 +71,5 @@ type MatchResult struct {
 	SourcePosition KafkaPosition // ← replaces SourceOffset int64
 	Snapshot       *BookSnapshot // optional serialized order book state
 	BarrierReached bool          // true when EventRecoveryBarrier is processed
+	BarrierOffset  int64         // offset of the checkpoint watermark triggering the barrier
 }

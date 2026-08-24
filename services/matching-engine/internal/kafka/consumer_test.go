@@ -1,11 +1,14 @@
 package kafka_test
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/segmentio/kafka-go"
 	kafkapkg "tradedrift/services/matching-engine/internal/kafka"
 	"tradedrift/services/matching-engine/internal/market"
@@ -195,3 +198,127 @@ func TestHandleOrderCommand_MalformedJSON(t *testing.T) {
 		t.Fatal("expected routed=false on error")
 	}
 }
+
+type mockpgxRow struct {
+	val int64
+	err error
+}
+
+func (r *mockpgxRow) Scan(dest ...any) error {
+	if r.err != nil {
+		return r.err
+	}
+	*(dest[0].(*int64)) = r.val
+	return nil
+}
+
+type mockConsumerDB struct {
+	checkpoints map[string]int64
+}
+
+func (db *mockConsumerDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	topic := args[0].(string)
+	partition := args[1].(int)
+	key := fmt.Sprintf("%s/%d", topic, partition)
+	if val, ok := db.checkpoints[key]; ok {
+		return &mockpgxRow{val: val}
+	}
+	return &mockpgxRow{err: fmt.Errorf("no row")}
+}
+
+type mockOffsetTracker struct{}
+
+func (m *mockOffsetTracker) Track(pos orderbook.KafkaPosition) {}
+func (m *mockOffsetTracker) MarkDone(ctx context.Context, pos orderbook.KafkaPosition) error {
+	return nil
+}
+
+func TestConsumer_SeekToPostgresCheckpoints(t *testing.T) {
+	db := &mockConsumerDB{
+		checkpoints: map[string]int64{
+			"orders.commands/0": 100,
+			"orders.commands/1": 200,
+		},
+	}
+
+	manager := market.NewMarketManager()
+	tracker := &mockOffsetTracker{}
+
+	consumer := kafkapkg.NewConsumer(kafkapkg.Config{
+		Brokers: []string{"localhost:9092"},
+		GroupID: "test-group",
+		DB:      db,
+	}, manager, tracker)
+
+	// Mock partition discovery
+	var committedOffset []int64
+	var committedPartition []int
+	consumer.OverrideDiscoveryAndCommit(
+		func(topic string) ([]int, error) {
+			return []int{0, 1}, nil
+		},
+		func(ctx context.Context, brokers []string, topic string, groupID string, partition int, offset int64) error {
+			committedPartition = append(committedPartition, partition)
+			committedOffset = append(committedOffset, offset)
+			return nil
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	consumer.Start(ctx, func() {})
+
+	if len(committedOffset) != 2 {
+		t.Fatalf("expected 2 offset commits, got %d", len(committedOffset))
+	}
+	if committedPartition[0] != 0 || committedOffset[0] != 100 {
+		t.Errorf("expected partition 0 to seek to 100, got partition %d at %d", committedPartition[0], committedOffset[0])
+	}
+	if committedPartition[1] != 1 || committedOffset[1] != 200 {
+		t.Errorf("expected partition 1 to seek to 200, got partition %d at %d", committedPartition[1], committedOffset[1])
+	}
+}
+
+func TestConsumer_SeekToPostgresCheckpoints_Failure(t *testing.T) {
+	db := &mockConsumerDB{
+		checkpoints: map[string]int64{
+			"orders.commands/0": 100,
+		},
+	}
+
+	manager := market.NewMarketManager()
+	tracker := &mockOffsetTracker{}
+
+	consumer := kafkapkg.NewConsumer(kafkapkg.Config{
+		Brokers: []string{"localhost:9092"},
+		GroupID: "test-group",
+		DB:      db,
+	}, manager, tracker)
+
+	// Mock partition discovery and make commit fail (Issue 2 / Test H)
+	consumer.OverrideDiscoveryAndCommit(
+		func(topic string) ([]int, error) {
+			return []int{0}, nil
+		},
+		func(ctx context.Context, brokers []string, topic string, groupID string, partition int, offset int64) error {
+			return fmt.Errorf("simulated broker offset commit failure")
+		},
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var cancelCalled bool
+	cancelTracker := func() {
+		cancelCalled = true
+		cancel()
+	}
+
+	consumer.Start(ctx, cancelTracker)
+
+	if !cancelCalled {
+		t.Fatal("expected fail-stop cancellation on dynamic offset committed positioning failure")
+	}
+}
+

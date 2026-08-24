@@ -119,6 +119,8 @@ func Restore(
 	partition int,
 	checkpoint int64,
 	expectedChecksum []byte,
+	tickSize decimal.Decimal,
+	lotSize decimal.Decimal,
 ) error {
 	if snap.SchemaVersion != CurrentSchemaVersion {
 		return ErrSnapshotSchemaMismatch
@@ -182,21 +184,27 @@ func Restore(
 			return fmt.Errorf("invalid snapshot remaining quantity %q: %w", o.RemainingQty, err)
 		}
 
-		// Validation checks (Issue #8)
+		// Validation checks (Issue #8 & v9.4 Patches)
 		if SideType(o.Side) != SideBuy && SideType(o.Side) != SideSell {
 			return fmt.Errorf("invalid snapshot side %q", o.Side)
 		}
-		if OrderType(o.OrderType) != OrderTypeLimit && OrderType(o.OrderType) != OrderTypeMarket {
-			return fmt.Errorf("invalid snapshot order type %q", o.OrderType)
+		if OrderType(o.OrderType) != OrderTypeLimit {
+			return fmt.Errorf("invalid snapshot: order type %q not supported for resting order in book", o.OrderType)
 		}
 		if origQty.LessThanOrEqual(decimal.Zero) {
 			return fmt.Errorf("invalid snapshot original qty %s: must be > 0", origQty)
 		}
-		if remQty.LessThan(decimal.Zero) {
-			return fmt.Errorf("invalid snapshot remaining qty %s: must be >= 0", remQty)
+		if remQty.LessThanOrEqual(decimal.Zero) {
+			return fmt.Errorf("invalid snapshot remaining qty %s: must be > 0 for resting order", remQty)
 		}
 		if remQty.GreaterThan(origQty) {
 			return fmt.Errorf("invalid snapshot remaining qty %s cannot exceed original qty %s", remQty, origQty)
+		}
+		if !price.Mod(tickSize).IsZero() {
+			return fmt.Errorf("invalid snapshot order price %s: does not conform to tick size %s", price, tickSize)
+		}
+		if !remQty.Mod(lotSize).IsZero() {
+			return fmt.Errorf("invalid snapshot order remaining qty %s: does not conform to lot size %s", remQty, lotSize)
 		}
 		if OrderType(o.OrderType) == OrderTypeLimit && price.LessThanOrEqual(decimal.Zero) {
 			return fmt.Errorf("invalid snapshot limit price %s: must be > 0", price)

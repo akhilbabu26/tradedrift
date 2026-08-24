@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	kafkago "github.com/segmentio/kafka-go"
 	"github.com/shopspring/decimal"
 
@@ -46,6 +47,10 @@ type orderCancelPayload struct {
 
 type routeFunc func(marketID string) chan market.InputEvent
 
+type dbQueryer interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 type offsetTracker interface {
 	Track(pos orderbook.KafkaPosition)
 	MarkDone(ctx context.Context, pos orderbook.KafkaPosition) error
@@ -57,21 +62,30 @@ type kafkaCommitter interface {
 
 // Consumer reads from the orders.commands Kafka topic and routes InputEvents.
 type Consumer struct {
-	commandReader *kafkago.Reader
-	manager       *market.MarketManager
-	tracker       offsetTracker
-	cancelCtx     context.CancelFunc // context cancel func to fail closed gracefully (Issue #10)
+	commandReader          *kafkago.Reader
+	manager                *market.MarketManager
+	tracker                offsetTracker
+	cancelCtx              context.CancelFunc // context cancel func to fail closed gracefully (Issue #10)
+	brokers                []string
+	groupID                string
+	db                     dbQueryer
+	discoverPartitionsFunc func(topic string) ([]int, error)
+	commitMessagesFunc     func(ctx context.Context, brokers []string, topic string, groupID string, partition int, offset int64) error
 }
 
 type Config struct {
 	Brokers []string
 	GroupID string
+	DB      dbQueryer
 }
 
 func NewConsumer(cfg Config, manager *market.MarketManager, tracker offsetTracker) *Consumer {
 	c := &Consumer{
 		manager: manager,
 		tracker: tracker,
+		brokers: cfg.Brokers,
+		groupID: cfg.GroupID,
+		db:      cfg.DB,
 		commandReader: kafkago.NewReader(kafkago.ReaderConfig{
 			Brokers:        cfg.Brokers,
 			Topic:          TopicOrderCommands,
@@ -81,6 +95,37 @@ func NewConsumer(cfg Config, manager *market.MarketManager, tracker offsetTracke
 			MaxWait:        1 * time.Second,
 			CommitInterval: 0,
 		}),
+	}
+	c.discoverPartitionsFunc = func(topic string) ([]int, error) {
+		conn, err := kafkago.Dial("tcp", c.brokers[0])
+		if err != nil {
+			return nil, err
+		}
+		parts, err := conn.ReadPartitions(topic)
+		conn.Close()
+		if err != nil {
+			return nil, err
+		}
+		partitionIDs := make([]int, len(parts))
+		for i, p := range parts {
+			partitionIDs[i] = p.ID
+		}
+		return partitionIDs, nil
+	}
+	c.commitMessagesFunc = func(ctx context.Context, brokers []string, topic string, groupID string, partition int, offset int64) error {
+		tempReader := kafkago.NewReader(kafkago.ReaderConfig{
+			Brokers: brokers,
+			Topic:   topic,
+			GroupID: groupID,
+		})
+		defer tempReader.Close()
+		commitCtx, cancelCommit := context.WithTimeout(ctx, 5*time.Second)
+		defer cancelCommit()
+		return tempReader.CommitMessages(commitCtx, kafkago.Message{
+			Topic:     topic,
+			Partition: partition,
+			Offset:    offset,
+		})
 	}
 
 	if committerReg, ok := tracker.(interface {
@@ -95,11 +140,56 @@ func NewConsumer(cfg Config, manager *market.MarketManager, tracker offsetTracke
 // Start launches the consumer read loop.
 func (c *Consumer) Start(ctx context.Context, cancel context.CancelFunc) {
 	c.cancelCtx = cancel
+	if err := c.seekToPostgresCheckpoints(ctx); err != nil {
+		log.Printf("[kafka] FATAL positioning error: %v", err)
+		cancel()
+		return
+	}
 	go c.consume(ctx, c.commandReader, c.handleOrderCommand)
+}
+
+func (c *Consumer) seekToPostgresCheckpoints(ctx context.Context) error {
+	if c.db == nil {
+		return nil
+	}
+
+	// 1. Discover partitions dynamically
+	partitions, err := c.discoverPartitionsFunc(TopicOrderCommands)
+	if err != nil {
+		return fmt.Errorf("discover partitions: %w", err)
+	}
+
+	// 2. Commit postgres checkpoint for each partition to seek the group (Issue 1)
+	for _, pID := range partitions {
+		var savedOffset int64
+		err := c.db.QueryRow(ctx,
+			`SELECT "offset" FROM kafka_checkpoints WHERE topic = $1 AND partition = $2`,
+			TopicOrderCommands, pID,
+		).Scan(&savedOffset)
+		if err != nil {
+			continue // No checkpoint, start offset defaults to earliest/latest depending on config
+		}
+
+		err = c.commitMessagesFunc(ctx, c.brokers, TopicOrderCommands, c.groupID, pID, savedOffset)
+		if err != nil {
+			return fmt.Errorf("align Kafka group offset for partition %d to PostgreSQL checkpoint %d: %w", pID, savedOffset, err)
+		}
+		log.Printf("[kafka] positioned partition %d offset on broker to %d (LIVE will consume from %d)", pID, savedOffset, savedOffset+1)
+	}
+	return nil
 }
 
 func (c *Consumer) Close() error {
 	return c.commandReader.Close()
+}
+
+// OverrideDiscoveryAndCommit overrides partition discovery and offset committing for unit tests (Issue I).
+func (c *Consumer) OverrideDiscoveryAndCommit(
+	discover func(topic string) ([]int, error),
+	commit func(ctx context.Context, brokers []string, topic string, groupID string, partition int, offset int64) error,
+) {
+	c.discoverPartitionsFunc = discover
+	c.commitMessagesFunc = commit
 }
 
 func (c *Consumer) consume(
@@ -128,7 +218,7 @@ func (c *Consumer) consume(
 			c.tracker.Track(pos)
 		}
 
-		routed, err := handler(msg)
+		_, err = handler(msg)
 		if err != nil {
 			// INVARIANT (Issue #10): Fail-Closed policy on live malformed command.
 			// Trigger graceful shutdown immediately to prevent divergence or CPU spin loops.
@@ -140,13 +230,6 @@ func (c *Consumer) consume(
 			return
 		}
 
-		// INTENTIONAL SKIP: unknown market_id.
-		if !routed && c.tracker != nil {
-			if err := c.tracker.MarkDone(ctx, pos); err != nil {
-				log.Printf("[kafka] checkpoint skip-acknowledgment error (topic=%s partition=%d offset=%d): %v",
-					pos.Topic, pos.Partition, pos.Offset, err)
-			}
-		}
 	}
 }
 

@@ -110,32 +110,9 @@ func run() error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	// Dynamic partition assignment based on Kafka balancer (Issue #4)
-	var partitionList []kafkago.Partition
-	{
-		kConn, err := kafkago.Dial("tcp", cfg.KafkaBrokers[0])
-		if err != nil {
-			return fmt.Errorf("dial kafka for partition discovery: %w", err)
-		}
-		parts, err := kConn.ReadPartitions(intkafka.TopicOrderCommands)
-		kConn.Close()
-		if err != nil {
-			return fmt.Errorf("read partitions for TopicOrderCommands: %w", err)
-		}
-		partitionList = parts
-	}
-
 	configs := marketConfigs()
-	balancer := &kafkago.Hash{}
-	partitionIDs := make([]int, len(partitionList))
-	for i, p := range partitionList {
-		partitionIDs[i] = p.ID
-	}
-	for i := range configs {
-		msg := kafkago.Message{Key: []byte(configs[i].MarketID)}
-		pID := balancer.Balance(msg, partitionIDs...)
-		configs[i].Partition = pID
-		log.Printf("[server] dynamically mapped market %s to partition %d", configs[i].MarketID, pID)
+	for _, mc := range configs {
+		log.Printf("[server] using static assignment for market %s on partition %d", mc.MarketID, mc.Partition)
 	}
 
 	if err := validateMarketConfigs(configs); err != nil {
@@ -153,52 +130,7 @@ func run() error {
 	}
 	log.Println("[server] postgres connected")
 
-	// Create tables
-	createTableSQL := `
-	CREATE TABLE IF NOT EXISTS kafka_checkpoints (
-		topic      VARCHAR(255) NOT NULL,
-		partition  INTEGER      NOT NULL,
-		"offset"     BIGINT       NOT NULL,
-		updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-		PRIMARY KEY (topic, partition)
-	);`
-	if _, err := db.Exec(opCtx, createTableSQL); err != nil {
-		return fmt.Errorf("init kafka_checkpoints table: %w", err)
-	}
 
-	createSeqTableSQL := `
-	CREATE TABLE IF NOT EXISTS market_sequences (
-		market_id  VARCHAR(64)  NOT NULL,
-		sequence   BIGINT       NOT NULL DEFAULT 0,
-		updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-		PRIMARY KEY (market_id)
-	);`
-	if _, err := db.Exec(opCtx, createSeqTableSQL); err != nil {
-		return fmt.Errorf("init market_sequences table: %w", err)
-	}
-
-	// Schema creation for market_snapshots (Issue #9)
-	createSnapTableSQL := `
-	CREATE TABLE IF NOT EXISTS market_snapshots (
-		market_id      VARCHAR(64)  NOT NULL,
-		sequence       BIGINT       NOT NULL,
-		partition      INTEGER      NOT NULL,
-		"offset"       BIGINT       NOT NULL,
-		schema_version INTEGER      NOT NULL,
-		snapshot       JSONB        NOT NULL,
-		checksum       BYTEA        NOT NULL,
-		created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-		PRIMARY KEY (market_id, sequence)
-	);`
-	if _, err := db.Exec(opCtx, createSnapTableSQL); err != nil {
-		return fmt.Errorf("init market_snapshots table: %w", err)
-	}
-
-	createSnapIndexSQL := `
-	CREATE INDEX IF NOT EXISTS idx_market_snapshots_market_sequence ON market_snapshots (market_id, sequence DESC);`
-	if _, err := db.Exec(opCtx, createSnapIndexSQL); err != nil {
-		return fmt.Errorf("init market_snapshots index: %w", err)
-	}
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr:         cfg.RedisAddr,
@@ -234,11 +166,11 @@ func run() error {
 
 	coord := checkpoint.NewCoordinator(checkpoint.WrapPGXPool(db))
 
-	// Discover and initialize partition baselines
+	// Initialize baseline checkpoints for coordinator from DB (Issue E)
 	{
 		kConn, err := kafkago.Dial("tcp", cfg.KafkaBrokers[0])
 		if err != nil {
-			return fmt.Errorf("dial kafka for partition discovery: %w", err)
+			return fmt.Errorf("dial kafka for checkpoint baseline: %w", err)
 		}
 		parts, err := kConn.ReadPartitions(intkafka.TopicOrderCommands)
 		kConn.Close()
@@ -283,6 +215,7 @@ func run() error {
 	consumer := intkafka.NewConsumer(intkafka.Config{
 		Brokers: cfg.KafkaBrokers,
 		GroupID: cfg.KafkaGroupID,
+		DB:      db,
 	}, manager, coord)
 	defer consumer.Close()
 
@@ -297,6 +230,9 @@ func run() error {
 	<-opCtx.Done()
 
 	// DETERMINISTIC STAGED GRACEFUL SHUTDOWN (Issue #6)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+
 	log.Println("[server] [shutdown phase 1/4] stopping consumer intake...")
 	cancelConsumer()
 	consumer.Close()
@@ -305,20 +241,38 @@ func run() error {
 	manager.CloseInputQueues()
 
 	log.Println("[server] [shutdown phase 3/4] waiting for engines to exit...")
-	engineWg.Wait()
-
-	log.Println("[server] [shutdown phase 4/4] waiting for publisher drain...")
-	done := make(chan struct{})
+	enginesDone := make(chan struct{})
 	go func() {
-		wg.Wait()
-		close(done)
+		engineWg.Wait()
+		close(enginesDone)
 	}()
 
 	select {
-	case <-done:
-		log.Println("[server] graceful shutdown complete")
-	case <-time.After(30 * time.Second): // Graceful shutdown timeout (Issue #8)
-		log.Println("[server] shutdown timeout expired (30s) — forcing process termination")
+	case <-enginesDone:
+		log.Println("[server] ✓ engines stopped cleanly")
+	case <-shutdownCtx.Done():
+		log.Println("[server] [shutdown timeout] forcing exit waiting for engines")
+		os.Exit(1)
+	}
+
+	log.Println("[server] [shutdown phase 4/4] waiting for publisher drain...")
+	cancelPub() // signal publisher goroutines to exit and drain (Issue 11/12)
+
+	pubDone := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(pubDone)
+	}()
+
+	select {
+	case <-pubDone:
+		if pub.HasDrainFailed() {
+			log.Println("[server] [shutdown error] publisher drain failed — forcing exit with status 1")
+			os.Exit(1)
+		}
+		log.Println("[server] [shutdown complete] all systems stopped cleanly")
+	case <-shutdownCtx.Done():
+		log.Println("[server] [shutdown timeout] forcing exit waiting for publisher drain")
 		os.Exit(1)
 	}
 

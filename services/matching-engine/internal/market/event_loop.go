@@ -43,6 +43,12 @@ func (m *MarketEngine) Run(ctx context.Context) {
 						MarketID: m.MarketID,
 					},
 					BarrierReached: true,
+					BarrierOffset:  event.Offset,
+					SourcePosition: orderbook.KafkaPosition{
+						Topic:     event.Topic,
+						Partition: event.Partition,
+						Offset:    event.Offset,
+					},
 				}
 				continue
 			}
@@ -219,7 +225,7 @@ func (m *MarketEngine) applyEvent(event InputEvent) (*orderbook.MatchResult, err
 			}, nil
 		}
 
-		fills := matcher.Match(m.book, node, matcherMode)
+		fills := matcher.Match(m.book, node, matcherMode, event.EventID)
 
 		var cancel *orderbook.CancelledOrder
 		if node.OrderType == orderbook.OrderTypeMarket &&

@@ -31,6 +31,8 @@ The `kafka_checkpoints` table is the **single source of truth for crash recovery
 | File | Target Table | Description |
 | :--- | :--- | :--- |
 | `00001_create_kafka_checkpoints.sql` | `kafka_checkpoints` | Creates the primary checkpoint tracking table with composite primary key `(topic, partition)` |
+| `00002_create_market_sequences.sql` | `market_sequences` | Creates the sequence tracking table for individual markets |
+| `00003_create_market_snapshots.sql` | `market_snapshots` | Creates the order book state snapshot table and its sequence indexes |
 | `README.md` | — | This documentation file |
 
 ---

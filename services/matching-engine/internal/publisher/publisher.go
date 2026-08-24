@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -80,6 +81,11 @@ type Publisher struct {
 	latestDepth     map[string]orderbook.DepthSnapshot
 	HaltCallback    func()
 	retentionCancel context.CancelFunc
+	drainFailed     int32
+}
+
+func (p *Publisher) HasDrainFailed() bool {
+	return atomic.LoadInt32(&p.drainFailed) == 1
 }
 
 func NewPublisher(brokers []string, rdb *redis.Client, coord checkpointCoordinator, db dbWriter) *Publisher {
@@ -187,8 +193,15 @@ func (p *Publisher) Run(ctx context.Context, engine *market.MarketEngine) {
 						return
 					}
 					if err := p.process(drainCtx, result); err != nil {
-						log.Printf("[publisher] drain error (market=%s offset=%d): %v",
+						atomic.StoreInt32(&p.drainFailed, 1)
+						log.Printf("[publisher] FATAL drain error (market=%s offset=%d): %v",
 							engine.MarketID, result.SourcePosition.Offset, err)
+						if p.HaltCallback != nil {
+							p.HaltCallback()
+						} else if engine.HaltCallback != nil {
+							engine.HaltCallback()
+						}
+						return
 					}
 				default:
 					p.flushPendingDepthRetries(drainCtx, engine.MarketID)

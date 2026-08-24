@@ -1,6 +1,5 @@
--- 00001_create_kafka_checkpoints.sql
+-- +goose Up
 -- Matching Engine PostgreSQL Durability Checkpoint Table
-
 CREATE TABLE IF NOT EXISTS kafka_checkpoints (
     topic      VARCHAR(255) NOT NULL,
     partition  INTEGER      NOT NULL,
@@ -8,3 +7,6 @@ CREATE TABLE IF NOT EXISTS kafka_checkpoints (
     updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     PRIMARY KEY (topic, partition)
 );
+
+-- +goose Down
+DROP TABLE IF EXISTS kafka_checkpoints;

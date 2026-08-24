@@ -1,6 +1,5 @@
--- 00003_create_market_snapshots.sql
+-- +goose Up
 -- Matching Engine PostgreSQL Snapshot Table
-
 CREATE TABLE IF NOT EXISTS market_snapshots (
     market_id      VARCHAR(64)  NOT NULL,
     sequence       BIGINT       NOT NULL,
@@ -14,3 +13,7 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
 );
 
 CREATE INDEX IF NOT EXISTS idx_market_snapshots_market_sequence ON market_snapshots (market_id, sequence DESC);
+
+-- +goose Down
+DROP INDEX IF EXISTS idx_market_snapshots_market_sequence;
+DROP TABLE IF EXISTS market_snapshots;

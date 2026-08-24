@@ -20,10 +20,11 @@ type rawRedisDepth struct {
 	SnapshotAt string `json:"snapshot_at"`
 }
 
-// RawTradeEvent is the internal matching engine event format.
+// RawTradeEvent is the internal matching engine event format received from Kafka.
 type RawTradeEvent struct {
 	TradeID      string    `json:"trade_id"`
 	MarketID     string    `json:"market_id"`
+	Sequence     uint64    `json:"sequence"` // authoritative sequence from matching engine
 	Price        string    `json:"price"`
 	Quantity     string    `json:"quantity"`
 	Side         string    `json:"side"`

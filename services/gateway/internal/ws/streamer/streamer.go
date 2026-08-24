@@ -42,10 +42,6 @@ type Streamer struct {
 	tickerAvailability map[string]availabilityState
 	availMu            sync.Mutex
 
-	// Per-market trade sequence counters (Gateway assigned for Kafka events).
-	tradeSeqs map[string]uint64
-	seqMu     sync.Mutex
-
 	// Kafka resilience metrics.
 	kafkaErrorsTotal     int64
 	kafkaReconnectsTotal int64
@@ -78,7 +74,6 @@ func NewStreamer(
 		tickerHashes:       make(map[string]uint64),
 		depthAvailability:  make(map[string]availabilityState),
 		tickerAvailability: make(map[string]availabilityState),
-		tradeSeqs:          make(map[string]uint64),
 	}
 }
 
@@ -104,14 +99,6 @@ func (s *Streamer) Start(ctx context.Context) {
 	go s.runKafkaTradeStreamer(ctx)
 }
 
-// NextTradeSeq returns the next gateway-assigned trade sequence for a market.
-func (s *Streamer) NextTradeSeq(marketID string) uint64 {
-	s.seqMu.Lock()
-	defer s.seqMu.Unlock()
-	s.tradeSeqs[marketID]++
-	return s.tradeSeqs[marketID]
-}
-
 // ─── SnapshotProvider Implementation ─────────────────────────────────────────
 
 // GetImmediateOrderBook retrieves the current Level-2 depth snapshot from Redis.
@@ -132,6 +119,10 @@ func (s *Streamer) GetImmediateOrderBook(marketID string) (*protocol.OrderBookDe
 	var raw rawRedisDepth
 	if err := json.Unmarshal([]byte(val), &raw); err != nil {
 		return nil, err
+	}
+
+	if raw.Sequence == 0 {
+		return nil, errors.New("invalid or missing matching engine sequence in depth snapshot")
 	}
 
 	payload := convertDepthPayload(marketID, raw)

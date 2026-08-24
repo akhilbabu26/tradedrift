@@ -14,12 +14,15 @@ import (
 )
 
 type mockSnapshotProvider struct {
+	mu          sync.Mutex
 	depthCalls  int
 	tickerCalls int
 }
 
 func (m *mockSnapshotProvider) GetImmediateOrderBook(marketID string) (*protocol.OrderBookDepthPayload, error) {
+	m.mu.Lock()
 	m.depthCalls++
+	m.mu.Unlock()
 	return &protocol.OrderBookDepthPayload{
 		MarketID:  marketID,
 		Bids:      [][2]string{{"64000.00", "1.0"}},
@@ -30,11 +33,19 @@ func (m *mockSnapshotProvider) GetImmediateOrderBook(marketID string) (*protocol
 }
 
 func (m *mockSnapshotProvider) GetImmediateTicker(marketID string) (*protocol.TickerPayload, error) {
+	m.mu.Lock()
 	m.tickerCalls++
+	m.mu.Unlock()
 	return &protocol.TickerPayload{
 		MarketID:  marketID,
 		LastPrice: "64050.00",
 	}, nil
+}
+
+func (m *mockSnapshotProvider) DepthCalls() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.depthCalls
 }
 
 type mockFailingProvider struct{}
@@ -68,8 +79,8 @@ func TestHub_OnDemandMarketTracking(t *testing.T) {
 		t.Fatalf("expected ['BTC-USDT'] active market, got %v", active)
 	}
 
-	if mockProvider.depthCalls != 1 {
-		t.Fatalf("expected 1 immediate depth call, got %d", mockProvider.depthCalls)
+	if mockProvider.DepthCalls() != 1 {
+		t.Fatalf("expected 1 immediate depth call, got %d", mockProvider.DepthCalls())
 	}
 
 	h.HandleClientFrame(client, protocol.InboundFrame{
@@ -191,14 +202,18 @@ func TestDuplicateSubscription(t *testing.T) {
 	if !client.HasSubscription("market:orderbook:BTC-USDT") {
 		t.Fatal("first subscription should succeed")
 	}
-	if mockProvider.depthCalls != 1 {
-		t.Fatalf("expected 1 snapshot call on first subscribe, got %d", mockProvider.depthCalls)
+	if mockProvider.DepthCalls() != 1 {
+		t.Fatalf("expected 1 snapshot call on first subscribe, got %d", mockProvider.DepthCalls())
 	}
 
 	h.HandleClientFrame(client, protocol.InboundFrame{
 		Event:   "subscribe",
 		Streams: []string{"market:orderbook:BTC-USDT"},
 	})
+
+	if mockProvider.DepthCalls() != 1 {
+		t.Fatalf("duplicate subscribe should NOT request redundant snapshot: got %d calls, want 1", mockProvider.DepthCalls())
+	}
 
 	h.mu.RLock()
 	count := h.marketSubs["BTC-USDT"]
@@ -392,5 +407,188 @@ func TestRedisFailureEmitsErrorFrame(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("timed out waiting for MARKET_DATA_UNAVAILABLE error frame")
+	}
+}
+
+type blockingSnapshotProvider struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingSnapshotProvider) GetImmediateOrderBook(marketID string) (*protocol.OrderBookDepthPayload, error) {
+	b.started <- struct{}{}
+	<-b.release
+	return &protocol.OrderBookDepthPayload{
+		MarketID:  marketID,
+		Bids:      [][2]string{{"64000.00", "1.0"}},
+		Asks:      [][2]string{{"64100.00", "1.5"}},
+		Timestamp: time.Now().UnixMilli(),
+		Sequence:  100,
+	}, nil
+}
+
+func (b *blockingSnapshotProvider) GetImmediateTicker(marketID string) (*protocol.TickerPayload, error) {
+	return nil, nil
+}
+
+// TestInitialSnapshotOrdering creates the actual concurrent race:
+//
+//	T1: Client subscribes and is registered in Hub.subs.
+//	T2: Snapshot fetch begins (blocked in provider).
+//	T3: Live broadcast fires with Sequence=101 and is queued into client.send FIRST.
+//	T4: Snapshot fetch finishes and is queued into client.send SECOND with Sequence=100.
+//	T5: Frontend receives [101, 100] and discards 100 because incoming.Sequence <= currentSequence.
+func TestInitialSnapshotOrdering(t *testing.T) {
+	logger := zap.NewNop()
+	provider := &blockingSnapshotProvider{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	h := NewHub(logger, provider)
+
+	client := NewTestClient(h, "user-ordering", logger)
+	h.Register(client)
+
+	// Goroutine begins subscribe -> enters blocking snapshot provider
+	go func() {
+		h.HandleClientFrame(client, protocol.InboundFrame{
+			Event:   "subscribe",
+			Streams: []string{"market:orderbook:BTC-USDT"},
+		})
+	}()
+
+	// Wait until client is registered and snapshot fetch is in-flight
+	<-provider.started
+
+	// Broadcast live update with Sequence=101 while snapshot is still in-flight
+	livePayload := protocol.OrderBookDepthPayload{
+		MarketID:  "BTC-USDT",
+		Bids:      [][2]string{{"64050.00", "2.0"}},
+		Asks:      [][2]string{{"64150.00", "2.5"}},
+		Timestamp: time.Now().UnixMilli(),
+		Sequence:  101,
+	}
+	liveEnvelope := protocol.OutboundEnvelope{
+		Stream: "market:orderbook:BTC-USDT",
+		Data:   livePayload,
+	}
+	liveBytes, _ := json.Marshal(liveEnvelope)
+	h.Broadcast("market:orderbook:BTC-USDT", liveBytes, protocol.StreamTypeOrderBook)
+
+	// Release in-flight snapshot provider with older Sequence=100
+	provider.release <- struct{}{}
+
+	// Give goroutines a moment to flush to client channel
+	time.Sleep(20 * time.Millisecond)
+
+	// Collect messages sent to client
+	var messages [][]byte
+	for len(client.send) > 0 {
+		messages = append(messages, <-client.send)
+	}
+
+	if len(messages) < 2 {
+		t.Fatalf("expected at least 2 messages (live broadcast + snapshot), got %d", len(messages))
+	}
+
+	// Message 1: Live update that raced snapshot (Seq=101)
+	var env1 protocol.OutboundEnvelope
+	_ = json.Unmarshal(messages[0], &env1)
+	liveMap := env1.Data.(map[string]interface{})
+	firstSeq := uint64(liveMap["sequence"].(float64))
+
+	// Message 2: Snapshot that finished after live broadcast (Seq=100)
+	var env2 protocol.OutboundEnvelope
+	_ = json.Unmarshal(messages[1], &env2)
+	snapMap := env2.Data.(map[string]interface{})
+	secondSeq := uint64(snapMap["sequence"].(float64))
+
+	if firstSeq != 101 {
+		t.Fatalf("first message should be live broadcast sequence 101, got %d", firstSeq)
+	}
+	if secondSeq != 100 {
+		t.Fatalf("second message should be snapshot sequence 100, got %d", secondSeq)
+	}
+
+	// Frontend sequence gate simulation:
+	var clientStateSequence uint64
+	var discardedStaleSnapshot bool
+
+	// Process Message 1 (Live broadcast)
+	clientStateSequence = firstSeq // 101
+
+	// Process Message 2 (Snapshot)
+	if secondSeq <= clientStateSequence {
+		discardedStaleSnapshot = true // Stale snapshot correctly rejected!
+	}
+
+	if !discardedStaleSnapshot {
+		t.Fatalf("frontend sequence gate failed to discard stale snapshot (secondSeq=%d <= currentSeq=%d)", secondSeq, clientStateSequence)
+	}
+}
+
+// TestConcurrentSubscribeCloseRace stress tests the Hub with hundreds of goroutines
+// concurrently calling subscribe, close, and unsubscribe simultaneously.
+func TestConcurrentSubscribeCloseRace(t *testing.T) {
+	logger := zap.NewNop()
+
+	for iteration := 0; iteration < 20; iteration++ {
+		h := NewHub(logger, &mockSnapshotProvider{})
+		var wg sync.WaitGroup
+
+		numClients := 15
+		clients := make([]*Client, numClients)
+		for i := 0; i < numClients; i++ {
+			clients[i] = NewTestClient(h, fmt.Sprintf("race-user-%d", i), logger)
+			h.Register(clients[i])
+		}
+
+		for i := 0; i < numClients; i++ {
+			c := clients[i]
+			wg.Add(3)
+
+			// Goroutine 1: Rapid Subscriptions
+			go func(cl *Client) {
+				defer wg.Done()
+				for s := 0; s < 10; s++ {
+					h.HandleClientFrame(cl, protocol.InboundFrame{
+						Event:   "subscribe",
+						Streams: []string{"market:orderbook:BTC-USDT", "market:trades:BTC-USDT"},
+					})
+				}
+			}(c)
+
+			// Goroutine 2: Rapid Unsubscriptions
+			go func(cl *Client) {
+				defer wg.Done()
+				for s := 0; s < 10; s++ {
+					h.HandleClientFrame(cl, protocol.InboundFrame{
+						Event:   "unsubscribe",
+						Streams: []string{"market:orderbook:BTC-USDT"},
+					})
+				}
+			}(c)
+
+			// Goroutine 3: Concurrent Close
+			go func(cl *Client) {
+				defer wg.Done()
+				time.Sleep(time.Duration(iteration%4) * time.Millisecond)
+				cl.Close()
+			}(c)
+		}
+
+		wg.Wait()
+
+		h.mu.RLock()
+		btcDepthCount := h.marketSubs["BTC-USDT"]
+		activeClients := len(h.clients)
+		h.mu.RUnlock()
+
+		if btcDepthCount < 0 {
+			t.Fatalf("iteration %d: marketSubs went negative: %d", iteration, btcDepthCount)
+		}
+		if activeClients != 0 && btcDepthCount > activeClients {
+			t.Fatalf("iteration %d: market count %d exceeds remaining clients %d", iteration, btcDepthCount, activeClients)
+		}
 	}
 }

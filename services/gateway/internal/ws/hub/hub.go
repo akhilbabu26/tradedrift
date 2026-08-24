@@ -181,9 +181,8 @@ func (h *Hub) handleSubscribe(c *Client, stream string) {
 
 	cSubs := h.clientSubs[c]
 	if cSubs[stream] {
-		// Idempotent: already subscribed -> unlock and deliver snapshot
+		// Idempotent no-op: client is already subscribed
 		h.mu.Unlock()
-		h.deliverImmediateSnapshot(c, streamType, target)
 		return
 	}
 

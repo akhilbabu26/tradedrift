@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"os/signal"
 	"strings"
@@ -114,11 +115,13 @@ func main() {
 		}
 	}
 
-	// Bug Fix #7: Create one Streamer, bind Hub after both are constructed.
-	// Previously two Streamer instances were created to work around the circular
-	// dependency — the first was used as the snapshot provider, the second (with hub)
-	// was used for background streaming. SetHub() cleanly resolves this.
-	wsStreamer := ws.NewStreamer(nil, redisClient, kafkaBrokers, "trades.executed", "gateway-websocket-group", appLogger)
+	// Horizontal Scaling Fanout: Each Gateway replica requires a stable instance-unique
+	// consumer group ID (e.g. POD_NAME or HOSTNAME) so Kafka broadcasts all trades to all Gateway replicas.
+	gatewayInstanceID := config.GetEnv("GATEWAY_INSTANCE_ID", config.GetEnv("HOSTNAME", "gateway-01"))
+	kafkaGroupID := config.GetEnv("KAFKA_GROUP_ID", fmt.Sprintf("gateway-websocket-%s", gatewayInstanceID))
+	appLogger.Info("Configured WebSocket Kafka trade consumer group", zap.String("group_id", kafkaGroupID))
+
+	wsStreamer := ws.NewStreamer(nil, redisClient, kafkaBrokers, "trades.executed", kafkaGroupID, appLogger)
 	wsHub := ws.NewHub(appLogger, wsStreamer)
 	wsStreamer.SetHub(wsHub)
 	wsStreamer.Start(ctx)

@@ -44,6 +44,7 @@ func (s *Streamer) runKafkaTradeStreamer(ctx context.Context) {
 			Brokers:        s.kafkaBrokers,
 			GroupID:        s.kafkaGroupID,
 			Topic:          s.kafkaTopic,
+			StartOffset:    kafka.LastOffset, // New consumer groups start at latest offset, existing groups resume from committed offset
 			MinBytes:       1,
 			MaxBytes:       10e6, // 10 MB
 			CommitInterval: 0,    // synchronous manual commits
@@ -126,7 +127,7 @@ func (s *Streamer) consumeKafkaTrades(ctx context.Context, reader *kafka.Reader)
 				Quantity:   event.Quantity,
 				Side:       event.Side,
 				ExecutedAt: execMs,
-				Sequence:   s.NextTradeSeq(event.MarketID),
+				Sequence:   event.Sequence, // Forward authoritative sequence from matching engine
 			}
 			env := protocol.OutboundEnvelope{Stream: channel, Data: tradePayload}
 			if b, err := json.Marshal(env); err == nil {
@@ -154,6 +155,9 @@ func ValidateTradeEvent(e RawTradeEvent) error {
 	}
 	if e.Quantity == "" {
 		return errors.New("missing quantity")
+	}
+	if e.Sequence == 0 {
+		return errors.New("missing or invalid trade sequence: must be > 0")
 	}
 
 	p, err := strconv.ParseFloat(e.Price, 64)

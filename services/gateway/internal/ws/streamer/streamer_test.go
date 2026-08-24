@@ -7,33 +7,23 @@ import (
 	"tradedrift/services/gateway/internal/ws/streamer"
 )
 
-func TestTradeSequenceNumbers(t *testing.T) {
-	s := streamer.NewStreamer(nil, nil, nil, "", "", nil)
-
-	for want := uint64(1); want <= 5; want++ {
-		got := s.NextTradeSeq("BTC-USDT")
-		if got != want {
-			t.Fatalf("BTC-USDT trade seq: want %d, got %d", want, got)
-		}
-	}
-}
-
 func TestMalformedTradeEvent(t *testing.T) {
 	cases := []struct {
 		name    string
 		event   streamer.RawTradeEvent
 		wantErr bool
 	}{
-		{"valid", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "100.50", Quantity: "1.25"}, false},
-		{"missing trade_id", streamer.RawTradeEvent{MarketID: "BTC-USDT", Price: "100", Quantity: "1"}, true},
-		{"missing market_id", streamer.RawTradeEvent{TradeID: "t1", Price: "100", Quantity: "1"}, true},
-		{"missing price", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Quantity: "1"}, true},
-		{"missing quantity", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "100"}, true},
-		{"non-numeric price", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "abc", Quantity: "1"}, true},
-		{"negative price", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "-50.0", Quantity: "1"}, true},
-		{"zero price", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "0", Quantity: "1"}, true},
-		{"negative quantity", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "100", Quantity: "-5"}, true},
-		{"zero quantity", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "100", Quantity: "0"}, true},
+		{"valid", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "100.50", Quantity: "1.25", Sequence: 101}, false},
+		{"missing trade_id", streamer.RawTradeEvent{MarketID: "BTC-USDT", Price: "100", Quantity: "1", Sequence: 101}, true},
+		{"missing market_id", streamer.RawTradeEvent{TradeID: "t1", Price: "100", Quantity: "1", Sequence: 101}, true},
+		{"missing price", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Quantity: "1", Sequence: 101}, true},
+		{"missing quantity", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "100", Sequence: 101}, true},
+		{"missing sequence", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "100", Quantity: "1", Sequence: 0}, true},
+		{"non-numeric price", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "abc", Quantity: "1", Sequence: 101}, true},
+		{"negative price", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "-50.0", Quantity: "1", Sequence: 101}, true},
+		{"zero price", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "0", Quantity: "1", Sequence: 101}, true},
+		{"negative quantity", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "100", Quantity: "-5", Sequence: 101}, true},
+		{"zero quantity", streamer.RawTradeEvent{TradeID: "t1", MarketID: "BTC-USDT", Price: "100", Quantity: "0", Sequence: 101}, true},
 	}
 
 	for _, tc := range cases {

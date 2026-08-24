@@ -33,31 +33,28 @@ type OutboundEvent struct {
 // ─── Stream Payloads ─────────────────────────────────────────────────────────
 
 // OrderBookDepthPayload represents Level-2 depth data for a market.
-// Sequence is forwarded from the matching engine's own version stored in Redis.
-// If Redis does not provide a sequence the Gateway assigns a local counter as
-// a fallback. Clients MUST use the sequence to detect stale snapshots:
-// if a live update arrives with seq=N and the snapshot arrives with seq < N,
-// discard the snapshot and use the live state.
+// Sequence is the authoritative Matching Engine sequence stored with the Redis snapshot.
+// The Gateway does not generate a replacement sequence. Clients MUST use the sequence
+// to detect stale snapshots: if a live update arrives with seq=N and the snapshot
+// arrives with seq < N, discard the snapshot and use the live state.
 type OrderBookDepthPayload struct {
 	MarketID  string      `json:"marketId"`
 	Bids      [][2]string `json:"bids"` // [[price, qty], ...]
 	Asks      [][2]string `json:"asks"` // [[price, qty], ...]
-	Sequence  uint64      `json:"sequence"`  // from matching engine (preferred) or gateway counter
+	Sequence  uint64      `json:"sequence"`  // authoritative Matching Engine sequence
 	Timestamp int64       `json:"timestamp"` // Unix milliseconds
 }
 
 // TradePayload represents a public executed trade fill.
-// Privacy contract: BuyerUserID and SellerUserID are intentionally omitted.
-// They exist on the internal Kafka event (rawTradeEvent) but MUST NOT be
-// forwarded to the public WebSocket feed. Any anonymous client subscribing to
-// market:trades:{market} would otherwise receive the full participant identity.
+// Sequence is the authoritative Matching Engine trade sequence forwarded from Kafka.
+// Privacy contract: BuyerUserID and SellerUserID are intentionally omitted from public feeds.
 type TradePayload struct {
 	TradeID    string `json:"tradeId"`
 	MarketID   string `json:"marketId"`
 	Price      string `json:"price"`
 	Quantity   string `json:"quantity"`
 	Side       string `json:"side,omitempty"` // "BUY" or "SELL"
-	Sequence   uint64 `json:"sequence"`       // monotonically increasing per market
+	Sequence   uint64 `json:"sequence"`       // authoritative Matching Engine trade sequence
 	ExecutedAt int64  `json:"executedAt"`     // Unix milliseconds
 }
 

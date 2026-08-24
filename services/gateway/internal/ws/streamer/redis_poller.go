@@ -78,6 +78,11 @@ func (s *Streamer) pollActiveMarketDepth(ctx context.Context) {
 			continue
 		}
 
+		if raw.Sequence == 0 {
+			s.logger.Debug("Skipping depth snapshot with missing sequence from Redis", zap.String("market", mkt))
+			continue
+		}
+
 		payload := convertDepthPayload(mkt, raw)
 		payload.Sequence = raw.Sequence
 

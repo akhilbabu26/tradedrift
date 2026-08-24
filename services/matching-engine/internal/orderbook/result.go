@@ -13,6 +13,7 @@ import (
 type Fill struct {
 	TradeID      uuid.UUID
 	MarketID     string          // market this trade occurred in (e.g. "BTC-USDT")
+	Sequence     uint64          // Authoritative matching engine sequence (> 0)
 	MakerOrderID uuid.UUID       // the resting order that was consumed
 	TakerOrderID uuid.UUID       // the incoming order that triggered the match
 	BuyOrderID   uuid.UUID       // whichever of maker/taker had side == BUY
@@ -25,9 +26,10 @@ type Fill struct {
 
 // CancelledOrder is produced when an order is removed from the book.
 // reason values:
-//   "user_requested"          — explicit user cancel
-//   "ioc_expired"             — MARKET order unfilled remainder
-//   "invalid_order_parameters" — tick/lot size violation (defensive)
+//
+//	"user_requested"          — explicit user cancel
+//	"ioc_expired"             — MARKET order unfilled remainder
+//	"invalid_order_parameters" — tick/lot size violation (defensive)
 type CancelledOrder struct {
 	OrderID           uuid.UUID
 	UserID            uuid.UUID
@@ -46,6 +48,7 @@ type DepthLevel struct {
 // DepthSnapshot is the top-N levels of the book, pushed to Redis after every match.
 type DepthSnapshot struct {
 	MarketID   string
+	Sequence   uint64 // Authoritative matching engine sequence (> 0)
 	Bids       []DepthLevel
 	Asks       []DepthLevel
 	SnapshotAt time.Time
@@ -65,5 +68,5 @@ type MatchResult struct {
 	Fills          []Fill
 	CancelResult   *CancelledOrder
 	DepthSnapshot  DepthSnapshot
-	SourcePosition KafkaPosition   // ← replaces SourceOffset int64
+	SourcePosition KafkaPosition // ← replaces SourceOffset int64
 }

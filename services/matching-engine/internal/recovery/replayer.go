@@ -65,21 +65,64 @@ func NewReplayer(brokers []string, db *pgxpool.Pool, rdb *redis.Client, manager 
 }
 
 // ReplayAll replays historical events for every registered MarketEngine sequentially.
-// After it returns, all engines are in ModeLive with a correct in-memory book and
-// a fresh depth snapshot in Redis.
+// High Water Marks are captured ONCE before replay begins to freeze the recovery boundary.
+// After all markets finish replay and draining, the frozen boundaries are saved to PostgreSQL
+// so the live consumer starts strictly after the replayed events without skipping anything.
 //
 // Consumer.Start() MUST NOT be called until ReplayAll returns.
 func (r *Replayer) ReplayAll(ctx context.Context) error {
+	const partition = 0
+	boundaries := make(map[string]int64)
+
+	// Step 1: Capture HWM for all topics BEFORE starting any replay
+	for _, topic := range []string{intkafka.TopicOrderCreated, intkafka.TopicOrderCancel} {
+		hwm, err := r.highWatermark(topic, partition)
+		if err != nil {
+			return fmt.Errorf("high watermark for topic %s: %w", topic, err)
+		}
+		boundaries[topic] = hwm
+		log.Printf("[recovery] frozen recovery boundary: topic=%s partition=%d HWM=%d", topic, partition, hwm)
+	}
+
+	// Step 2: Replay each engine up to the frozen HWM
 	for _, engine := range r.manager.All() {
-		if err := r.replayEngine(ctx, engine); err != nil {
+		if err := r.replayEngine(ctx, engine, boundaries); err != nil {
 			return fmt.Errorf("replay market %s: %w", engine.MarketID, err)
 		}
 	}
+
+	// Step 3: Persist the frozen recovery boundaries to PostgreSQL
+	for _, topic := range []string{intkafka.TopicOrderCreated, intkafka.TopicOrderCancel} {
+		hwm := boundaries[topic]
+		if hwm > 0 {
+			lastReplayed := hwm - 1
+			if err := r.saveCheckpoint(ctx, topic, partition, lastReplayed); err != nil {
+				return fmt.Errorf("save recovery checkpoint (topic=%s offset=%d): %w", topic, lastReplayed, err)
+			}
+			log.Printf("[recovery] saved recovery checkpoint topic=%s partition=%d offset=%d", topic, partition, lastReplayed)
+		}
+	}
+
 	return nil
 }
 
-// replayEngine recovers one MarketEngine.
-func (r *Replayer) replayEngine(ctx context.Context, engine *market.MarketEngine) error {
+// saveCheckpoint advances the Postgres checkpoint after recovery finishes replaying up to HWM.
+func (r *Replayer) saveCheckpoint(ctx context.Context, topic string, partition int, offset int64) error {
+	const query = `
+		INSERT INTO kafka_checkpoints (topic, partition, "offset", updated_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (topic, partition)
+		DO UPDATE SET
+			"offset"   = EXCLUDED."offset",
+			updated_at = NOW()
+		WHERE kafka_checkpoints."offset" < EXCLUDED."offset"`
+
+	_, err := r.db.Exec(ctx, query, topic, partition, offset)
+	return err
+}
+
+// replayEngine recovers one MarketEngine up to the frozen topic boundaries.
+func (r *Replayer) replayEngine(ctx context.Context, engine *market.MarketEngine, boundaries map[string]int64) error {
 	log.Printf("[recovery] starting replay for market=%s", engine.MarketID)
 
 	// Step 1: Start the engine's event loop goroutine (runs in ModeRecovery).
@@ -89,11 +132,9 @@ func (r *Replayer) replayEngine(ctx context.Context, engine *market.MarketEngine
 
 	totalEvents := 0
 
-	// Step 2: Replay both consumed topics for this engine.
-	// ORDER IS INTENTIONAL: submitted first, then cancel.
-	// See package-level ORDERING CONTRACT comment above.
+	// Step 2: Replay both consumed topics for this engine up to the frozen HWM.
 	for _, topic := range []string{intkafka.TopicOrderCreated, intkafka.TopicOrderCancel} {
-		n, err := r.replayTopic(ctx, engine, topic)
+		n, err := r.replayTopic(ctx, engine, topic, boundaries[topic])
 		if err != nil {
 			return fmt.Errorf("topic %s: %w", topic, err)
 		}
@@ -101,9 +142,6 @@ func (r *Replayer) replayEngine(ctx context.Context, engine *market.MarketEngine
 	}
 
 	// Step 3: Drain exactly totalEvents from OutputQueue.
-	// We know the exact count of events sent, so we drain exactly that many.
-	// This blocks until the engine has processed all replayed events.
-	// Using an exact count avoids blocking forever waiting for live events.
 	for i := 0; i < totalEvents; i++ {
 		select {
 		case <-engine.OutputQueue:
@@ -114,40 +152,25 @@ func (r *Replayer) replayEngine(ctx context.Context, engine *market.MarketEngine
 	}
 
 	// Step 4: Push a fresh Top-20 depth snapshot to Redis.
-	// The in-memory book is now correct. Redis may be stale if it also restarted.
 	if err := r.pushFreshDepth(ctx, engine); err != nil {
 		return fmt.Errorf("push fresh depth: %w", err)
 	}
 
 	// Step 5: Transition to LIVE mode.
-	// All subsequent events processed by engine.Run() will emit fills and
-	// be written to OutputQueue for the Publisher to consume.
 	engine.SetLive()
 
 	log.Printf("[recovery] market=%s recovered %d events — now LIVE", engine.MarketID, totalEvents)
 	return nil
 }
 
-// replayTopic replays one Kafka topic for one engine from savedOffset+1 to
-// the partition's high water mark captured at startup.
-// Returns the number of events actually sent to the engine's InputQueue.
-func (r *Replayer) replayTopic(ctx context.Context, engine *market.MarketEngine, topic string) (int, error) {
-	// V1: single partition (partition 0) per topic.
-	// V2: call kafkago.LookupPartitions() to replay all partitions.
+// replayTopic replays one Kafka topic for one engine from savedOffset+1 to the frozen high water mark.
+func (r *Replayer) replayTopic(ctx context.Context, engine *market.MarketEngine, topic string, hwm int64) (int, error) {
 	const partition = 0
 
 	// Load the last successfully committed offset for this topic+partition.
 	savedOffset, err := r.loadCheckpoint(ctx, topic, partition)
 	if err != nil {
 		return 0, fmt.Errorf("load checkpoint: %w", err)
-	}
-
-	// Get the high water mark (latest available offset) as of right now.
-	// Events AT the HWM offset haven't been produced yet — the last available
-	// message is at hwm-1. Any events at hwm or beyond are live events.
-	hwm, err := r.highWatermark(topic, partition)
-	if err != nil {
-		return 0, fmt.Errorf("high watermark: %w", err)
 	}
 
 	// startOffset is the first offset we need to replay.
@@ -230,9 +253,9 @@ func (r *Replayer) routeMessage(msg kafkago.Message, engine *market.MarketEngine
 	var err error
 	switch topic {
 	case intkafka.TopicOrderCreated:
-		err = intkafka.HandleOrderCreated(msg, route)
+		_, err = intkafka.HandleOrderCreated(msg, route)
 	case intkafka.TopicOrderCancel:
-		err = intkafka.HandleOrderCancel(msg, route)
+		_, err = intkafka.HandleOrderCancel(msg, route)
 	default:
 		return false, fmt.Errorf("unknown topic %q", topic)
 	}
@@ -290,6 +313,7 @@ func (r *Replayer) pushFreshDepth(ctx context.Context, engine *market.MarketEngi
 	}
 	type depthMsg struct {
 		MarketID   string       `json:"market_id"`
+		Sequence   uint64       `json:"sequence"`
 		Bids       []depthLevel `json:"bids"`
 		Asks       []depthLevel `json:"asks"`
 		SnapshotAt string       `json:"snapshot_at"`
@@ -306,6 +330,7 @@ func (r *Replayer) pushFreshDepth(ctx context.Context, engine *market.MarketEngi
 
 	msg := depthMsg{
 		MarketID:   snap.MarketID,
+		Sequence:   snap.Sequence,
 		Bids:       bids,
 		Asks:       asks,
 		SnapshotAt: snap.SnapshotAt.UTC().Format(time.RFC3339Nano),

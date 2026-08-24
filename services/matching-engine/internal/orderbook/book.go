@@ -13,6 +13,7 @@ import (
 // by ID in O(1) without knowing which side it's on.
 type OrderBook struct {
 	MarketID   string
+	Sequence   uint64                   // Monotonically increasing sequence per market
 	Bids       Side                     // buy side — sorted highest → lowest
 	Asks       Side                     // sell side — sorted lowest → highest
 	OrderIndex map[uuid.UUID]*OrderNode // O(1) cancel lookup

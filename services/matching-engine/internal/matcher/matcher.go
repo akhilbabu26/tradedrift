@@ -5,9 +5,10 @@ import (
 	"sort"
 	"time"
 
+	"tradedrift/services/matching-engine/internal/orderbook"
+
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-	"tradedrift/services/matching-engine/internal/orderbook"
 )
 
 // Mode controls whether Match suppresses output (RECOVERY) or emits fills (LIVE).
@@ -149,6 +150,7 @@ func GetDepth(book *orderbook.OrderBook, depth int) orderbook.DepthSnapshot {
 
 	return orderbook.DepthSnapshot{
 		MarketID:   book.MarketID,
+		Sequence:   book.Sequence,
 		Bids:       bids,
 		Asks:       asks,
 		SnapshotAt: time.Now(),
@@ -181,9 +183,13 @@ func Match(book *orderbook.OrderBook, incoming *orderbook.OrderNode, mode Mode) 
 		// TODO: replace uuid.New() with UUIDv7 from platform/uuid
 		tradeID := uuid.New()
 
+		// Advance authoritative monotonically increasing trade execution sequence
+		book.Sequence++
+
 		fills = append(fills, orderbook.Fill{
 			TradeID:      tradeID,
 			MarketID:     book.MarketID, // ← authoritative market identifier
+			Sequence:     book.Sequence,
 			MakerOrderID: best.OrderID,
 			TakerOrderID: incoming.OrderID,
 			BuyOrderID:   buyOrderOf(incoming, best),
@@ -206,6 +212,7 @@ func Match(book *orderbook.OrderBook, incoming *orderbook.OrderNode, mode Mode) 
 	// LIMIT: insert remaining quantity as a new resting order
 	if incoming.RemainingQty.GreaterThan(decimal.Zero) &&
 		incoming.OrderType == orderbook.OrderTypeLimit {
+		book.Sequence++
 		Insert(book, incoming)
 	}
 

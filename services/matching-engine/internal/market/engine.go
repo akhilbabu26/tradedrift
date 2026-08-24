@@ -99,3 +99,15 @@ func (m *MarketEngine) SetLive() {
 func (m *MarketEngine) GetDepth(n int) orderbook.DepthSnapshot {
 	return matcher.GetDepth(m.book, n)
 }
+
+// GetSequence returns the current authoritative order book sequence.
+func (m *MarketEngine) GetSequence() uint64 {
+	return m.book.Sequence
+}
+
+// SetSequence restores the sequence from a persisted baseline checkpoint.
+func (m *MarketEngine) SetSequence(seq uint64) {
+	if seq > m.book.Sequence {
+		m.book.Sequence = seq
+	}
+}

@@ -24,6 +24,7 @@ type DepthLevel struct {
 // OrderBookProjection is the domain representation of a market's live depth.
 type OrderBookProjection struct {
 	MarketID   string       `json:"market_id"`
+	Sequence   uint64       `json:"sequence"`
 	Bids       []DepthLevel `json:"bids"` // sorted descending (best bid first)
 	Asks       []DepthLevel `json:"asks"` // sorted ascending (best ask first)
 	SnapshotAt time.Time    `json:"snapshot_at"`

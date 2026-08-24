@@ -35,6 +35,7 @@ func NewCustomReader(client RedisGetter) *Reader {
 // rawDepthMessage matches the exact JSON wire format emitted by Publisher.
 type rawDepthMessage struct {
 	MarketID string `json:"market_id"`
+	Sequence uint64 `json:"sequence"`
 	Bids     []struct {
 		Price    string `json:"price"`
 		Quantity string `json:"quantity"`
@@ -178,6 +179,7 @@ func parseAndValidateSnapshot(data []byte, expectedMarketID string) (*OrderBookP
 
 	return &OrderBookProjection{
 		MarketID:   raw.MarketID,
+		Sequence:   raw.Sequence,
 		Bids:       bids,
 		Asks:       asks,
 		SnapshotAt: snapshotTime.UTC(),

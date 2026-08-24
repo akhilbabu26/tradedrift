@@ -15,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/shopspring/decimal"
 
+	"tradedrift/services/matching-engine/internal/checkpoint"
 	intkafka "tradedrift/services/matching-engine/internal/kafka"
 	"tradedrift/services/matching-engine/internal/market"
 	"tradedrift/services/matching-engine/internal/publisher"
@@ -198,13 +199,22 @@ func run() error {
 	// ── 7. Start Publisher goroutines (one per MarketEngine) ──────────────────
 	//
 	// Publisher reads MatchResults from each engine's OutputQueue and:
-	//   1. Writes TradeExecuted events to Kafka (trades.executed)
+	//   1. Writes TradeExecuted events to Kafka (trades.executed, partitioned by MarketID)
 	//   2. Pushes depth snapshots to Redis (depth:{market_id})
-	//   3. UPSERTs Kafka checkpoint to Postgres (monotonic, only advances)
+	//   3. Advances contiguous Kafka checkpoint via CheckpointCoordinator
 	//
 	// Starts AFTER ReplayAll so the Publisher doesn't consume OutputQueue
 	// results that belong to the recovery drain phase.
-	pub := publisher.NewPublisher(cfg.KafkaBrokers, rdb, db)
+	coord := checkpoint.NewCoordinator(db)
+	for _, topic := range []string{intkafka.TopicOrderCreated, intkafka.TopicOrderCancel} {
+		var savedOffset int64
+		err := db.QueryRow(opCtx, `SELECT "offset" FROM kafka_checkpoints WHERE topic = $1 AND partition = $2`, topic, 0).Scan(&savedOffset)
+		if err == nil {
+			coord.InitBaseline(topic, 0, savedOffset)
+			log.Printf("[server] checkpoint baseline initialized for %s/0 @ offset=%d", topic, savedOffset)
+		}
+	}
+	pub := publisher.NewPublisher(cfg.KafkaBrokers, rdb, coord)
 	defer pub.Close()
 
 	var wg sync.WaitGroup
@@ -227,7 +237,7 @@ func run() error {
 	consumer := intkafka.NewConsumer(intkafka.Config{
 		Brokers: cfg.KafkaBrokers,
 		GroupID: cfg.KafkaGroupID,
-	}, manager)
+	}, manager, coord)
 	defer consumer.Close()
 
 	consumer.Start(opCtx)

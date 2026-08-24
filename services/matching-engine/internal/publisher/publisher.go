@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 	kafkago "github.com/segmentio/kafka-go"
 
@@ -32,9 +32,9 @@ type redisWriter interface {
 	Set(ctx context.Context, key string, value []byte, expiration time.Duration) error
 }
 
-// dbWriter is the interface for writing checkpoints to Postgres.
-type dbWriter interface {
-	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+// checkpointCoordinator ensures contiguous checkpoint progression across markets.
+type checkpointCoordinator interface {
+	MarkDone(ctx context.Context, pos orderbook.KafkaPosition) error
 }
 
 // ─── redisClientAdapter — wraps *redis.Client to implement redisWriter ────────
@@ -54,6 +54,7 @@ func (r *redisClientAdapter) Set(ctx context.Context, key string, value []byte, 
 type tradeExecutedMessage struct {
 	TradeID      string `json:"trade_id"`
 	MarketID     string `json:"market_id"`
+	Sequence     uint64 `json:"sequence"`
 	MakerOrderID string `json:"maker_order_id"`
 	TakerOrderID string `json:"taker_order_id"`
 	BuyOrderID   string `json:"buy_order_id"`
@@ -68,6 +69,7 @@ type tradeExecutedMessage struct {
 // depthSnapshotMessage is the JSON payload written to Redis.
 type depthSnapshotMessage struct {
 	MarketID   string       `json:"market_id"`
+	Sequence   uint64       `json:"sequence"`
 	Bids       []depthLevel `json:"bids"`
 	Asks       []depthLevel `json:"asks"`
 	SnapshotAt string       `json:"snapshot_at"` // RFC3339Nano
@@ -81,27 +83,23 @@ type depthLevel struct {
 // ─── Publisher ────────────────────────────────────────────────────────────────
 
 // Publisher reads MatchResults from a MarketEngine's OutputQueue and:
-//  1. Publishes one TradeExecuted Kafka message per Fill (fill.MarketID is set)
+//  1. Publishes one TradeExecuted Kafka message per Fill (partitioned by MarketID)
 //  2. Pushes DepthSnapshot to Redis (key: "depth:{market_id}")
-//  3. Writes topic+partition+offset checkpoint to Postgres (ONLY after 1+2 succeed)
-//
-// ORDERING GUARANTEE:
-//   Kafka publish → Redis push → Postgres checkpoint
-//
-// If any step fails, the checkpoint is NOT written.
-// On restart, recovery replays from the last checkpoint offset.
-// Match() runs in ModeRecovery — fills are re-derived but NOT re-published.
+//  3. Advances the contiguous Kafka checkpoint via the CheckpointCoordinator
 type Publisher struct {
-	writer kafkaWriter
-	redis  redisWriter
-	db     dbWriter
+	writer      kafkaWriter
+	redis       redisWriter
+	coord       checkpointCoordinator
+	retryMu     sync.Mutex
+	latestDepth map[string]orderbook.DepthSnapshot // bounded latest snapshot retry buffer per market
 }
 
 // NewPublisher creates a Publisher wired to real infrastructure.
-func NewPublisher(brokers []string, rdb *redis.Client, db dbWriter) *Publisher {
+func NewPublisher(brokers []string, rdb *redis.Client, coord checkpointCoordinator) *Publisher {
 	return &Publisher{
-		redis: &redisClientAdapter{client: rdb},
-		db:    db,
+		redis:       &redisClientAdapter{client: rdb},
+		coord:       coord,
+		latestDepth: make(map[string]orderbook.DepthSnapshot),
 		writer: &kafkago.Writer{
 			Addr:                   kafkago.TCP(brokers...),
 			Topic:                  TopicTradeExecuted,
@@ -114,21 +112,18 @@ func NewPublisher(brokers []string, rdb *redis.Client, db dbWriter) *Publisher {
 }
 
 // Run reads from one engine's OutputQueue until ctx is cancelled.
-// Call as: go publisher.Run(ctx, engine)
-// One goroutine per MarketEngine — markets are fully isolated.
-//
-// IMPORTANT: Results are processed sequentially per market.
-// Do NOT process multiple results concurrently for the same market —
-// that could cause the checkpoint to move backwards.
 func (p *Publisher) Run(ctx context.Context, engine *market.MarketEngine) {
+	retryTicker := time.NewTicker(500 * time.Millisecond)
+	defer retryTicker.Stop()
+
 	for {
 		select {
 		case result, ok := <-engine.OutputQueue:
 			if !ok {
+				p.flushPendingDepthRetries(context.Background(), engine.MarketID)
 				return // channel closed — engine shut down
 			}
 			if err := p.process(ctx, result); err != nil {
-				// Checkpoint NOT written — recovery will re-process this event.
 				log.Printf("[publisher] process error (market=%s %s/%d@%d): %v",
 					engine.MarketID,
 					result.SourcePosition.Topic,
@@ -137,23 +132,50 @@ func (p *Publisher) Run(ctx context.Context, engine *market.MarketEngine) {
 					err,
 				)
 			}
+		case <-retryTicker.C:
+			p.flushPendingDepthRetries(ctx, engine.MarketID)
 		case <-ctx.Done():
-			return
+			// Shutdown signal received. Drain remaining in-flight MatchResults in OutputQueue before exit.
+			drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			for {
+				select {
+				case result, ok := <-engine.OutputQueue:
+					if !ok {
+						p.flushPendingDepthRetries(drainCtx, engine.MarketID)
+						return
+					}
+					if err := p.process(drainCtx, result); err != nil {
+						log.Printf("[publisher] drain error (market=%s offset=%d): %v",
+							engine.MarketID, result.SourcePosition.Offset, err)
+					}
+				default:
+					p.flushPendingDepthRetries(drainCtx, engine.MarketID)
+					return
+				}
+			}
 		}
 	}
 }
 
+func (p *Publisher) flushPendingDepthRetries(ctx context.Context, marketID string) {
+	p.retryMu.Lock()
+	snap, ok := p.latestDepth[marketID]
+	if !ok {
+		p.retryMu.Unlock()
+		return
+	}
+	p.retryMu.Unlock()
+
+	if err := p.pushDepth(ctx, snap); err == nil {
+		p.retryMu.Lock()
+		delete(p.latestDepth, marketID)
+		p.retryMu.Unlock()
+		log.Printf("[publisher] successfully flushed retried depth snapshot (market=%s seq=%d)", marketID, snap.Sequence)
+	}
+}
+
 // process handles one MatchResult in strict order.
-//
-// Failure semantics:
-//   - Kafka publish failure  → return error → checkpoint NOT written → event replayed on restart.
-//   - Redis push failure     → log and continue → checkpoint IS written → Redis self-heals on next event.
-//   - Checkpoint failure     → return error → Kafka already written → at-least-once delivery on restart.
-//
-// Redis is a read-only projection/cache, NOT a durable event boundary.
-// Blocking the checkpoint on a Redis failure would cause duplicate Kafka trade events
-// for the entire Redis outage window upon restart — a worse outcome than a stale snapshot.
-// The next successful event always overwrites the missed Redis snapshot.
 func (p *Publisher) process(ctx context.Context, result orderbook.MatchResult) error {
 	// Step 1: Publish TradeExecuted for every Fill.
 	// Kafka IS the durable event boundary — failure here must block the checkpoint.
@@ -161,7 +183,6 @@ func (p *Publisher) process(ctx context.Context, result orderbook.MatchResult) e
 		if err := p.publishFills(ctx, result.Fills); err != nil {
 			return fmt.Errorf("publish fills: %w", err)
 		}
-		// Log each fill so trades are visible in console output.
 		for _, f := range result.Fills {
 			log.Printf("[trade] ✅ MATCH  market=%s  price=%s  qty=%s  buy=%s  sell=%s",
 				f.MarketID, f.Price.String(), f.Quantity.String(),
@@ -169,39 +190,40 @@ func (p *Publisher) process(ctx context.Context, result orderbook.MatchResult) e
 			)
 		}
 	} else {
-		// No fills — order was rested in the book.
 		log.Printf("[book]  📋 RESTED market=%s  offset=%d",
 			result.DepthSnapshot.MarketID, result.SourcePosition.Offset,
 		)
 	}
 
-	// Step 2: Push DepthSnapshot to Redis (non-critical projection — log and continue).
-	// Redis is a cache, not a source of truth. A failed write is self-healing:
-	// the next successful event overwrites with a fresh snapshot.
-	// Returning an error here would prevent the Postgres checkpoint from advancing,
-	// causing duplicate Kafka trade events for the full Redis outage window on restart.
+	// Step 2: Push DepthSnapshot to Redis.
+	// If it fails, buffer the latest snapshot for background retry.
 	if err := p.pushDepth(ctx, result.DepthSnapshot); err != nil {
-		log.Printf("[publisher] redis depth push failed (non-critical, market=%s offset=%d): %v",
+		log.Printf("[publisher] redis depth push failed (buffered for retry, market=%s offset=%d): %v",
 			result.DepthSnapshot.MarketID,
 			result.SourcePosition.Offset,
 			err,
 		)
-		// intentionally continue — do not return
+		p.retryMu.Lock()
+		p.latestDepth[result.DepthSnapshot.MarketID] = result.DepthSnapshot
+		p.retryMu.Unlock()
+	} else {
+		p.retryMu.Lock()
+		delete(p.latestDepth, result.DepthSnapshot.MarketID)
+		p.retryMu.Unlock()
 	}
 
-	// Step 3: Write Postgres checkpoint — ONLY after Kafka succeeds.
-	// Redis failure above does NOT prevent checkpoint advancement.
-	if err := p.writeCheckpoint(ctx, result.SourcePosition); err != nil {
-		return fmt.Errorf("write checkpoint: %w", err)
+	// Step 3: Advance contiguous Postgres checkpoint via coordinator.
+	if p.coord != nil {
+		if err := p.coord.MarkDone(ctx, result.SourcePosition); err != nil {
+			return fmt.Errorf("advance checkpoint: %w", err)
+		}
 	}
 
 	return nil
 }
 
 // publishFills writes one Kafka message per Fill to trades.executed.
-// Partition key: BuyOrderID — fills for the same buy order land on the same partition.
-//
-// NOTE: Change to fill.BuyerUserID.String() for user-centric partitioning.
+// Partition key: fill.MarketID so all trades for a market land in strict sequence on the same partition.
 func (p *Publisher) publishFills(ctx context.Context, fills []orderbook.Fill) error {
 	msgs := make([]kafkago.Message, 0, len(fills))
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -210,6 +232,7 @@ func (p *Publisher) publishFills(ctx context.Context, fills []orderbook.Fill) er
 		payload := tradeExecutedMessage{
 			TradeID:      fill.TradeID.String(),
 			MarketID:     fill.MarketID, // from Fill directly — authoritative
+			Sequence:     fill.Sequence,
 			MakerOrderID: fill.MakerOrderID.String(),
 			TakerOrderID: fill.TakerOrderID.String(),
 			BuyOrderID:   fill.BuyOrderID.String(),
@@ -227,7 +250,7 @@ func (p *Publisher) publishFills(ctx context.Context, fills []orderbook.Fill) er
 		}
 
 		msgs = append(msgs, kafkago.Message{
-			Key:   []byte(fill.BuyOrderID.String()), // partition key
+			Key:   []byte(fill.MarketID), // partition key by market
 			Value: b,
 		})
 	}
@@ -251,6 +274,7 @@ func (p *Publisher) pushDepth(ctx context.Context, snap orderbook.DepthSnapshot)
 
 	msg := depthSnapshotMessage{
 		MarketID:   snap.MarketID,
+		Sequence:   snap.Sequence,
 		Bids:       bids,
 		Asks:       asks,
 		SnapshotAt: snap.SnapshotAt.UTC().Format(time.RFC3339Nano),
@@ -262,36 +286,6 @@ func (p *Publisher) pushDepth(ctx context.Context, snap orderbook.DepthSnapshot)
 	}
 
 	return p.redis.Set(ctx, "depth:"+snap.MarketID, b, 0)
-}
-
-// writeCheckpoint writes the Kafka position to Postgres using a MONOTONIC UPSERT.
-// Each (topic, partition) pair has exactly one row — the latest processed offset.
-//
-// MONOTONIC GUARANTEE: The WHERE guard ensures the checkpoint can only advance
-// forward, never backwards. Multiple MarketEngine publishers write to the same
-// (topic, partition) row. Without this guard, a slower publisher processing an
-// earlier offset could move the checkpoint backwards, causing duplicate replays on
-// restart.
-//
-// Example race without the guard:
-//
-//	ETH writes checkpoint=101  (fast publisher, higher offset)
-//	BTC writes checkpoint=100  (slow publisher, lower offset) ← regression
-//
-// With the WHERE guard, BTC's write is silently ignored — correct behavior.
-func (p *Publisher) writeCheckpoint(ctx context.Context, pos orderbook.KafkaPosition) error {
-		const query = `
-		INSERT INTO kafka_checkpoints (topic, partition, "offset", updated_at)
-		VALUES ($1, $2, $3, NOW())
-		ON CONFLICT (topic, partition)
-		DO UPDATE SET
-			"offset"     = EXCLUDED."offset",
-			updated_at = NOW()
-		WHERE kafka_checkpoints."offset" < EXCLUDED."offset"`
-
-
-	_, err := p.db.Exec(ctx, query, pos.Topic, pos.Partition, pos.Offset)
-	return err
 }
 
 // Close shuts down the Kafka writer cleanly.
@@ -310,9 +304,14 @@ type TestablePublisher struct {
 }
 
 // NewTestable creates a Publisher with injected fakes for unit testing.
-func NewTestable(w kafkaWriter, r redisWriter, db dbWriter) *TestablePublisher {
+func NewTestable(w kafkaWriter, r redisWriter, coord checkpointCoordinator) *TestablePublisher {
 	return &TestablePublisher{
-		p: &Publisher{writer: w, redis: r, db: db},
+		p: &Publisher{
+			writer:      w,
+			redis:       r,
+			coord:       coord,
+			latestDepth: make(map[string]orderbook.DepthSnapshot),
+		},
 	}
 }
 

@@ -3,6 +3,7 @@ package market
 import (
 	"context"
 	"time"
+
 	"github.com/shopspring/decimal"
 
 	"tradedrift/services/matching-engine/internal/matcher"
@@ -13,17 +14,27 @@ import (
 // It processes one InputEvent at a time and sends exactly one MatchResult
 // per event to OutputQueue (one-in one-out invariant).
 //
-// Exits cleanly when ctx is cancelled.
-// InputQueue is intentionally never closed — the ctx cancellation is the
-// shutdown signal. Closing InputQueue would risk a "send on closed channel"
-// panic if a Consumer goroutine races with the close during shutdown.
 func (m *MarketEngine) Run(ctx context.Context) {
 	for {
 		select {
-		case event := <-m.InputQueue:
+		case event, ok := <-m.InputQueue:
+			if !ok {
+				return
+			}
 			m.processEvent(event)
 		case <-ctx.Done():
-			return
+			// Context cancelled (shutdown signal). Drain remaining in-flight events in InputQueue.
+			for {
+				select {
+				case event, ok := <-m.InputQueue:
+					if !ok {
+						return
+					}
+					m.processEvent(event)
+				default:
+					return
+				}
+			}
 		}
 	}
 }
@@ -106,6 +117,7 @@ func (m *MarketEngine) processEvent(event InputEvent) {
 
 		var cancel *orderbook.CancelledOrder
 		if node != nil {
+			m.book.Sequence++
 			cancel = &orderbook.CancelledOrder{
 				OrderID:           node.OrderID,
 				UserID:            node.UserID,

@@ -84,22 +84,25 @@ It does this by:
 
 ---
 
-## 3. Configuration & Structs
-
-### `Replayer`
-
-```go
-type Replayer struct {
-    brokers                []string
-    groupID                string
-    db                     ReplayerDB
-    redis                  ReplayerRedis
-    manager                *market.MarketManager
-    newReaderFunc          func(brokers []string, topic string, partition int) KafkaReader
-    discoverPartitionsFunc func(topic string) ([]int, error)
-    queryHWMFunc           func(ctx context.Context, topic string, partition int) (int64, error)
-}
 ```
 
-- **`ReplayAll(ctx, engineWg)`**: Sequential execution coordinator. Starts all registered market engines in recovery mode, runs partition replay, drains recovery barriers, asserts state alignment, and sets engines to live.
-- **`replayPartition(ctx, topic, partition, checkpointOffset, marketLastSeenOffset)`**: Reconstructs state for all registered markets assigned to a single partition by restoring snapshots and replaying Kafka command logs up to the checkpoint offset.
+---
+
+## 3. Modules & File Split
+
+To enforce a strict separation of concerns, the recovery logic is structured into three clean source files:
+
+1. **[`replayer.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go)** (Orchestrator): Defines the main orchestrator configuration and coordinates overall bootstrap recovery sequence via `ReplayAll()`. Starts all registered market engines in recovery mode, spawns concurrent `OutputQueue` draining goroutines to prevent deadlocks, runs partition replay, asserts final state alignments, and moves engines to live mode.
+2. **[`partition.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/partition.go)** (Kafka Recovery Engine): Manages partition offsets, logs continuity verification, commits checkpoints, and handles loop message routing (`replayPartition`, `routeMessage`, `commitKafkaGroupOffset`).
+3. **[`db.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/db.go)** (SQL Repository): Contains raw PostgreSQL database query helpers (`loadCheckpoint`, `loadLatestSnapshot`, `loadMarketSequence`).
+
+---
+
+## 4. Key Invariants
+
+### 4.1 Side-Effect-Free Recovery
+During the replay phase, recovery generates zero external side effects: no external trades are published, no snapshots are taken, and no Redis depth cache writes (`pushFreshDepth`) occur.
+
+### 4.2 Concurrent OutputQueue Draining
+Before replaying offsets, `ReplayAll` registers asynchronous drain goroutines for all engine `OutputQueues`. This keeps the queues empty during replay and prevents deadlocks when replaying massive historical logs exceeding the channel buffer size (1,000).
+

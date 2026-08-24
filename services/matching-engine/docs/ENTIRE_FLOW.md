@@ -69,8 +69,10 @@ services/matching-engine/
 │   │   └── README.md                   # Publisher package documentation
 │   │
 │   ├── recovery/                       # Durability & Crash Recovery
-│   │   ├── replayer.go                 # Replayer struct, ReplayAll, HWM query, drain loop, SetLive()
-│   │   └── README.md                   # Recovery package documentation
+│   │   ├── replayer.go                 # Orchestrates startup bootstrap & concurrent draining
+│   │   ├── partition.go                # Kafka partition message iteration & routing
+│   │   ├── db.go                       # Postgres database query encapsulation
+│   │   └── 01README.md                 # Recovery package documentation
 │   │
 │   └── projection/                     # Read-Only Depth Projection Client Layer
 │       ├── snapshot.go                 # OrderBookProjection, DepthLevel, analytical helpers
@@ -186,9 +188,8 @@ cmd/server/main.go               recovery/replayer.go            market/event_lo
        │                                  │                               │── OutputQueue ─────>│                          │
        │                                  │<── 8. Drain OutputQueue ──────│   (Exact count)     │                          │
        │                                  │                                                     │                          │
-       │                                  │── 9. pushFreshDepth() ────────────────────────────────────────────────────────>│ SET depth:BTC-USDT
-       │                                  │── 10. engine.SetLive() ──────>│ (Transitions to ModeLive)                      │
-       │<── 11. ReplayAll returns OK ─────│                               │                     │                          │
+       │                                  │── 9. engine.SetLive() ───────>│ (Transitions to ModeLive)                      │
+       │<── 10. ReplayAll returns OK ─────│                               │                     │                          │
        │                                                                  │                     │                          │
        │── 12. Start Publishers (1 per engine)                            │                     │                          │
        │── 13. consumer.Start(ctx) ───────────────────────────────────────────────────────────────────────────────────────>│ (Live Kafka reads)
@@ -306,7 +307,7 @@ This section lists every tricky concurrency, recovery, and matching edge case en
 | **7** | **Invalid Order Parameter Injection** | Incoming order has price `$45,123.456` when tick size is `$0.01`, or quantity `0.000005` when lot size is `0.0001`. | Broken price-level indexing or fractional dust precision corruption. | `validTickAndLot()` calculates `Price.Mod(TickSize) == 0` and rejects with `CancelledOrder{Reason: "invalid_order_parameters"}`. | [`event_loop.go:127`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/market/event_loop.go#L127) (`validTickAndLot`) |
 | **8** | **Zero Config Bypass** | Startup config has `TickSize: 0` or `LotSize: 0`. | Validation is silently skipped, allowing corrupt orders through. | `validateMarketConfigs()` enforces `TickSize > 0` and `LotSize > 0` before DB or Kafka connects. | [`main.go:93`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/cmd/server/main.go#L93) (`validateMarketConfigs`) |
 | **9** | **Postgres Checkpoint Absence** | Brand new deployment on empty database table. | `Scan()` returns error on missing row, causing startup crash. | `loadCheckpoint()` detects `errors.Is(err, pgx.ErrNoRows)` and returns `-1` (signals replay from offset 0). | [`replayer.go:240`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go#L240) (`loadCheckpoint`) |
-| **10** | **Redis Desynchronization After Crash** | Redis container restarts or purges memory during engine crash. | Redis depth key `depth:BTC-USDT` is empty while order book is fully populated. | `pushFreshDepth()` writes fresh Top-20 depth to Redis immediately at the end of recovery before going live. | [`replayer.go:263`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go#L263) (`pushFreshDepth`) |
+| **10** | **Redis Desynchronization After Crash** | Redis container restarts or purges memory during engine crash. | Redis depth key `depth:BTC-USDT` is empty while order book is fully populated. | Live publisher naturally pushes fresh Top-20 depth to Redis on the first live transaction/order event. | [`publisher.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/publisher/publisher.go) |
 | **11** | **Missing Market Identification on Fills** | Downstream Trade Service needs to settle trades by market ID. | `Fill` struct missing `MarketID`, causing downstream settlement failure. | `matcher.go` explicitly injects `MarketID: book.MarketID` onto every `Fill` struct. | [`matcher.go:195`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/matcher/matcher.go#L195) (`matchLimit`) |
 | **12** | **At-Least-Once Replay Duplication** | Crash occurs after trade published to Kafka but before Postgres checkpoint committed. | On restart, engine replays that offset and republishes the trade. | Documented architectural invariant: downstream services MUST be idempotent on `TradeID` (UUID). | [`README.md (publisher)`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/publisher/01README.md) |
 | **13** | **Redis Outage Causes Duplicate Kafka Trades** | Redis goes down for N minutes during a live market. Publisher writes Kafka trades successfully for every event. | If Redis failure is treated as a blocking error, the Postgres checkpoint never advances. On restart, all events from the pre-outage checkpoint are replayed — emitting duplicate `TradeExecuted` events for the entire outage window. | Redis push failure is **non-blocking**: logs warning, continues to Postgres checkpoint. Redis self-heals on the next successful event. Kafka and Postgres remain in sync throughout the outage. | [`publisher.go:process()`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/publisher/publisher.go#L145) |

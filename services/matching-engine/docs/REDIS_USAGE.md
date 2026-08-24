@@ -123,7 +123,7 @@ It is crucial to distinguish what resides in **Engine RAM** versus what is store
 | :--- | :--- | :--- |
 | [`cmd/server/main.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/cmd/server/main.go#L140-L153) | **Connection Lifecycle** | Connects to Redis via `redis.NewClient()`, pings connection, passes client to Publisher and Replayer, runs deferred `rdb.Close()`. |
 | [`internal/publisher/publisher.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/publisher/publisher.go#L225-L245) | **Live Depth Egress** | `pushDepth()` writes `depthSnapshotMessage` to `depth:{market_id}` after every match/order event. |
-| [`internal/recovery/replayer.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go#L281-L320) | **Recovery Hydration** | `pushFreshDepth()` pushes the current Top-20 depth to Redis immediately after replaying Kafka history on startup. |
+| [`internal/recovery/replayer.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go) | **Recovery Isolation** | Genuinely side-effect-free recovery. Recovery does not write intermediate states to Redis. |
 | [`internal/projection/reader.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/projection/reader.go#L49-L109) | **Read Projection Client** | `GetOrderBook()` (single `GET`) and `GetOrderBooks()` (batch `MGET`) for reading depth with strict validation. |
 
 ---
@@ -186,18 +186,12 @@ sequenceDiagram
     REP->>PG: Read last committed offset
     REP->>K: Fetch historical order events
     REP->>ME: Replay events into OrderBook
-    Note over ME: Rebuilds RAM book without publishing trades
-    REP->>R: pushFreshDepth(ctx, engine)
-    Note over R: Redis key depth:market_id is hydrated
+     Note over ME: Rebuilds RAM book without publishing trades
+     REP->>ME: SetLive() & complete recovery
 ```
 
-#### Function Details in `replayer.go`:
-
-* **`Replayer.pushFreshDepth(ctx, engine)`**
-  * Invoked at the very end of recovery ([`replayer.go:284`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go#L284)).
-  * Extracts `engine.GetDepth(20)` from the newly reconstructed in-memory order book.
-  * Formats and pushes the JSON payload to Redis (`depth:{market_id}`).
-  * **Benefit:** Guarantees that even if Redis lost its data or restarted while the engine was down, the cache is instantly repopulated before the engine begins processing live orders.
+#### Side-Effect-Free Recovery:
+During Kafka history replay, no Redis operations occur. This isolates the recovery phase from downstream caching systems, ensuring recovery is 100% side-effect-free. Once the engine transitions to `ModeLive`, normal matching events will populate Redis depth projections.
 
 ---
 
@@ -325,7 +319,7 @@ func (p *Publisher) Run(ctx context.Context, engine *market.MarketEngine) {
 
 | Phase | Handled By | Concurrency Model | Frequency |
 | :--- | :--- | :--- | :--- |
-| **Crash Recovery / Startup** | [`replayer.go:pushFreshDepth`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go#L281) | Runs **synchronously once** per market at the conclusion of Kafka history replay. | **One-time execution** before opening to live traffic. |
+| **Crash Recovery / Startup** | *None* | No Redis writes occur during recovery (Side-effect isolated). | *0 times* |
 | **Live Trading Operations** | [`publisher.go:pub.Run`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/publisher/publisher.go#L122) | Runs as a **dedicated goroutine per market**. | **Event-driven** (pushes immediately whenever an order event occurs). |
 
 ---

@@ -16,6 +16,7 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 	"github.com/shopspring/decimal"
 
+	"tradedrift/platform/postgres"
 	"tradedrift/services/matching-engine/internal/checkpoint"
 	intkafka "tradedrift/services/matching-engine/internal/kafka"
 	"tradedrift/services/matching-engine/internal/market"
@@ -129,6 +130,22 @@ func run() error {
 		return fmt.Errorf("postgres ping: %w", err)
 	}
 	log.Println("[server] postgres connected")
+
+	// Run database migrations on startup (Issue E & v9.9 Tables setup)
+	migrationDir := os.Getenv("ME_MIGRATIONS_DIR")
+	if migrationDir == "" {
+		migrationDir = "services/matching-engine/migration"
+	}
+	if _, err := os.Stat(migrationDir); os.IsNotExist(err) {
+		if _, err := os.Stat("migration"); err == nil {
+			migrationDir = "migration"
+		}
+	}
+	log.Printf("[server] running database migrations from dir: %s...", migrationDir)
+	if err := postgres.RunMigrations(cfg.PostgresDSN, migrationDir); err != nil {
+		return fmt.Errorf("postgres migrations: %w", err)
+	}
+	log.Println("[server] database migrations applied successfully")
 
 
 

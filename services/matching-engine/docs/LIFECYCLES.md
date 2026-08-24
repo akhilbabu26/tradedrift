@@ -62,15 +62,10 @@ When the engine starts up or recovers from a crash, it reconstructs the in-memor
                (Runs in ModeRecovery — Rebuilds
                 OrderBook; Trade Fills Suppressed)
                               │
-                    ┌─────────┴─────────┐
-                    ↓ (Step 1)          ↓ (Step 2)
-             pushFreshDepth()     engine.SetLive()
-                    │                   │
-                  Redis                 │
-             (depth:BTC-USDT)           │
-                    │                   │
-                    └─────────┬─────────┘
-                              ↓
+                              ▼
+                        engine.SetLive()
+                              │
+                              ▼
                    [System in LIVE Mode]
                (Start Publishers & Live Consumers)
 ```
@@ -79,10 +74,9 @@ When the engine starts up or recovers from a crash, it reconstructs the in-memor
 1. **Load Checkpoint:** Queries PostgreSQL `kafka_checkpoints` to find the exact last processed offset.
 2. **Fetch HWM:** Queries Kafka to determine how many unread messages exist.
 3. **Replay in Recovery Mode:** Historical messages are fed into `matcher.Match()` in `ModeRecovery`. The in-memory order book is reconstructed, but **no duplicate trades are emitted to Kafka**.
-4. **Hydrate Redis:** Calls [`pushFreshDepth()`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go#L281) to push the Top-20 depth snapshot to Redis (`depth:{market_id}`).
-5. **Switch to Live:** Switches the engine to `ModeLive` and starts publisher goroutines and live Kafka consumers.
+4. **Switch to Live:** Switches the engine to `ModeLive` and starts publisher goroutines and live Kafka consumers. No Redis depth hydration occurs during recovery, keeping the phase completely side-effect-free.
 
-* **Code Reference:** [`cmd/server/main.go:164-184`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/cmd/server/main.go#L164-L184) & [`internal/recovery/replayer.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go)
+* **Code Reference:** [`cmd/server/main.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/cmd/server/main.go) & [`internal/recovery/replayer.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go)
 
 ---
 
@@ -356,7 +350,7 @@ Intercepts and rejects malformed orders (negative numbers, invalid tick/lot size
 
 | # | Lifecycle Name | Trigger | RAM Engine Action | Egress Mutations |
 | :---: | :--- | :--- | :--- | :--- |
-| **1** | **Bootstrap & Recovery** | Startup / Crash Restart | Replays Kafka logs; suppresses fills | Hydrates Redis (`pushFreshDepth`); sets `ModeLive` |
+| **1** | **Bootstrap & Recovery** | Startup / Crash Restart | Replays Kafka logs; suppresses fills | Re-aligns offsets; sets `ModeLive` |
 | **2** | **Limit Order Matching** | `OrderCreated` (`LIMIT`) | Matches FIFO; rests remaining balance | Kafka trades $\to$ Redis depth $\to$ Postgres checkpoint |
 | **3** | **Market Order (IOC)** | `OrderCreated` (`MARKET`) | Sweeps book; cancels unfilled remainder | Kafka trades $\to$ Redis depth $\to$ Postgres checkpoint |
 | **4** | **Order Cancellation** | `OrderCancel` | $O(1)$ lookup; unlinks from FIFO queue | Redis depth $\to$ Postgres checkpoint |

@@ -11,13 +11,7 @@ import ResetPasswordPage from './pages/auth/ResetPasswordPage'
 import DashboardPage from './pages/DashboardPage'
 import WalletPage from './pages/WalletPage'
 import SettingsPage from './pages/SettingsPage'
-
-// Placeholder pages — will be built as designs come in
-const ComingSoon = ({ label }: { label: string }) => (
-  <div className="min-h-screen bg-base flex items-center justify-center text-white text-xl">
-    {label} — Coming Soon
-  </div>
-)
+import TradePage from './pages/TradePage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
@@ -50,6 +44,9 @@ export default function App() {
         {/* Protected */}
         <Route path="/dashboard" element={
           <ProtectedRoute><DashboardPage /></ProtectedRoute>
+        } />
+        <Route path="/trade" element={
+          <ProtectedRoute><TradePage /></ProtectedRoute>
         } />
         <Route path="/wallet" element={
           <ProtectedRoute><WalletPage /></ProtectedRoute>

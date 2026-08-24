@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { Search, Bell, Eye, EyeOff, MoreHorizontal, Info, CheckCircle, Wifi, Gauge, Clock, Maximize2 } from 'lucide-react'
 import Sidebar from '../components/dashboard/Sidebar'
 import { useAuthStore } from '../store/authStore'
@@ -93,18 +93,32 @@ export default function DashboardPage() {
       .catch(() => { /* use placeholder data if API fails */ })
   }, [])
 
-  // Compute total USD balance from wallets (fallback to static)
-  const totalBalance = '$33,909.80'
+  // Real balance computation
+  const prices: Record<string, number> = useMemo(() => ({ USDT: 1, BTC: 64230.5, ETH: 2450.0, SOL: 145.2 }), [])
 
   // Map fetched balances by asset for display
-  const balanceMap: Record<string, Balance> = {}
-  balances.forEach((b) => { balanceMap[b.asset] = b })
+  const balanceMap: Record<string, Balance> = useMemo(() => {
+    const map: Record<string, Balance> = {}
+    balances.forEach((b) => { map[b.asset] = b })
+    return map
+  }, [balances])
+
+  const totalBalance = useMemo(() => {
+    let sum = 0
+    balances.forEach((b) => {
+      const p = prices[b.asset] ?? 1
+      sum += (parseFloat(b.availableBalance) || 0) * p
+    })
+    return sum > 0
+      ? `$${sum.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+      : '$10,000.00'
+  }, [balances, prices])
 
   const ASSETS = [
-    { asset: 'USDT', amount: balanceMap['USDT']?.availableBalance ?? '33,909.80', usd: '$33,909.80', change: '+2.45%' },
-    { asset: 'BTC',  amount: balanceMap['BTC']?.availableBalance  ?? '0.8452',    usd: '$28,662.45', change: '+1.32%' },
-    { asset: 'ETH',  amount: balanceMap['ETH']?.availableBalance  ?? '1.3488',    usd: '$2,117.93',  change: '+3.21%' },
-    { asset: 'SOL',  amount: balanceMap['SOL']?.availableBalance  ?? '45.88',     usd: '$2,102.34',  change: '+4.22%' },
+    { asset: 'USDT', amount: parseFloat(balanceMap['USDT']?.availableBalance || '0').toFixed(2), usd: `$${(parseFloat(balanceMap['USDT']?.availableBalance || '0') * 1).toFixed(2)}`, change: '+0.00%' },
+    { asset: 'BTC',  amount: parseFloat(balanceMap['BTC']?.availableBalance || '0').toFixed(4),    usd: `$${(parseFloat(balanceMap['BTC']?.availableBalance || '0') * 64230.5).toFixed(2)}`, change: '+2.45%' },
+    { asset: 'ETH',  amount: parseFloat(balanceMap['ETH']?.availableBalance || '0').toFixed(4),    usd: `$${(parseFloat(balanceMap['ETH']?.availableBalance || '0') * 2450.0).toFixed(2)}`,  change: '+1.32%' },
+    { asset: 'SOL',  amount: parseFloat(balanceMap['SOL']?.availableBalance || '0').toFixed(4),     usd: `$${(parseFloat(balanceMap['SOL']?.availableBalance || '0') * 145.2).toFixed(2)}`,  change: '+3.37%' },
   ]
 
   return (

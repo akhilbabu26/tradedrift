@@ -164,12 +164,18 @@ services:
       WALLET_ADDR:  "wallet:50052"
       ORDER_ADDR:   "order:50053"
       MARKET_ADDR:  "market:50054"
+      REDIS_ADDR:   "redis:6379"
+      KAFKA_BROKERS: "kafka:29092"
       JWT_SECRET:   "super-secret-jwt-key-tradedrift-dev-32bytes"
       CORS_ORIGIN:  "http://localhost:5173"
       LOG_LEVEL:    "info"
     ports:
       - "8080:8080"
     depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
       auth:
         condition: service_started
       wallet:

@@ -26,6 +26,9 @@ import (
 	orderhandler "tradedrift/services/gateway/internal/handler/order"
 	wallethandler "tradedrift/services/gateway/internal/handler/wallet"
 	"tradedrift/services/gateway/internal/middleware"
+	"tradedrift/services/gateway/internal/ws"
+
+	"github.com/redis/go-redis/v9"
 )
 
 func formatTarget(addr string) string {
@@ -93,9 +96,35 @@ func main() {
 	orderH  := orderhandler.NewHandler(orderv1.NewOrderServiceClient(orderConn))
 	marketH := markethandler.NewHandler(marketv1.NewMarketServiceClient(marketConn))
 
-	// 5. Middleware setup
+	// 5. Redis and WebSocket Subsystem Setup
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	redisAddr := config.GetEnv("REDIS_ADDR", "localhost:6379")
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: redisAddr,
+	})
+	defer redisClient.Close()
+
+	kafkaBrokersStr := config.GetEnv("KAFKA_BROKERS", "localhost:9092")
+	var kafkaBrokers []string
+	for _, b := range strings.Split(kafkaBrokersStr, ",") {
+		if trimmed := strings.TrimSpace(b); trimmed != "" {
+			kafkaBrokers = append(kafkaBrokers, trimmed)
+		}
+	}
+
+	// Bug Fix #7: Create one Streamer, bind Hub after both are constructed.
+	// Previously two Streamer instances were created to work around the circular
+	// dependency — the first was used as the snapshot provider, the second (with hub)
+	// was used for background streaming. SetHub() cleanly resolves this.
+	wsStreamer := ws.NewStreamer(nil, redisClient, kafkaBrokers, "trades.executed", "gateway-websocket-group", appLogger)
+	wsHub := ws.NewHub(appLogger, wsStreamer)
+	wsStreamer.SetHub(wsHub)
+	wsStreamer.Start(ctx)
+
+	corsOrigin := config.GetEnv("CORS_ORIGIN", "http://localhost:5173")
+	wsH := ws.NewHandler(wsHub, jwtSecretStr, corsOrigin, appLogger)
 
 	jwtValidator := platformjwt.NewHMACValidator([]byte(jwtSecretStr))
 	rateLimiter  := middleware.NewRateLimiter(ctx, rate.Every(time.Second), 20)
@@ -116,6 +145,9 @@ func main() {
 
 	// 6. Router
 	mux := http.NewServeMux()
+
+	// WebSocket Gateway — RFC 6455
+	mux.HandleFunc("GET /ws", wsH.ServeWS)
 
 	// Auth — public
 	mux.HandleFunc("POST /api/v1/auth/register",        authH.Register)

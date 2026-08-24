@@ -51,9 +51,9 @@ export default function VerifyEmailPage() {
     setError('')
     setLoading(true)
     try {
-      const { data } = await authApi.verifyEmail({ email, code }) as { data: { accessToken?: string; refreshToken?: string; user?: { id: string; email: string; username: string } } }
+      const { data } = await authApi.verifyEmail({ email, code })
       if (data?.accessToken) {
-        setTokens(data.accessToken, data.refreshToken!)
+        setTokens(data.accessToken, data.refreshToken)
         if (data.user) setUser(data.user)
       }
       navigate('/dashboard')

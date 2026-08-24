@@ -1,4 +1,4 @@
-package ws
+package hub
 
 import (
 	"encoding/json"
@@ -7,22 +7,27 @@ import (
 	"sync/atomic"
 
 	"go.uber.org/zap"
+
+	"tradedrift/services/gateway/internal/ws/protocol"
 )
 
-// SnapshotProvider fetches immediate depth and ticker snapshots upon client subscription.
-type SnapshotProvider interface {
-	GetImmediateOrderBook(marketID string) (*OrderBookDepthPayload, error)
-	GetImmediateTicker(marketID string) (*TickerPayload, error)
-}
+const maxSubLimit = 50
 
 // Hub manages WebSocket client connections, channel routing, and broadcast distribution.
+// Implements protocol.Broadcaster.
+//
+// Concurrency Model:
+// Hub is the single, authoritative owner of all client connection and subscription states.
+// All subscription additions, removals, and client cleanups are protected by Hub.mu,
+// eliminating multi-lock coordination issues.
 type Hub struct {
 	clients          map[*Client]bool
+	clientSubs       map[*Client]map[string]bool // client -> set of subscribed streams
 	subs             map[string]map[*Client]bool // stream -> set of clients
 	marketSubs       map[string]int              // marketID -> count of active subscribers
 	mu               sync.RWMutex
 	logger           *zap.Logger
-	snapshotProvider SnapshotProvider
+	snapshotProvider protocol.SnapshotProvider
 
 	// Prometheus / Internal Observability Counters
 	activeConnections    int64
@@ -32,9 +37,10 @@ type Hub struct {
 }
 
 // NewHub creates a new Hub instance.
-func NewHub(logger *zap.Logger, provider SnapshotProvider) *Hub {
+func NewHub(logger *zap.Logger, provider protocol.SnapshotProvider) *Hub {
 	return &Hub{
 		clients:          make(map[*Client]bool),
+		clientSubs:       make(map[*Client]map[string]bool),
 		subs:             make(map[string]map[*Client]bool),
 		marketSubs:       make(map[string]int),
 		logger:           logger,
@@ -42,16 +48,17 @@ func NewHub(logger *zap.Logger, provider SnapshotProvider) *Hub {
 	}
 }
 
-// Register adds a new client to the hub.
+// Register adds a new client to the hub under Hub.mu.
 func (h *Hub) Register(c *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.clients[c] = true
+	h.clientSubs[c] = make(map[string]bool)
 	atomic.AddInt64(&h.activeConnections, 1)
 	h.logger.Debug("Client registered", zap.String("user_id", c.UserID()))
 }
 
-// Unregister removes a client and cleans up all its active subscriptions.
+// Unregister atomically removes a client and cleans up all its active subscriptions.
 func (h *Hub) Unregister(c *Client) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -62,20 +69,61 @@ func (h *Hub) Unregister(c *Client) {
 	delete(h.clients, c)
 	atomic.AddInt64(&h.activeConnections, -1)
 
-	// Clean up all channel subscriptions for this client
-	for _, stream := range c.Subscriptions() {
-		h.removeSubscriptionLocked(c, stream)
+	// Clean up all stream subscriptions held by this client
+	if streams, ok := h.clientSubs[c]; ok {
+		for stream := range streams {
+			if clients, exists := h.subs[stream]; exists {
+				delete(clients, c)
+				if len(clients) == 0 {
+					delete(h.subs, stream)
+				}
+			}
+
+			streamType, target, _ := protocol.ValidateStream(stream)
+			if target != "" && (streamType == protocol.StreamTypeOrderBook || streamType == protocol.StreamTypeTrades || streamType == protocol.StreamTypeTicker) {
+				if h.marketSubs[target] > 0 {
+					h.marketSubs[target]--
+					if h.marketSubs[target] <= 0 {
+						delete(h.marketSubs, target)
+					}
+				}
+			}
+		}
+		delete(h.clientSubs, c)
 	}
 
 	h.logger.Debug("Client unregistered", zap.String("user_id", c.UserID()))
 }
 
+// HasClientSubscription checks if a client is subscribed to a specific stream.
+func (h *Hub) HasClientSubscription(c *Client, stream string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if subs, ok := h.clientSubs[c]; ok {
+		return subs[stream]
+	}
+	return false
+}
+
+// GetClientSubscriptions returns a copy of all active subscriptions for a client.
+func (h *Hub) GetClientSubscriptions(c *Client) []string {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	subs, ok := h.clientSubs[c]
+	if !ok {
+		return nil
+	}
+	list := make([]string, 0, len(subs))
+	for s := range subs {
+		list = append(list, s)
+	}
+	return list
+}
+
 // HandleClientFrame processes an inbound client event.
-func (h *Hub) HandleClientFrame(c *Client, frame InboundFrame) {
+func (h *Hub) HandleClientFrame(c *Client, frame protocol.InboundFrame) {
 	switch frame.Event {
 	case "ping":
-		// Bug Fix #4: Application-level ping also refreshes the 60s read deadline.
-		// Previously only RFC 6455 Pong frames (SetPongHandler) refreshed it.
 		c.RefreshReadDeadline()
 		c.SendPong()
 
@@ -94,7 +142,7 @@ func (h *Hub) HandleClientFrame(c *Client, frame InboundFrame) {
 	}
 }
 
-// handleSubscribe executes the subscription validation and registration pipeline.
+// handleSubscribe executes validation, authorization, and atomic registration under Hub.mu.
 func (h *Hub) handleSubscribe(c *Client, stream string) {
 	stream = strings.TrimSpace(stream)
 	if stream == "" {
@@ -102,16 +150,14 @@ func (h *Hub) handleSubscribe(c *Client, stream string) {
 		return
 	}
 
-	// Bug Fix #6: Use strict validation — rejects malformed patterns like
-	// "user:abc:123", "market:foo:BTC-USDT", "market:orderbook:", etc.
-	streamType, target, ok := ValidateStream(stream)
+	streamType, target, ok := protocol.ValidateStream(stream)
 	if !ok {
 		c.SendControlError("INVALID_STREAM", "unrecognized or malformed stream: "+stream)
 		return
 	}
 
-	// Authentication & Authorization Guard for Private Streams
-	if streamType == StreamTypeNotification {
+	// Authorization Guard for Private Streams
+	if streamType == protocol.StreamTypeNotification {
 		if c.UserID() == "" {
 			c.SendControlError("UNAUTHORIZED", "authentication required for private notifications")
 			return
@@ -126,43 +172,78 @@ func (h *Hub) handleSubscribe(c *Client, stream string) {
 		}
 	}
 
-	// Bug Fix #2: AddSubscription is now idempotent — returns (added, allowed).
-	// If the client already subscribed to this stream, skip hub registration to
-	// prevent double-incrementing marketSubs[target].
-	added, allowed := c.AddSubscription(stream)
-	if !allowed {
-		c.SendControlError("SUBSCRIPTION_LIMIT_EXCEEDED", "max 50 active subscriptions allowed per connection")
-		return
+	// ── Atomic Subscription Registration under Hub.mu ────────────────────────
+	h.mu.Lock()
+	if !h.clients[c] {
+		h.mu.Unlock()
+		return // Client disconnected before subscription registered
 	}
-	if !added {
-		// Client already subscribed — no state change needed, still send snapshot.
+
+	cSubs := h.clientSubs[c]
+	if cSubs[stream] {
+		// Idempotent: already subscribed -> unlock and deliver snapshot
+		h.mu.Unlock()
 		h.deliverImmediateSnapshot(c, streamType, target)
 		return
 	}
 
-	// Bug Fix #3: Hub registration (marketSubs increment) BEFORE snapshot delivery.
-	// Previously: snapshot was fetched & sent, THEN the client was registered.
-	// Race: a Broadcast() happening between snapshot and registration would be missed.
-	// Now: client is in the subscriber set before snapshot starts, guaranteeing no gap.
-	h.mu.Lock()
+	if len(cSubs) >= maxSubLimit {
+		h.mu.Unlock()
+		c.SendControlError("SUBSCRIPTION_LIMIT_EXCEEDED", "max 50 active subscriptions allowed per connection")
+		return
+	}
+
+	// Register subscription
+	cSubs[stream] = true
+
 	if _, ok := h.subs[stream]; !ok {
 		h.subs[stream] = make(map[*Client]bool)
 	}
 	h.subs[stream][c] = true
 
-	// Increment market subscriber counter for on-demand polling
-	if target != "" && (streamType == StreamTypeOrderBook || streamType == StreamTypeTrades || streamType == StreamTypeTicker) {
+	if target != "" && (streamType == protocol.StreamTypeOrderBook || streamType == protocol.StreamTypeTrades || streamType == protocol.StreamTypeTicker) {
 		h.marketSubs[target]++
 	}
 	h.mu.Unlock()
+	// ─────────────────────────────────────────────────────────────────────────
 
-	// Deliver immediate snapshot AFTER hub registration
+	// Deliver initial snapshot AFTER registration so no live broadcast is missed
 	h.deliverImmediateSnapshot(c, streamType, target)
 
 	h.logger.Debug("Client subscribed to stream",
 		zap.String("stream", stream),
 		zap.String("user_id", c.UserID()),
 	)
+}
+
+// handleUnsubscribe atomically removes a stream subscription under Hub.mu.
+func (h *Hub) handleUnsubscribe(c *Client, stream string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	cSubs, ok := h.clientSubs[c]
+	if !ok || !cSubs[stream] {
+		return // Client was not subscribed to this stream -> idempotent no-op
+	}
+
+	delete(cSubs, stream)
+
+	if clients, exists := h.subs[stream]; exists {
+		delete(clients, c)
+		if len(clients) == 0 {
+			delete(h.subs, stream)
+		}
+	}
+
+	streamType, target, _ := protocol.ValidateStream(stream)
+	if target != "" && (streamType == protocol.StreamTypeOrderBook || streamType == protocol.StreamTypeTrades || streamType == protocol.StreamTypeTicker) {
+		if count := h.marketSubs[target]; count > 0 {
+			h.marketSubs[target]--
+			if h.marketSubs[target] <= 0 {
+				delete(h.marketSubs, target)
+			}
+		}
+	}
 }
 
 // deliverImmediateSnapshot dispatches initial depth or ticker snapshot upon subscription.
@@ -172,76 +253,42 @@ func (h *Hub) deliverImmediateSnapshot(c *Client, streamType, marketID string) {
 	}
 
 	switch streamType {
-	case StreamTypeOrderBook:
+	case protocol.StreamTypeOrderBook:
 		snapshot, err := h.snapshotProvider.GetImmediateOrderBook(marketID)
 		if err != nil {
-			// Bug Fix #8: Inform the client when market data is unavailable
-			// instead of silently doing nothing.
 			c.SendControlError("MARKET_DATA_UNAVAILABLE", "order book data temporarily unavailable for "+marketID)
 			return
 		}
 		if snapshot != nil {
-			env := OutboundEnvelope{
+			env := protocol.OutboundEnvelope{
 				Stream: "market:orderbook:" + marketID,
 				Data:   snapshot,
 			}
 			if bytes, err := json.Marshal(env); err == nil {
-				c.Send(StreamTypeOrderBook, bytes)
+				c.Send(protocol.StreamTypeOrderBook, bytes)
 			}
 		}
 
-	case StreamTypeTicker:
+	case protocol.StreamTypeTicker:
 		ticker, err := h.snapshotProvider.GetImmediateTicker(marketID)
 		if err != nil {
-			// Bug Fix #8: Inform the client when ticker data is unavailable.
 			c.SendControlError("MARKET_DATA_UNAVAILABLE", "ticker data temporarily unavailable for "+marketID)
 			return
 		}
 		if ticker != nil {
-			env := OutboundEnvelope{
+			env := protocol.OutboundEnvelope{
 				Stream: "market:ticker:" + marketID,
 				Data:   ticker,
 			}
 			if bytes, err := json.Marshal(env); err == nil {
-				c.Send(StreamTypeTicker, bytes)
+				c.Send(protocol.StreamTypeTicker, bytes)
 			}
 		}
-	}
-}
-
-// handleUnsubscribe unregisters a stream subscription for a client.
-func (h *Hub) handleUnsubscribe(c *Client, stream string) {
-	c.RemoveSubscription(stream)
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.removeSubscriptionLocked(c, stream)
-}
-
-func (h *Hub) removeSubscriptionLocked(c *Client, stream string) {
-	clients, ok := h.subs[stream]
-	if !ok {
-		return
-	}
-	delete(clients, c)
-
-	// Clean up market subscriber count
-	streamType, target, _ := parseStreamStrict(stream)
-	if target != "" && (streamType == StreamTypeOrderBook || streamType == StreamTypeTrades || streamType == StreamTypeTicker) {
-		if count := h.marketSubs[target]; count > 0 {
-			h.marketSubs[target]--
-			if h.marketSubs[target] <= 0 {
-				delete(h.marketSubs, target)
-			}
-		}
-	}
-
-	if len(clients) == 0 {
-		delete(h.subs, stream)
 	}
 }
 
 // Broadcast dispatches a message to all active subscribers of a channel.
+// Implements protocol.Broadcaster.
 func (h *Hub) Broadcast(channel string, payload []byte, streamType string) {
 	h.mu.RLock()
 	clients := make([]*Client, 0, len(h.subs[channel]))
@@ -258,6 +305,7 @@ func (h *Hub) Broadcast(channel string, payload []byte, streamType string) {
 }
 
 // GetActiveMarketIDs returns all markets that currently have at least one active subscriber.
+// Implements protocol.Broadcaster.
 func (h *Hub) GetActiveMarketIDs() []string {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -270,6 +318,7 @@ func (h *Hub) GetActiveMarketIDs() []string {
 }
 
 // HasSubscribers checks if a channel currently has at least 1 listener.
+// Implements protocol.Broadcaster.
 func (h *Hub) HasSubscribers(channel string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

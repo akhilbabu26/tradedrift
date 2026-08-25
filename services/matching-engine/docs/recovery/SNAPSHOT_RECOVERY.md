@@ -32,7 +32,18 @@ This overall architectural pattern is known as **Snapshot-Based State Recovery**
 
 ---
 
-## 2. The Core Problem: The $O(N)$ Historical Replay Bottleneck
+## 2. Problems Solved, How Solved & Implementing Functions Matrix
+
+| Problem Solved | Danger / Failure Scenario | How It Is Solved | Implementing Function(s) & Code Location |
+| :--- | :--- | :--- | :--- |
+| **1. $O(N)$ Historical Replay Bottleneck** | Replaying millions of orders from Offset 0 on reboot takes hours of downtime, halting all trading. | Serializes resting orders periodically to PostgreSQL; restores 500,000 orders into RAM in **~10ms**, replaying only the last few seconds of Kafka deltas. | [`Serialize`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/orderbook/snapshot.go#L61-L82), [`Restore`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/orderbook/snapshot.go#L115-L157) |
+| **2. Database Bit-Rot & JSON Tampering** | Bit flip or manual DB tampering corrupts price/quantity decimals in resting orders. | Computes a **256-bit SHA-256 cryptographic hash** of the snapshot payload and asserts parity before loading. | [`Checksum`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/orderbook/snapshot.go#L51-L58), [`Restore`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/orderbook/snapshot.go#L141-L144) |
+| **3. Snapshot Beyond Partition Checkpoint** | System loads a snapshot containing orders past the safe committed offset, causing double-matching or missing fills. | 5-Gate Validation Gate 4 asserts: `snap.Offset <= checkpointOffset`. | [`Restore`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/orderbook/snapshot.go#L136-L138) |
+| **4. Snapshot Freezing RAM Execution** | Taking snapshots blocks trading during active volatility surges. | Zero mutex locks; snapshot triggers execute synchronously inside the single-threaded event loop between discrete orders ($< 1\text{ms}$). | [`triggerPeriodicSnapshot`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/market/event_loop.go#L93-L108) |
+
+---
+
+## 3. The Core Problem: The $O(N)$ Historical Replay Bottleneck
 
 Because the order book lives in RAM, when the server restarts after a crash:
 

@@ -24,7 +24,18 @@ The **Replayer** ([`internal/recovery/replayer.go`](file:///c:/Users/AKHIL%20BAB
 
 ---
 
-## 2. Core Mechanism: Kafka Delta Replay & Offset Continuity Guard
+## 2. Problems Solved, How Solved & Implementing Functions Matrix
+
+| Problem Solved | Danger / Failure Scenario | How It Is Solved | Implementing Function(s) & Code Location |
+| :--- | :--- | :--- | :--- |
+| **1. Truncated / Wiped Kafka Cluster Boot** | Server is accidentally pointed to an empty or truncated Kafka broker where messages were lost. Starting live would skip historical un-executed orders. | Connects to Kafka broker before replay, queries High Watermark (HWM), and aborts boot if `checkpoint > HWM`. | [`FetchLatestOffset`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go#L80-L100), [`replayPartition`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/partition.go#L38-L46) |
+| **2. $O(N)$ Kafka Log Replay Bottleneck** | Replaying millions of orders from Offset 0 takes hours of downtime on reboot. | Restores latest snapshot $\le \text{checkpoint}$ into RAM in 10ms, then starts Kafka reader at `min(snapshot.Offset) + 1`. | [`replayPartition`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/partition.go#L83-L90), [`loadLatestSnapshot`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/db.go#L28-L58) |
+| **3. Kafka Message Stream Gaps / Out-of-Order Delivery** | Network drop or partition rebalance skips an offset (e.g. 95 $\to$ 97), causing cancelled orders or matching against wrong order books. | Enforces strict gapless continuity on every single message: asserts `msg.Offset == expectedOffset++`. | [`replayPartition`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/partition.go#L123-L127) |
+| **4. Duplicate Trade Egress During Replay** | Replaying historical orders accidentally re-emits trade fills to Kafka and WebSockets, double-filling trader balances. | Starts market engines in `ModeRecovery`, which matches in RAM but suppresses output publication until `SetLive()`. | [`ModeRecovery`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/market/engine.go#L16-L19), [`Publisher.process`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/publisher/publisher.go#L102-L115) |
+
+---
+
+## 3. Core Mechanism: Kafka Delta Replay & Offset Continuity Guard
 
 ```
                            KAFKA DELTA REPLAYER LIFECYCLE

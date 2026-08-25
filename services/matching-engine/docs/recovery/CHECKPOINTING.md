@@ -13,14 +13,20 @@ In the TradeDrift Matching Engine, order books reside **100% in volatile RAM** t
 
 The **Contiguous Offset Checkpointing** mechanism ([`internal/checkpoint`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/checkpoint/coordinator.go)) is the **durability and crash-recovery engine** that makes in-memory matching completely safe.
 
-It solves three critical architectural imperatives:
-1. **Zero Lost Orders**: Guarantees that when different trading pairs share a Kafka partition, a fast market finishing ahead of a slow market **never** advances the committed checkpoint past an in-flight order.
-2. **Atomic Multi-Sink Persistence**: Commits contiguous Kafka offsets, monotonic market sequence counters, and point-in-time order book snapshots inside a **single atomic PostgreSQL transaction (`BEGIN ... COMMIT`)**.
-3. **Deterministic Fast Recovery**: Allows rebooting nodes to restore 500,000-order books in **~10 milliseconds** and replay only the tiny un-snapshotted delta of Kafka commands.
+---
+
+## 2. Problems Solved, How Solved & Implementing Functions Matrix
+
+| Problem Solved | Danger / Failure Scenario | How It Is Solved | Implementing Function(s) & Code Location |
+| :--- | :--- | :--- | :--- |
+| **1. Out-of-Order Offset Commit Gap** | A fast market finishes Offset 101 while a slow market is still executing Offset 100. If committed naively, a crash will permanently skip and lose Offset 100 on reboot. | Coordinator maintains `inFlight` and `completed` hash maps, advancing checkpoint offset **only in strict contiguous order** ($N+1, N+2$). | [`Track`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/checkpoint/coordinator.go#L110-L117), [`MarkDoneWithSequence`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/checkpoint/coordinator.go#L128-L160) |
+| **2. Multi-Sink Persistence Desync** | System crashes while saving snapshot to DB, but checkpoint advances in Kafka, leaving order book in an inconsistent state. | Commits `kafka_checkpoints`, `market_sequences`, and `market_snapshots` inside a **single atomic PostgreSQL transaction (`BEGIN ... COMMIT`)**. | [`commitTransaction`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/checkpoint/coordinator.go#L163-L248) |
+| **3. Checkpoint Backward Regressions** | Network lag causes a delayed write from an older thread to overwrite a newer checkpoint in DB. | SQL UPSERT enforces a monotonic guard clause: `WHERE kafka_checkpoints.offset < EXCLUDED.offset`. | [`migration/00001_create_kafka_checkpoints.sql`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/migration/00001_create_kafka_checkpoints.sql#L3-L9) |
+| **4. In-Memory Goroutine Churn** | Spawning goroutines per offset creates CPU context switching and memory leaks during high traffic. | Zero per-offset goroutines; uses two synchronized in-memory hash maps with instantaneous $O(1)$ lookups. | [`partitionTracker`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/checkpoint/coordinator.go#L24-L35) |
 
 ---
 
-## 2. The Core Problem: Multi-Market Speed Divergence
+## 3. The Core Problem: Multi-Market Speed Divergence
 
 In high-throughput cryptocurrency exchanges, multiple trading pairs (`BTC-USDT`, `ETH-USDT`, `SOL-USDT`) are multiplexed onto shared Kafka partitions (e.g. Partition 0).
 

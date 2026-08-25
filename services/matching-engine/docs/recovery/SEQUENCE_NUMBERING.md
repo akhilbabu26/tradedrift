@@ -19,7 +19,18 @@ It creates a deterministic, gapless chronological timeline ($1, 2, 3, \dots, N$)
 
 ---
 
-## 2. Why Sequence Numbers Are Used (Core Advantages)
+## 2. Problems Solved, How Solved & Implementing Functions Matrix
+
+| Problem Solved | Danger / Failure Scenario | How It Is Solved | Implementing Function(s) & Code Location |
+| :--- | :--- | :--- | :--- |
+| **1. Undetected Packet Loss & Gaps** | A trade fill message is dropped over Kafka/WebSockets. Downstream settlement calculates balances on missing data. | Monotonic sequence increment ($N \to N+1$). Downstream consumers detect gaps if `receivedSeq > lastSeenSeq + 1`. | [`nextSequence`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/market/event_loop.go#L20-L24), [`Publisher.process`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/publisher/publisher.go#L95-L105) |
+| **2. Post-Recovery State Divergence** | Engine finishes Kafka replay on reboot, but subtle math bugs caused an order to match differently or drop. | Asserts `engine.GetSequence() == db.market_sequences.sequence`. Halts boot immediately if sequence counters diverge. | [`replayer.ReplayAll`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go#L243-L247) |
+| **3. Non-Deterministic Trade ID Collisions** | Random UUIDs cause duplicate fills to generate new IDs upon retry. | Feeds monotonic sequence into deterministic UUIDv5 SHA-1 hash for `TradeID`, guaranteeing 100% idempotent IDs. | [`generateTradeID`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/matcher/matcher.go#L340-L360) |
+| **4. Concurrency Mutex Lock Bottlenecks** | Global sequence counter requires cross-core locking between BTC and ETH. | Strict per-market ownership. Each single-threaded event loop increments its own counter without any mutexes. | [`MarketEngine.sequence`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/market/engine.go#L40-L45) |
+
+---
+
+## 3. Why Sequence Numbers Are Used (Core Advantages)
 
 ```
        WITHOUT SEQUENCE NUMBERS                       WITH SEQUENCE NUMBERS

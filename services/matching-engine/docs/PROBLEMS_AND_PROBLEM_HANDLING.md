@@ -151,22 +151,18 @@ High-Frequency Trading (HFT) algorithms and market makers place and cancel hundr
 
 ---
 
-### Problem 6: Cross-Topic Ingestion Reordering
+### Problem 6: Ingestion Command Ordering & Causality
 
 #### 🔴 The Problem & Risk
-The engine consumes from two independent Kafka topics:
-* `orders.submitted`
-* `orders.cancel-requested`
-
-Kafka guarantees ordering **within a partition**, but provides **no global ordering across separate topics**. If a cancel request were consumed or replayed before its order was submitted, state corruption or dropped cancels could occur.
+If a cancel command were consumed or replayed before its order was submitted, state corruption or dropped cancels could occur.
 
 #### 🟢 TradeDrift Engineering Solution: Three-Layer Ordering Defense
 1. **Layer 1 (Domain Invariant - Producer Guarantee):** The upstream Order Service cannot publish a `CancelRequested` event to Kafka until the corresponding `OrderCreated` event has been committed and acknowledged by Kafka.
-2. **Layer 2 (Replay Strategy):** During recovery replay, `replayer.go` always replays `orders.submitted` to its High-Water Mark **first**, then replays `orders.cancel-requested`.
+2. **Layer 2 (Single-Topic Partition Key):** All commands for a given market arrive on the unified `orders.commands` topic with `Key = MarketID`, guaranteeing strict FIFO arrival on the broker partition.
 3. **Layer 3 (Defensive Idempotent Matcher):** `matcher.Cancel()` checks `book.OrderIndex[orderID]`. If the order is not found (already filled or unknown), it returns `nil` without panicking or modifying book state.
 
 **Primary Files:**
-* [`internal/recovery/replayer.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go)
+* [`internal/kafka/consumer.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/kafka/consumer.go)
 * [`internal/matcher/matcher.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/matcher/matcher.go) (`Cancel`)
 
 ---

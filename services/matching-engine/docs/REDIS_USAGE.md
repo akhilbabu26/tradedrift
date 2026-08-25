@@ -30,14 +30,14 @@ TradeDrift adheres strictly to the **CQRS (Command Query Responsibility Segregat
 ```mermaid
 flowchart TD
     subgraph COMMAND_PATH ["⚡ Command Path (Write / Matching)"]
-        KIn["Kafka Ingress (orders.submitted)"] --> Engine["MarketEngine (In-Memory RAM)"]
+        KIn["Kafka Ingress (orders.commands)"] --> Engine["MarketEngine (In-Memory RAM)"]
         Engine --> OutQueue["OutputQueue (MatchResult)"]
     end
 
     subgraph EGRESS_PIPELINE ["🔄 Sequential Egress Pipeline (publisher.go)"]
         OutQueue --> Step1["1. Kafka (trades.executed) [DURABLE]"]
-        Step1 --> Step2["2. Redis (depth:market_id) [CACHE]"]
-        Step2 --> Step3["3. Postgres (kafka_checkpoints) [CHECKPOINT]"]
+        Step1 --> Step2["2. Redis (depth:market_id) [PROJECTION]"]
+        Step2 --> Step3["3. Postgres (checkpoint.Coordinator) [CHECKPOINT]"]
     end
 
     subgraph QUERY_PATH ["🔍 Query Path (Read / Projections)"]

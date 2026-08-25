@@ -91,9 +91,9 @@ Processes a new `LIMIT` order, matches it against crossing price levels in FIFO 
                          Trader
                            │
                      Kafka Ingress
-                  (orders.submitted)
+                  (orders.commands)
                            │
-                   Kafka Consumer
+                    Kafka Consumer
                            │ (InputQueue)
                     Matching Engine
                   (FIFO Match in RAM)
@@ -114,7 +114,7 @@ Processes a new `LIMIT` order, matches it against crossing price levels in FIFO 
 ```
 
 ### Step-by-Step Explanation:
-1. **Ingress:** Trader submits an order $\to$ Kafka topic `orders.submitted` $\to$ routed to `engine.InputQueue`.
+1. **Ingress:** Trader submits an order $\to$ Kafka topic `orders.commands` $\to$ routed to `engine.InputQueue`.
 2. **RAM Matching:** The single-threaded engine matches crossing orders in RAM (sub-microsecond) and rests any unfilled quantity in the book.
 3. **Publisher Pipeline (Strict Order):**
    * **Step 1 (Kafka):** Publishes executed trade fills to `trades.executed` for financial settlement.
@@ -136,7 +136,7 @@ Executes a `MARKET` order by immediately sweeping available resting liquidity ac
                          Trader
                            │
                      Kafka Ingress
-                  (orders.submitted)
+                  (orders.commands)
                            │ (MARKET Order)
                     Matching Engine
                   (Sweeps Opposite Book:
@@ -315,7 +315,7 @@ Intercepts and rejects malformed orders (negative numbers, invalid tick/lot size
 
 ```
                      Kafka Ingress
-                  (orders.submitted)
+                   (orders.commands)
                            │
                    Kafka Consumer
                            │

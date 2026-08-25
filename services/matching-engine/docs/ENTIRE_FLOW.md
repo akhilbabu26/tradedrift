@@ -95,9 +95,8 @@ services/matching-engine/
 
 ```
                         ┌──────────────────────────────────────────────────┐
-                        │             KAFKA INGESTION TOPICS               │
-                        │   • orders.submitted                             │
-                        │   • orders.cancel-requested                      │
+                        │             KAFKA INGESTION TOPIC                │
+                        │   • orders.commands (OrderCreated, Cancel)       │
                         └────────┬────────────────────────────────┬────────┘
                                  │                                │
                        (Live Ingestion)                   (Startup Replay)
@@ -200,7 +199,7 @@ cmd/server/main.go               recovery/replayer.go            market/event_lo
 ### Flow 2: Live LIMIT Order Matching & Publication
 
 ```
-Kafka: orders.submitted       kafka.Consumer             market.MarketEngine         matcher.Match()             publisher.Publisher        Kafka/Redis/Postgres
+Kafka: orders.commands        kafka.Consumer             market.MarketEngine         matcher.Match()             publisher.Publisher        Kafka/Redis/Postgres
           │                         │                             │                         │                             │                      │
           │── 1. OrderCreated msg ─>│                             │                         │                             │                      │
           │   (Topic, Part, Offset) │── 2. HandleOrderCreated() ─>│                         │                             │                      │
@@ -302,7 +301,7 @@ This section lists every tricky concurrency, recovery, and matching edge case en
 | **2** | **Recovery Drain Deadlock** | During recovery, replayer routes messages for all markets. Messages for foreign markets return `nil` channel and are not queued. | If foreign messages are counted in the drain tally, the drain loop waits forever for an `OutputQueue` item that never arrives. | `routeMessage()` captures `sent` boolean inside route closure; only increments `totalEvents` when `sent == true`. | [`replayer.go:210`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go#L210) (`routeMessage`) |
 | **3** | **Shutdown Channel Close Panic** | Consumer goroutine is writing to `InputQueue` while shutdown sequence closes the channel. | Go runtime panic: `panic: send on closed channel`. | `InputQueue` is **never closed**. `event_loop.Run(ctx)` uses `select { case <-ctx.Done(): return }` driven by context cancellation. | [`event_loop.go:20`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/market/event_loop.go#L20) (`Run`) |
 | **4** | **Replay Output Pollution** | Replaying 100,000 historical events during startup. | If engines are live, millions of duplicate trade executions and depth snapshots are published downstream. | `ModeRecovery` flag suppresses fill creation inside `matcher.Match()`. Publishers are not started until recovery finishes. | [`matcher.go:42`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/matcher/matcher.go#L42) (`Match`) & [`replayer.go:94`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go#L94) |
-| **5** | **Cross-Topic Replay Causality** | Kafka topics `orders.submitted` and `orders.cancel-requested` are replayed sequentially (submitted first). | Risk that a cancel is processed before its corresponding submit, corrupting state. | Three-layer defence: (1) Domain invariant — Order Service cannot emit a `CancelRequested` event before the `OrderCreated` event for the same `order_id` has been committed and acknowledged. (2) Replay strategy — Replayer always processes `orders.submitted` fully to HWM before starting `orders.cancel-requested`. (3) Defensive matcher — `Cancel()` on an unknown/filled `order_id` returns `nil` (idempotent no-op), never panics. | [`replayer.go:28`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go#L28) (ordering contract) & [`matcher.go:120`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/matcher/matcher.go#L120) (`Cancel`) |
+| **5** | **Single-Topic Ingestion Causality** | Commands (`OrderCreated`, `OrderCancelRequested`) arrive on `orders.commands` partitioned by `MarketID`. | Risk that a cancel is processed before its corresponding submit, corrupting state. | Three-layer defence: (1) Domain invariant — Order Service cannot emit a `CancelRequested` event before the `OrderCreated` event for the same `order_id` has been committed and acknowledged. (2) Kafka partition key — all events for a market share `Key = MarketID`, guaranteeing in-order arrival. (3) Defensive matcher — `Cancel()` on an unknown/filled `order_id` returns `nil` (idempotent no-op), never panics. | [`matcher.go:120`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/matcher/matcher.go#L120) (`Cancel`) |
 | **6** | **Market Order (IOC) Partial Fill** | Market buy order arrives for 10 BTC, but ask book only contains 4 BTC. | Leftover 6 BTC rests on book as an invalid Limit order with price 0. | `processEvent()` detects `OrderTypeMarket && RemainingQty > 0` and emits a synthetic `CancelledOrder{Reason: "ioc_expired"}`. | [`event_loop.go:68`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/market/event_loop.go#L68) (`processEvent`) |
 | **7** | **Invalid Order Parameter Injection** | Incoming order has price `$45,123.456` when tick size is `$0.01`, or quantity `0.000005` when lot size is `0.0001`. | Broken price-level indexing or fractional dust precision corruption. | `validTickAndLot()` calculates `Price.Mod(TickSize) == 0` and rejects with `CancelledOrder{Reason: "invalid_order_parameters"}`. | [`event_loop.go:127`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/market/event_loop.go#L127) (`validTickAndLot`) |
 | **8** | **Zero Config Bypass** | Startup config has `TickSize: 0` or `LotSize: 0`. | Validation is silently skipped, allowing corrupt orders through. | `validateMarketConfigs()` enforces `TickSize > 0` and `LotSize > 0` before DB or Kafka connects. | [`main.go:93`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/cmd/server/main.go#L93) (`validateMarketConfigs`) |
@@ -324,8 +323,7 @@ In steady-state live operation with 3 registered markets (`BTC-USDT`, `ETH-USDT`
 ┌───────────────────────────────────────────────┬───────────────┬──────────────────────────────────────────┐
 │ Goroutine Identity                            │ Count         │ Lifetime & Responsibility                │
 ├───────────────────────────────────────────────┼───────────────┼──────────────────────────────────────────┤
-│ Consumer: orders.submitted reader             │ 1             │ Lifetime of app; reads Kafka Submit topic│
-│ Consumer: orders.cancel-requested reader      │ 1             │ Lifetime of app; reads Kafka Cancel topic│
+│ Consumer: orders.commands reader              │ 1             │ Lifetime of app; reads Kafka command topic│
 │ MarketEngine: EventLoop (Run)                 │ 3 (1/market)  │ Spawns in Recovery, runs forever         │
 │ Publisher: OutputQueue worker                 │ 3 (1/market)  │ Spawns post-recovery, runs forever       │
 │ Main Orchestrator                             │ 1             │ Blocks on OS signal, handles teardown    │
@@ -342,25 +340,25 @@ If Kafka ingestion bursts faster than the Event Loop can match orders, `InputQue
 
 ---
 
-### Cross-Topic Ordering Invariant
+### Unified Ingestion Topic & Partition Key Invariant
 
-The matching engine consumes two independent Kafka topics:
+The matching engine consumes from the unified `orders.commands` topic:
 
 ```
- orders.submitted          orders.cancel-requested
- ────────────────          ───────────────────────
-  [ORDER_A created]          [ORDER_A cancel req]
-  [ORDER_B created]          [ORDER_C cancel req]
-        ...                        ...
+ orders.commands (Partition Key = MarketID)
+ ──────────────────────────────────────────
+  [Key: BTC-USDT] -> OrderCreated
+  [Key: BTC-USDT] -> OrderCancelRequested
+  [Key: ETH-USDT] -> OrderCreated
 ```
 
-Kafka guarantees **within-partition ordering** but provides **no global ordering across two topics**. This is the most commonly questioned aspect of this architecture. The correctness relies on three independent layers of defence:
+Kafka guarantees **within-partition FIFO ordering** when messages are keyed by `MarketID`. The Order Service routes all commands for a given market with `Key = MarketID`, guaranteeing that cancel requests strictly follow order creations on the partition.
 
 | Layer | Guarantee | Where Enforced |
 | :--- | :--- | :--- |
-| **1. Domain Invariant** | The Order Service cannot publish a `CancelRequested` event to Kafka for an `order_id` until the `OrderCreated` event for that same `order_id` has been committed and fully acknowledged by Kafka. This is a **producer-side causal guarantee**, not a Kafka ordering guarantee. | Order Service (upstream producer) |
-| **2. Replay Strategy** | During crash recovery, `Replayer.replayTopic()` always drains `orders.submitted` to its high-water mark **first**, then starts `orders.cancel-requested`. This means the in-memory order book always contains the submitted order before its cancel is attempted during replay. | [`replayer.go:95`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/recovery/replayer.go#L95) (`replayEngine`) |
-| **3. Defensive Matcher** | `matcher.Cancel()` is idempotent by design. A cancel for an `order_id` that does not exist in the order book — whether it was already filled, already cancelled, or simply not yet received — returns `nil` without panicking or corrupting state. | [`matcher.go:120`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/matcher/matcher.go#L120) (`Cancel`) |
+| **1. Domain Invariant** | The Order Service cannot publish a `CancelRequested` event to Kafka for an `order_id` until the `OrderCreated` event for that same `order_id` has been committed and fully acknowledged by Kafka. | Order Service (upstream producer) |
+| **2. Single-Topic Partition Key** | All commands for a given market share the same Kafka partition key (`MarketID`), guaranteeing strict sequential ordering on the broker. | Kafka broker partitioning |
+| **3. Defensive Matcher** | `matcher.Cancel()` is idempotent by design. A cancel for an `order_id` that does not exist in the order book — whether it was already filled or cancelled — returns `nil` without panicking or corrupting state. | [`matcher.go:120`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/matcher/matcher.go#L120) (`Cancel`) |
 
 > **In live mode**, the same two-goroutine consumer model applies — `orders.submitted` and `orders.cancel-requested` are consumed concurrently with no global ordering guarantee. The same three-layer defence applies: domain invariant prevents the cancel from arriving before the submit at the Kafka broker level, and the defensive matcher handles any race.
 
@@ -385,7 +383,7 @@ It is NOT per-market. It is per (topic, partition).
 
 **Why this matters with multiple markets sharing one partition:**
 
-With V1's single-partition topology, all markets share `(orders.submitted, partition=0)`. This means:
+With V1's single-partition topology, all markets share `(orders.commands, partition=0)`. This means:
 
 - `BTC-USDT` publisher processes offset 100 → writes checkpoint 100
 - `ETH-USDT` publisher processes offset 101 → writes checkpoint 101  
@@ -411,7 +409,7 @@ This ensures that a slow publisher finishing an earlier offset cannot overwrite 
 
 ## 7. Data Contracts & Wire Formats
 
-### 1. Ingestion: `orders.submitted`
+### 1. Ingestion: `orders.commands` (`OrderCreated`)
 ```json
 {
   "order_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",

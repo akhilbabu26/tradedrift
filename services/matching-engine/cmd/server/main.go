@@ -16,6 +16,7 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 	"github.com/shopspring/decimal"
 
+	"tradedrift/platform/config"
 	"tradedrift/platform/postgres"
 	"tradedrift/services/matching-engine/internal/checkpoint"
 	intkafka "tradedrift/services/matching-engine/internal/kafka"
@@ -31,41 +32,55 @@ func main() {
 	}
 }
 
-type config struct {
+type appConfig struct {
 	KafkaBrokers []string
 	KafkaGroupID string
 	PostgresDSN  string
 	RedisAddr    string
 }
 
-func loadConfig() (config, error) {
+func loadConfig() (appConfig, error) {
 	postgresDSN := os.Getenv("POSTGRES_DSN")
 	if postgresDSN == "" {
-		return config{}, fmt.Errorf("POSTGRES_DSN env var is required")
+		return appConfig{}, fmt.Errorf("POSTGRES_DSN env var is required")
 	}
 
-	return config{
-		KafkaBrokers: strings.Split(getEnv("KAFKA_BROKERS", "localhost:9092"), ","),
-		KafkaGroupID: getEnv("KAFKA_GROUP_ID", "matching-engine"),
+	kafkaBrokers := config.GetEnv("KAFKA_BROKERS", "localhost:9092")
+	brokers := strings.Split(kafkaBrokers, ",")
+	for i := range brokers {
+		brokers[i] = strings.TrimSpace(brokers[i])
+	}
+
+	return appConfig{
+		KafkaBrokers: brokers,
+		KafkaGroupID: config.GetEnv("KAFKA_GROUP_ID", "matching-engine-group"),
 		PostgresDSN:  postgresDSN,
-		RedisAddr:    getEnv("REDIS_ADDR", "localhost:6379"),
+		RedisAddr:    config.GetEnv("REDIS_ADDR", "localhost:6379"),
 	}, nil
 }
 
-func getEnv(key, defaultVal string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+func marketConfigs() ([]market.MarketConfig, error) {
+	btcPart, err := config.GetEnvAsInt("BTC_PARTITION", 0)
+	if err != nil {
+		return nil, fmt.Errorf("BTC_PARTITION: %w", err)
 	}
-	return defaultVal
-}
 
-func marketConfigs() []market.MarketConfig {
+	ethPart, err := config.GetEnvAsInt("ETH_PARTITION", 1)
+	if err != nil {
+		return nil, fmt.Errorf("ETH_PARTITION: %w", err)
+	}
+
+	solPart, err := config.GetEnvAsInt("SOL_PARTITION", 2)
+	if err != nil {
+		return nil, fmt.Errorf("SOL_PARTITION: %w", err)
+	}
+
 	return []market.MarketConfig{
 		{
 			MarketID:         "BTC-USDT",
 			TickSize:         decimal.RequireFromString("0.01"),
 			LotSize:          decimal.RequireFromString("0.00001"),
-			Partition:        0,
+			Partition:        btcPart,
 			SnapshotInterval: 10000,
 			SnapshotDuration: 60 * time.Second,
 		},
@@ -73,7 +88,7 @@ func marketConfigs() []market.MarketConfig {
 			MarketID:         "ETH-USDT",
 			TickSize:         decimal.RequireFromString("0.01"),
 			LotSize:          decimal.RequireFromString("0.0001"),
-			Partition:        0,
+			Partition:        ethPart,
 			SnapshotInterval: 10000,
 			SnapshotDuration: 60 * time.Second,
 		},
@@ -81,14 +96,15 @@ func marketConfigs() []market.MarketConfig {
 			MarketID:         "SOL-USDT",
 			TickSize:         decimal.RequireFromString("0.001"),
 			LotSize:          decimal.RequireFromString("0.01"),
-			Partition:        0,
+			Partition:        solPart,
 			SnapshotInterval: 10000,
 			SnapshotDuration: 60 * time.Second,
 		},
-	}
+	}, nil
 }
 
 func validateMarketConfigs(configs []market.MarketConfig) error {
+	seenPartitions := make(map[int]string)
 	for _, mc := range configs {
 		if mc.TickSize.LessThanOrEqual(decimal.Zero) {
 			return fmt.Errorf("market %s: TickSize must be > 0 (got %s)", mc.MarketID, mc.TickSize)
@@ -96,6 +112,10 @@ func validateMarketConfigs(configs []market.MarketConfig) error {
 		if mc.LotSize.LessThanOrEqual(decimal.Zero) {
 			return fmt.Errorf("market %s: LotSize must be > 0 (got %s)", mc.MarketID, mc.LotSize)
 		}
+		if existing, ok := seenPartitions[mc.Partition]; ok {
+			return fmt.Errorf("partition %d assigned to both %s and %s", mc.Partition, existing, mc.MarketID)
+		}
+		seenPartitions[mc.Partition] = mc.MarketID
 	}
 	return nil
 }
@@ -111,7 +131,10 @@ func run() error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	configs := marketConfigs()
+	configs, err := marketConfigs()
+	if err != nil {
+		return fmt.Errorf("load market configs: %w", err)
+	}
 	for _, mc := range configs {
 		log.Printf("[server] using static assignment for market %s on partition %d", mc.MarketID, mc.Partition)
 	}
@@ -146,8 +169,6 @@ func run() error {
 		return fmt.Errorf("postgres migrations: %w", err)
 	}
 	log.Println("[server] database migrations applied successfully")
-
-
 
 	rdb := redis.NewClient(&redis.Options{
 		Addr:         cfg.RedisAddr,

@@ -72,19 +72,30 @@ run()
 | :--- | :--- | :--- | :--- |
 | `POSTGRES_DSN` | ✅ Yes | — | PostgreSQL connection string |
 | `KAFKA_BROKERS` | No | `localhost:9092` | Comma-separated list of Kafka brokers |
-| `KAFKA_GROUP_ID` | No | `matching-engine` | Kafka consumer group ID |
+| `KAFKA_GROUP_ID` | No | `matching-engine-group` | Kafka consumer group ID |
 | `REDIS_ADDR` | No | `localhost:6379` | Redis host:port |
+| `BTC_PARTITION` | No | `0` | Kafka partition assigned to BTC-USDT |
+| `ETH_PARTITION` | No | `1` | Kafka partition assigned to ETH-USDT |
+| `SOL_PARTITION` | No | `2` | Kafka partition assigned to SOL-USDT |
 
 ---
 
-## 4. Market Configurations (Hardcoded V1)
+## 4. Market Configurations (Dedicated Per-Market Partitions)
+
+To eliminate Head-of-Line ingestion blocking and enable horizontal multi-node scaling, each market is mapped to its own dedicated Kafka partition:
+
+| Market | Default Partition | Tick Size | Lot Size | Snapshot Triggers |
+| :--- | :---: | :--- | :--- | :--- |
+| **`BTC-USDT`** | `0` | `0.01` | `0.00001` | Every 10,000 orders / 60 seconds |
+| **`ETH-USDT`** | `1` | `0.01` | `0.0001` | Every 10,000 orders / 60 seconds |
+| **`SOL-USDT`** | `2` | `0.001` | `0.01` | Every 10,000 orders / 60 seconds |
 
 ```go
 {
     MarketID:         "BTC-USDT",
     TickSize:         decimal.RequireFromString("0.01"),
     LotSize:          decimal.RequireFromString("0.00001"),
-    Partition:        0,
+    Partition:        getEnvInt("BTC_PARTITION", 0),
     SnapshotInterval: 10000,
     SnapshotDuration: 60 * time.Second,
 }

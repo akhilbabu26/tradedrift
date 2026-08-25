@@ -70,7 +70,10 @@ func main() {
 
 	orderSvc := service.NewService(orderRepo, walletClient, appLogger)
 	grpcHandler := handler.NewGRPCHandler(orderSvc, appLogger)
-	kafkaProducer := publisher.NewKafkaProducer(cfg.KafkaBrokers, appLogger)
+	kafkaProducer, err := publisher.NewKafkaProducer(cfg.KafkaBrokers, appLogger)
+	if err != nil {
+		appLogger.Fatal("Failed to create Kafka Producer", zap.Error(err))
+	}
 	defer kafkaProducer.Close()
 
 	// 5. Background Outbox Worker Lifecycle Context with WaitGroup Sync

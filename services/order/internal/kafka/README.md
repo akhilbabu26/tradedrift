@@ -72,22 +72,28 @@ type LogProducer struct {
 
 ---
 
-### 4.3 Struct `KafkaProducer` (`kafka_producer.go`) — Production
+### 4.3 Struct `KafkaProducer` (`kafka_producer.go`) — Production (Option B Explicit Partitioning)
 
 ```go
 type KafkaProducer struct {
-    writer *kafkago.Writer
-    logger *zap.Logger
+    writer             *kafkago.Writer
+    logger             *zap.Logger
+    partitionOverrides map[string]int
 }
 ```
-* **Purpose**: Real Kafka producer using `segmentio/kafka-go` Writer. Wired in `cmd/server/main.go` via:
+* **Purpose**: Real Kafka producer using `segmentio/kafka-go` Writer with **Option B (Explicit Partition Assignment)**. Wired in `cmd/server/main.go` via:
   ```go
-  kafkaProducer := publisher.NewKafkaProducer(cfg.KafkaBrokers, appLogger)
+  kafkaProducer, err := publisher.NewKafkaProducer(cfg.KafkaBrokers, appLogger)
   ```
+* **Explicit Market-to-Partition Routing**:
+  - `ResolvePartition(marketID)` maps trading pairs directly to dedicated Kafka partitions:
+    - `BTC-USDT` $\to$ **Partition 0** (`BTC_PARTITION`, default `0`)
+    - `ETH-USDT` $\to$ **Partition 1** (`ETH_PARTITION`, default `1`)
+    - `SOL-USDT` $\to$ **Partition 2** (`SOL_PARTITION`, default `2`)
+  - Explicitly sets `msg.Partition = partition` and `msg.Key = []byte(market_id)` to guarantee 100% deterministic agreement with the Matching Engine.
 * **Key Config**:
   - `AllowAutoTopicCreation: true` — topics created automatically on first publish.
   - `RequiredAcks: RequireOne` — waits for leader broker ACK before returning.
-  - `Balancer: Hash{}` — routes same `market_id` to same partition (ordering guarantee).
 
 ---
 

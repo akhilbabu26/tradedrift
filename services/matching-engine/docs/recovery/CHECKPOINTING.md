@@ -312,23 +312,27 @@ committer.CommitMessages(ctx, kafkago.Message{
 
 ---
 
-## 7. How It Works Across Different Market Topologies
+## 7. Market Partition Topologies & Production Standard
 
-### Scenario A: Multiplexed Mode (Default in Exchanges)
-* Multiple pairs (`BTC-USDT`, `ETH-USDT`, `SOL-USDT`) share Kafka Partition 0.
-* The coordinator treats Partition 0 as a single contiguous stream, smoothly coalescing results from all 3 market engine workers.
+### 7.1 Production Standard: Dedicated Partition Mode (Option B: 1:1 Mapping)
+TradeDrift standardizes on **Option B (Explicit Dedicated Partitioning)** to ensure zero Head-of-Line blocking and complete independence across trading pairs:
+* **`BTC-USDT`** $\to$ **Kafka Partition 0** (`BTC_PARTITION`, default `0`)
+* **`ETH-USDT`** $\to$ **Kafka Partition 1** (`ETH_PARTITION`, default `1`)
+* **`SOL-USDT`** $\to$ **Kafka Partition 2** (`SOL_PARTITION`, default `2`)
 
-### Scenario B: Dedicated Partition Mode (1:1 Mapping)
-* `BTC-USDT` on Partition 0, `ETH-USDT` on Partition 1, `SOL-USDT` on Partition 2.
-* The Coordinator maintains independent `partitionTracker` structs for each partition:
-  ```
-  partitionTrackers: {
-      "orders.commands/0": { lastCommitted: 54820 },
-      "orders.commands/1": { lastCommitted: 12400 },
-      "orders.commands/2": { lastCommitted: 8110  }
-  }
-  ```
-* Each partition advances at its own independent rate without any cross-partition locking.
+The Coordinator maintains independent `partitionTracker` states for each partition:
+```go
+partitionTrackers: {
+    "orders.commands/0": { lastCommitted: 54820 }, // Tracks BTC-USDT only
+    "orders.commands/1": { lastCommitted: 12400 }, // Tracks ETH-USDT only
+    "orders.commands/2": { lastCommitted: 8110  }, // Tracks SOL-USDT only
+}
+```
+* **Zero Cross-Market Watermark Drag:** Each partition advances at its own rate. A slow deep book sweep on BTC never delays checkpoint commits on ETH.
+* **Deterministic Producer Agreement:** The Order Service's `KafkaProducer` explicitly sets `msg.Partition` to match the exact same partition index.
+
+### 7.2 Alternate Mode: Multiplexed Mode (Multi-Market Shared Partition)
+* If multiple low-volume altcoins share a partition (e.g. Partition 3), the coordinator treats Partition 3 as a single contiguous stream, coalescing results across shared market engine workers using its sliding watermark window.
 
 ---
 

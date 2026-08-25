@@ -108,7 +108,9 @@ In TradeDrift, the **Kafka Partition Key** is chosen as the **`MarketID`** (e.g.
 ### 4.2 Ingress & Egress Implementation in Code
 
 #### A. Inbound Commands (`orders.commands`)
-The consumer validates that the partition key strictly matches the payload's `market_id`:
+The Order Service uses **Option B (Explicit Partition Assignment)**, explicitly resolving `msg.Partition` from the market mapping (`BTC-USDT` $\to$ P0, `ETH-USDT` $\to$ P1, `SOL-USDT` $\to$ P2) while retaining `Key = MarketID`.
+
+The matching engine consumer validates that the partition key strictly matches the payload's `market_id`:
 ```go
 // internal/kafka/consumer.go
 if string(msg.Key) != env.MarketID {

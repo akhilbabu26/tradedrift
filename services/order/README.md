@@ -100,7 +100,9 @@ services/order/
 │   │   ├── README.md
 │   │   └── publisher/
 │   │       ├── outbox_publisher.go      <-- Polling loop, topic router, linear backoff
-│   │       └── producer.go              <-- Producer interface & LogProducer stub
+│   │       ├── producer.go              <-- Producer interface & LogProducer stub
+│   │       ├── kafka_producer.go        <-- Option B Explicit Partition Producer (BTC:0, ETH:1, SOL:2)
+│   │       └── kafka_producer_test.go   <-- Unit tests for explicit partition resolution
 │   └── wallet/                          <-- Inter-service gRPC client adapter
 │       ├── README.md
 │       └── client.go                    <-- Wallet Service gRPC client wrapper

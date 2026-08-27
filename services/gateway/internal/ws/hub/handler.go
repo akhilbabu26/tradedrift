@@ -51,7 +51,15 @@ func (h *Handler) checkOrigin(r *http.Request) bool {
 	if allowed == "" {
 		allowed = "http://localhost:5173"
 	}
-	if origin == allowed {
+
+	for _, o := range strings.Split(allowed, ",") {
+		if strings.TrimSpace(o) == origin {
+			return true
+		}
+	}
+
+	// Allow localhost / 127.0.0.1 on any port in development
+	if strings.HasPrefix(origin, "http://localhost:") || strings.HasPrefix(origin, "http://127.0.0.1:") {
 		return true
 	}
 

@@ -1,32 +1,49 @@
-# React + TypeScript + Vite
+# TradeDrift Pro — Frontend Trading Terminal
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The official frontend web application for the **TradeDrift Cryptocurrency Exchange**, built with React 19, TypeScript, Vite, and Tailwind CSS.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 📚 Documentation
 
-## React Compiler
+For a detailed breakdown of the complete technology stack, architectural decisions, and why specialized trading libraries are used, refer to:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+👉 **[`docs/TECH_STACK_AND_TOOLS.md`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/frontend/docs/TECH_STACK_AND_TOOLS.md)**
 
-## Expanding the Oxlint configuration
+---
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+## ⚡ Tech Stack Summary
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+| Technology | Role |
+| :--- | :--- |
+| **React 19 + TypeScript** | Reactive component UI and strict type safety |
+| **Vite 8** | High-speed HMR development and optimized production builds |
+| **Tailwind CSS v3** | Institutional dark-mode styling and custom design tokens |
+| **Zustand 5** | High-performance slice-based global state management |
+| **Lightweight Charts (TradingView)** | 60fps canvas-rendered candlestick and volume charts |
+| **Framer Motion** | Real-time price flash animations and smooth modal transitions |
+| **Zod** | Pre-flight order submission and wallet address validation |
+| **Radix UI Primitives** | Accessible balance sliders, modals, tabs, and tooltips |
+| **Decimal.js** | Exact financial math eliminating JavaScript floating-point errors |
+| **Axios + WebSockets** | Unified REST APIs and multi-market real-time data streaming |
+
+---
+
+## 🚀 Getting Started
+
+### 1. Install Dependencies
+```bash
+npm install
+npm install lightweight-charts framer-motion zod @radix-ui/react-slider @radix-ui/react-dialog @radix-ui/react-tabs @radix-ui/react-tooltip decimal.js date-fns clsx tailwind-merge
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+### 2. Start Development Server
+```bash
+npm run dev
+```
+
+### 3. Build for Production
+```bash
+npm run build
+```
+

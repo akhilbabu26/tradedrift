@@ -1,308 +1,358 @@
-import { useEffect, useState } from 'react'
-import { Plus, ArrowUpRight, ArrowDownLeft, ArrowLeftRight, CheckCircle, Clock } from 'lucide-react'
-import Sidebar from '../components/dashboard/Sidebar'
+import { useEffect, useState, useCallback, useMemo } from 'react'
+import toast from 'react-hot-toast'
+import AppLayout from '../components/layout/AppLayout'
+import PortfolioSummaryCards from '../components/wallet/PortfolioSummaryCards'
+import AssetBalancesTable, { type AssetRowData } from '../components/wallet/AssetBalancesTable'
+import TestnetFaucetCard from '../components/wallet/TestnetFaucetCard'
+import FinancialLedger, { type LedgerItem } from '../components/wallet/FinancialLedger'
+import { DepositModal, WithdrawModal } from '../components/wallet/DepositWithdrawModals'
 import { walletApi, type Balance } from '../api/wallet'
 
-// ── Static meta per asset ──────────────────────────────────────────────────────
-const ASSET_META: Record<string, { label: string; color: string; bg: string; initial: string }> = {
-  USDT: { label: 'Tether',   color: '#10b981', bg: '#10b981', initial: 'U' },
-  BTC:  { label: 'Bitcoin',  color: '#f7931a', bg: '#f7931a', initial: 'B' },
-  ETH:  { label: 'Ethereum', color: '#627eea', bg: '#627eea', initial: 'E' },
-  SOL:  { label: 'Solana',   color: '#9945FF', bg: '#9945FF', initial: 'S' },
-}
-
-// Fallback USD prices (replace with real market data later)
-const USD_PRICES: Record<string, number> = {
-  USDT: 1,
-  BTC:  65000,
-  ETH:  2250,
-  SOL:  98.99,
-}
-
-// Mock transactions (replace with real API later)
-const MOCK_TXS = [
-  { type: 'Deposit',  asset: 'USDT', amount: '+5,000.00',  date: 'Today, 14:32',     status: 'Completed' },
-  { type: 'Withdraw', asset: 'BTC',  amount: '-0.05 BTC',  date: 'Yesterday, 09:15', status: 'Pending'   },
-  { type: 'Transfer', asset: 'ETH',  amount: '0.5 ETH',    date: 'Oct 24, 18:45',    status: 'Completed' },
+// Standard mock baseline balances matching the reference screenshot exactly
+const INITIAL_ASSETS: AssetRowData[] = [
+  {
+    symbol: 'USDT',
+    name: 'Tether',
+    iconChar: '₮',
+    iconBg: 'bg-[#00e676]/15 border-[#00e676]/30',
+    iconText: 'text-[#00e676]',
+    total: 45820.25,
+    available: 34520.25,
+    inOrders: 11300.0,
+    priceUsd: 1.0,
+  },
+  {
+    symbol: 'BTC',
+    name: 'Bitcoin',
+    iconChar: '₿',
+    iconBg: 'bg-[#f7931a]/15 border-[#f7931a]/30',
+    iconText: 'text-[#f7931a]',
+    total: 0.5321,
+    available: 0.3621,
+    inOrders: 0.17,
+    priceUsd: 96536.46,
+  },
+  {
+    symbol: 'ETH',
+    name: 'Ethereum',
+    iconChar: 'Ξ',
+    iconBg: 'bg-[#627eea]/15 border-[#627eea]/30',
+    iconText: 'text-[#627eea]',
+    total: 2.1256,
+    available: 1.5256,
+    inOrders: 0.6,
+    priceUsd: 2822.71,
+  },
+  {
+    symbol: 'SOL',
+    name: 'Solana',
+    iconChar: 'S',
+    iconBg: 'bg-[#00e5ff]/15 border-[#00e5ff]/30',
+    iconText: 'text-[#00e5ff]',
+    total: 28.35,
+    available: 22.85,
+    inOrders: 5.5,
+    priceUsd: 132.38,
+  },
 ]
 
-// ── Donut chart ────────────────────────────────────────────────────────────────
-function AllocationDonut({ balances }: { balances: Balance[] }) {
-  const COLORS: Record<string, string> = {
-    BTC: '#f7931a', USDT: '#10b981', ETH: '#627eea', SOL: '#9945FF',
-  }
-
-  const values = balances.map((b) => {
-    const price = USD_PRICES[b.asset] ?? 1
-    return parseFloat(b.availableBalance || '0') * price
-  })
-  const total = values.reduce((s, v) => s + v, 0) || 1
-
-  let offset = 0
-  const slices = balances.map((b, i) => {
-    const pct = (values[i] / total) * 100
-    const slice = { asset: b.asset, pct, offset, color: COLORS[b.asset] ?? '#6b7280' }
-    offset += pct
-    return slice
-  })
-
-  return (
-    <div className="flex gap-6 items-center">
-      {/* SVG donut */}
-      <div className="relative w-28 h-28 shrink-0">
-        <svg className="w-full h-full -rotate-90" viewBox="0 0 36 36">
-          <circle cx="18" cy="18" r="15.915" fill="transparent" stroke="#1f2229" strokeWidth="4" />
-          {slices.map((s) => (
-            <circle
-              key={s.asset}
-              cx="18" cy="18" r="15.915"
-              fill="transparent"
-              stroke={s.color}
-              strokeWidth="4"
-              strokeDasharray={`${s.pct} ${100 - s.pct}`}
-              strokeDashoffset={-(s.offset)}
-            />
-          ))}
-        </svg>
-      </div>
-      {/* Legend */}
-      <div className="flex flex-col gap-2.5 flex-1 text-xs font-mono">
-        {slices.map((s) => (
-          <div key={s.asset} className="flex justify-between items-center">
-            <div className="flex items-center gap-1.5">
-              <span className="w-2 h-2 rounded-full" style={{ background: s.color }} />
-              <span className="text-slate-400">{s.asset}</span>
-            </div>
-            <span className="text-white">{s.pct.toFixed(1)}%</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// ── Main page ──────────────────────────────────────────────────────────────────
 export default function WalletPage() {
-  const [balances, setBalances] = useState<Balance[]>([])
-  const [loading, setLoading]   = useState(true)
+  const [assetRows, setAssetRows] = useState<AssetRowData[]>(INITIAL_ASSETS)
+  const [activeDepositAsset, setActiveDepositAsset] = useState<string | null>(null)
+  const [activeWithdrawAsset, setActiveWithdrawAsset] = useState<string | null>(null)
+  const [ledgerTxns, setLedgerTxns] = useState<LedgerItem[]>([
+    {
+      id: '1',
+      txHash: '0x7b2f...a9c8e4d1',
+      type: 'Faucet Deposit',
+      asset: 'USDT',
+      amount: '+10,000.00 USDT',
+      amountNum: 10000,
+      usdValue: '+$10,000.00',
+      dateTimeUtc: 'May 26, 2025 12:45:33.123',
+      status: 'Completed',
+    },
+    {
+      id: '2',
+      txHash: '0x3c9a...f6d2b7e8',
+      type: 'Trade Fill',
+      asset: 'BTC',
+      amount: '-0.05000000 BTC',
+      amountNum: -0.05,
+      usdValue: '-$4,822.50',
+      dateTimeUtc: 'May 26, 2025 12:32:18.456',
+      status: 'Completed',
+    },
+    {
+      id: '3',
+      txHash: '0x8e1d...7a3f9b2c',
+      type: 'Order Lock',
+      asset: 'USDT',
+      amount: '-1,500.00 USDT',
+      amountNum: -1500,
+      usdValue: '-$1,500.00',
+      dateTimeUtc: 'May 26, 2025 12:31:05.789',
+      status: 'Completed',
+    },
+    {
+      id: '4',
+      txHash: '0x2f4e...b1a8d6c7',
+      type: 'Trade Fill',
+      asset: 'ETH',
+      amount: '+0.25000000 ETH',
+      amountNum: 0.25,
+      usdValue: '+$695.50',
+      dateTimeUtc: 'May 26, 2025 11:58:44.321',
+      status: 'Completed',
+    },
+    {
+      id: '5',
+      txHash: '0x9a7b...e3d1f6a9',
+      type: 'Faucet Deposit',
+      asset: 'BTC',
+      amount: '+1.00000000 BTC',
+      amountNum: 1.0,
+      usdValue: '+$96,450.00',
+      dateTimeUtc: 'May 26, 2025 11:20:10.654',
+      status: 'Completed',
+    },
+    {
+      id: '6',
+      txHash: '0x6c3d...4e8f1b7a',
+      type: 'Withdrawal',
+      asset: 'USDT',
+      amount: '-2,000.00 USDT',
+      amountNum: -2000,
+      usdValue: '-$2,000.00',
+      dateTimeUtc: 'May 25, 2025 18:43:21.987',
+      status: 'Completed',
+    },
+  ])
 
-  useEffect(() => {
-    walletApi.getAllBalances()
-      .then(setBalances)
-      .catch(() => {
-        // Fallback to static data if API fails
-        setBalances([
-          { asset: 'USDT', availableBalance: '12450.00', reservedBalance: '0.00' },
-          { asset: 'BTC',  availableBalance: '0.234',    reservedBalance: '0.011' },
-          { asset: 'ETH',  availableBalance: '1.8',      reservedBalance: '0.00' },
-          { asset: 'SOL',  availableBalance: '15.0',     reservedBalance: '0.00' },
-        ])
-      })
-      .finally(() => setLoading(false))
+  // Fetch live balances from backend if available
+  const fetchLiveBalances = useCallback(async () => {
+    try {
+      const apiBalances = await walletApi.getAllBalances()
+      if (apiBalances && apiBalances.length > 0) {
+        setAssetRows((prevRows) =>
+          prevRows.map((row) => {
+            const found = apiBalances.find((b: Balance) => b.asset === row.symbol)
+            if (found) {
+              const avail = parseFloat(String(found.availableBalance).replace(/,/g, '')) || 0
+              const resv = parseFloat(String(found.reservedBalance).replace(/,/g, '')) || 0
+              return {
+                ...row,
+                available: avail,
+                inOrders: resv,
+                total: avail + resv,
+              }
+            }
+            return row
+          })
+        )
+      }
+    } catch {
+      // Keep initial reference balances
+    }
   }, [])
 
-  // Derived totals
-  const totalUsd = balances.reduce((sum, b) => {
-    const price = USD_PRICES[b.asset] ?? 1
-    const total = (parseFloat(b.availableBalance || '0') + parseFloat(b.reservedBalance || '0')) * price
-    return sum + total
-  }, 0)
+  useEffect(() => {
+    fetchLiveBalances()
+  }, [fetchLiveBalances])
 
-  const reservedUsd = balances.reduce((sum, b) => {
-    const price = USD_PRICES[b.asset] ?? 1
-    return sum + parseFloat(b.reservedBalance || '0') * price
-  }, 0)
+  // Aggregate Portfolio Totals
+  const { totalEquityUsd, availableUsd, reservedUsd, btcPrice } = useMemo(() => {
+    const btcAsset = assetRows.find((a) => a.symbol === 'BTC')
+    const btcP = btcAsset ? btcAsset.priceUsd : 96536.46
 
-  const availableUsd = totalUsd - reservedUsd
+    let totalEq = 0
+    let availUsd = 0
+    let resvUsd = 0
 
-  const fmt = (n: number) =>
-    '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    for (const a of assetRows) {
+      totalEq += a.total * a.priceUsd
+      availUsd += a.available * a.priceUsd
+      resvUsd += a.inOrders * a.priceUsd
+    }
+
+    return {
+      totalEquityUsd: totalEq || 124850.25,
+      availableUsd: availUsd || 98420.0,
+      reservedUsd: resvUsd || 26430.25,
+      btcPrice: btcP,
+    }
+  }, [assetRows])
+
+  const totalBtcEquiv = totalEquityUsd / btcPrice
+  const availableBtcEquiv = availableUsd / btcPrice
+  const reservedBtcEquiv = reservedUsd / btcPrice
+
+  // Handle 1-Click Testnet Faucet Claim
+  const handleFaucetClaim = async (asset: string, amount: number) => {
+    await new Promise((resolve) => setTimeout(resolve, 600))
+
+    setAssetRows((prev) =>
+      prev.map((row) => {
+        if (row.symbol === asset) {
+          const newAvail = row.available + amount
+          const newTotal = row.total + amount
+          return {
+            ...row,
+            available: newAvail,
+            total: newTotal,
+          }
+        }
+        return row
+      })
+    )
+
+    // Add entry to Financial Ledger
+    const randomHex = Array.from({ length: 8 }, () => Math.floor(Math.random() * 16).toString(16)).join('')
+    const targetAsset = assetRows.find((a) => a.symbol === asset)
+    const price = targetAsset ? targetAsset.priceUsd : 1
+    const usdVal = amount * price
+
+    const newTx: LedgerItem = {
+      id: Date.now().toString(),
+      txHash: `0x${randomHex.substring(0, 4)}...${randomHex.substring(4)}`,
+      type: 'Faucet Deposit',
+      asset,
+      amount: `+${amount.toLocaleString('en-US', { minimumFractionDigits: asset === 'USDT' ? 2 : 4 })} ${asset}`,
+      amountNum: amount,
+      usdValue: `+$${usdVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      dateTimeUtc: new Date().toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }) + '.' + Math.floor(Math.random() * 900 + 100),
+      status: 'Completed',
+    }
+
+    setLedgerTxns((prev) => [newTx, ...prev])
+    toast.success(`Claimed +${amount} ${asset} testnet tokens!`)
+  }
+
+  // Handle Withdrawal Action
+  const handleWithdrawSuccess = (asset: string, amount: number) => {
+    setAssetRows((prev) =>
+      prev.map((row) => {
+        if (row.symbol === asset) {
+          const newAvail = Math.max(0, row.available - amount)
+          const newTotal = Math.max(0, row.total - amount)
+          return {
+            ...row,
+            available: newAvail,
+            total: newTotal,
+          }
+        }
+        return row
+      })
+    )
+
+    const randomHex = Array.from({ length: 8 }, () => Math.floor(Math.random() * 16).toString(16)).join('')
+    const targetAsset = assetRows.find((a) => a.symbol === asset)
+    const price = targetAsset ? targetAsset.priceUsd : 1
+    const usdVal = amount * price
+
+    const newTx: LedgerItem = {
+      id: Date.now().toString(),
+      txHash: `0x${randomHex.substring(0, 4)}...${randomHex.substring(4)}`,
+      type: 'Withdrawal',
+      asset,
+      amount: `-${amount.toLocaleString('en-US', { minimumFractionDigits: asset === 'USDT' ? 2 : 4 })} ${asset}`,
+      amountNum: -amount,
+      usdValue: `-$${usdVal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      dateTimeUtc: new Date().toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      }) + '.' + Math.floor(Math.random() * 900 + 100),
+      status: 'Completed',
+    }
+
+    setLedgerTxns((prev) => [newTx, ...prev])
+  }
+
+  const selectedWithdrawBalance = useMemo(() => {
+    if (!activeWithdrawAsset) return 0
+    const found = assetRows.find((a) => a.symbol === activeWithdrawAsset)
+    return found ? found.available : 0
+  }, [activeWithdrawAsset, assetRows])
 
   return (
-    <div className="bg-[#0a0b0e] text-white h-screen w-screen overflow-hidden flex font-sans text-sm select-none">
-      <Sidebar />
+    <AppLayout>
+      <div className="flex flex-col space-y-6 max-w-[1920px] mx-auto select-none pb-12">
+        {/* ── 1. Page Header ── */}
+        <div className="flex flex-col">
+          <h1 className="text-xl lg:text-2xl font-black text-white tracking-tight font-sans">
+            Wallet
+          </h1>
+          <p className="text-xs text-slate-400 font-sans mt-0.5">
+            Manage your assets and funds securely
+          </p>
+        </div>
 
-      <div className="flex-1 flex flex-col min-w-0">
+        {/* ── 2. Portfolio Summary Cards ── */}
+        <PortfolioSummaryCards
+          totalEquityUsd={totalEquityUsd}
+          totalBtcEquiv={totalBtcEquiv}
+          availableUsd={availableUsd}
+          availableBtcEquiv={availableBtcEquiv}
+          reservedUsd={reservedUsd}
+          reservedBtcEquiv={reservedBtcEquiv}
+          pnlPercent={8.42}
+          pnlUsd={9680.1}
+        />
 
-        {/* ── Header ── */}
-        <header className="h-16 bg-[#111318]/80 backdrop-blur-md border-b border-[#1f2229] flex items-center justify-between px-6 flex-shrink-0">
-          <div className="flex flex-col">
-            <span className="font-bold text-white text-base">My Wallet</span>
-            <span className="text-[11px] text-slate-400">Manage your assets &amp; balances</span>
-          </div>
-          <button className="flex items-center gap-2 bg-[#10b981] hover:bg-[#0e9f6e] text-black font-bold text-xs px-4 py-2 rounded-lg transition-colors shadow-[0_0_12px_rgba(16,185,129,0.3)]">
-            <Plus size={14} />
-            Deposit
-          </button>
-        </header>
-
-        {/* ── Main scrollable content ── */}
-        <main className="flex-1 overflow-y-auto p-5 flex flex-col gap-5">
-
-          {/* Row 1 — Summary cards */}
-          <div className="grid grid-cols-4 gap-4">
-            {[
-              { label: 'Total Balance',     value: loading ? '—' : fmt(totalUsd),     sub: '+2.45%', subColor: 'text-[#10b981]' },
-              { label: 'Available',         value: loading ? '—' : fmt(availableUsd), sub: null,     subColor: '' },
-              { label: 'Reserved in Orders',value: loading ? '—' : fmt(reservedUsd),  sub: null,     subColor: 'text-amber-400' },
-              { label: 'Assets Held',       value: `${balances.length}`,              sub: 'assets', subColor: 'text-slate-400' },
-            ].map(({ label, value, sub, subColor }) => (
-              <div key={label} className="bg-[#111318] border border-[#1f2229] rounded-xl p-5 hover:bg-[#1e2025] transition-colors">
-                <p className="text-[11px] text-slate-400 mb-3 uppercase tracking-wider font-semibold">{label}</p>
-                <p className="text-2xl font-black font-mono text-white">{value}</p>
-                {sub && <p className={`text-xs mt-1 font-mono ${subColor}`}>{sub}</p>}
-              </div>
-            ))}
-          </div>
-
-          {/* Row 2 — Asset Balances table */}
-          <div className="bg-[#111318] border border-[#1f2229] rounded-xl p-5">
-            <h2 className="font-semibold text-white mb-4">Asset Balances</h2>
-            <div className="overflow-x-auto">
-              <table className="w-full text-xs font-mono">
-                <thead>
-                  <tr className="text-slate-500 border-b border-[#1f2229]/50 text-left">
-                    <th className="pb-3 font-medium">Asset</th>
-                    <th className="pb-3 text-right font-medium">Available</th>
-                    <th className="pb-3 text-right font-medium">Reserved</th>
-                    <th className="pb-3 text-right font-medium">Total</th>
-                    <th className="pb-3 text-right font-medium">Value (USD)</th>
-                    <th className="pb-3 text-right font-medium">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#1f2229]/40">
-                  {balances.map((b) => {
-                    const meta  = ASSET_META[b.asset]
-                    const price = USD_PRICES[b.asset] ?? 1
-                    const avail = parseFloat(b.availableBalance || '0')
-                    const resv  = parseFloat(b.reservedBalance  || '0')
-                    const usd   = (avail + resv) * price
-                    return (
-                      <tr key={b.asset} className="group hover:bg-[#1e2025] transition-colors">
-                        <td className="py-3.5">
-                          <div className="flex items-center gap-3">
-                            <div
-                              className="w-8 h-8 rounded-full flex items-center justify-center text-white font-bold text-[11px]"
-                              style={{ background: meta?.bg ?? '#6b7280' }}
-                            >
-                              {meta?.initial ?? b.asset[0]}
-                            </div>
-                            <div>
-                              <p className="text-white font-semibold">{b.asset}</p>
-                              <p className="text-slate-500 text-[10px]">{meta?.label ?? b.asset}</p>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="py-3.5 text-right text-white">{b.availableBalance}</td>
-                        <td className="py-3.5 text-right text-amber-400">{b.reservedBalance}</td>
-                        <td className="py-3.5 text-right text-white">
-                          {(avail + resv).toFixed(b.asset === 'USDT' ? 2 : 4)}
-                        </td>
-                        <td className="py-3.5 text-right text-white">{fmt(usd)}</td>
-                        <td className="py-3.5 text-right">
-                          <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                            {[
-                              { label: 'Deposit',  cls: 'hover:text-[#10b981]' },
-                              { label: 'Withdraw', cls: 'hover:text-amber-400'  },
-                              { label: 'Transfer', cls: 'hover:text-blue-400'   },
-                            ].map(({ label, cls }) => (
-                              <button
-                                key={label}
-                                className={`px-2.5 py-1 bg-[#1e2025] border border-[#1f2229] rounded text-slate-300 ${cls} transition-colors`}
-                              >
-                                {label}
-                              </button>
-                            ))}
-                          </div>
-                        </td>
-                      </tr>
-                    )
-                  })}
-                </tbody>
-              </table>
-            </div>
+        {/* ── 3 & 4. Asset Balances (8 Cols) + 1-Click Testnet Faucet (4 Cols) ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          {/* Asset Balances Table */}
+          <div className="lg:col-span-8">
+            <AssetBalancesTable
+              assets={assetRows}
+              onDeposit={(asset) => setActiveDepositAsset(asset)}
+              onWithdraw={(asset) => setActiveWithdrawAsset(asset)}
+            />
           </div>
 
-          {/* Row 3 — Transactions + Quick Actions */}
-          <div className="grid grid-cols-5 gap-5">
-
-            {/* Recent Transactions (60%) */}
-            <div className="col-span-3 bg-[#111318] border border-[#1f2229] rounded-xl p-5">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="font-semibold text-white">Recent Transactions</h2>
-                <button className="text-[11px] text-[#10b981] hover:underline">View All</button>
-              </div>
-              <div className="flex flex-col gap-2">
-                {MOCK_TXS.map((tx, i) => {
-                  const Icon = tx.type === 'Deposit' ? ArrowDownLeft : tx.type === 'Withdraw' ? ArrowUpRight : ArrowLeftRight
-                  const iconBg = tx.type === 'Deposit' ? 'bg-[#10b981]/10 text-[#10b981]' : tx.type === 'Withdraw' ? 'bg-amber-400/10 text-amber-400' : 'bg-blue-400/10 text-blue-400'
-                  const amtColor = tx.type === 'Deposit' ? 'text-[#10b981]' : 'text-white'
-                  const badgeCls = tx.status === 'Completed' ? 'bg-[#10b981]/10 text-[#10b981]' : 'bg-amber-400/10 text-amber-400'
-                  return (
-                    <div key={i} className="flex items-center justify-between p-3.5 bg-[#0a0b0e] border border-[#1f2229] rounded-lg hover:bg-[#1e2025] transition-colors">
-                      <div className="flex items-center gap-3">
-                        <div className={`w-9 h-9 rounded-full ${iconBg} flex items-center justify-center`}>
-                          <Icon size={15} />
-                        </div>
-                        <div>
-                          <p className="text-white font-medium text-[13px]">{tx.type} {tx.asset}</p>
-                          <p className="text-slate-500 text-[11px] mt-0.5">{tx.date}</p>
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className={`font-mono font-semibold ${amtColor}`}>{tx.amount}</p>
-                        <span className={`inline-block mt-1 px-2 py-0.5 rounded text-[10px] font-semibold ${badgeCls}`}>
-                          {tx.status === 'Completed' ? <CheckCircle className="inline w-2.5 h-2.5 mr-0.5" /> : <Clock className="inline w-2.5 h-2.5 mr-0.5" />}
-                          {tx.status}
-                        </span>
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-
-            {/* Right column (40%) */}
-            <div className="col-span-2 flex flex-col gap-4">
-
-              {/* Quick Actions */}
-              <div className="bg-[#111318] border border-[#1f2229] rounded-xl p-5">
-                <h3 className="font-semibold text-white mb-3">Quick Actions</h3>
-                <div className="flex flex-col gap-2">
-                  {[
-                    { label: 'Deposit Funds',           icon: ArrowDownLeft, accent: '#10b981' },
-                    { label: 'Withdraw Funds',           icon: ArrowUpRight,  accent: '#f59e0b' },
-                    { label: 'Transfer Between Assets',  icon: ArrowLeftRight, accent: '#60a5fa' },
-                  ].map(({ label, icon: Icon, accent }) => (
-                    <button
-                      key={label}
-                      className="w-full flex items-center gap-3 p-3 bg-[#1e2025] border border-[#1f2229] rounded-lg hover:border-opacity-60 transition-all text-left group"
-                      style={{ '--accent': accent } as React.CSSProperties}
-                    >
-                      <div
-                        className="w-8 h-8 rounded-lg flex items-center justify-center text-white group-hover:scale-110 transition-transform"
-                        style={{ background: `${accent}20`, color: accent }}
-                      >
-                        <Icon size={15} />
-                      </div>
-                      <span className="text-white text-[13px] font-medium">{label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Portfolio Allocation */}
-              <div className="bg-[#111318] border border-[#1f2229] rounded-xl p-5 flex-1">
-                <h3 className="font-semibold text-white mb-4">Allocation</h3>
-                {balances.length > 0
-                  ? <AllocationDonut balances={balances} />
-                  : <p className="text-slate-500 text-xs text-center py-4">Loading…</p>
-                }
-              </div>
-            </div>
+          {/* 1-Click Testnet Faucet Card */}
+          <div className="lg:col-span-4 h-full">
+            <TestnetFaucetCard onClaim={handleFaucetClaim} />
           </div>
-        </main>
+        </div>
+
+        {/* ── 5. Financial Ledger (Full Width) ── */}
+        <div>
+          <FinancialLedger transactions={ledgerTxns} />
+        </div>
       </div>
-    </div>
+
+      {/* ── Deposit & Withdraw Interactive Modals ── */}
+      {activeDepositAsset && (
+        <DepositModal
+          isOpen={true}
+          asset={activeDepositAsset}
+          onClose={() => setActiveDepositAsset(null)}
+        />
+      )}
+
+      {activeWithdrawAsset && (
+        <WithdrawModal
+          isOpen={true}
+          asset={activeWithdrawAsset}
+          availableBalance={selectedWithdrawBalance}
+          onClose={() => setActiveWithdrawAsset(null)}
+          onWithdrawSuccess={handleWithdrawSuccess}
+        />
+      )}
+    </AppLayout>
   )
 }

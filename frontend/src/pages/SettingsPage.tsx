@@ -4,7 +4,7 @@ import {
   Eye, EyeOff, Monitor, ShieldOff, AlertTriangle,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
-import Sidebar from '../components/dashboard/Sidebar'
+import AppLayout from '../components/layout/AppLayout'
 import { useAuthStore } from '../store/authStore'
 import { authApi } from '../api/auth'
 
@@ -129,54 +129,49 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="bg-[#0a0b0e] text-white h-screen w-screen overflow-hidden flex font-sans text-sm select-none">
-      <Sidebar />
-
-      <div className="flex-1 flex flex-col min-w-0">
-
-        {/* ── Header ── */}
-        <header className="h-16 bg-[#111318]/80 backdrop-blur-md border-b border-[#1f2229] flex items-center justify-between px-6 flex-shrink-0">
+    <AppLayout>
+      <div className="max-w-6xl mx-auto flex flex-col space-y-6 pb-12 select-none">
+        {/* Header */}
+        <div className="flex items-center justify-between">
           <div className="flex flex-col">
-            <span className="font-bold text-white text-base">Settings</span>
-            <span className="text-[11px] text-slate-400">Manage your account &amp; preferences</span>
+            <h1 className="text-xl lg:text-2xl font-black text-white tracking-tight font-sans">Settings</h1>
+            <p className="text-xs text-slate-400 font-sans mt-0.5">Manage your account &amp; preferences</p>
           </div>
           <button
             onClick={handleSaveChanges}
             disabled={!hasChanges}
-            className={`flex items-center gap-2 text-xs px-4 py-2 rounded-lg transition-all duration-200 font-bold ${
+            className={`flex items-center gap-2 text-xs px-4 py-2 rounded-xl transition-all duration-200 font-bold ${
               hasChanges
-                ? 'bg-[#10b981] hover:bg-[#0e9f6e] text-black shadow-[0_0_12px_rgba(16,185,129,0.35)] cursor-pointer opacity-100'
-                : 'bg-[#1e2025] text-slate-500 border border-[#1f2229] opacity-60 cursor-not-allowed'
+                ? 'bg-[#00e5ff] hover:bg-[#00b4d8] text-black shadow-[0_0_15px_rgba(0,229,255,0.35)] cursor-pointer opacity-100'
+                : 'bg-[#141a26] text-slate-500 border border-[#1b2230] opacity-60 cursor-not-allowed'
             }`}
           >
             <Save size={14} />
             Save Changes
           </button>
-        </header>
+        </div>
 
-        {/* ── Main ── */}
-        <main className="flex-1 overflow-y-auto p-5">
-          <div className="max-w-5xl mx-auto flex gap-5">
-
-            {/* Left tab list */}
-            <aside className="w-48 shrink-0">
-              <div className="bg-[#111318] border border-[#1f2229] rounded-xl p-2 flex flex-col gap-1">
-                {TABS.map(({ id, label, icon: Icon }) => (
-                  <button
-                    key={id}
-                    onClick={() => setActiveTab(id)}
-                    className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-[13px] font-medium transition-all w-full text-left ${
-                      activeTab === id
-                        ? 'bg-[#10b981] text-black'
-                        : 'text-slate-400 hover:text-white hover:bg-[#1e2025]'
-                    }`}
-                  >
-                    <Icon size={16} />
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </aside>
+        {/* Main */}
+        <div className="flex gap-6 items-start">
+          {/* Left tab list */}
+          <aside className="w-52 shrink-0">
+            <div className="bg-[#0e121b] border border-[#1b2230] rounded-xl p-2 flex flex-col gap-1.5 shadow-xl">
+              {TABS.map(({ id, label, icon: Icon }) => (
+                <button
+                  key={id}
+                  onClick={() => setActiveTab(id)}
+                  className={`flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition-all w-full text-left ${
+                    activeTab === id
+                      ? 'bg-[#00e5ff]/15 text-[#00e5ff] border border-[#00e5ff]/40 shadow-[0_0_12px_rgba(0,229,255,0.15)]'
+                      : 'text-slate-400 hover:text-white hover:bg-[#141a26] border border-transparent'
+                  }`}
+                >
+                  <Icon size={16} />
+                  {label}
+                </button>
+              ))}
+            </div>
+          </aside>
 
             {/* Right content */}
             <div className="flex-1 min-w-0 flex flex-col gap-4">
@@ -352,9 +347,8 @@ export default function SettingsPage() {
               )}
 
             </div>
-          </div>
-        </main>
+        </div>
       </div>
-    </div>
+    </AppLayout>
   )
 }

@@ -19,10 +19,14 @@ client.interceptors.response.use(
   (res) => res,
   async (error) => {
     const original = error.config
-    if (error.response?.status === 401 && !original._retry) {
+    if (error.response?.status === 401 && !original?._retry) {
+      const refresh = localStorage.getItem('refresh_token')
+      if (!refresh) {
+        return Promise.reject(error)
+      }
+
       original._retry = true
       try {
-        const refresh = localStorage.getItem('refresh_token')
         const { data } = await axios.post(`${API_BASE_URL}/api/v1/auth/refresh`, {
           refreshToken: refresh,
         })
@@ -31,7 +35,9 @@ client.interceptors.response.use(
         original.headers.Authorization = `Bearer ${data.accessToken}`
         return client(original)
       } catch {
-        localStorage.clear()
+        localStorage.removeItem('access_token')
+        localStorage.removeItem('refresh_token')
+        localStorage.removeItem('user')
         window.location.href = '/login'
       }
     }

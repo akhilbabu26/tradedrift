@@ -13,11 +13,33 @@ interface AuthState {
   hydrate: () => void
 }
 
+// Synchronously read stored session so first render has correct auth state
+const getStoredSession = () => {
+  if (typeof window === 'undefined') {
+    return { accessToken: null, refreshToken: null, user: null, isAuthenticated: false }
+  }
+  try {
+    const accessToken = localStorage.getItem('access_token')
+    const refreshToken = localStorage.getItem('refresh_token')
+    const userStr = localStorage.getItem('user')
+    let user: User | null = null
+    if (userStr) {
+      user = JSON.parse(userStr)
+    }
+    const isAuthenticated = Boolean(accessToken && refreshToken)
+    return { accessToken, refreshToken, user, isAuthenticated }
+  } catch {
+    return { accessToken: null, refreshToken: null, user: null, isAuthenticated: false }
+  }
+}
+
+const initialSession = getStoredSession()
+
 export const useAuthStore = create<AuthState>((set) => ({
-  user: null,
-  accessToken: null,
-  refreshToken: null,
-  isAuthenticated: false,
+  user: initialSession.user,
+  accessToken: initialSession.accessToken,
+  refreshToken: initialSession.refreshToken,
+  isAuthenticated: initialSession.isAuthenticated,
 
   setTokens: (accessToken, refreshToken) => {
     localStorage.setItem('access_token', accessToken)
@@ -37,18 +59,11 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ user: null, accessToken: null, refreshToken: null, isAuthenticated: false })
   },
 
-  // Rehydrate from localStorage on app start
+  // Manual rehydrate helper
   hydrate: () => {
-    const accessToken = localStorage.getItem('access_token')
-    const refreshToken = localStorage.getItem('refresh_token')
-    const userStr = localStorage.getItem('user')
-    if (accessToken && refreshToken) {
-      set({
-        accessToken,
-        refreshToken,
-        isAuthenticated: true,
-        user: userStr ? JSON.parse(userStr) : null,
-      })
+    const session = getStoredSession()
+    if (session.isAuthenticated) {
+      set(session)
     }
   },
 }))

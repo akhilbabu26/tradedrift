@@ -106,13 +106,18 @@ export default function RegisterPage() {
               id="password"
               type={showPassword ? 'text' : 'password'}
               required
+              autoComplete="new-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Min. 8 characters"
               className="w-full pl-10 pr-10 py-3 bg-[#0a0b0e]/80 border border-[#1f2229] rounded-lg text-white placeholder-slate-600 text-sm focus:outline-none focus:border-brand focus:shadow-[0_0_15px_rgba(16,185,129,0.2)] transition-all duration-200"
             />
-            <button type="button" onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors">
+            <button
+              type="button"
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              onClick={() => setShowPassword(!showPassword)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors"
+            >
               {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
             </button>
           </div>
@@ -129,6 +134,7 @@ export default function RegisterPage() {
               id="confirm"
               type={showPassword ? 'text' : 'password'}
               required
+              autoComplete="new-password"
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
               placeholder="Re-enter password"

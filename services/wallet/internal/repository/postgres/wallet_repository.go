@@ -121,7 +121,7 @@ func (r *WalletRepository) DebitAvailable(ctx context.Context, walletID, amount 
 		return fmt.Errorf("failed to debit available balance: %w", err)
 	}
 	if res.RowsAffected() == 0 {
-		return fmt.Errorf("insufficient balance or wallet not found")
+		return repository.ErrInsufficientBalance
 	}
 	return nil
 }
@@ -140,7 +140,7 @@ func (r *WalletRepository) MoveToReserved(ctx context.Context, walletID, amount 
 		return fmt.Errorf("failed to move funds to reserved: %w", err)
 	}
 	if res.RowsAffected() == 0 {
-		return fmt.Errorf("insufficient balance or wallet not found")
+		return repository.ErrInsufficientBalance
 	}
 	return nil
 }

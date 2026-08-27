@@ -129,17 +129,17 @@ func (h *Handler) GetCandles(w http.ResponseWriter, r *http.Request) {
 
 func parseResolution(res string) marketv1.CandleResolution {
 	switch res {
-	case "1m":
+	case "1m", "1M":
 		return marketv1.CandleResolution_CANDLE_RESOLUTION_1M
-	case "5m":
+	case "5m", "5M":
 		return marketv1.CandleResolution_CANDLE_RESOLUTION_5M
-	case "15m":
+	case "15m", "15M":
 		return marketv1.CandleResolution_CANDLE_RESOLUTION_15M
-	case "1h":
+	case "1h", "1H", "4h", "4H":
 		return marketv1.CandleResolution_CANDLE_RESOLUTION_1H
-	case "1d":
+	case "1d", "1D":
 		return marketv1.CandleResolution_CANDLE_RESOLUTION_1D
 	default:
-		return marketv1.CandleResolution_CANDLE_RESOLUTION_UNSPECIFIED
+		return marketv1.CandleResolution_CANDLE_RESOLUTION_1H
 	}
 }

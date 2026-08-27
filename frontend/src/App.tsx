@@ -12,6 +12,10 @@ import DashboardPage from './pages/DashboardPage'
 import WalletPage from './pages/WalletPage'
 import SettingsPage from './pages/SettingsPage'
 import TradePage from './pages/TradePage'
+import MarketsPage from './pages/MarketsPage'
+import OrdersPage from './pages/OrdersPage'
+import HistoryPage from './pages/HistoryPage'
+import AnalyticsPage from './pages/AnalyticsPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
@@ -48,15 +52,27 @@ export default function App() {
         <Route path="/trade" element={
           <ProtectedRoute><TradePage /></ProtectedRoute>
         } />
+        <Route path="/markets" element={
+          <ProtectedRoute><MarketsPage /></ProtectedRoute>
+        } />
         <Route path="/wallet" element={
           <ProtectedRoute><WalletPage /></ProtectedRoute>
+        } />
+        <Route path="/orders" element={
+          <ProtectedRoute><OrdersPage /></ProtectedRoute>
+        } />
+        <Route path="/history" element={
+          <ProtectedRoute><HistoryPage /></ProtectedRoute>
+        } />
+        <Route path="/analytics" element={
+          <ProtectedRoute><AnalyticsPage /></ProtectedRoute>
         } />
         <Route path="/settings" element={
           <ProtectedRoute><SettingsPage /></ProtectedRoute>
         } />
 
         {/* Fallback */}
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </BrowserRouter>
   )

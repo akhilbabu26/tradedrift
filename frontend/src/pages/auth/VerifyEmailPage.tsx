@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { Mail, RefreshCw, ShieldCheck } from 'lucide-react'
+import { Mail, RefreshCw, ShieldCheck, AlertCircle } from 'lucide-react'
 import AuthCard from '../../components/AuthCard'
 import { useAuthStore } from '../../store/authStore'
 import { authApi } from '../../api/auth'
@@ -14,12 +14,26 @@ export default function VerifyEmailPage() {
   const [otp, setOtp]               = useState<string[]>(Array(6).fill(''))
   const [loading, setLoading]       = useState(false)
   const [resending, setResending]   = useState(false)
+  const [cooldown, setCooldown]     = useState(60)
   const [error, setError]           = useState('')
   const [success, setSuccess]       = useState('')
   const inputRefs = useRef<(HTMLInputElement | null)[]>([])
 
-  // Auto-focus first input on mount
-  useEffect(() => { inputRefs.current[0]?.focus() }, [])
+  // Auto-focus first input on mount if email is present
+  useEffect(() => {
+    if (email) {
+      inputRefs.current[0]?.focus()
+    }
+  }, [email])
+
+  // 60-second countdown timer for resending verification code
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const timer = setInterval(() => {
+      setCooldown((prev) => prev - 1)
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [cooldown])
 
   const handleOtpChange = (index: number, value: string) => {
     if (!/^\d?$/.test(value)) return
@@ -46,6 +60,10 @@ export default function VerifyEmailPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!email) {
+      setError('Missing email address. Please register or log in first.')
+      return
+    }
     const code = otp.join('')
     if (code.length < 6) { setError('Please enter the full 6-digit code'); return }
     setError('')
@@ -68,18 +86,48 @@ export default function VerifyEmailPage() {
   }
 
   const handleResend = async () => {
-    if (!email) return
+    if (!email || cooldown > 0 || resending) return
     setResending(true)
     setError('')
     try {
       await authApi.resendVerification({ email })
       setSuccess('A new code has been sent to your email.')
+      setCooldown(60)
       setTimeout(() => setSuccess(''), 4000)
     } catch {
       setError('Failed to resend code. Please try again.')
     } finally {
       setResending(false)
     }
+  }
+
+  if (!email) {
+    return (
+      <AuthCard>
+        <div className="flex justify-center mb-6">
+          <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+            <AlertCircle size={28} className="text-amber-400" />
+          </div>
+        </div>
+        <div className="text-center mb-8">
+          <h1 className="text-2xl font-black text-white mb-2">No email provided</h1>
+          <p className="text-slate-400 text-sm leading-relaxed">
+            Please register a new account or sign in to verify your email.
+          </p>
+        </div>
+        <button
+          onClick={() => navigate('/register')}
+          className="w-full py-3 px-4 bg-brand hover:bg-brand-dark text-black font-bold rounded-lg text-sm transition-all duration-200 glow-green-sm hover:glow-green"
+        >
+          Create Account →
+        </button>
+        <div className="mt-5 text-center">
+          <Link to="/login" className="text-sm text-slate-500 hover:text-slate-300 transition-colors">
+            ← Back to Login
+          </Link>
+        </div>
+      </AuthCard>
+    )
   }
 
   return (
@@ -96,7 +144,7 @@ export default function VerifyEmailPage() {
         <h1 className="text-2xl font-black text-white mb-1">Check your email</h1>
         <p className="text-slate-400 text-sm">
           We sent a 6-digit code to{' '}
-          <span className="text-brand font-semibold">{email || 'your email'}</span>
+          <span className="text-brand font-semibold">{email}</span>
         </p>
       </div>
 
@@ -125,11 +173,13 @@ export default function VerifyEmailPage() {
                 ref={(el) => { inputRefs.current[i] = el }}
                 type="text"
                 inputMode="numeric"
+                pattern="[0-9]*"
+                aria-label={`Digit ${i + 1} of 6`}
                 maxLength={1}
                 value={digit}
                 onChange={(e) => handleOtpChange(i, e.target.value)}
                 onKeyDown={(e) => handleKeyDown(i, e)}
-                className="w-12 h-14 text-center text-xl font-bold bg-[#0a0b0e]/80 border border-[#1f2229] rounded-xl text-white focus:outline-none focus:border-brand focus:shadow-[0_0_15px_rgba(16,185,129,0.2)] transition-all duration-200 caret-brand"
+                className="w-12 h-14 text-center text-xl font-bold bg-[#0a0b0e]/80 border border-[#1f2229] rounded-xl text-white focus:outline-none focus:border-brand focus:shadow-[0_0_15px_rgba(16,185,129,0.2)] transition-all duration-200 caret-brand font-mono"
               />
             ))}
           </div>
@@ -150,12 +200,13 @@ export default function VerifyEmailPage() {
         <p className="text-sm text-slate-400">
           Didn't receive the code?{' '}
           <button
+            type="button"
             onClick={handleResend}
-            disabled={resending}
-            className="font-semibold text-brand hover:text-brand-light transition-colors inline-flex items-center gap-1 disabled:opacity-50"
+            disabled={resending || cooldown > 0}
+            className="font-semibold text-brand hover:text-brand-light transition-colors inline-flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <RefreshCw size={13} className={resending ? 'animate-spin' : ''} />
-            Resend
+            {cooldown > 0 ? `Resend in ${cooldown}s` : 'Resend'}
           </button>
         </p>
         <p className="text-sm text-slate-400">

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { Lock, Eye, EyeOff, ShieldCheck, CheckCircle } from 'lucide-react'
+import { Lock, Eye, EyeOff, ShieldCheck, CheckCircle, AlertCircle } from 'lucide-react'
 import AuthCard from '../../components/AuthCard'
 import { authApi } from '../../api/auth'
 
@@ -18,7 +18,11 @@ export default function ResetPasswordPage() {
   const [done, setDone]                 = useState(false)
   const inputRefs = useRef<(HTMLInputElement | null)[]>([])
 
-  useEffect(() => { inputRefs.current[0]?.focus() }, [])
+  useEffect(() => {
+    if (emailParam) {
+      inputRefs.current[0]?.focus()
+    }
+  }, [emailParam])
 
   const handleOtpChange = (index: number, value: string) => {
     if (!/^\d?$/.test(value)) return
@@ -45,6 +49,10 @@ export default function ResetPasswordPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (!emailParam) {
+      setError('Missing email parameter. Please request a new reset code.')
+      return
+    }
     const code = otp.join('')
     if (code.length < 6)         { setError('Enter the full 6-digit code'); return }
     if (newPassword !== confirm)  { setError('Passwords do not match'); return }
@@ -87,6 +95,35 @@ export default function ResetPasswordPage() {
     )
   }
 
+  if (!emailParam) {
+    return (
+      <AuthCard>
+        <div className="flex justify-center mb-6">
+          <div className="w-16 h-16 rounded-2xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+            <AlertCircle size={28} className="text-amber-400" />
+          </div>
+        </div>
+        <div className="text-center mb-8">
+          <h1 className="text-2xl font-black text-white mb-2">No email provided</h1>
+          <p className="text-slate-400 text-sm leading-relaxed">
+            Please request a password reset code before creating a new password.
+          </p>
+        </div>
+        <button
+          onClick={() => navigate('/forgot-password')}
+          className="w-full py-3 px-4 bg-brand hover:bg-brand-dark text-black font-bold rounded-lg text-sm transition-all duration-200 glow-green-sm hover:glow-green"
+        >
+          Request Reset Code →
+        </button>
+        <div className="mt-5 text-center">
+          <Link to="/login" className="text-sm text-slate-500 hover:text-slate-300 transition-colors">
+            ← Back to Login
+          </Link>
+        </div>
+      </AuthCard>
+    )
+  }
+
   return (
     <AuthCard>
       {/* Heading */}
@@ -94,7 +131,7 @@ export default function ResetPasswordPage() {
         <h1 className="text-2xl font-black text-white mb-1">Create new password</h1>
         <p className="text-slate-400 text-sm">
           Enter the code sent to{' '}
-          <span className="text-brand font-semibold">{emailParam || 'your email'}</span>
+          <span className="text-brand font-semibold">{emailParam}</span>
         </p>
       </div>
 
@@ -117,11 +154,13 @@ export default function ResetPasswordPage() {
                 ref={(el) => { inputRefs.current[i] = el }}
                 type="text"
                 inputMode="numeric"
+                pattern="[0-9]*"
+                aria-label={`Digit ${i + 1} of 6`}
                 maxLength={1}
                 value={digit}
                 onChange={(e) => handleOtpChange(i, e.target.value)}
                 onKeyDown={(e) => handleKeyDown(i, e)}
-                className="w-12 h-14 text-center text-xl font-bold bg-[#0a0b0e]/80 border border-[#1f2229] rounded-xl text-white focus:outline-none focus:border-brand focus:shadow-[0_0_15px_rgba(16,185,129,0.2)] transition-all duration-200 caret-brand"
+                className="w-12 h-14 text-center text-xl font-bold bg-[#0a0b0e]/80 border border-[#1f2229] rounded-xl text-white focus:outline-none focus:border-brand focus:shadow-[0_0_15px_rgba(16,185,129,0.2)] transition-all duration-200 caret-brand font-mono"
               />
             ))}
           </div>
@@ -138,13 +177,18 @@ export default function ResetPasswordPage() {
               id="newPassword"
               type={showPassword ? 'text' : 'password'}
               required
+              autoComplete="new-password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               placeholder="Min. 8 characters"
               className="w-full pl-10 pr-10 py-3 bg-[#0a0b0e]/80 border border-[#1f2229] rounded-lg text-white placeholder-slate-600 text-sm focus:outline-none focus:border-brand focus:shadow-[0_0_15px_rgba(16,185,129,0.2)] transition-all duration-200"
             />
-            <button type="button" onClick={() => setShowPassword(!showPassword)}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors">
+            <button
+              type="button"
+              aria-label={showPassword ? 'Hide password' : 'Show password'}
+              onClick={() => setShowPassword(!showPassword)}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white transition-colors"
+            >
               {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
             </button>
           </div>
@@ -161,6 +205,7 @@ export default function ResetPasswordPage() {
               id="confirm"
               type={showPassword ? 'text' : 'password'}
               required
+              autoComplete="new-password"
               value={confirm}
               onChange={(e) => setConfirm(e.target.value)}
               placeholder="Re-enter new password"

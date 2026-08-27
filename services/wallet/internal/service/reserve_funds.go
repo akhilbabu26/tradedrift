@@ -35,12 +35,12 @@ func (s *Service) ReserveFunds(ctx context.Context, userID, orderID, asset, amou
 		return nil, fmt.Errorf("failed to fetch wallet: %w", err)
 	}
 	if wallet == nil {
-		return nil, fmt.Errorf("wallet not found for user %s and asset %s", userID, asset)
+		return nil, repository.ErrInsufficientBalance
 	}
 
 	// Step 3: Reject if wallet is frozen
 	if wallet.IsFrozen {
-		return nil, fmt.Errorf("wallet is frozen for asset %s", asset)
+		return nil, repository.ErrWalletFrozen
 	}
 
 	// Step 4: Check idempotency on ledger (guard against rare race)
@@ -55,8 +55,7 @@ func (s *Service) ReserveFunds(ctx context.Context, userID, orderID, asset, amou
 
 	// Step 5: Move funds from available → reserved (atomic SQL UPDATE)
 	if err := s.walletRepo.MoveToReserved(ctx, wallet.ID, amount); err != nil {
-		return nil, fmt.Errorf("failed to reserve funds: %w", err)
-		// Note: MoveToReserved returns error if available_balance < amount
+		return nil, err
 	}
 
 	// Step 6: Create reservation row

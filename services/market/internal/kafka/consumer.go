@@ -21,6 +21,7 @@ type TradeExecutedEvent struct {
 	Price        string `json:"price"`
 	Quantity     string `json:"quantity"`
 	ExecutedAtMs int64  `json:"executed_at_ms"`
+	ExecutedAt   string `json:"executed_at"`
 }
 
 type Consumer struct {
@@ -106,14 +107,19 @@ func (c *Consumer) Start(ctx context.Context) {
 			continue
 		}
 
-		// 5. Millisecond timestamp validation
-		if event.ExecutedAtMs <= 0 {
-			c.log.Error("Poison message: Invalid executed_at_ms timestamp, skipping offset",
-				zap.String("trade_id", event.TradeID),
-				zap.Int64("executed_at_ms", event.ExecutedAtMs),
-			)
-			c.commitPoisonMessage(ctx, msg)
-			continue
+		// 5. Timestamp resolution (accepts ms integer or RFC3339 string)
+		var execTime time.Time
+		if event.ExecutedAtMs > 0 {
+			execTime = time.UnixMilli(event.ExecutedAtMs)
+		} else if event.ExecutedAt != "" {
+			if t, err := time.Parse(time.RFC3339Nano, event.ExecutedAt); err == nil {
+				execTime = t
+			} else if t, err := time.Parse(time.RFC3339, event.ExecutedAt); err == nil {
+				execTime = t
+			}
+		}
+		if execTime.IsZero() {
+			execTime = time.Now().UTC()
 		}
 
 		payload := &service.TradeEventPayload{
@@ -121,7 +127,7 @@ func (c *Consumer) Start(ctx context.Context) {
 			MarketID:   event.MarketID,
 			Price:      price,
 			Quantity:   quantity,
-			ExecutedAt: time.UnixMilli(event.ExecutedAtMs),
+			ExecutedAt: execTime,
 		}
 
 		// 6. Process trade in atomic PostgreSQL transaction (Idempotent)

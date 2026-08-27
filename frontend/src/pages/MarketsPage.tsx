@@ -50,7 +50,7 @@ export default function MarketsPage() {
     <AppLayout>
       <div className="flex flex-col space-y-6 max-w-[1920px] mx-auto select-none pb-12">
         {/* ── 1. Market Highlight Cards (Top Gainer, 24h Volume Leader, New Listing) ── */}
-        <MarketHighlightCards />
+        <MarketHighlightCards tickers={liveTickers} />
 
         {/* ── 2. Spot Markets Section (Categories, Table, Sparklines, Pagination) ── */}
         <SpotMarketsTable liveTickers={liveTickers} />

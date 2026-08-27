@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { ChevronDown } from 'lucide-react'
+import { ChevronDown, Loader2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import AppLayout from '../components/layout/AppLayout'
 import OrdersKpiCards from '../components/orders/OrdersKpiCards'
@@ -8,119 +8,11 @@ import OpenOrdersTable, { type OrderRowItem } from '../components/orders/OpenOrd
 import TriggerOrdersTable, { type TriggerOrderItem } from '../components/orders/TriggerOrdersTable'
 import { orderApi, type Order } from '../api/order'
 
-const INITIAL_OPEN_ORDERS: OrderRowItem[] = [
-  {
-    id: '1',
-    orderId: 'ord_8f7c2d1a9b3e4f7a',
-    marketId: 'BTC-USDT',
-    marketSymbol: 'BTC/USDT',
-    iconChar: '₿',
-    iconBg: 'bg-[#f7931a]/15 border-[#f7931a]/30',
-    iconText: 'text-[#f7931a]',
-    side: 'BUY',
-    type: 'LIMIT',
-    price: '96,450.00',
-    priceNum: 96450.0,
-    filledQty: 0.15,
-    totalQty: 0.35,
-    assetSymbol: 'BTC',
-    totalUsd: '$33,757.50',
-    timeUtc: 'May 26, 2025 12:45:33 UTC',
-  },
-  {
-    id: '2',
-    orderId: 'ord_3a9b1e7d5c2f4a8b',
-    marketId: 'ETH-USDT',
-    marketSymbol: 'ETH/USDT',
-    iconChar: 'Ξ',
-    iconBg: 'bg-[#627eea]/15 border-[#627eea]/30',
-    iconText: 'text-[#627eea]',
-    side: 'SELL',
-    type: 'LIMIT',
-    price: '2,800.00',
-    priceNum: 2800.0,
-    filledQty: 0.0,
-    totalQty: 2.0,
-    assetSymbol: 'ETH',
-    totalUsd: '$5,600.00',
-    timeUtc: 'May 26, 2025 12:32:18 UTC',
-  },
-  {
-    id: '3',
-    orderId: 'ord_d2c6e8b4f1a9d3c7',
-    marketId: 'SOL-USDT',
-    marketSymbol: 'SOL/USDT',
-    iconChar: 'S',
-    iconBg: 'bg-[#00e5ff]/15 border-[#00e5ff]/30',
-    iconText: 'text-[#00e5ff]',
-    side: 'BUY',
-    type: 'LIMIT',
-    price: '186.50',
-    priceNum: 186.5,
-    filledQty: 5.0,
-    totalQty: 10.0,
-    assetSymbol: 'SOL',
-    totalUsd: '$1,865.00',
-    timeUtc: 'May 26, 2025 12:31:05 UTC',
-  },
-  {
-    id: '4',
-    orderId: 'ord_a1b2c3d4e5f6a7b8',
-    marketId: 'BTC-USDT',
-    marketSymbol: 'BTC/USDT',
-    iconChar: '₿',
-    iconBg: 'bg-[#f7931a]/15 border-[#f7931a]/30',
-    iconText: 'text-[#f7931a]',
-    side: 'SELL',
-    type: 'LIMIT',
-    price: '98,200.00',
-    priceNum: 98200.0,
-    filledQty: 0.0,
-    totalQty: 0.2,
-    assetSymbol: 'BTC',
-    totalUsd: '$19,640.00',
-    timeUtc: 'May 26, 2025 11:58:44 UTC',
-  },
-]
-
-const INITIAL_TRIGGER_ORDERS: TriggerOrderItem[] = [
-  {
-    id: 'trg-1',
-    orderId: 'trg_7e6d5c4b3a2f1e9d',
-    marketSymbol: 'BTC/USDT',
-    iconChar: '₿',
-    iconBg: 'bg-[#f7931a]/15 border-[#f7931a]/30',
-    iconText: 'text-[#f7931a]',
-    side: 'SELL',
-    type: 'STOP-LIMIT',
-    triggerPrice: '94,000.00',
-    price: '93,900.00',
-    amountStr: '0.2500 BTC',
-    totalUsd: '$23,475.00',
-    timeUtc: 'May 26, 2025 11:20:10 UTC',
-    status: 'ACTIVE',
-  },
-  {
-    id: 'trg-2',
-    orderId: 'trg_5d4c3b2a1f0e9d8c',
-    marketSymbol: 'ETH/USDT',
-    iconChar: 'Ξ',
-    iconBg: 'bg-[#627eea]/15 border-[#627eea]/30',
-    iconText: 'text-[#627eea]',
-    side: 'BUY',
-    type: 'TAKE-PROFIT',
-    triggerPrice: '2,950.00',
-    price: '2,950.00',
-    amountStr: '1.5000 ETH',
-    totalUsd: '$4,425.00',
-    timeUtc: 'May 26, 2025 10:45:21 UTC',
-    status: 'ACTIVE',
-  },
-]
-
 export default function OrdersPage() {
-  const [openOrders, setOpenOrders] = useState<OrderRowItem[]>(INITIAL_OPEN_ORDERS)
-  const [triggerOrders, setTriggerOrders] = useState<TriggerOrderItem[]>(INITIAL_TRIGGER_ORDERS)
+  const [openOrders, setOpenOrders] = useState<OrderRowItem[]>([])
+  const [triggerOrders, setTriggerOrders] = useState<TriggerOrderItem[]>([])
+  const [filledTodayOrders, setFilledTodayOrders] = useState<Order[]>([])
+  const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('open')
   const [selectedMarket, setSelectedMarket] = useState('ALL')
   const [selectedSide, setSelectedSide] = useState('ALL')
@@ -128,12 +20,17 @@ export default function OrdersPage() {
   const [rowsPerPage, setRowsPerPage] = useState('10')
   const [currentPage, setCurrentPage] = useState(1)
 
-  // Fetch live backend orders if available
+  // Fetch live backend orders
   const fetchLiveOrders = useCallback(async () => {
     try {
-      const apiOrders = await orderApi.listOrders({ status: 'OPEN' })
-      if (apiOrders && apiOrders.length > 0) {
-        const mapped: OrderRowItem[] = apiOrders.map((o: Order) => {
+      setLoading(true)
+      const [apiOpenOrders, apiFilledOrders] = await Promise.all([
+        orderApi.listOrders({ status: 'OPEN' }).catch(() => []),
+        orderApi.listOrders({ status: 'FILLED' }).catch(() => []),
+      ])
+
+      if (apiOpenOrders) {
+        const mapped: OrderRowItem[] = apiOpenOrders.map((o: Order) => {
           const price = parseFloat(o.price?.replace(/,/g, '')) || 0
           const qty = parseFloat(o.quantity?.replace(/,/g, '')) || 0
           const filled = parseFloat(o.filled_quantity?.replace(/,/g, '')) || 0
@@ -160,7 +57,7 @@ export default function OrdersPage() {
             totalQty: qty,
             assetSymbol: base,
             totalUsd: `$${(price * qty).toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
-            timeUtc: new Date(o.created_at).toLocaleString('en-US', {
+            timeUtc: new Date(o.created_at || Date.now()).toLocaleString('en-US', {
               month: 'short',
               day: 'numeric',
               year: 'numeric',
@@ -173,8 +70,14 @@ export default function OrdersPage() {
         })
         setOpenOrders(mapped)
       }
+
+      if (apiFilledOrders) {
+        setFilledTodayOrders(apiFilledOrders)
+      }
     } catch {
-      // Retain baseline reference orders
+      // keep state
+    } finally {
+      setLoading(false)
     }
   }, [])
 
@@ -196,11 +99,11 @@ export default function OrdersPage() {
   const handleCancelOrder = async (id: string) => {
     try {
       await orderApi.cancelOrder(id)
+      setOpenOrders((prev) => prev.filter((o) => o.id !== id))
+      toast.success('Order cancelled successfully')
     } catch {
-      // optimistic fallback
+      toast.error('Failed to cancel order')
     }
-    setOpenOrders((prev) => prev.filter((o) => o.id !== id))
-    toast.success('Order cancelled successfully')
   }
 
   // Handle trigger order cancellation
@@ -210,19 +113,32 @@ export default function OrdersPage() {
   }
 
   // Handle cancel all orders
-  const handleCancelAll = () => {
+  const handleCancelAll = async () => {
     if (openOrders.length === 0) {
       toast.error('No active open orders to cancel')
       return
     }
-    setOpenOrders([])
-    toast.success('All open orders cancelled')
+    try {
+      await Promise.allSettled(openOrders.map((o) => orderApi.cancelOrder(o.id)))
+      setOpenOrders([])
+      toast.success('All open orders cancelled')
+    } catch {
+      toast.error('Could not cancel all orders')
+    }
   }
 
   // Aggregate KPI metrics
   const totalLockedValue = useMemo(() => {
-    return openOrders.reduce((sum, o) => sum + (o.priceNum * o.totalQty), 0) || 42150.0
+    return openOrders.reduce((sum, o) => sum + o.priceNum * o.totalQty, 0)
   }, [openOrders])
+
+  const filledTodayVolume = useMemo(() => {
+    return filledTodayOrders.reduce((sum, o) => {
+      const p = parseFloat(o.price || '0')
+      const q = parseFloat(o.filled_quantity || o.quantity || '0')
+      return sum + p * q
+    }, 0)
+  }, [filledTodayOrders])
 
   return (
     <AppLayout>
@@ -242,9 +158,9 @@ export default function OrdersPage() {
           openOrdersCount={openOrders.length}
           lockedValueUsd={totalLockedValue}
           triggerOrdersCount={triggerOrders.length}
-          totalExposureUsd={18620.5}
-          filledTodayCount={18}
-          filledTodayVolumeUsd={112400.0}
+          totalExposureUsd={0}
+          filledTodayCount={filledTodayOrders.length}
+          filledTodayVolumeUsd={filledTodayVolume}
         />
 
         {/* ── 3. Filter Toolbar ── */}
@@ -259,12 +175,19 @@ export default function OrdersPage() {
         />
 
         {/* ── 4. Open Orders Tabbed Table ── */}
-        <OpenOrdersTable
-          orders={filteredOrders}
-          activeTab={activeTab}
-          onTabChange={setActiveTab}
-          onCancelOrder={handleCancelOrder}
-        />
+        {loading ? (
+          <div className="py-16 bg-[#0e121b] border border-[#1b2230] rounded-xl flex items-center justify-center text-slate-400">
+            <Loader2 className="animate-spin mr-2" size={20} />
+            <span>Loading orders...</span>
+          </div>
+        ) : (
+          <OpenOrdersTable
+            orders={filteredOrders}
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            onCancelOrder={handleCancelOrder}
+          />
+        )}
 
         {/* ── 5. Trigger Orders Section ── */}
         <TriggerOrdersTable
@@ -317,7 +240,10 @@ export default function OrdersPage() {
                   <option value="25">25</option>
                   <option value="50">50</option>
                 </select>
-                <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+                <ChevronDown
+                  size={12}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none"
+                />
               </div>
             </div>
           </div>

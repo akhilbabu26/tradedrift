@@ -1,6 +1,26 @@
 import { Clock, Shield, Info, BarChart2 } from 'lucide-react'
 
-export default function AnalyticsMetricCards() {
+interface AnalyticsMetricCardsProps {
+  netProfit?: number
+  winRatePct?: number
+  winsCount?: number
+  lossesCount?: number
+  profitFactor?: number
+  maxDrawdownPct?: number
+  totalTradesCount?: number
+}
+
+export default function AnalyticsMetricCards({
+  netProfit = 0,
+  winRatePct = 0,
+  winsCount = 0,
+  lossesCount = 0,
+  profitFactor = 0,
+  maxDrawdownPct = 0,
+  totalTradesCount = 0,
+}: AnalyticsMetricCardsProps) {
+  const isProfit = netProfit >= 0
+
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 select-none">
       {/* ── CARD 1: Cumulative Net Profit ── */}
@@ -17,22 +37,25 @@ export default function AnalyticsMetricCards() {
 
         <div className="flex items-end justify-between mt-3 z-10">
           <div>
-            <div className="text-xl lg:text-2xl font-black font-mono text-[#00e676] tracking-tight">
-              +$48,920.50
+            <div
+              className={`text-xl lg:text-2xl font-black font-mono tracking-tight ${
+                isProfit ? 'text-[#00e676]' : 'text-[#ff3366]'
+              }`}
+            >
+              {isProfit ? '+' : '-'}${Math.abs(netProfit).toLocaleString('en-US', { minimumFractionDigits: 2 })}
             </div>
-            <div className="flex items-center gap-1 mt-1 text-[11px] text-[#00e676] font-mono">
-              <span>↑ 38.4%</span>
-              <span className="text-slate-400 font-sans text-[10px]">vs Previous 30 Days</span>
+            <div className="flex items-center gap-1 mt-1 text-[11px] font-mono text-slate-400">
+              <span className="text-slate-400 font-sans text-[10px]">Realized Account Return</span>
             </div>
           </div>
 
-          {/* Green Sparkline */}
+          {/* Sparkline */}
           <div className="w-20 h-9 flex-shrink-0">
             <svg className="w-full h-full" viewBox="0 0 80 30" preserveAspectRatio="none">
               <path
-                d="M0,25 Q15,22 30,18 T55,14 T70,8 T80,3"
+                d={isProfit ? 'M0,25 Q15,22 30,18 T55,14 T70,8 T80,3' : 'M0,5 Q15,10 30,15 T55,20 T70,24 T80,27'}
                 fill="none"
-                stroke="#00e676"
+                stroke={isProfit ? '#00e676' : '#ff3366'}
                 strokeWidth="2"
                 strokeLinecap="round"
               />
@@ -56,10 +79,10 @@ export default function AnalyticsMetricCards() {
         <div className="flex items-end justify-between mt-3 z-10">
           <div>
             <div className="text-xl lg:text-2xl font-black font-mono text-white tracking-tight">
-              68.4%
+              {winRatePct > 0 ? `${winRatePct.toFixed(1)}%` : '--'}
             </div>
             <div className="text-[11px] font-mono text-slate-400 mt-1">
-              82 Wins / 38 Losses
+              {winsCount} Wins / {lossesCount} Losses
             </div>
           </div>
 
@@ -75,7 +98,7 @@ export default function AnalyticsMetricCards() {
               />
               <path
                 className="text-[#a855f7]"
-                strokeDasharray="68.4, 100"
+                strokeDasharray={`${winRatePct}, 100`}
                 strokeWidth="3.5"
                 strokeLinecap="round"
                 stroke="currentColor"
@@ -102,10 +125,10 @@ export default function AnalyticsMetricCards() {
         <div className="flex items-end justify-between mt-3 z-10">
           <div>
             <div className="text-xl lg:text-2xl font-black font-mono text-white tracking-tight">
-              2.41
+              {profitFactor > 0 ? profitFactor.toFixed(2) : '--'}
             </div>
             <div className="text-[11px] font-sans font-medium text-[#00e5ff] mt-1">
-              Excellent Performance
+              {totalTradesCount > 0 ? 'Active Performance' : 'Awaiting Trades'}
             </div>
           </div>
 
@@ -133,11 +156,11 @@ export default function AnalyticsMetricCards() {
 
         <div className="flex items-end justify-between mt-3 z-10">
           <div>
-            <div className="text-xl lg:text-2xl font-black font-mono text-[#ff3366] tracking-tight">
-              -4.20%
+            <div className="text-xl lg:text-2xl font-black font-mono text-white tracking-tight">
+              {maxDrawdownPct !== 0 ? `${maxDrawdownPct.toFixed(2)}%` : '0.00%'}
             </div>
             <div className="text-[11px] font-sans font-medium text-emerald-400 mt-1">
-              Excellent Risk Score
+              Protected Risk State
             </div>
           </div>
 
@@ -147,7 +170,7 @@ export default function AnalyticsMetricCards() {
               <path
                 d="M0,8 Q20,6 40,16 T60,22 T80,26"
                 fill="none"
-                stroke="#ff3366"
+                stroke="#00e676"
                 strokeWidth="2"
                 strokeLinecap="round"
               />
@@ -156,14 +179,14 @@ export default function AnalyticsMetricCards() {
         </div>
       </div>
 
-      {/* ── CARD 5: Average Trade Duration ── */}
+      {/* ── CARD 5: Total Executions ── */}
       <div className="bg-[#0e121b] border border-[#1b2230] rounded-xl p-4 relative overflow-hidden flex flex-col justify-between shadow-xl group hover:border-[#00e5ff]/30 transition-all">
         <div className="flex items-center justify-between z-10">
           <div className="flex items-center gap-1.5 text-xs text-slate-400 font-medium font-sans">
             <div className="w-5 h-5 rounded-md bg-[#00e5ff]/10 text-[#00e5ff] flex items-center justify-center">
               <Clock size={12} />
             </div>
-            <span>Average Trade Duration</span>
+            <span>Total Executions</span>
             <Info size={12} className="text-slate-500 hover:text-slate-300 cursor-pointer" />
           </div>
         </div>
@@ -171,14 +194,13 @@ export default function AnalyticsMetricCards() {
         <div className="flex items-end justify-between mt-3 z-10">
           <div>
             <div className="text-xl lg:text-2xl font-black font-mono text-white tracking-tight">
-              4h 12m
+              {totalTradesCount}
             </div>
             <div className="text-[11px] font-sans text-slate-400 mt-1">
-              Across 120 Trades
+              Filled Orders
             </div>
           </div>
 
-          {/* Clock Icon Graphic */}
           <div className="w-9 h-9 rounded-full bg-[#00e5ff]/10 border border-[#00e5ff]/20 text-[#00e5ff] flex items-center justify-center flex-shrink-0">
             <Clock size={16} />
           </div>

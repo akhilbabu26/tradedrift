@@ -1,4 +1,5 @@
 export type MessageHandler = (data: any) => void
+export type ConnectionStatus = 'connected' | 'connecting' | 'reconnecting' | 'offline'
 
 const WS_BASE_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8080/ws'
 
@@ -6,28 +7,41 @@ class WebSocketService {
   private socket: WebSocket | null = null
   private subscribers: Map<string, Set<MessageHandler>> = new Map()
   private reconnectAttempt = 0
-  private reconnectTimeout: any = null
-  private pingInterval: any = null
+  private reconnectTimeout: ReturnType<typeof setTimeout> | null = null
+  private pingInterval: ReturnType<typeof setInterval> | null = null
   private isExplicitlyClosed = false
   private onReconnectHooks: Set<() => void> = new Set()
-  private onStatusHooks: Set<(connected: boolean) => void> = new Set()
+  private onStatusHooks: Set<(connected: boolean, status: ConnectionStatus) => void> = new Set()
+  private onLatencyHooks: Set<(ms: number) => void> = new Set()
+  private lastPingSentAt = 0
+  private currentLatency = 0
 
   constructor() {
-    // Initial connection
     this.connect()
   }
 
-  // Register a hook to track connection state (true = connected, false = connecting/closed)
-  public onStatus(hook: (connected: boolean) => void) {
+  public onStatus(hook: (connected: boolean, status: ConnectionStatus) => void) {
     this.onStatusHooks.add(hook)
-    hook(this.isConnected())
+    hook(this.isConnected(), this.getStatus())
     return () => this.onStatusHooks.delete(hook)
   }
 
-  // Register a hook to be called whenever WebSocket reconnects (for REST state resync)
+  public onLatency(hook: (ms: number) => void) {
+    this.onLatencyHooks.add(hook)
+    hook(this.currentLatency)
+    return () => this.onLatencyHooks.delete(hook)
+  }
+
   public onReconnect(hook: () => void) {
     this.onReconnectHooks.add(hook)
     return () => this.onReconnectHooks.delete(hook)
+  }
+
+  public getStatus(): ConnectionStatus {
+    if (!this.socket) return 'offline'
+    if (this.socket.readyState === WebSocket.OPEN) return 'connected'
+    if (this.socket.readyState === WebSocket.CONNECTING) return this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting'
+    return 'offline'
   }
 
   public connect() {
@@ -36,7 +50,7 @@ class WebSocketService {
     }
 
     this.isExplicitlyClosed = false
-    this.notifyStatus(false)
+    this.notifyStatus(false, this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting')
     const token = localStorage.getItem('access_token')
     const url = token ? `${WS_BASE_URL}?token=${encodeURIComponent(token)}` : WS_BASE_URL
 
@@ -45,11 +59,11 @@ class WebSocketService {
 
       this.socket.onopen = () => {
         this.reconnectAttempt = 0
-        this.notifyStatus(true)
+        this.notifyStatus(true, 'connected')
+        this.measureLatency()
         this.startHeartbeat()
         this.resubscribeAll()
 
-        // Trigger REST state resynchronization
         this.onReconnectHooks.forEach((hook) => {
           try { hook() } catch { /* ignore */ }
         })
@@ -61,6 +75,15 @@ class WebSocketService {
           for (const line of lines) {
             if (!line.trim()) continue
             const parsed = JSON.parse(line)
+
+            if (parsed.event === 'pong' || parsed.type === 'pong') {
+              if (this.lastPingSentAt > 0) {
+                const rtt = Math.max(1, Date.now() - this.lastPingSentAt)
+                this.currentLatency = rtt
+                this.onLatencyHooks.forEach((h) => h(rtt))
+              }
+              continue
+            }
 
             if (parsed.stream) {
               const handlers = this.subscribers.get(parsed.stream)
@@ -75,7 +98,7 @@ class WebSocketService {
       }
 
       this.socket.onclose = () => {
-        this.notifyStatus(false)
+        this.notifyStatus(false, 'offline')
         this.cleanup()
         if (!this.isExplicitlyClosed) {
           this.scheduleReconnect()
@@ -83,18 +106,18 @@ class WebSocketService {
       }
 
       this.socket.onerror = () => {
-        this.notifyStatus(false)
+        this.notifyStatus(false, 'offline')
         if (this.socket) this.socket.close()
       }
     } catch {
-      this.notifyStatus(false)
+      this.notifyStatus(false, 'offline')
       this.scheduleReconnect()
     }
   }
 
-  private notifyStatus(connected: boolean) {
+  private notifyStatus(connected: boolean, status: ConnectionStatus) {
     this.onStatusHooks.forEach((hook) => {
-      try { hook(connected) } catch { /* ignore */ }
+      try { hook(connected, status) } catch { /* ignore */ }
     })
   }
 
@@ -102,7 +125,6 @@ class WebSocketService {
     if (this.reconnectTimeout) return
     this.reconnectAttempt++
 
-    // Exponential Backoff with Random Jitter: min(30000, 1000 * 2^attempt) + rand(0, 1000)
     const baseDelay = Math.min(30000, 1000 * Math.pow(2, Math.min(this.reconnectAttempt, 5)))
     const jitter = Math.floor(Math.random() * 1000)
     const delay = baseDelay + jitter
@@ -113,13 +135,18 @@ class WebSocketService {
     }, delay)
   }
 
+  private measureLatency() {
+    if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+      this.lastPingSentAt = Date.now()
+      this.socket.send(JSON.stringify({ event: 'ping', ts: this.lastPingSentAt }))
+    }
+  }
+
   private startHeartbeat() {
     this.stopHeartbeat()
     this.pingInterval = setInterval(() => {
-      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-        this.socket.send(JSON.stringify({ event: 'ping' }))
-      }
-    }, 30000)
+      this.measureLatency()
+    }, 15000)
   }
 
   private stopHeartbeat() {
@@ -132,6 +159,7 @@ class WebSocketService {
   private cleanup() {
     this.stopHeartbeat()
     this.socket = null
+    this.currentLatency = 0
   }
 
   private resubscribeAll() {

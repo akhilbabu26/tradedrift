@@ -1,4 +1,4 @@
-import type { ElementType } from 'react'
+import { useState, useEffect, type ElementType } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { useAuthStore } from '../../store/authStore'
 import { authApi } from '../../api/auth'
+import { wsService, type ConnectionStatus } from '../../api/ws'
 
 interface NavItem {
   to: string
@@ -26,8 +27,8 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/trade', label: 'Trade', icon: TrendingUp },
   { to: '/markets', label: 'Markets', icon: BarChart2 },
+  { to: '/trade', label: 'Trade', icon: TrendingUp },
   { to: '/wallet', label: 'Wallet', icon: Wallet },
   { to: '/orders', label: 'Orders', icon: ClipboardList },
   { to: '/history', label: 'History', icon: History },
@@ -39,6 +40,22 @@ export default function AppSidebar() {
   const { pathname } = useLocation()
   const navigate = useNavigate()
   const { user, logout } = useAuthStore()
+  const [wsStatus, setWsStatus] = useState<ConnectionStatus>('connecting')
+  const [wsLatency, setWsLatency] = useState<number>(0)
+
+  useEffect(() => {
+    const unsubStatus = wsService.onStatus((_connected, status) => {
+      setWsStatus(status)
+    })
+    const unsubLatency = wsService.onLatency((ms) => {
+      setWsLatency(ms)
+    })
+
+    return () => {
+      unsubStatus()
+      unsubLatency()
+    }
+  }, [])
 
   const displayName = user?.username || 'Akhil Babu'
   const initials = displayName
@@ -115,11 +132,23 @@ export default function AppSidebar() {
           <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-center gap-2">
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00e676] opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-[#00e676]" />
+                {wsStatus === 'connected' && (
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#00e676] opacity-75" />
+                )}
+                <span
+                  className={`relative inline-flex rounded-full h-2 w-2 ${
+                    wsStatus === 'connected'
+                      ? 'bg-[#00e676]'
+                      : wsStatus === 'reconnecting' || wsStatus === 'connecting'
+                      ? 'bg-amber-400 animate-pulse'
+                      : 'bg-[#ff3366]'
+                  }`}
+                />
               </span>
               <span className="text-[11px] font-semibold text-white">WebSocket</span>
-              <span className="text-[10px] text-slate-400">Connected</span>
+              <span className="text-[10px] text-slate-400 capitalize">
+                {wsStatus === 'connected' ? 'Connected' : wsStatus === 'reconnecting' ? 'Reconnecting' : wsStatus === 'connecting' ? 'Connecting' : 'Offline'}
+              </span>
             </div>
             <button
               type="button"
@@ -133,19 +162,39 @@ export default function AppSidebar() {
           {/* Live Latency & Waveform */}
           <div className="flex items-end justify-between mt-2">
             <div>
-              <div className="font-mono text-lg font-bold text-[#00e676] leading-none">18ms</div>
+              <div
+                className={`font-mono text-lg font-bold leading-none ${
+                  wsStatus === 'connected'
+                    ? wsLatency < 50
+                      ? 'text-[#00e676]'
+                      : wsLatency < 120
+                      ? 'text-amber-400'
+                      : 'text-[#ff3366]'
+                    : 'text-slate-500'
+                }`}
+              >
+                {wsStatus === 'connected' && wsLatency > 0 ? `${wsLatency}ms` : wsStatus === 'connected' ? '< 20ms' : '--'}
+              </div>
               <div className="text-[9px] font-medium text-slate-400 mt-1 uppercase tracking-wider">
                 Live Latency
               </div>
             </div>
 
-            {/* Real-time green sparkline waveform */}
+            {/* Real-time sparkline waveform */}
             <div className="w-20 h-6">
               <svg className="w-full h-full" viewBox="0 0 80 24" preserveAspectRatio="none">
                 <defs>
                   <linearGradient id="wsGradient" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#00e676" stopOpacity="0.4" />
-                    <stop offset="100%" stopColor="#00e676" stopOpacity="0.0" />
+                    <stop
+                      offset="0%"
+                      stopColor={wsStatus === 'connected' ? '#00e676' : '#64748b'}
+                      stopOpacity="0.4"
+                    />
+                    <stop
+                      offset="100%"
+                      stopColor={wsStatus === 'connected' ? '#00e676' : '#64748b'}
+                      stopOpacity="0.0"
+                    />
                   </linearGradient>
                 </defs>
                 <path
@@ -155,7 +204,7 @@ export default function AppSidebar() {
                 <path
                   d="M0,16 Q10,12 20,18 T40,10 T60,14 T80,8"
                   fill="none"
-                  stroke="#00e676"
+                  stroke={wsStatus === 'connected' ? '#00e676' : '#64748b'}
                   strokeWidth="1.5"
                 />
               </svg>

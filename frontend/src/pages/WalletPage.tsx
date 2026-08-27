@@ -7,18 +7,18 @@ import TestnetFaucetCard from '../components/wallet/TestnetFaucetCard'
 import FinancialLedger, { type LedgerItem } from '../components/wallet/FinancialLedger'
 import { DepositModal, WithdrawModal } from '../components/wallet/DepositWithdrawModals'
 import { walletApi, type Balance } from '../api/wallet'
+import { orderApi } from '../api/order'
 
-// Standard mock baseline balances matching the reference screenshot exactly
-const INITIAL_ASSETS: AssetRowData[] = [
+const BASE_ASSETS: AssetRowData[] = [
   {
     symbol: 'USDT',
     name: 'Tether',
     iconChar: '₮',
     iconBg: 'bg-[#00e676]/15 border-[#00e676]/30',
     iconText: 'text-[#00e676]',
-    total: 45820.25,
-    available: 34520.25,
-    inOrders: 11300.0,
+    total: 0,
+    available: 0,
+    inOrders: 0,
     priceUsd: 1.0,
   },
   {
@@ -27,10 +27,10 @@ const INITIAL_ASSETS: AssetRowData[] = [
     iconChar: '₿',
     iconBg: 'bg-[#f7931a]/15 border-[#f7931a]/30',
     iconText: 'text-[#f7931a]',
-    total: 0.5321,
-    available: 0.3621,
-    inOrders: 0.17,
-    priceUsd: 96536.46,
+    total: 0,
+    available: 0,
+    inOrders: 0,
+    priceUsd: 96450.0,
   },
   {
     symbol: 'ETH',
@@ -38,10 +38,10 @@ const INITIAL_ASSETS: AssetRowData[] = [
     iconChar: 'Ξ',
     iconBg: 'bg-[#627eea]/15 border-[#627eea]/30',
     iconText: 'text-[#627eea]',
-    total: 2.1256,
-    available: 1.5256,
-    inOrders: 0.6,
-    priceUsd: 2822.71,
+    total: 0,
+    available: 0,
+    inOrders: 0,
+    priceUsd: 2780.5,
   },
   {
     symbol: 'SOL',
@@ -49,90 +49,27 @@ const INITIAL_ASSETS: AssetRowData[] = [
     iconChar: 'S',
     iconBg: 'bg-[#00e5ff]/15 border-[#00e5ff]/30',
     iconText: 'text-[#00e5ff]',
-    total: 28.35,
-    available: 22.85,
-    inOrders: 5.5,
-    priceUsd: 132.38,
+    total: 0,
+    available: 0,
+    inOrders: 0,
+    priceUsd: 188.2,
   },
 ]
 
 export default function WalletPage() {
-  const [assetRows, setAssetRows] = useState<AssetRowData[]>(INITIAL_ASSETS)
+  const [assetRows, setAssetRows] = useState<AssetRowData[]>(BASE_ASSETS)
   const [activeDepositAsset, setActiveDepositAsset] = useState<string | null>(null)
   const [activeWithdrawAsset, setActiveWithdrawAsset] = useState<string | null>(null)
-  const [ledgerTxns, setLedgerTxns] = useState<LedgerItem[]>([
-    {
-      id: '1',
-      txHash: '0x7b2f...a9c8e4d1',
-      type: 'Faucet Deposit',
-      asset: 'USDT',
-      amount: '+10,000.00 USDT',
-      amountNum: 10000,
-      usdValue: '+$10,000.00',
-      dateTimeUtc: 'May 26, 2025 12:45:33.123',
-      status: 'Completed',
-    },
-    {
-      id: '2',
-      txHash: '0x3c9a...f6d2b7e8',
-      type: 'Trade Fill',
-      asset: 'BTC',
-      amount: '-0.05000000 BTC',
-      amountNum: -0.05,
-      usdValue: '-$4,822.50',
-      dateTimeUtc: 'May 26, 2025 12:32:18.456',
-      status: 'Completed',
-    },
-    {
-      id: '3',
-      txHash: '0x8e1d...7a3f9b2c',
-      type: 'Order Lock',
-      asset: 'USDT',
-      amount: '-1,500.00 USDT',
-      amountNum: -1500,
-      usdValue: '-$1,500.00',
-      dateTimeUtc: 'May 26, 2025 12:31:05.789',
-      status: 'Completed',
-    },
-    {
-      id: '4',
-      txHash: '0x2f4e...b1a8d6c7',
-      type: 'Trade Fill',
-      asset: 'ETH',
-      amount: '+0.25000000 ETH',
-      amountNum: 0.25,
-      usdValue: '+$695.50',
-      dateTimeUtc: 'May 26, 2025 11:58:44.321',
-      status: 'Completed',
-    },
-    {
-      id: '5',
-      txHash: '0x9a7b...e3d1f6a9',
-      type: 'Faucet Deposit',
-      asset: 'BTC',
-      amount: '+1.00000000 BTC',
-      amountNum: 1.0,
-      usdValue: '+$96,450.00',
-      dateTimeUtc: 'May 26, 2025 11:20:10.654',
-      status: 'Completed',
-    },
-    {
-      id: '6',
-      txHash: '0x6c3d...4e8f1b7a',
-      type: 'Withdrawal',
-      asset: 'USDT',
-      amount: '-2,000.00 USDT',
-      amountNum: -2000,
-      usdValue: '-$2,000.00',
-      dateTimeUtc: 'May 25, 2025 18:43:21.987',
-      status: 'Completed',
-    },
-  ])
+  const [ledgerTxns, setLedgerTxns] = useState<LedgerItem[]>([])
 
-  // Fetch live balances from backend if available
+  // Fetch live balances and orders from backend
   const fetchLiveBalances = useCallback(async () => {
     try {
-      const apiBalances = await walletApi.getAllBalances()
+      const [apiBalances, orders] = await Promise.all([
+        walletApi.getAllBalances().catch(() => []),
+        orderApi.listOrders({ limit: 20 }).catch(() => []),
+      ])
+
       if (apiBalances && apiBalances.length > 0) {
         setAssetRows((prevRows) =>
           prevRows.map((row) => {
@@ -151,8 +88,39 @@ export default function WalletPage() {
           })
         )
       }
+
+      // Populate ledger from real orders if available
+      if (orders && orders.length > 0) {
+        const mappedTxns: LedgerItem[] = orders.map((o) => {
+          const isBuy = o.side === 'BUY'
+          const numPrice = parseFloat(o.price || '0')
+          const numQty = parseFloat(o.quantity || '0')
+          const totalVal = numPrice * numQty
+
+          return {
+            id: o.id,
+            txHash: `0x${o.id.substring(0, 4)}...${o.id.substring(o.id.length - 4)}`,
+            type: o.status === 'FILLED' ? 'Trade Fill' : 'Order Lock',
+            asset: o.market_id.split('-')[0] || 'USDT',
+            amount: `${isBuy ? '+' : '-'}${numQty.toFixed(4)} ${o.market_id.split('-')[0]}`,
+            amountNum: isBuy ? numQty : -numQty,
+            usdValue: `${isBuy ? '+' : '-'}$${totalVal.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+            dateTimeUtc: new Date(o.created_at || Date.now()).toLocaleString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: false,
+            }),
+            status: o.status === 'FILLED' ? 'Completed' : 'Pending',
+          }
+        })
+        setLedgerTxns(mappedTxns)
+      }
     } catch {
-      // Keep initial reference balances
+      // keep state
     }
   }, [])
 
@@ -163,7 +131,7 @@ export default function WalletPage() {
   // Aggregate Portfolio Totals
   const { totalEquityUsd, availableUsd, reservedUsd, btcPrice } = useMemo(() => {
     const btcAsset = assetRows.find((a) => a.symbol === 'BTC')
-    const btcP = btcAsset ? btcAsset.priceUsd : 96536.46
+    const btcP = btcAsset ? btcAsset.priceUsd : 96450.0
 
     let totalEq = 0
     let availUsd = 0
@@ -176,20 +144,20 @@ export default function WalletPage() {
     }
 
     return {
-      totalEquityUsd: totalEq || 124850.25,
-      availableUsd: availUsd || 98420.0,
-      reservedUsd: resvUsd || 26430.25,
+      totalEquityUsd: totalEq,
+      availableUsd: availUsd,
+      reservedUsd: resvUsd,
       btcPrice: btcP,
     }
   }, [assetRows])
 
-  const totalBtcEquiv = totalEquityUsd / btcPrice
-  const availableBtcEquiv = availableUsd / btcPrice
-  const reservedBtcEquiv = reservedUsd / btcPrice
+  const totalBtcEquiv = btcPrice > 0 ? totalEquityUsd / btcPrice : 0
+  const availableBtcEquiv = btcPrice > 0 ? availableUsd / btcPrice : 0
+  const reservedBtcEquiv = btcPrice > 0 ? reservedUsd / btcPrice : 0
 
   // Handle 1-Click Testnet Faucet Claim
   const handleFaucetClaim = async (asset: string, amount: number) => {
-    await new Promise((resolve) => setTimeout(resolve, 600))
+    await new Promise((resolve) => setTimeout(resolve, 500))
 
     setAssetRows((prev) =>
       prev.map((row) => {
@@ -228,7 +196,7 @@ export default function WalletPage() {
         minute: '2-digit',
         second: '2-digit',
         hour12: false,
-      }) + '.' + Math.floor(Math.random() * 900 + 100),
+      }),
       status: 'Completed',
     }
 
@@ -274,7 +242,7 @@ export default function WalletPage() {
         minute: '2-digit',
         second: '2-digit',
         hour12: false,
-      }) + '.' + Math.floor(Math.random() * 900 + 100),
+      }),
       status: 'Completed',
     }
 
@@ -308,8 +276,8 @@ export default function WalletPage() {
           availableBtcEquiv={availableBtcEquiv}
           reservedUsd={reservedUsd}
           reservedBtcEquiv={reservedBtcEquiv}
-          pnlPercent={8.42}
-          pnlUsd={9680.1}
+          pnlPercent={0.0}
+          pnlUsd={0.0}
         />
 
         {/* ── 3 & 4. Asset Balances (8 Cols) + 1-Click Testnet Faucet (4 Cols) ── */}

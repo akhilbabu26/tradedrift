@@ -1,206 +1,102 @@
-import { useState, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Loader2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import AppLayout from '../components/layout/AppLayout'
 import HistoryKpiCards from '../components/history/HistoryKpiCards'
 import HistoryFilterToolbar from '../components/history/HistoryFilterToolbar'
 import ExecutionFillsTable, { type ExecutionFillItem } from '../components/history/ExecutionFillsTable'
-
-const INITIAL_EXECUTIONS: ExecutionFillItem[] = [
-  {
-    id: '1',
-    executionId: 'exe_8f7c2d1a9b3e4f7a',
-    marketId: 'BTC-USDT',
-    marketSymbol: 'BTC/USDT',
-    iconChar: '₿',
-    iconBg: 'bg-[#f7931a]/15 border-[#f7931a]/30',
-    iconText: 'text-[#f7931a]',
-    side: 'BUY',
-    role: 'MAKER',
-    executedPrice: '96,450.00',
-    filledQuantity: '0.1500 BTC',
-    totalValueUsd: '$14,467.50',
-    feeUsdt: '2.89',
-    realizedPnl: '+$125.40',
-    isPnlPositive: true,
-    timestampUtc: 'Aug 27, 2026 14:32:05.123',
-  },
-  {
-    id: '2',
-    executionId: 'exe_3a9b1e7d5c2f4a8b',
-    marketId: 'ETH-USDT',
-    marketSymbol: 'ETH/USDT',
-    iconChar: 'Ξ',
-    iconBg: 'bg-[#627eea]/15 border-[#627eea]/30',
-    iconText: 'text-[#627eea]',
-    side: 'SELL',
-    role: 'TAKER',
-    executedPrice: '2,780.50',
-    filledQuantity: '1.0000 ETH',
-    totalValueUsd: '$2,780.50',
-    feeUsdt: '0.56',
-    realizedPnl: '+$45.20',
-    isPnlPositive: true,
-    timestampUtc: 'Aug 27, 2026 13:58:44.512',
-  },
-  {
-    id: '3',
-    executionId: 'exe_1b2c3d4e5f6a7b8c',
-    marketId: 'BTC-USDT',
-    marketSymbol: 'BTC/USDT',
-    iconChar: '₿',
-    iconBg: 'bg-[#f7931a]/15 border-[#f7931a]/30',
-    iconText: 'text-[#f7931a]',
-    side: 'SELL',
-    role: 'MAKER',
-    executedPrice: '97,200.00',
-    filledQuantity: '0.2000 BTC',
-    totalValueUsd: '$19,440.00',
-    feeUsdt: '3.89',
-    realizedPnl: '+$310.80',
-    isPnlPositive: true,
-    timestampUtc: 'Aug 27, 2026 12:21:10.845',
-  },
-  {
-    id: '4',
-    executionId: 'exe_7c8d9e0f1a2b3c4d',
-    marketId: 'SOL-USDT',
-    marketSymbol: 'SOL/USDT',
-    iconChar: 'S',
-    iconBg: 'bg-[#00e5ff]/15 border-[#00e5ff]/30',
-    iconText: 'text-[#00e5ff]',
-    side: 'BUY',
-    role: 'TAKER',
-    executedPrice: '188.20',
-    filledQuantity: '10.0000 SOL',
-    totalValueUsd: '$1,882.00',
-    feeUsdt: '0.37',
-    realizedPnl: '-$12.30',
-    isPnlPositive: false,
-    timestampUtc: 'Aug 27, 2026 11:45:33.221',
-  },
-  {
-    id: '5',
-    executionId: 'exe_9d8c7b6a5e4f3d2c',
-    marketId: 'ETH-USDT',
-    marketSymbol: 'ETH/USDT',
-    iconChar: 'Ξ',
-    iconBg: 'bg-[#627eea]/15 border-[#627eea]/30',
-    iconText: 'text-[#627eea]',
-    side: 'BUY',
-    role: 'MAKER',
-    executedPrice: '2,745.00',
-    filledQuantity: '0.5000 ETH',
-    totalValueUsd: '$1,372.50',
-    feeUsdt: '0.27',
-    realizedPnl: '+$18.90',
-    isPnlPositive: true,
-    timestampUtc: 'Aug 27, 2026 10:33:18.654',
-  },
-  {
-    id: '6',
-    executionId: 'exe_0a1b2c3d4e5f6a7b',
-    marketId: 'BTC-USDT',
-    marketSymbol: 'BTC/USDT',
-    iconChar: '₿',
-    iconBg: 'bg-[#f7931a]/15 border-[#f7931a]/30',
-    iconText: 'text-[#f7931a]',
-    side: 'BUY',
-    role: 'TAKER',
-    executedPrice: '95,800.25',
-    filledQuantity: '0.1000 BTC',
-    totalValueUsd: '$9,580.03',
-    feeUsdt: '1.92',
-    realizedPnl: '-$22.10',
-    isPnlPositive: false,
-    timestampUtc: 'Aug 27, 2026 09:17:04.877',
-  },
-  {
-    id: '7',
-    executionId: 'exe_6e5d4c3b2a1f0e9d',
-    marketId: 'SOL-USDT',
-    marketSymbol: 'SOL/USDT',
-    iconChar: 'S',
-    iconBg: 'bg-[#00e5ff]/15 border-[#00e5ff]/30',
-    iconText: 'text-[#00e5ff]',
-    side: 'SELL',
-    role: 'MAKER',
-    executedPrice: '190.00',
-    filledQuantity: '5.0000 SOL',
-    totalValueUsd: '$950.00',
-    feeUsdt: '0.19',
-    realizedPnl: '+$6.50',
-    isPnlPositive: true,
-    timestampUtc: 'Aug 27, 2026 08:54:22.331',
-  },
-  {
-    id: '8',
-    executionId: 'exe_f1e2d3c4b5a69788',
-    marketId: 'BTC-USDT',
-    marketSymbol: 'BTC/USDT',
-    iconChar: '₿',
-    iconBg: 'bg-[#f7931a]/15 border-[#f7931a]/30',
-    iconText: 'text-[#f7931a]',
-    side: 'SELL',
-    role: 'TAKER',
-    executedPrice: '96,980.00',
-    filledQuantity: '0.0500 BTC',
-    totalValueUsd: '$4,849.00',
-    feeUsdt: '0.97',
-    realizedPnl: '+$8.75',
-    isPnlPositive: true,
-    timestampUtc: 'Aug 27, 2026 07:23:45.998',
-  },
-  {
-    id: '9',
-    executionId: 'exe_a1b2c3d4e5f6a7b9c',
-    marketId: 'ETH-USDT',
-    marketSymbol: 'ETH/USDT',
-    iconChar: 'Ξ',
-    iconBg: 'bg-[#627eea]/15 border-[#627eea]/30',
-    iconText: 'text-[#627eea]',
-    side: 'SELL',
-    role: 'MAKER',
-    executedPrice: '2,752.10',
-    filledQuantity: '0.7000 ETH',
-    totalValueUsd: '$1,926.47',
-    feeUsdt: '0.38',
-    realizedPnl: '-$15.40',
-    isPnlPositive: false,
-    timestampUtc: 'Aug 27, 2026 06:42:13.456',
-  },
-  {
-    id: '10',
-    executionId: 'exe_b1c2d3e4f5a6b7c8d',
-    marketId: 'SOL-USDT',
-    marketSymbol: 'SOL/USDT',
-    iconChar: 'S',
-    iconBg: 'bg-[#00e5ff]/15 border-[#00e5ff]/30',
-    iconText: 'text-[#00e5ff]',
-    side: 'BUY',
-    role: 'MAKER',
-    executedPrice: '187.50',
-    filledQuantity: '8.0000 SOL',
-    totalValueUsd: '$1,500.00',
-    feeUsdt: '0.15',
-    realizedPnl: '+$4.20',
-    isPnlPositive: true,
-    timestampUtc: 'Aug 27, 2026 05:31:55.109',
-  },
-]
+import { orderApi, type Order } from '../api/order'
 
 export default function HistoryPage() {
+  const [executions, setExecutions] = useState<ExecutionFillItem[]>([])
+  const [loading, setLoading] = useState(true)
   const [selectedMarket, setSelectedMarket] = useState('ALL')
   const [selectedSide, setSelectedSide] = useState('ALL')
 
+  const fetchExecutions = useCallback(async () => {
+    try {
+      setLoading(true)
+      const filledOrders = await orderApi.listOrders({ status: 'FILLED' })
+      if (filledOrders && filledOrders.length > 0) {
+        const mapped: ExecutionFillItem[] = filledOrders.map((o: Order) => {
+          const price = parseFloat(o.price || '0')
+          const qty = parseFloat(o.filled_quantity || o.quantity || '0')
+          const totalVal = price * qty
+          const fee = totalVal * 0.0002 // 0.02% VIP fee tier
+          const base = o.market_id.split('-')[0] || 'BTC'
+          const isBtc = base === 'BTC'
+          const isEth = base === 'ETH'
+
+          return {
+            id: o.id,
+            executionId: `exe_${o.id.substring(0, 16)}`,
+            marketId: o.market_id,
+            marketSymbol: `${base}/USDT`,
+            iconChar: isBtc ? '₿' : isEth ? 'Ξ' : 'S',
+            iconBg: isBtc
+              ? 'bg-[#f7931a]/15 border-[#f7931a]/30'
+              : isEth
+              ? 'bg-[#627eea]/15 border-[#627eea]/30'
+              : 'bg-[#00e5ff]/15 border-[#00e5ff]/30',
+            iconText: isBtc ? 'text-[#f7931a]' : isEth ? 'text-[#627eea]' : 'text-[#00e5ff]',
+            side: o.side === 'BUY' ? 'BUY' : 'SELL',
+            role: 'MAKER',
+            executedPrice: price.toLocaleString('en-US', { minimumFractionDigits: 2 }),
+            filledQuantity: `${qty.toFixed(4)} ${base}`,
+            totalValueUsd: `$${totalVal.toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
+            feeUsdt: fee.toFixed(2),
+            realizedPnl: '+$0.00',
+            isPnlPositive: true,
+            timestampUtc: new Date(o.updated_at || o.created_at || Date.now()).toLocaleString('en-US', {
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: false,
+            }),
+          }
+        })
+        setExecutions(mapped)
+      } else {
+        setExecutions([])
+      }
+    } catch {
+      setExecutions([])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchExecutions()
+  }, [fetchExecutions])
+
   const filteredExecutions = useMemo(() => {
-    return INITIAL_EXECUTIONS.filter((e) => {
+    return executions.filter((e) => {
       const matchMarket = selectedMarket === 'ALL' || e.marketId === selectedMarket
       const matchSide = selectedSide === 'ALL' || e.side === selectedSide
       return matchMarket && matchSide
     })
-  }, [selectedMarket, selectedSide])
+  }, [executions, selectedMarket, selectedSide])
+
+  const totalVolume = useMemo(() => {
+    return executions.reduce((sum, e) => {
+      const val = parseFloat(e.totalValueUsd.replace(/[$,]/g, '')) || 0
+      return sum + val
+    }, 0)
+  }, [executions])
+
+  const totalFees = useMemo(() => {
+    return executions.reduce((sum, e) => sum + (parseFloat(e.feeUsdt) || 0), 0)
+  }, [executions])
 
   const handleExportCsv = () => {
+    if (filteredExecutions.length === 0) {
+      toast.error('No execution records to export')
+      return
+    }
     const headers = [
       'Execution ID',
       'Market',
@@ -251,7 +147,15 @@ export default function HistoryPage() {
         </div>
 
         {/* ── 2. Top Summary KPI Cards ── */}
-        <HistoryKpiCards />
+        <HistoryKpiCards
+          totalVolumeUsd={totalVolume}
+          btcEquiv={totalVolume > 0 ? totalVolume / 96450 : 0}
+          realizedPnlUsd={0}
+          pnlChangePercent={0}
+          feesPaidUsdt={totalFees}
+          feeTier="VIP 1"
+          feeRate="0.02%"
+        />
 
         {/* ── 3. Filter Toolbar ── */}
         <HistoryFilterToolbar
@@ -263,7 +167,14 @@ export default function HistoryPage() {
         />
 
         {/* ── 4. Execution Fills Table ── */}
-        <ExecutionFillsTable executions={filteredExecutions} />
+        {loading ? (
+          <div className="py-16 bg-[#0e121b] border border-[#1b2230] rounded-xl flex items-center justify-center text-slate-400">
+            <Loader2 className="animate-spin mr-2" size={20} />
+            <span>Loading trade executions...</span>
+          </div>
+        ) : (
+          <ExecutionFillsTable executions={filteredExecutions} />
+        )}
       </div>
     </AppLayout>
   )

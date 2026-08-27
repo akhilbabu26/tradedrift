@@ -10,12 +10,12 @@ interface OrdersKpiCardsProps {
 }
 
 export default function OrdersKpiCards({
-  openOrdersCount = 4,
-  lockedValueUsd = 42150.0,
-  triggerOrdersCount = 2,
-  totalExposureUsd = 18620.5,
-  filledTodayCount = 18,
-  filledTodayVolumeUsd = 112400.0,
+  openOrdersCount = 0,
+  lockedValueUsd = 0,
+  triggerOrdersCount = 0,
+  totalExposureUsd = 0,
+  filledTodayCount = 0,
+  filledTodayVolumeUsd = 0,
 }: OrdersKpiCardsProps) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 select-none">

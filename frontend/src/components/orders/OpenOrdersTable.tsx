@@ -46,8 +46,8 @@ export default function OpenOrdersTable({
 
   const TABS = [
     { id: 'open', label: `Open Orders (${orders.length})` },
-    { id: 'trigger', label: 'Trigger Orders (2)' },
-    { id: 'history', label: 'Order History (250+)' },
+    { id: 'trigger', label: 'Trigger Orders' },
+    { id: 'history', label: 'Order History' },
     { id: 'fills', label: 'Trade Fills' },
   ]
 

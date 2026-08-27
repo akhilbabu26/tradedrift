@@ -31,16 +31,30 @@ export default function OrdersPage() {
 
       if (apiOpenOrders) {
         const mapped: OrderRowItem[] = apiOpenOrders.map((o: Order) => {
-          const price = parseFloat(o.price?.replace(/,/g, '')) || 0
-          const qty = parseFloat(o.quantity?.replace(/,/g, '')) || 0
-          const filled = parseFloat(o.filled_quantity?.replace(/,/g, '')) || 0
-          const base = o.market_id.split('-')[0] || 'BTC'
+          const price = parseFloat(String(o.price || '0').replace(/,/g, '')) || 0
+          const qty = parseFloat(String(o.quantity || '0').replace(/,/g, '')) || 0
+          const filled = parseFloat(String(o.filled_quantity || '0').replace(/,/g, '')) || 0
+          const cleanMarketId = (o.market_id || 'BTC-USDT').replace('_', '-')
+          const base = cleanMarketId.split('-')[0] || 'BTC'
           const isBtc = base === 'BTC'
           const isEth = base === 'ETH'
+          const parsedDate = o.created_at ? new Date(o.created_at) : new Date()
+          const safeDateStr = isNaN(parsedDate.getTime())
+            ? new Date().toLocaleTimeString()
+            : parsedDate.toLocaleString('en-US', {
+                month: 'short',
+                day: 'numeric',
+                year: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false,
+              }) + ' UTC'
+
           return {
             id: o.id,
-            orderId: `ord_${o.id.substring(0, 16)}`,
-            marketId: o.market_id,
+            orderId: `ord_${(o.id || '').substring(0, 16)}`,
+            marketId: cleanMarketId,
             marketSymbol: `${base}/USDT`,
             iconChar: isBtc ? '₿' : isEth ? 'Ξ' : 'S',
             iconBg: isBtc
@@ -49,7 +63,7 @@ export default function OrdersPage() {
               ? 'bg-[#627eea]/15 border-[#627eea]/30'
               : 'bg-[#00e5ff]/15 border-[#00e5ff]/30',
             iconText: isBtc ? 'text-[#f7931a]' : isEth ? 'text-[#627eea]' : 'text-[#00e5ff]',
-            side: o.side === 'BUY' ? 'BUY' : 'SELL',
+            side: (o.side === 'BUY' ? 'BUY' : 'SELL') as 'BUY' | 'SELL',
             type: o.order_type || 'LIMIT',
             price: price.toLocaleString('en-US', { minimumFractionDigits: 2 }),
             priceNum: price,
@@ -57,15 +71,7 @@ export default function OrdersPage() {
             totalQty: qty,
             assetSymbol: base,
             totalUsd: `$${(price * qty).toLocaleString('en-US', { minimumFractionDigits: 2 })}`,
-            timeUtc: new Date(o.created_at || Date.now()).toLocaleString('en-US', {
-              month: 'short',
-              day: 'numeric',
-              year: 'numeric',
-              hour: '2-digit',
-              minute: '2-digit',
-              second: '2-digit',
-              hour12: false,
-            }) + ' UTC',
+            timeUtc: safeDateStr,
           }
         })
         setOpenOrders(mapped)

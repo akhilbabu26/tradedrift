@@ -13,6 +13,7 @@ import (
 	intkafka "tradedrift/services/matching-engine/internal/kafka"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 	kafkago "github.com/segmentio/kafka-go"
 )
@@ -29,6 +30,7 @@ type KafkaReader interface {
 
 type pgxConn interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
 type redisConn interface {

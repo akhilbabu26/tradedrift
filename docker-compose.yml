@@ -193,10 +193,11 @@ services:
       dockerfile: services/liquidity-engine/Dockerfile
     container_name: tradedrift-liquidity-engine
     restart: unless-stopped
+    deploy:
+      replicas: 1 # MUST run as singleton (replicas: 1). Horizontal scaling is prohibited in V1.
     environment:
       KAFKA_BROKERS: kafka:29092
       KAFKA_GROUP_ID: liquidity-engine-group
-      REDIS_ADDR: redis:6379
       WALLET_GRPC_ADDR: wallet:50052
       ORDER_GRPC_ADDR: order:50053
       BTC_PARTITION: 0
@@ -206,6 +207,8 @@ services:
       ETH_REFERENCE_PRICE: "2780.50"
       SOL_REFERENCE_PRICE: "188.20"
       RECONCILE_INTERVAL: "30s"
+      WALLET_REFRESH_INTERVAL: "15s"
+      MAX_BALANCE_STALENESS: "60s"
       PENDING_TIMEOUT: "10s"
       CANCELLING_TIMEOUT: "30s"
       CANCEL_RETRY_LIMIT: 3
@@ -218,8 +221,6 @@ services:
     depends_on:
       kafka:
         condition: service_started
-      redis:
-        condition: service_healthy
       wallet:
         condition: service_started
       order:

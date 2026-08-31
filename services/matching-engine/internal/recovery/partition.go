@@ -40,6 +40,35 @@ func (r *Replayer) replayPartition(ctx context.Context, topic string, partition 
 	if err != nil {
 		return fmt.Errorf("query partition HWM (partition=%d): %w", partition, err)
 	}
+	if logEndOffset == 0 && checkpointOffset >= 0 {
+		// Topic was wiped (e.g. deleted and recreated). The checkpoint in Postgres is now
+		// ahead of Kafka's log-end offset. Treat this as a clean-slate: reset the stale
+		// checkpoint and replay from scratch, identical to a fresh first-boot.
+		log.Printf("[recovery] partition=%d — Kafka topic was reset (log-end=0, checkpoint=%d). Clearing stale checkpoint and starting fresh.",
+			partition, checkpointOffset)
+		if _, err := r.db.Exec(ctx,
+			`DELETE FROM kafka_checkpoints WHERE topic = $1 AND partition = $2`,
+			topic, partition,
+		); err != nil {
+			return fmt.Errorf("clear stale checkpoint (partition=%d): %w", partition, err)
+		}
+		if _, err := r.db.Exec(ctx,
+			`DELETE FROM market_snapshots WHERE market_id IN (SELECT market_id FROM market_sequences WHERE partition = $1)`,
+			partition,
+		); err != nil {
+			return fmt.Errorf("clear stale snapshots (partition=%d): %w", partition, err)
+		}
+		if _, err := r.db.Exec(ctx,
+			`DELETE FROM market_sequences WHERE partition = $1`,
+			partition,
+		); err != nil {
+			return fmt.Errorf("clear stale sequences (partition=%d): %w", partition, err)
+		}
+		for _, engine := range marketsOnPartition {
+			marketLastSeenOffset[engine.MarketID] = -1
+		}
+		return nil
+	}
 	if checkpointOffset >= logEndOffset {
 		return fmt.Errorf("checkpoint offset %d is at or beyond Kafka log-end offset %d (partition=%d) — recovery aborted",
 			checkpointOffset, logEndOffset, partition)

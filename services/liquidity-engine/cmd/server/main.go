@@ -19,12 +19,14 @@ import (
 
 	"tradedrift/services/liquidity-engine/internal/config"
 	"tradedrift/services/liquidity-engine/internal/engine"
+	"tradedrift/services/liquidity-engine/internal/health"
 	"tradedrift/services/liquidity-engine/internal/inventory"
 	"tradedrift/services/liquidity-engine/internal/kafka"
 	"tradedrift/services/liquidity-engine/internal/metrics"
 	"tradedrift/services/liquidity-engine/internal/order"
 	"tradedrift/services/liquidity-engine/internal/orderservice"
 	"tradedrift/services/liquidity-engine/internal/reconciler"
+	"tradedrift/services/liquidity-engine/internal/walletservice"
 )
 
 func main() {
@@ -63,6 +65,13 @@ func main() {
 	}
 	defer orderSvc.Close()
 
+	// ── Wallet Service Client ─────────────────────────────────────────
+	walletSvc, err := walletservice.NewClient(cfg.WalletGRPCAddr, logger)
+	if err != nil {
+		logger.Fatal("failed to connect to Wallet Service", zap.Error(err))
+	}
+	defer walletSvc.Close()
+
 	// ── Tracker + Inventory ───────────────────────────────────────────
 	tracker := order.NewTracker()
 	inv := inventory.NewManager(tracker, logger)
@@ -86,39 +95,17 @@ func main() {
 	rec := reconciler.NewReconciler(tracker, producer, orderSvc, &cfg, logger, m)
 
 	// ── Engine ────────────────────────────────────────────────────────
-	eng := engine.NewEngine(&cfg, tracker, inv, rec, producer, consumer, m, logger)
+	eng := engine.NewEngine(&cfg, tracker, inv, rec, producer, consumer, walletSvc, m, logger)
 
 	// ── Context with graceful shutdown ────────────────────────────────
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	// ── HTTP Servers ──────────────────────────────────────────────────
-	// Health server (Port 8080)
-	healthMux := http.NewServeMux()
-	healthMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		state := eng.State().String()
-		if state == "STOPPED" {
-			http.Error(w, "stopped", http.StatusServiceUnavailable)
-			return
-		}
-		w.Write([]byte("ok"))
-	})
-	healthMux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		state := eng.State()
-		if state == engine.StatePaused || state == engine.StateSyncing || state == engine.StateStarting {
-			http.Error(w, state.String(), http.StatusServiceUnavailable)
-			return
-		}
-		if !eng.IsReady() {
-			http.Error(w, "insufficient resting orders", http.StatusServiceUnavailable)
-			return
-		}
-		w.Write([]byte("ready"))
-	})
-
+	// Health server (Port 8080: /healthz, /readyz, /status)
 	healthServer := &http.Server{
 		Addr:    ":" + cfg.HealthPort,
-		Handler: healthMux,
+		Handler: health.New(eng).Handler(),
 	}
 	go func() {
 		logger.Info("health server listening", zap.String("port", cfg.HealthPort))

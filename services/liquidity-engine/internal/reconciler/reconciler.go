@@ -31,8 +31,14 @@ type Reconciler struct {
 	cfg                        *config.Config
 	logger                     *zap.Logger
 	metrics                    ReconcilerMetrics
-	consecutivePendingTimeouts map[string]int // marketID -> count of consecutive timeouts
+	consecutivePendingTimeouts map[string]int // marketID → count of consecutive timeouts
+	// notFoundCount tracks how many consecutive times GetOrderByClientID returned
+	// ErrOrderNotFound for a specific level. Only after notFoundThreshold consecutive
+	// misses does the LE count it as a ME liveness failure.
+	notFoundCount map[string]int // levelID → consecutive NOT_FOUND count
 }
+
+const notFoundThreshold = 3 // consecutive NOT_FOUND before counting as liveness failure
 
 // ReconcilerMetrics is the minimal metrics interface used by the reconciler.
 type ReconcilerMetrics interface {
@@ -61,6 +67,7 @@ func NewReconciler(
 		logger:                     logger,
 		metrics:                    metrics,
 		consecutivePendingTimeouts: make(map[string]int),
+		notFoundCount:              make(map[string]int),
 	}
 }
 
@@ -124,13 +131,31 @@ func (r *Reconciler) applyEntry(ctx context.Context, e order.DiffEntry, mc *conf
 	}
 }
 
-// applyCreate generates a new client_order_id and publishes an OrderCreated command.
+// applyCreate generates a new client_order_id, registers it with the Order Service,
+// sets the tracker to PENDING, and publishes an OrderCreated command to Kafka.
 func (r *Reconciler) applyCreate(ctx context.Context, e order.DiffEntry, mc *config.MarketConfig) error {
 	gen := r.tracker.NextGeneration(e.LevelID)
 	clientOrderID := order.ClientOrderID(e.LevelID, gen)
-	orderID := uuid.New().String()
 
-	err := r.producer.PublishCreate(ctx,
+	// Step 1: Register in Order Service (idempotent, skips wallet ReserveFunds for MM)
+	osOrder, err := r.orderSvc.CreateMMOrder(ctx,
+		mc.MarketID,
+		e.DesiredLevel.Side,
+		e.DesiredLevel.Price.String(),
+		e.DesiredLevel.Quantity.String(),
+		clientOrderID,
+	)
+	if err != nil {
+		return fmt.Errorf("register MM order in Order Service for %s: %w", e.LevelID, err)
+	}
+
+	orderID := osOrder.OrderID
+
+	// Step 2: Set PENDING in tracker with OS-assigned orderID
+	r.tracker.SetPending(e.LevelID, orderID, clientOrderID, gen, *e.DesiredLevel)
+
+	// Step 3: Publish OrderCreated command to Kafka
+	err = r.producer.PublishCreate(ctx,
 		mc.MarketID,
 		mc.Partition,
 		orderID,
@@ -140,14 +165,16 @@ func (r *Reconciler) applyCreate(ctx context.Context, e order.DiffEntry, mc *con
 		e.DesiredLevel.Quantity.String(),
 	)
 	if err != nil {
-		r.tracker.DecrementGeneration(e.LevelID)
+		r.logger.Warn("kafka publish OrderCreated failed after OS registration — tracker is PENDING and will retry",
+			zap.String("level_id", e.LevelID),
+			zap.String("order_id", orderID),
+			zap.Error(err))
 		return fmt.Errorf("publish OrderCreated for %s: %w", e.LevelID, err)
 	}
 
-	r.tracker.SetPending(e.LevelID, clientOrderID, gen, *e.DesiredLevel)
 	r.metrics.IncReconcileCreate(mc.MarketID)
 
-	r.logger.Info("published OrderCreated",
+	r.logger.Info("published OrderCreated with OS registration",
 		zap.String("level_id", e.LevelID),
 		zap.String("client_order_id", clientOrderID),
 		zap.String("order_id", orderID),
@@ -209,11 +236,20 @@ func (r *Reconciler) CheckPendingTimeouts(ctx context.Context, marketID string) 
 		osState, err := r.orderSvc.GetOrderByClientID(ctx, o.ClientOrderID)
 		if err != nil {
 			if err == orderservice.ErrOrderNotFound {
-				r.logger.Warn("PENDING order not found in Order Service — removing",
+				// NOT_FOUND can be a transient timing window: LE published to OS
+				// but OS hasn't committed yet, or network delay. Only count as a
+				// liveness failure after notFoundThreshold consecutive misses.
+				r.notFoundCount[o.LevelID]++
+				r.logger.Warn("PENDING order not found in Order Service",
 					zap.String("level_id", o.LevelID),
-					zap.String("client_order_id", o.ClientOrderID))
-				r.tracker.Remove(o.LevelID)
-				timedOut = true
+					zap.String("client_order_id", o.ClientOrderID),
+					zap.Int("consecutive_not_found", r.notFoundCount[o.LevelID]),
+					zap.Int("threshold", notFoundThreshold))
+				if r.notFoundCount[o.LevelID] >= notFoundThreshold {
+					r.logger.Error("PENDING order persistently absent from Order Service — possible ME delivery failure",
+						zap.String("level_id", o.LevelID))
+					timedOut = true
+				}
 			} else {
 				r.logger.Warn("Order Service check failed for PENDING order",
 					zap.String("client_order_id", o.ClientOrderID),
@@ -223,22 +259,31 @@ func (r *Reconciler) CheckPendingTimeouts(ctx context.Context, marketID string) 
 			continue
 		}
 
+		// Reset not-found counter on successful OS response
+		delete(r.notFoundCount, o.LevelID)
+
 		switch osState.Status {
 		case "OPEN", "PARTIALLY_FILLED":
-			r.logger.Info("PENDING confirmed RESTING via Order Service",
+			// OS confirmed the order exists. Transition to OS_REGISTERED — NOT RESTING.
+			// OS OPEN means the order is registered for recovery.
+			// ME RESTING means ME has it in the live order book.
+			// These are distinct: CheckOSRegisteredTimeouts handles the OS_REGISTERED → RESTING promotion.
+			r.logger.Info("PENDING confirmed by Order Service — transitioning to OS_REGISTERED",
 				zap.String("level_id", o.LevelID))
-			r.tracker.SetResting(o.LevelID, osState.OrderID, osState.OriginalQty, osState.RemainingQty)
+			r.tracker.SetOSRegistered(o.LevelID, osState.OrderID, osState.OriginalQty, osState.RemainingQty)
 			r.consecutivePendingTimeouts[marketID] = 0
 
 		case "FILLED":
 			r.logger.Info("PENDING order was filled before RESTING",
 				zap.String("level_id", o.LevelID))
+			delete(r.notFoundCount, o.LevelID)
 			r.tracker.Remove(o.LevelID)
 			r.metrics.IncOrdersFilled(marketID, o.Side)
 
 		case "CANCELLED":
 			r.logger.Warn("PENDING order was cancelled",
 				zap.String("level_id", o.LevelID))
+			delete(r.notFoundCount, o.LevelID)
 			r.tracker.Remove(o.LevelID)
 
 		default:
@@ -251,6 +296,27 @@ func (r *Reconciler) CheckPendingTimeouts(ctx context.Context, marketID string) 
 	}
 
 	return r.consecutivePendingTimeouts[marketID]
+}
+
+// CheckOSRegisteredTimeouts promotes OS_REGISTERED orders to RESTING after MEConfirmationTimeout.
+// This is the V1 proxy for ME confirmation: if OS has the order and ME is healthy,
+// we assume ME has accepted it after sufficient time has elapsed.
+// V2 should replace this with a direct OrderRested event from the ME.
+func (r *Reconciler) CheckOSRegisteredTimeouts(marketID string, meConfirmationTimeout time.Duration) {
+	allOrders := r.tracker.All(marketID)
+	for _, o := range allOrders {
+		if o.Status != order.StatusOSRegistered {
+			continue
+		}
+		if time.Since(o.OSRegisteredSince) < meConfirmationTimeout {
+			continue
+		}
+		r.logger.Info("OS_REGISTERED order promoted to RESTING (ME confirmation timeout)",
+			zap.String("level_id", o.LevelID),
+			zap.String("order_id", o.OrderID),
+			zap.Duration("elapsed", time.Since(o.OSRegisteredSince)))
+		r.tracker.SetResting(o.LevelID, o.OrderID, o.OriginalQty, o.RemainingQty)
+	}
 }
 
 // CheckCancellingTimeouts examines all CANCELLING orders for a market.
@@ -311,10 +377,11 @@ func (r *Reconciler) handleCancellingTimeout(ctx context.Context, o *order.LiveO
 					zap.Error(err))
 				return
 			}
-			r.tracker.SetPending(o.LevelID, clientOrderID, gen, desired)
+			r.tracker.SetPending(o.LevelID, orderID, clientOrderID, gen, desired)
 			r.logger.Info("CORRECT replacement published",
 				zap.String("level_id", o.LevelID),
-				zap.String("new_client_order_id", clientOrderID))
+				zap.String("new_client_order_id", clientOrderID),
+				zap.String("order_id", orderID))
 		}
 
 	case "FILLED", "PARTIALLY_FILLED":

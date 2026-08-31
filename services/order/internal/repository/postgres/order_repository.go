@@ -185,8 +185,10 @@ func (r *orderRepository) ListOrders(ctx context.Context, userID, marketID, curs
 		paramIdx += 2
 	}
 
-	if limit <= 0 || limit > 100 {
+	if limit <= 0 {
 		limit = 20
+	} else if limit > 500 {
+		limit = 500
 	}
 
 	query += ` ORDER BY created_at DESC, id DESC LIMIT $` + strconv.Itoa(paramIdx)

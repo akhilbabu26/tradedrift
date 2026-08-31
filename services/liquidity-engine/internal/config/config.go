@@ -27,11 +27,12 @@ type MarketConfig struct {
 	MinOrderSize    decimal.Decimal // minimum resting quantity before treating as consumed
 	MinBase         decimal.Decimal // effective available base below which skew to LOW
 	CriticalBase    decimal.Decimal // effective available base below which skew to CRITICAL
-	MinQuote        decimal.Decimal // effective available quote below which bid-side skew
-	CriticalQuote   decimal.Decimal
-	SpreadBps       int             // base spread in basis points (default 4 bps per level)
-	ReferencePrice  decimal.Decimal // V1 static reference price
-	MaxDeviationPct decimal.Decimal // pause if traded price deviates by this pct
+	MinQuote       decimal.Decimal // effective available quote below which bid-side skew
+	CriticalQuote  decimal.Decimal
+	SpreadBps      int             // base spread in basis points (default 4 bps per level)
+	ReferencePrice decimal.Decimal // V1 static reference price
+	// TODO(V2): MaxDeviationPct — pause if traded price deviates by more than this percentage
+	MaxDeviationPct decimal.Decimal
 }
 
 // Config is the full LE configuration.
@@ -41,7 +42,6 @@ type Config struct {
 	KafkaGroupID string
 
 	// External services
-	RedisAddr      string
 	WalletGRPCAddr string
 	OrderGRPCAddr  string
 
@@ -125,7 +125,7 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("MIN_READY_ASKS: %w", err)
 	}
 
-	walletRefresh, err := platformconfig.GetEnvAsDuration("WALLET_REFRESH_INTERVAL", 5*time.Minute)
+	walletRefresh, err := platformconfig.GetEnvAsDuration("WALLET_REFRESH_INTERVAL", 15*time.Second)
 	if err != nil {
 		return Config{}, fmt.Errorf("WALLET_REFRESH_INTERVAL: %w", err)
 	}
@@ -157,7 +157,6 @@ func Load() (Config, error) {
 	cfg := Config{
 		KafkaBrokers:   brokers,
 		KafkaGroupID:   platformconfig.GetEnv("KAFKA_GROUP_ID", "liquidity-engine-group"),
-		RedisAddr:      platformconfig.GetEnv("REDIS_ADDR", "localhost:6379"),
 		WalletGRPCAddr: platformconfig.GetEnv("WALLET_GRPC_ADDR", "localhost:50052"),
 		OrderGRPCAddr:  platformconfig.GetEnv("ORDER_GRPC_ADDR", "localhost:50053"),
 

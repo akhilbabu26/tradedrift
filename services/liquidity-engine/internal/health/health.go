@@ -1,21 +1,23 @@
-// Package health provides the /healthz and /readyz HTTP endpoints.
+// Package health provides the /healthz, /readyz, and /status HTTP endpoints.
 package health
 
 import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"tradedrift/services/liquidity-engine/internal/engine"
 )
 
 // HealthChecker is the interface for components that provide health status.
 type HealthChecker interface {
-	State() string
+	State() engine.EngineState
 	IsReady() bool
 	InventoryLastRefresh() time.Time
 	MaxBalanceStaleness() time.Duration
 }
 
-// Server provides /healthz (liveness) and /readyz (readiness) endpoints.
+// Server provides /healthz (liveness), /readyz (readiness), and /status endpoints.
 type Server struct {
 	checker HealthChecker
 }
@@ -36,7 +38,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) handleLiveness(w http.ResponseWriter, r *http.Request) {
 	state := s.checker.State()
-	if state == "STOPPED" {
+	if state == engine.StateStopped {
 		http.Error(w, "stopped", http.StatusServiceUnavailable)
 		return
 	}
@@ -46,8 +48,8 @@ func (s *Server) handleLiveness(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	state := s.checker.State()
-	if state == "PAUSED" || state == "SYNCING" || state == "STARTING" {
-		http.Error(w, state, http.StatusServiceUnavailable)
+	if state == engine.StatePaused || state == engine.StateSyncing || state == engine.StateStarting {
+		http.Error(w, state.String(), http.StatusServiceUnavailable)
 		return
 	}
 
@@ -63,12 +65,13 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	lastRefresh := s.checker.InventoryLastRefresh()
 	stale := s.checker.MaxBalanceStaleness()
+	isStale := lastRefresh.IsZero() || time.Since(lastRefresh) > stale
 
 	resp := map[string]interface{}{
-		"state":                  s.checker.State(),
+		"state":                  s.checker.State().String(),
 		"ready":                  s.checker.IsReady(),
 		"inventory_last_refresh": lastRefresh.Format(time.RFC3339),
-		"inventory_stale":        time.Since(lastRefresh) > stale,
+		"inventory_stale":        isStale,
 		"uptime_s":               time.Since(startTime).Seconds(),
 	}
 

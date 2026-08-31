@@ -28,6 +28,7 @@ import (
 	"tradedrift/services/liquidity-engine/internal/kafka"
 	"tradedrift/services/liquidity-engine/internal/order"
 	"tradedrift/services/liquidity-engine/internal/reconciler"
+	"tradedrift/services/liquidity-engine/internal/walletservice"
 )
 
 // EngineState is the lifecycle state of the LE engine.
@@ -61,7 +62,6 @@ func (s EngineState) String() string {
 	}
 }
 
-// event is the internal event type used by the event loop.
 type eventKind int
 
 const (
@@ -71,11 +71,13 @@ const (
 	evPendingCheck
 	evCancellingCheck
 	evResyncTick
+	evTargetedReconcile
 )
 
 type loopEvent struct {
-	kind  eventKind
-	trade kafka.TradeEvent
+	kind     eventKind
+	trade    kafka.TradeEvent
+	marketID string
 }
 
 // EngineMetrics is the metrics interface the engine uses.
@@ -95,12 +97,21 @@ type Engine struct {
 	reconciler            *reconciler.Reconciler
 	producer              *kafka.Producer
 	consumer              *kafka.Consumer
+	walletSvc             *walletservice.Client
 	metrics               EngineMetrics
 	logger                *zap.Logger
 	events                chan loopEvent
 	state                 EngineState
 	stateMu               sync.RWMutex
 	consecutiveMETimeouts map[string]int
+
+	// Fix 7: Bounded TradeID deduplication (retention up to 1000 recent trades)
+	processedTrades map[string]struct{}
+	tradeHistory    []string
+	maxTradeHistory int
+
+	// Fix 6: Targeted reconciliation debounce timers per market
+	targetedTimers map[string]*time.Timer
 }
 
 // NewEngine creates a fully wired Engine.
@@ -111,6 +122,7 @@ func NewEngine(
 	rec *reconciler.Reconciler,
 	producer *kafka.Producer,
 	consumer *kafka.Consumer,
+	walletSvc *walletservice.Client,
 	metrics EngineMetrics,
 	logger *zap.Logger,
 ) *Engine {
@@ -121,11 +133,16 @@ func NewEngine(
 		reconciler:            rec,
 		producer:              producer,
 		consumer:              consumer,
+		walletSvc:             walletSvc,
 		metrics:               metrics,
 		logger:                logger,
 		events:                make(chan loopEvent, 256),
 		state:                 StateStarting,
 		consecutiveMETimeouts: make(map[string]int),
+		processedTrades:       make(map[string]struct{}),
+		tradeHistory:          make([]string, 0, 1000),
+		maxTradeHistory:       1000,
+		targetedTimers:        make(map[string]*time.Timer),
 	}
 }
 
@@ -152,6 +169,11 @@ func (e *Engine) Run(ctx context.Context) error {
 
 	// Start Kafka consumer in background
 	go e.consumer.Run(ctx)
+
+	// Fetch initial wallet balances for MM-001
+	if err := e.refreshWalletBalances(ctx); err != nil {
+		e.logger.Warn("initial wallet balance fetch failed — will retry on tick", zap.Error(err))
+	}
 
 	// SYNCING: discover all existing MM orders from the Order Service
 	e.setState(StateSyncing)
@@ -196,13 +218,18 @@ func (e *Engine) Run(ctx context.Context) error {
 			case evTrade:
 				e.handleTrade(ev.trade)
 
+			case evTargetedReconcile:
+				if e.state == StateRunning || e.state == StateDegraded {
+					e.runReconcileMarket(ctx, ev.marketID)
+				}
+
 			case evReconcileTick:
 				if e.state == StateRunning || e.state == StateDegraded {
 					e.runReconcileAll(ctx)
 				}
 
 			case evWalletTick:
-				e.handleWalletRefresh()
+				e.handleWalletRefresh(ctx)
 
 			case evPendingCheck:
 				e.handlePendingCheck(ctx)
@@ -240,21 +267,38 @@ func (e *Engine) pumpTicker(ctx context.Context, ch <-chan time.Time, kind event
 }
 
 func (e *Engine) handleTrade(ev kafka.TradeEvent) {
+	// Fix 7: Bounded TradeID deduplication
+	if ev.TradeID != "" {
+		if _, seen := e.processedTrades[ev.TradeID]; seen {
+			e.logger.Debug("ignoring duplicate trade event", zap.String("trade_id", ev.TradeID))
+			return
+		}
+		if len(e.tradeHistory) >= e.maxTradeHistory {
+			oldest := e.tradeHistory[0]
+			e.tradeHistory = e.tradeHistory[1:]
+			delete(e.processedTrades, oldest)
+		}
+		e.processedTrades[ev.TradeID] = struct{}{}
+		e.tradeHistory = append(e.tradeHistory, ev.TradeID)
+	}
+
 	if ev.MMSide == "" {
 		return
 	}
 
 	e.inv.ApplyTrade(ev)
 
+	mmOrderMatched := false
 	for _, o := range e.tracker.All(ev.MarketID) {
 		if o.OrderID == ev.MakerOrderID || o.OrderID == ev.TakerOrderID {
+			mmOrderMatched = true
 			e.logger.Info("MM order involved in trade",
 				zap.String("level_id", o.LevelID),
 				zap.String("market_id", ev.MarketID),
 				zap.String("mm_side", ev.MMSide),
 				zap.String("quantity", ev.Quantity.String()))
 
-			if o.Status == order.StatusResting {
+			if o.Status == order.StatusResting || o.Status == order.StatusOSRegistered {
 				newRemaining := o.RemainingQty.Sub(ev.Quantity)
 				if newRemaining.IsNegative() {
 					newRemaining = decimal.Zero
@@ -267,21 +311,71 @@ func (e *Engine) handleTrade(ev kafka.TradeEvent) {
 	}
 
 	e.consecutiveMETimeouts[ev.MarketID] = 0
+
+	// Fix 6: Trigger targeted immediate reconciliation after fill
+	if mmOrderMatched {
+		e.scheduleTargetedReconcile(ev.MarketID)
+	}
 }
 
-func (e *Engine) handleWalletRefresh() {
+func (e *Engine) scheduleTargetedReconcile(marketID string) {
+	if timer, ok := e.targetedTimers[marketID]; ok {
+		timer.Stop()
+	}
+	debounce := e.cfg.TargetedReconcileDebounce
+	if debounce <= 0 {
+		debounce = 200 * time.Millisecond
+	}
+	e.targetedTimers[marketID] = time.AfterFunc(debounce, func() {
+		select {
+		case e.events <- loopEvent{kind: evTargetedReconcile, marketID: marketID}:
+		default:
+			e.logger.Warn("event channel full — dropping targeted reconcile event",
+				zap.String("market_id", marketID))
+		}
+	})
+}
+
+func (e *Engine) handleWalletRefresh(ctx context.Context) {
+	if err := e.refreshWalletBalances(ctx); err != nil {
+		e.logger.Warn("periodic wallet balance fetch failed", zap.Error(err))
+	}
+
 	if e.inv.IsStale(e.cfg.MaxBalanceStaleness) {
 		e.logger.Error("wallet balance stale — pausing affected markets",
 			zap.Duration("max_staleness", e.cfg.MaxBalanceStaleness))
 		if e.state != StatePaused {
 			e.setState(StatePaused)
 		}
+	} else if e.state == StatePaused {
+		e.setState(StateRunning)
 	}
+}
+
+func (e *Engine) refreshWalletBalances(ctx context.Context) error {
+	if e.walletSvc == nil {
+		return nil
+	}
+	ctxTimeout, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	balances, err := e.walletSvc.GetMMBalances(ctxTimeout)
+	if err != nil {
+		return fmt.Errorf("fetch MM balances: %w", err)
+	}
+
+	e.inv.RefreshFromWallet(balances)
+	return nil
 }
 
 func (e *Engine) handlePendingCheck(ctx context.Context) {
 	for _, mc := range e.cfg.Markets {
 		consecutiveTimeouts := e.reconciler.CheckPendingTimeouts(ctx, mc.MarketID)
+
+		// Promote OS_REGISTERED orders to RESTING after MEConfirmationTimeout.
+		// V1 proxy: if OS has it and we've waited long enough, assume ME has it.
+		// V2: replace with direct OrderRested Kafka event from ME.
+		e.reconciler.CheckOSRegisteredTimeouts(mc.MarketID, e.cfg.PendingTimeout)
 
 		if consecutiveTimeouts >= e.cfg.MELivenessThreshold {
 			e.consecutiveMETimeouts[mc.MarketID]++
@@ -355,6 +449,48 @@ func (e *Engine) runReconcileAll(ctx context.Context) {
 	}
 }
 
+func (e *Engine) runReconcileMarket(ctx context.Context, marketID string) {
+	if e.inv.IsStale(e.cfg.MaxBalanceStaleness) {
+		e.logger.Warn("skipping targeted reconcile — inventory is stale", zap.String("market_id", marketID))
+		return
+	}
+
+	mc := e.cfg.ForMarket(marketID)
+	if mc == nil {
+		return
+	}
+
+	allMarkets := make([]string, len(e.cfg.Markets))
+	for i, m := range e.cfg.Markets {
+		allMarkets[i] = m.MarketID
+	}
+
+	effectiveQuote := e.inv.EffectiveAvailableQuote(allMarkets)
+	effectiveBase := e.inv.EffectiveAvailableBase(mc.MarketID)
+	skew := inventory.ComputeSkew(mc, effectiveBase, effectiveQuote, e.logger)
+
+	e.metrics.SetLevelCount(mc.MarketID, "BUY", skew.BidCount)
+	e.metrics.SetLevelCount(mc.MarketID, "SELL", skew.AskCount)
+
+	start := time.Now()
+	cmds, err := e.reconciler.ReconcileMarket(ctx, mc.MarketID, skew.BidCount, skew.AskCount)
+	if err != nil {
+		e.logger.Error("targeted reconcile failed",
+			zap.String("market_id", mc.MarketID),
+			zap.Error(err))
+	}
+
+	elapsed := time.Since(start).Milliseconds()
+	e.metrics.ObserveReconcileDuration(mc.MarketID, float64(elapsed))
+
+	if cmds > 0 {
+		e.logger.Info("targeted reconcile complete",
+			zap.String("market_id", mc.MarketID),
+			zap.Int("commands_published", cmds),
+			zap.Int64("duration_ms", elapsed))
+	}
+}
+
 func (e *Engine) syncAllMarkets(ctx context.Context) error {
 	for _, mc := range e.cfg.Markets {
 		if err := e.reconciler.SyncFromOrderService(ctx, mc.MarketID); err != nil {
@@ -385,4 +521,14 @@ func (e *Engine) IsReady() bool {
 		}
 	}
 	return true
+}
+
+// InventoryLastRefresh returns when the wallet balance was last fetched.
+func (e *Engine) InventoryLastRefresh() time.Time {
+	return e.inv.LastRefresh()
+}
+
+// MaxBalanceStaleness returns the configured max balance staleness.
+func (e *Engine) MaxBalanceStaleness() time.Duration {
+	return e.cfg.MaxBalanceStaleness
 }

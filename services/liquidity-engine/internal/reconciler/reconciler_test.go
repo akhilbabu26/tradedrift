@@ -49,16 +49,17 @@ func TestRetryCancelOrStale_TransitionsToStale(t *testing.T) {
 	rec := NewReconciler(tracker, nil, nil, cfg, logger, &mockMetrics{})
 
 	// Add an order with CancelRetries already at limit (3)
-	orderID := "MM-BTC-USDT-ASK-01"
-	tracker.SetPending(orderID, "MM-BTC-USDT-ASK-01-G001", 1, pricing.PriceLevel{
-		LevelID:  orderID,
+	levelID := "MM-BTC-USDT-ASK-01"
+	orderID := "00000000-0000-0000-0000-000000000099"
+	tracker.SetPending(levelID, orderID, "MM-BTC-USDT-ASK-01-G001", 1, pricing.PriceLevel{
+		LevelID:  levelID,
 		MarketID: "BTC-USDT",
 		Side:     "SELL",
 		Price:    decimal.RequireFromString("96500.00"),
 		Quantity: decimal.RequireFromString("0.85"),
 	})
-	tracker.SetCancelling(orderID)
-	liveOrder := tracker.Get(orderID)
+	tracker.SetCancelling(levelID)
+	liveOrder := tracker.Get(levelID)
 	liveOrder.CancelRetries = 3
 
 	rec.retryCancelOrStale(context.TODO(), liveOrder, &cfg.Markets[0])
@@ -67,7 +68,7 @@ func TestRetryCancelOrStale_TransitionsToStale(t *testing.T) {
 	if liveOrder.Status != order.StatusStale {
 		t.Errorf("expected status STALE, got %s", liveOrder.Status)
 	}
-	if tracker.Get(orderID) == nil {
+	if tracker.Get(levelID) == nil {
 		t.Error("STALE order must NOT be removed from tracker")
 	}
 }

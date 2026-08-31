@@ -5,7 +5,17 @@
 //
 //	BID-12 ... BID-01 | referencePrice | ASK-01 ... ASK-12
 //
-// Each level is separated by spreadBps basis points.
+// Spread Formula:
+//
+//	Bid_i = ref / (1 + bps*i/10000)
+//	Ask_i = ref * (1 + bps*i/10000)
+//	Inner spread (Bid-01 to Ask-01) is ~2 * SpreadBps basis points around reference.
+//
+// Quantities:
+//
+//	V1 uses deterministic uniform quantities across all levels for each market.
+//	Tapered, skewed, or randomized sizing across levels is deferred to V2.
+//
 // All prices are rounded to the market's tick size (ME rejects invalid values).
 // All quantities are rounded to the market's lot size (ME rejects invalid values).
 //

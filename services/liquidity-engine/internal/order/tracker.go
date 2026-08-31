@@ -23,20 +23,30 @@ import (
 type Status string
 
 const (
-	// StatusPending — OrderCreate published to Kafka, ME has not yet confirmed.
-	// knownSet: YES. Diff: excluded from CREATE.
+	// StatusPending — OrderCreate published to Kafka, awaiting OS confirmation.
+	// The LE has sent the command but has not yet verified the OS received it.
+	// Diff: excluded from CREATE.
 	StatusPending Status = "PENDING"
 
-	// StatusResting — Confirmed by Order Service (OPEN or PARTIALLY_FILLED, remaining > 0).
-	// knownSet: YES. Diff: eligible for CANCEL or CORRECT.
+	// StatusOSRegistered — Order Service has confirmed the order exists (OPEN).
+	// This means OS will return it on ListMMOrders for recovery.
+	// It does NOT mean ME has the order in the live order book.
+	// Diff: excluded from CREATE (already in flight).
+	// Transitions to RESTING after MEConfirmationTimeout if ME is healthy.
+	StatusOSRegistered Status = "OS_REGISTERED"
+
+	// StatusResting — ME has accepted the order into the live order book.
+	// Confirmed indirectly: OS is OPEN and ME liveness healthy for MEConfirmationTimeout.
+	// In V2, an OrderRested Kafka event from ME will trigger this directly.
+	// Diff: eligible for CANCEL or CORRECT.
 	StatusResting Status = "RESTING"
 
 	// StatusCancelling — OrderCancel published, awaiting Order Service confirmation.
-	// knownSet: YES. Diff: excluded from all actions (let it resolve).
+	// Diff: excluded from all actions (let it resolve).
 	StatusCancelling Status = "CANCELLING"
 
 	// StatusStale — Cancel retry limit exceeded, reconciliation frozen for this level.
-	// knownSet: YES. Diff: excluded from all actions. Authoritative resync required.
+	// Diff: excluded from all actions. Authoritative resync required.
 	StatusStale Status = "STALE"
 )
 
@@ -68,9 +78,10 @@ type LiveOrder struct {
 	Status Status
 
 	// Timing and retry tracking
-	PendingSince    time.Time
-	CancellingSince time.Time
-	CancelRetries   int
+	PendingSince        time.Time
+	OSRegisteredSince  time.Time // set when status transitions PENDING → OS_REGISTERED
+	CancellingSince    time.Time
+	CancelRetries      int
 
 	// CORRECT flow: set when a CANCEL is issued to correct a wrong-price order.
 	// After cancel confirms, the reconciler creates a replacement using this level.
@@ -116,10 +127,13 @@ func NewTracker() *Tracker {
 }
 
 // SetPending adds or updates a level as PENDING after an OrderCreate command is published.
-func (t *Tracker) SetPending(levelID, clientOrderID string, gen int, level pricing.PriceLevel) {
+// orderID is the LE-generated UUID sent in the Kafka OrderCreated command payload.
+// After Fix 3 (RegisterMMOrder), this will be the OS-returned UUID.
+func (t *Tracker) SetPending(levelID, orderID, clientOrderID string, gen int, level pricing.PriceLevel) {
 	t.orders[levelID] = &LiveOrder{
 		LevelID:       levelID,
 		Generation:    gen,
+		OrderID:       orderID,
 		ClientOrderID: clientOrderID,
 		MarketID:      level.MarketID,
 		Side:          level.Side,
@@ -132,7 +146,28 @@ func (t *Tracker) SetPending(levelID, clientOrderID string, gen int, level prici
 	}
 }
 
-// SetResting updates an existing entry to RESTING with authoritative quantities from Order Service.
+// SetOSRegistered transitions a PENDING order to OS_REGISTERED.
+// Called when CheckPendingTimeouts confirms OS has the order (status=OPEN).
+//
+// OS_REGISTERED means: the Order Service will return this order on ListMMOrders
+// (enabling LE recovery), but it does NOT prove ME has the order in its book.
+// That distinction is tracked explicitly to avoid incorrect inventory accounting.
+func (t *Tracker) SetOSRegistered(levelID, orderID string, origQty, remainQty decimal.Decimal) {
+	o, ok := t.orders[levelID]
+	if !ok {
+		return
+	}
+	o.OrderID = orderID
+	o.OriginalQty = origQty
+	o.RemainingQty = remainQty
+	o.FilledQty = origQty.Sub(remainQty)
+	o.Status = StatusOSRegistered
+	o.OSRegisteredSince = time.Now()
+}
+
+// SetResting transitions an order to RESTING — ME has accepted it into the live book.
+// In V1 this is called after MEConfirmationTimeout elapses with a healthy ME.
+// In V2 this should be called directly on an OrderRested event from the ME.
 func (t *Tracker) SetResting(levelID, orderID string, origQty, remainQty decimal.Decimal) {
 	o, ok := t.orders[levelID]
 	if !ok {
@@ -183,18 +218,11 @@ func (t *Tracker) Remove(levelID string) {
 
 // NextGeneration returns the next generation number for a level and increments the counter.
 // Generation is monotonically increasing and survives Remove() calls.
+// Once SetPending is called with a given generation, that generation is COMMITTED.
+// There is no rollback — the PENDING tracker entry keeps the generation alive for retry.
 func (t *Tracker) NextGeneration(levelID string) int {
 	t.generations[levelID]++
 	return t.generations[levelID]
-}
-
-// DecrementGeneration rolls back a generation increment.
-// Called when an OrderCreate publish fails — allows the next retry to use the same
-// client_order_id, making the retry idempotent at the Order Service level.
-func (t *Tracker) DecrementGeneration(levelID string) {
-	if t.generations[levelID] > 0 {
-		t.generations[levelID]--
-	}
 }
 
 // CurrentGeneration returns the current generation without incrementing.
@@ -227,22 +255,26 @@ func (t *Tracker) AllMarkets() []*LiveOrder {
 	return result
 }
 
-// ActiveCount returns the number of orders in RESTING status for a market and side.
+// ActiveCount returns the number of orders in RESTING or OS_REGISTERED status for a market and side.
+// OS_REGISTERED orders are included because they represent committed slots that OS will recover,
+// and we expect ME to have them (or receive them shortly).
 func (t *Tracker) ActiveCount(marketID, side string) int {
 	count := 0
 	for _, o := range t.orders {
-		if o.MarketID == marketID && o.Side == side && o.Status == StatusResting {
+		if o.MarketID == marketID && o.Side == side &&
+			(o.Status == StatusResting || o.Status == StatusOSRegistered) {
 			count++
 		}
 	}
 	return count
 }
 
-// PendingCount returns PENDING order count for a market.
+// PendingCount returns the count of PENDING and OS_REGISTERED orders for a market.
 func (t *Tracker) PendingCount(marketID string) int {
 	count := 0
 	for _, o := range t.orders {
-		if o.MarketID == marketID && o.Status == StatusPending {
+		if o.MarketID == marketID &&
+			(o.Status == StatusPending || o.Status == StatusOSRegistered) {
 			count++
 		}
 	}
@@ -260,27 +292,27 @@ func (t *Tracker) StaleCount(marketID string) int {
 	return count
 }
 
-// CommittedBase returns the total base asset committed by RESTING and PENDING SELL orders.
+// CommittedBase returns the total base asset committed by SELL orders in RESTING, OS_REGISTERED, or PENDING.
 // Used by inventory.EffectiveAvailable to compute effective_available_base.
 // Uses RemainingQty (not OriginalQty) to account for partial fills.
 func (t *Tracker) CommittedBase(marketID string) decimal.Decimal {
 	total := decimal.Zero
 	for _, o := range t.orders {
 		if o.MarketID == marketID && o.Side == "SELL" &&
-			(o.Status == StatusResting || o.Status == StatusPending) {
+			(o.Status == StatusResting || o.Status == StatusOSRegistered || o.Status == StatusPending) {
 			total = total.Add(o.RemainingQty)
 		}
 	}
 	return total
 }
 
-// CommittedQuote returns the total quote asset committed by RESTING and PENDING BUY orders.
+// CommittedQuote returns the total quote asset committed by BUY orders in RESTING, OS_REGISTERED, or PENDING.
 // committed_quote = Σ(RemainingQty × Price) for all active BUY orders.
 func (t *Tracker) CommittedQuote(marketID string) decimal.Decimal {
 	total := decimal.Zero
 	for _, o := range t.orders {
 		if o.MarketID == marketID && o.Side == "BUY" &&
-			(o.Status == StatusResting || o.Status == StatusPending) {
+			(o.Status == StatusResting || o.Status == StatusOSRegistered || o.Status == StatusPending) {
 			total = total.Add(o.RemainingQty.Mul(o.Price))
 		}
 	}

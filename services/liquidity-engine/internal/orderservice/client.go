@@ -7,22 +7,27 @@
 //
 // The LE NEVER writes to the Order Service (no CreateOrder, no CancelOrder via gRPC).
 // Orders are created/cancelled via Kafka commands only (orders.commands topic).
+//
+// IMPORTANT: The Order Service stores user_id as UUID in the DB.
+// All ListOrders queries must use account.WalletUUIDStr, NOT the string "MM-001".
+// The string "MM-001" is only used in Kafka command payloads (OrderCreated.user_id),
+// where the Matching Engine accepts it as a plain string identifier.
 package orderservice
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
 
 	orderv1 "tradedrift/platform/api/gen/order/v1"
+	"tradedrift/services/liquidity-engine/internal/account"
 	"tradedrift/services/liquidity-engine/internal/order"
 )
 
@@ -67,11 +72,46 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
+// CreateMMOrder registers an MM limit order in the Order Service for persistence and recovery.
+// Uses account.WalletUUIDStr as UserId, and clientOrderID as IdempotencyKey.
+func (c *Client) CreateMMOrder(ctx context.Context, marketID, side, price, quantity, clientOrderID string) (*OrderState, error) {
+	protoSide := orderv1.OrderSide_ORDER_SIDE_BUY
+	if side == "SELL" {
+		protoSide = orderv1.OrderSide_ORDER_SIDE_SELL
+	}
+
+	resp, err := c.client.CreateOrder(ctx, &orderv1.CreateOrderRequest{
+		UserId:         account.WalletUUIDStr,
+		MarketId:       marketID,
+		Side:           protoSide,
+		OrderType:      orderv1.OrderType_ORDER_TYPE_LIMIT,
+		Price:          price,
+		Quantity:       quantity,
+		IdempotencyKey: clientOrderID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create MM order in Order Service: %w", err)
+	}
+
+	o := resp.Order
+	origQty, _ := decimal.NewFromString(o.Quantity)
+	remQty, _ := decimal.NewFromString(o.RemainingQuantity)
+
+	return &OrderState{
+		OrderID:       o.Id,
+		ClientOrderID: clientOrderID,
+		Status:        protoStatusToString(o.Status),
+		OriginalQty:   origQty,
+		RemainingQty:  remQty,
+	}, nil
+}
+
 // ListMMOrders fetches all OPEN and PARTIALLY_FILLED orders for MM-001 on a given market.
 func (c *Client) ListMMOrders(ctx context.Context, marketID string) ([]order.OSOrder, error) {
 	// Fetch OPEN orders
+	// NOTE: Order Service DB stores user_id as UUID — must use WalletUUIDStr, not "MM-001"
 	openResp, err := c.client.ListOrders(ctx, &orderv1.ListOrdersRequest{
-		UserId:   "MM-001",
+		UserId:   account.WalletUUIDStr,
 		MarketId: marketID,
 		Status:   orderv1.OrderStatus_ORDER_STATUS_OPEN,
 		Limit:    200, // well above the 24-order maximum per market
@@ -82,7 +122,7 @@ func (c *Client) ListMMOrders(ctx context.Context, marketID string) ([]order.OSO
 
 	// Fetch PARTIALLY_FILLED orders
 	partialResp, err := c.client.ListOrders(ctx, &orderv1.ListOrdersRequest{
-		UserId:   "MM-001",
+		UserId:   account.WalletUUIDStr,
 		MarketId: marketID,
 		Status:   orderv1.OrderStatus_ORDER_STATUS_PARTIALLY_FILLED,
 		Limit:    200,
@@ -151,9 +191,15 @@ func (c *Client) ListMMOrders(ctx context.Context, marketID string) ([]order.OSO
 
 // GetOrderByClientID looks up a specific MM order by its client_order_id (idempotency_key).
 func (c *Client) GetOrderByClientID(ctx context.Context, clientOrderID string) (*OrderState, error) {
+	var marketID string
+	if levelID, _, err := parseLevelFromClientOrderID(clientOrderID); err == nil {
+		marketID = parseMarketFromLevelID(levelID)
+	}
+
 	resp, err := c.client.ListOrders(ctx, &orderv1.ListOrdersRequest{
-		UserId: "MM-001",
-		Limit:  200,
+		UserId:   account.WalletUUIDStr, // Order Service DB: user_id is UUID type
+		MarketId: marketID,
+		Limit:    100,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("ListOrders for client_order_id lookup: %w", err)
@@ -176,21 +222,25 @@ func (c *Client) GetOrderByClientID(ctx context.Context, clientOrderID string) (
 	return nil, ErrOrderNotFound
 }
 
+func parseMarketFromLevelID(levelID string) string {
+	// Format: "MM-BTC-USDT-ASK-01" -> "BTC-USDT"
+	parts := strings.Split(levelID, "-")
+	if len(parts) >= 4 && parts[0] == "MM" {
+		return parts[1] + "-" + parts[2]
+	}
+	return ""
+}
+
 // IsAvailable performs a lightweight check to confirm the Order Service is reachable.
+// Any error (DeadlineExceeded, Internal, Unavailable, etc.) returns false.
 func (c *Client) IsAvailable(ctx context.Context) bool {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	_, err := c.client.ListOrders(ctx, &orderv1.ListOrdersRequest{
-		UserId: "MM-001",
+		UserId: account.WalletUUIDStr,
 		Limit:  1,
 	})
-	if err != nil {
-		st, ok := status.FromError(err)
-		if ok && st.Code() == codes.Unavailable {
-			return false
-		}
-	}
-	return true
+	return err == nil
 }
 
 // parseLevelFromClientOrderID extracts the LevelID and generation from a client_order_id.

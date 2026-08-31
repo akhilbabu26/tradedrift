@@ -1,7 +1,5 @@
-# syntax=docker/dockerfile:1
-
 # ── BUILD STAGE ───────────────────────────────────────────────────────────
-FROM golang:1.22-alpine AS builder
+FROM golang:1.26-alpine AS builder
 
 RUN apk add --no-cache git
 
@@ -13,8 +11,15 @@ COPY go.work go.work.sum ./
 # Copy platform module (shared proto gen)
 COPY platform/ platform/
 
-# Copy the LE service
-COPY services/liquidity-engine/ services/liquidity-engine/
+# Copy ALL modules listed in go.work (required for workspace resolution)
+COPY services/auth/             ./services/auth/
+COPY services/wallet/           ./services/wallet/
+COPY services/gateway/          ./services/gateway/
+COPY services/order/            ./services/order/
+COPY services/market/           ./services/market/
+COPY services/matching-engine/  ./services/matching-engine/
+COPY services/settlement/       ./services/settlement/
+COPY services/liquidity-engine/ ./services/liquidity-engine/
 
 # Download dependencies via workspace
 RUN go work sync

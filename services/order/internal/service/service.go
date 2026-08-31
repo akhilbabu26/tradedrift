@@ -182,33 +182,44 @@ func (s *orderService) CreateOrder(ctx context.Context, p *CreateOrderParams) (*
 		return nil, fmt.Errorf("failed to marshal outbox envelope: %w", err)
 	}
 
-	// 8. Reserve Funds in Wallet Service (Network Call)
-	s.logger.Info("Reserving funds in Wallet Service",
-		zap.String("order_id", orderID.String()),
-		zap.String("asset", reserveAsset),
-		zap.String("amount", reserveAmount),
-	)
-	_, _, err = s.wallet.ReserveFunds(ctx, p.UserID, orderID.String(), reserveAsset, reserveAmount)
-	if err != nil {
-		st, ok := status.FromError(err)
-		if ok && st.Code() == codes.FailedPrecondition {
-			return nil, ErrInsufficientFunds
+	const mmAccountUUID = "00000000-0000-0000-0000-000000000001"
+	isMMAccount := (p.UserID == mmAccountUUID)
+
+	// 8. Reserve Funds in Wallet Service (Network Call) — Skipped for MM account
+	if !isMMAccount {
+		s.logger.Info("Reserving funds in Wallet Service",
+			zap.String("order_id", orderID.String()),
+			zap.String("asset", reserveAsset),
+			zap.String("amount", reserveAmount),
+		)
+		_, _, err = s.wallet.ReserveFunds(ctx, p.UserID, orderID.String(), reserveAsset, reserveAmount)
+		if err != nil {
+			st, ok := status.FromError(err)
+			if ok && st.Code() == codes.FailedPrecondition {
+				return nil, ErrInsufficientFunds
+			}
+			s.logger.Error("Wallet ReserveFunds gRPC transport failure", zap.Error(err))
+			return nil, fmt.Errorf("wallet service reservation error: %w", err)
 		}
-		s.logger.Error("Wallet ReserveFunds gRPC transport failure", zap.Error(err))
-		return nil, fmt.Errorf("wallet service reservation error: %w", err)
+	} else {
+		s.logger.Info("MM order creation: skipping wallet ReserveFunds (inventory tracked locally in LE)",
+			zap.String("order_id", orderID.String()),
+			zap.String("user_id", p.UserID))
 	}
 
-	// 9. Persist Order + Outbox Atomically (With SAGA ReleaseFunds Compensation on DB Failure)
+	// 9. Persist Order + Outbox Atomically (With SAGA ReleaseFunds Compensation on DB Failure for user orders)
 	if err := s.repo.CreateOrder(ctx, order, envelopeBytes); err != nil {
 		s.logger.Error("PostgreSQL CreateOrder failed post-fund reservation. Triggering Saga ReleaseFunds compensation",
 			zap.String("order_id", orderID.String()),
 			zap.Error(err),
 		)
-		if releaseErr := s.wallet.ReleaseFunds(ctx, orderID.String()); releaseErr != nil {
-			s.logger.Error("SAGA CRITICAL FAILURE: Compensating ReleaseFunds failed!",
-				zap.String("order_id", orderID.String()),
-				zap.Error(releaseErr),
-			)
+		if !isMMAccount {
+			if releaseErr := s.wallet.ReleaseFunds(ctx, orderID.String()); releaseErr != nil {
+				s.logger.Error("SAGA CRITICAL FAILURE: Compensating ReleaseFunds failed!",
+					zap.String("order_id", orderID.String()),
+					zap.Error(releaseErr),
+				)
+			}
 		}
 		if errors.Is(err, repository.ErrDuplicateIdempotencyKey) {
 			return nil, ErrDuplicateIdempotencyKey

@@ -10,7 +10,7 @@
 //   - prices must be tick-rounded strings
 //   - quantities must be lot-rounded strings
 //   - order_id must be a valid UUID
-//   - user_id must be "MM-001" (Order Service string identity)
+//   - user_id must be a valid UUID (account.WalletUUIDStr — ME calls uuid.Parse on it)
 package kafka
 
 import (
@@ -22,6 +22,8 @@ import (
 	"github.com/google/uuid"
 	kafkago "github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
+
+	"tradedrift/services/liquidity-engine/internal/account"
 )
 
 // Topic constants — must match ME and Order Service topic names.
@@ -43,7 +45,7 @@ type CommandEnvelope struct {
 // orderCreatedPayload matches the ME consumer's orderCreatedPayload struct.
 type orderCreatedPayload struct {
 	OrderID       string `json:"order_id"`        // UUID (becomes OS order ID)
-	UserID        string `json:"user_id"`         // "MM-001"
+	UserID        string `json:"user_id"`         // UUID — ME calls uuid.Parse on this
 	Side          string `json:"side"`            // "BUY" | "SELL"
 	OrderType     string `json:"order_type"`      // always "LIMIT" for MM
 	Price         string `json:"price"`           // tick-rounded string
@@ -54,7 +56,7 @@ type orderCreatedPayload struct {
 // orderCancelPayload matches the ME consumer's orderCancelPayload struct.
 type orderCancelPayload struct {
 	OrderID string `json:"order_id"` // ME/OS-assigned UUID for this order
-	UserID  string `json:"user_id"`  // "MM-001"
+	UserID  string `json:"user_id"`  // UUID — ME calls uuid.Parse on this
 }
 
 // Producer publishes OrderCreated and OrderCancelRequested commands to orders.commands.
@@ -94,7 +96,7 @@ func (p *Producer) PublishCreate(ctx context.Context, marketID string, partition
 
 	payload, err := json.Marshal(orderCreatedPayload{
 		OrderID:       orderID,
-		UserID:        "MM-001",
+		UserID:        account.WalletUUIDStr, // ME validates user_id with uuid.Parse
 		Side:          side,
 		OrderType:     "LIMIT",
 		Price:         price,
@@ -124,7 +126,7 @@ func (p *Producer) PublishCancel(ctx context.Context, marketID string, partition
 
 	payload, err := json.Marshal(orderCancelPayload{
 		OrderID: orderID,
-		UserID:  "MM-001",
+		UserID:  account.WalletUUIDStr, // ME validates user_id with uuid.Parse
 	})
 	if err != nil {
 		return fmt.Errorf("marshal OrderCancelRequested payload: %w", err)

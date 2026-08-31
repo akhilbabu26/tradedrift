@@ -12,6 +12,8 @@
 -- Fixed UUID for the MM-001 system account wallet identity
 -- Used by: Wallet Service (UUID FK), Settlement Service (buyer/seller UUID)
 -- NOTE: Order Service uses the string "MM-001" as user_id (separate identity layer)
+
+-- +goose StatementBegin
 DO $$
 DECLARE
     mm_uuid UUID := '00000000-0000-0000-0000-000000000001';
@@ -90,9 +92,11 @@ WHERE w.user_id = mm_uuid
 ON CONFLICT (reference_id, reference_type, asset) DO NOTHING;
 
 END $$;
+-- +goose StatementEnd
 
 -- +goose Down
 -- Remove MM-001 system account wallets and transaction records
+-- +goose StatementBegin
 DO $$
 DECLARE
     mm_uuid UUID := '00000000-0000-0000-0000-000000000001';
@@ -100,3 +104,5 @@ BEGIN
     DELETE FROM wallet_transactions WHERE reference_id = mm_uuid AND reference_type = 'INITIAL_ALLOCATION';
     DELETE FROM wallets WHERE user_id = mm_uuid;
 END $$;
+-- +goose StatementEnd
+

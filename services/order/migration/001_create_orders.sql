@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS orders (
     filled_quantity     DECIMAL(30,10)  NOT NULL DEFAULT 0,
     remaining_quantity  DECIMAL(30,10)  NOT NULL,
     status              VARCHAR(20)     NOT NULL,
-    idempotency_key     UUID            UNIQUE,
+    idempotency_key     VARCHAR(64)     UNIQUE,
     created_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );

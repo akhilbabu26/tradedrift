@@ -15,6 +15,8 @@ import (
 	kafkago "github.com/segmentio/kafka-go"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
+
+	"tradedrift/services/liquidity-engine/internal/account"
 )
 
 // TradeEvent is the LE's internal representation of a trade execution.
@@ -102,15 +104,15 @@ func (c *Consumer) Run(ctx context.Context) {
 			continue
 		}
 
-		// Only send to channel if the message can be received (non-blocking with timeout)
+		// Block until the event loop accepts the trade event.
+		// Do NOT drop events — a dropped trade permanently corrupts inventory
+		// until the next authoritative wallet refresh.
+		// Backpressure here is intentional: if the event loop is slow, the
+		// Kafka consumer waits. Commit only after event is accepted.
 		select {
 		case c.events <- *event:
 		case <-ctx.Done():
 			return
-		case <-time.After(5 * time.Second):
-			c.logger.Warn("event channel full — dropping trade event",
-				zap.String("trade_id", event.TradeID),
-				zap.String("market_id", event.MarketID))
 		}
 
 		if err := c.reader.CommitMessages(ctx, msg); err != nil {
@@ -148,7 +150,9 @@ func parseTradeMessage(raw []byte) (*TradeEvent, error) {
 		}
 	}
 
-	const mmUserID = "MM-001"
+	// Use the canonical MM UUID — trades.executed contains UUID user_ids,
+	// not the human-readable "MM-001" string.
+	mmUserID := account.WalletUUIDStr
 	event := &TradeEvent{
 		TradeID:      msg.TradeID,
 		MarketID:     msg.MarketID,

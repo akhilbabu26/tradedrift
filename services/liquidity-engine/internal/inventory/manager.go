@@ -26,28 +26,30 @@ type AssetBalance struct {
 	AvailableBalance decimal.Decimal
 }
 
-// Manager tracks authoritative wallet balances and applies trade fills
+// Manager tracks wallet balances and applies trade fills
 // to maintain a fast view of effective available inventory.
 type Manager struct {
-	authBalances map[string]decimal.Decimal
-	lastRefresh  time.Time
-	tracker      *order.Tracker
-	logger       *zap.Logger
+	// projectedBalances = latest authoritative Wallet Service snapshot + locally observed trade deltas.
+	// Rebuilt from scratch on each wallet refresh.
+	projectedBalances map[string]decimal.Decimal
+	lastRefresh       time.Time
+	tracker           *order.Tracker
+	logger            *zap.Logger
 }
 
 // NewManager creates a new inventory Manager.
 func NewManager(tracker *order.Tracker, logger *zap.Logger) *Manager {
 	return &Manager{
-		authBalances: make(map[string]decimal.Decimal),
-		tracker:      tracker,
-		logger:       logger,
+		projectedBalances: make(map[string]decimal.Decimal),
+		tracker:           tracker,
+		logger:            logger,
 	}
 }
 
-// RefreshFromWallet updates authoritative balances from the Wallet Service response.
+// RefreshFromWallet updates projected balances from the authoritative Wallet Service response.
 func (m *Manager) RefreshFromWallet(balances map[string]decimal.Decimal) {
 	for asset, bal := range balances {
-		m.authBalances[asset] = bal
+		m.projectedBalances[asset] = bal
 		m.logger.Info("wallet balance refreshed",
 			zap.String("asset", asset),
 			zap.String("balance", bal.String()))
@@ -67,11 +69,11 @@ func (m *Manager) ApplyTrade(event kafka.TradeEvent) {
 	switch event.MMSide {
 	case "SELL":
 		// MM sold base asset (ask was filled) -> base decreases, quote increases
-		if bal, ok := m.authBalances[baseAsset(event.MarketID)]; ok {
-			m.authBalances[baseAsset(event.MarketID)] = maxZero(bal.Sub(qty))
+		if bal, ok := m.projectedBalances[baseAsset(event.MarketID)]; ok {
+			m.projectedBalances[baseAsset(event.MarketID)] = maxZero(bal.Sub(qty))
 		}
-		if bal, ok := m.authBalances["USDT"]; ok {
-			m.authBalances["USDT"] = bal.Add(quoteValue)
+		if bal, ok := m.projectedBalances["USDT"]; ok {
+			m.projectedBalances["USDT"] = bal.Add(quoteValue)
 		}
 		m.logger.Info("inventory: MM SELL filled",
 			zap.String("market_id", event.MarketID),
@@ -80,11 +82,11 @@ func (m *Manager) ApplyTrade(event kafka.TradeEvent) {
 
 	case "BUY":
 		// MM bought base asset (bid was filled) -> quote decreases, base increases
-		if bal, ok := m.authBalances["USDT"]; ok {
-			m.authBalances["USDT"] = maxZero(bal.Sub(quoteValue))
+		if bal, ok := m.projectedBalances["USDT"]; ok {
+			m.projectedBalances["USDT"] = maxZero(bal.Sub(quoteValue))
 		}
-		if bal, ok := m.authBalances[baseAsset(event.MarketID)]; ok {
-			m.authBalances[baseAsset(event.MarketID)] = bal.Add(qty)
+		if bal, ok := m.projectedBalances[baseAsset(event.MarketID)]; ok {
+			m.projectedBalances[baseAsset(event.MarketID)] = bal.Add(qty)
 		}
 		m.logger.Info("inventory: MM BUY filled",
 			zap.String("market_id", event.MarketID),
@@ -94,10 +96,10 @@ func (m *Manager) ApplyTrade(event kafka.TradeEvent) {
 }
 
 // EffectiveAvailableBase returns the effective available base asset for a market.
-// effective_base = wallet.available_balance[base] - committed_base
+// effective_base = projected_balance[base] - committed_base
 func (m *Manager) EffectiveAvailableBase(marketID string) decimal.Decimal {
 	base := baseAsset(marketID)
-	walletBal, ok := m.authBalances[base]
+	walletBal, ok := m.projectedBalances[base]
 	if !ok {
 		return decimal.Zero
 	}
@@ -107,7 +109,7 @@ func (m *Manager) EffectiveAvailableBase(marketID string) decimal.Decimal {
 
 // EffectiveAvailableQuote returns the effective available USDT for bid-side quoting across all markets.
 func (m *Manager) EffectiveAvailableQuote(markets []string) decimal.Decimal {
-	walletBal, ok := m.authBalances["USDT"]
+	walletBal, ok := m.projectedBalances["USDT"]
 	if !ok {
 		return decimal.Zero
 	}
@@ -131,9 +133,9 @@ func (m *Manager) IsStale(maxStaleness time.Duration) bool {
 	return time.Since(m.lastRefresh) > maxStaleness
 }
 
-// WalletBalanceFor returns the raw authoritative balance for an asset.
+// WalletBalanceFor returns the projected balance for an asset.
 func (m *Manager) WalletBalanceFor(asset string) (decimal.Decimal, bool) {
-	bal, ok := m.authBalances[asset]
+	bal, ok := m.projectedBalances[asset]
 	return bal, ok
 }
 

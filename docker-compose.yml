@@ -186,3 +186,43 @@ services:
         condition: service_started
       matching-engine:
         condition: service_started
+
+  liquidity-engine:
+    build:
+      context: .
+      dockerfile: services/liquidity-engine/Dockerfile
+    container_name: tradedrift-liquidity-engine
+    restart: unless-stopped
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: liquidity-engine-group
+      REDIS_ADDR: redis:6379
+      WALLET_GRPC_ADDR: wallet:50052
+      ORDER_GRPC_ADDR: order:50053
+      BTC_PARTITION: 0
+      ETH_PARTITION: 1
+      SOL_PARTITION: 2
+      BTC_REFERENCE_PRICE: "96450.00"
+      ETH_REFERENCE_PRICE: "2780.50"
+      SOL_REFERENCE_PRICE: "188.20"
+      RECONCILE_INTERVAL: "30s"
+      PENDING_TIMEOUT: "10s"
+      CANCELLING_TIMEOUT: "30s"
+      CANCEL_RETRY_LIMIT: 3
+      ME_LIVENESS_THRESHOLD: 3
+      HEALTH_PORT: "8080"
+      METRICS_PORT: "9090"
+    ports:
+      - "8081:8080"
+      - "9091:9090"
+    depends_on:
+      kafka:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      wallet:
+        condition: service_started
+      order:
+        condition: service_started
+      matching-engine:
+        condition: service_started

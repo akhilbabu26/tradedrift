@@ -27,3 +27,4 @@ This directory contains the detailed service design specifications for each micr
 * **[`09_Settlement_Service`](09_Settlement_Service/Settlement_Service.md):** Asynchronous double-leg balance settlement engine, short-lived transactions, and DLQ retries.
 * **[`10_Trade_Service`](10_Trade_Service/Trade_Service.md):** Query model tracking executed trades for charts, tickers, and public history endpoints.
 * **[`11_Admin_Service`](11_Admin_Service/Admin_Service.md):** Control-plane orchestrator for user suspension, wallet freezing, and market halting.
+* **[`12_Automated_Liquidity_Engine_Bot`](12_Automated_Liquidity_Engine_Bot/01_Overview.md):** Autonomous market-making bot providing initial orderbook laddering, counterparty depth, and micro-trade execution for cold-start bootstrapping.

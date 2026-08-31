@@ -12,4 +12,5 @@ use (
     ./services/market
     ./services/matching-engine
     ./services/settlement
+    ./services/liquidity-engine
 )

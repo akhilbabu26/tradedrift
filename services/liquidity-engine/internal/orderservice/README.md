@@ -8,7 +8,9 @@
 
 ## 1. What This Package Does
 
-This package provides a **read-only gRPC client** for the Order Service. The Liquidity Engine uses it to query the authoritative state of MM-001 orders — it never writes to the Order Service directly. All order creation and cancellation commands go through Kafka (`orders.commands`), not gRPC.
+This package provides a **gRPC client** for the Order Service. The Liquidity Engine uses it for two primary purposes:
+1. **MM Order Registration (`CreateMMOrder`)**: Prior to publishing an `OrderCreated` command to Kafka, the LE registers the order with the Order Service. This ensures the order is persisted in PostgreSQL with an authoritative UUID and `idempotency_key` (`client_order_id`) for crash recovery. For MM orders (`account.WalletUUIDStr`), the Order Service skips Wallet `ReserveFunds` and skips enqueuing an `outbox` record.
+2. **Authoritative State Queries & Recovery (`ListMMOrders`, `GetOrderByClientID`)**: Used on startup to populate the order tracker with existing orders and recover generation numbers (`-G003`), and during periodic resync and timeout resolution.
 
 ---
 
@@ -16,119 +18,63 @@ This package provides a **read-only gRPC client** for the Order Service. The Liq
 
 | File | Purpose |
 | :--- | :--- |
-| `client.go` | `Client` struct, `OrderState`, `ListMMOrders`, `GetOrderByClientID`, `IsAvailable` |
+| `client.go` | `Client` struct, `OrderState`, `CreateMMOrder`, `ListMMOrders`, `GetOrderByClientID`, `IsAvailable` |
 | `README.md` | This documentation file |
 
 ---
 
-## 3. The Golden Rule
+## 3. The Architecture Contract & Authority Split
 
-> **The LE NEVER writes to the Order Service.**  
-> Orders are created/cancelled via Kafka `orders.commands` only.  
-> The Order Service gRPC client is strictly read-only.
+```
+                       Liquidity Engine
+                              │
+               1. Register    │ 2. Command
+               CreateMMOrder  │    Publish
+                              ▼
+┌──────────────────┐               ┌──────────────────┐
+│  Order Service   │               │   Kafka Topic    │
+│                  │               │ orders.commands  │
+│  PostgreSQL      │               └────────┬─────────┘
+│  (MM Order DB)   │                        │
+│                  │                        ▼
+│  - No Reserve    │               ┌──────────────────┐
+│  - No Outbox     │               │ Matching Engine  │
+└──────────────────┘               │                  │
+                                   │  idempotency by  │
+                                   │     orderID      │
+                                   └────────┬─────────┘
+                                            │
+                                            ▼
+                                       Order Book
+```
+
+| Responsibility | Authoritative Service |
+| :--- | :--- |
+| MM Order Persistence & Recovery | Order Service (PostgreSQL) |
+| MM Command Publishing | Liquidity Engine (Sole Kafka publisher) |
+| Live Order Book & Execution | Matching Engine |
+| User Funds Reservation | Wallet Service / Order Service |
+| MM Inventory Tracking | Liquidity Engine / Wallet Service |
 
 ---
 
-## 4. When the LE Queries the Order Service
+## 4. Method Overview
 
-| Scenario | Method | Called by |
+| Method | Purpose | Called by |
 | :--- | :--- | :--- |
-| Startup: populate tracker with existing MM orders | `ListMMOrders` | `reconciler.SyncFromOrderService` |
-| Periodic resync (every ~5 min) | `ListMMOrders` | `reconciler.SyncFromOrderService` |
-| PENDING timeout: confirm if order was accepted | `GetOrderByClientID` | `reconciler.CheckPendingTimeouts` |
-| CANCELLING timeout: confirm if cancel was processed | `GetOrderByClientID` | `reconciler.handleCancellingTimeout` |
-| Health check: confirm OS is reachable | `IsAvailable` | health server |
+| `CreateMMOrder` | Pre-register MM order before Kafka publish | `reconciler.applyCreate` |
+| `ListMMOrders` | Startup & periodic recovery of live MM orders | `reconciler.SyncFromOrderService` |
+| `GetOrderByClientID` | Query state by `client_order_id` (idempotency key) | `reconciler.CheckPendingTimeouts`, `handleCancellingTimeout` |
+| `IsAvailable` | Health probe checking reachability | `health.Server` |
 
 ---
 
-## 5. `Client` Struct
+## 5. Generation Recovery Across Restarts
 
-```go
-type Client struct {
-    conn   *grpc.ClientConn
-    client orderv1.OrderServiceClient
-    logger *zap.Logger
-}
-```
-
-Uses `insecure.NewCredentials()` — mTLS is handled at the service mesh level in production.
-
----
-
-## 6. `OrderState` — LE's View of an Order
-
-```go
-type OrderState struct {
-    OrderID       string          // OS-assigned UUID
-    ClientOrderID string          // idempotency_key = LE's client_order_id
-    Status        string          // "OPEN" | "PARTIALLY_FILLED" | "FILLED" | "CANCELLING" | "CANCELLED"
-    RemainingQty  decimal.Decimal // from order.remaining_quantity
-    OriginalQty   decimal.Decimal // from order.quantity
-}
-```
-
----
-
-## 7. `ListMMOrders(ctx, marketID) ([]order.OSOrder, error)`
-
-Fetches all **OPEN and PARTIALLY_FILLED** orders for `MM-001` on a given market. Makes two gRPC calls (one per status) and combines the results.
-
-**Parsing & filtering:**
-
-- Orders with an empty `idempotency_key` are skipped (non-MM orders)
-- Orders whose `idempotency_key` cannot be parsed as `{LevelID}-G{gen}` are skipped with a warning log
-- Invalid decimal strings for `price`, `quantity`, or `remaining_quantity` are skipped
-
-**`client_order_id` parsing:**
-
+`client_order_id` follows the format:
 ```
 "MM-BTC-USDT-ASK-01-G003"
-    │
-    ├── LevelID = "MM-BTC-USDT-ASK-01"
-    └── Generation = 3
+    │               │
+    ├── LevelID     └── Generation = 3
 ```
-
-The parser scans for the last `-G` separator to split `LevelID` from `Generation`.
-
----
-
-## 8. `GetOrderByClientID(ctx, clientOrderID) (*OrderState, error)`
-
-Looks up a specific order by its `idempotency_key`. Used during PENDING and CANCELLING timeout resolution.
-
-**Current implementation:** Fetches all MM-001 orders (no server-side filter by idempotency_key — the OS API doesn't expose one) and scans for a match. Returns `ErrOrderNotFound` if not found.
-
-```go
-var ErrOrderNotFound = errors.New("order not found")
-```
-
-Callers should check for this sentinel:
-```go
-if errors.Is(err, orderservice.ErrOrderNotFound) {
-    // order never made it to OS — treat as failed create
-}
-```
-
----
-
-## 9. Proto Status Mapping
-
-The gRPC proto `OrderStatus` enum is converted to plain strings for internal use:
-
-| Proto Enum | String |
-| :--- | :--- |
-| `ORDER_STATUS_OPEN` | `"OPEN"` |
-| `ORDER_STATUS_PARTIALLY_FILLED` | `"PARTIALLY_FILLED"` |
-| `ORDER_STATUS_FILLED` | `"FILLED"` |
-| `ORDER_STATUS_CANCELLING` | `"CANCELLING"` |
-| `ORDER_STATUS_CANCELLED` | `"CANCELLED"` |
-| (default) | `"UNKNOWN"` |
-
----
-
-## 10. What This Package Does NOT Do
-
-- Does NOT call `CreateOrder`, `CancelOrder`, or any write endpoint on the Order Service
-- Does NOT cache responses — every call is a live gRPC query
-- Does NOT use Order Service websocket or streaming — polling only
-- Does NOT query orders for any account other than `MM-001`
+On engine startup, `ListMMOrders` extracts `Generation` and assigns it to `order.OSOrder`. The tracker initializes `generations[levelID] = max(generations[levelID], order.Generation)` so that subsequent replacements monotonically advance (e.g. `G004`).

@@ -8,7 +8,7 @@
 
 ## 1. What This Package Does
 
-This package is the **heart of reliable MM operation**. It takes the diff between the *desired* ladder state and the *actual* tracked state, then publishes the minimum necessary Kafka commands to close the gap. It also manages the full `PENDING → RESTING → CANCELLING → CANCELLED/STALE` order lifecycle with timeout-based resolution via the Order Service.
+This package is the **heart of reliable MM operation**. It takes the diff between the *desired* ladder state and the *actual* tracked state, then registers orders with Order Service and publishes the minimum necessary Kafka commands to close the gap. It also manages the full `PENDING → OS_REGISTERED → RESTING → CANCELLING → CANCELLED/STALE` order lifecycle with timeout-based resolution.
 
 The core invariant:
 > **No diff → No Kafka command.**  
@@ -26,186 +26,55 @@ The core invariant:
 
 ---
 
-## 3. `Reconciler` Struct
+## 3. Create Ordering & Safe Lifecycle
 
-```go
-type Reconciler struct {
-    tracker                    *order.Tracker
-    producer                   *kafka.Producer
-    orderSvc                   *orderservice.Client
-    cfg                        *config.Config
-    logger                     *zap.Logger
-    metrics                    ReconcilerMetrics
-    consecutivePendingTimeouts map[string]int // marketID → timeout count
-}
 ```
+1. CreateMMOrder (Order Service gRPC)
+   ↳ Order persisted in PostgreSQL (authoritative UUID assigned)
+   ↳ Outbox and wallet fund reservation skipped for MM UUID
 
-### `ReconcilerMetrics` Interface
+2. SetPending(levelID, orderID, clientOrderID, gen, desired)
+   ↳ LiveOrder created in tracker with StatusPending, KafkaPublished = false
 
-```go
-type ReconcilerMetrics interface {
-    IncStaleOrders(marketID string)
-    IncReconcileCreate(marketID string)
-    IncReconcileCancel(marketID string)
-    IncReconcileCorrect(marketID string)
-    IncReconcileNoop(marketID string)
-    IncOrdersFilled(marketID, side string)
-}
+3. PublishCreate (Kafka orders.commands)
+   ↳ If success: tracker.SetKafkaPublished(levelID, true)
+   ↳ If failure: logged as warning; tracker retains KafkaPublished = false
+
+4. CheckPendingTimeouts
+   ↳ If !KafkaPublished: retry Kafka publish with SAME orderID, clientOrderID, gen
+   ↳ If KafkaPublished: query Order Service via GetOrderByClientID
+   ↳ When OS confirms OPEN: transition to OS_REGISTERED (notFoundCount reset to 0)
+
+5. CheckOSRegisteredTimeouts
+   ↳ After ME confirmation window with healthy ME liveness: transition to RESTING
 ```
 
 ---
 
-## 4. `ReconcileMarket` — Core Reconcile Cycle
+## 4. Timeout and Retry Thresholds
 
-Called per-market on every `evReconcileTick`. Steps:
-
-```
-1. pricing.GenerateLadder(mc, bidCount, askCount)
-        │  desired []PriceLevel
-        ▼
-2. order.Diff(desired, tracker, marketID, mc)
-        │  []DiffEntry{Action, LevelID, DesiredLevel, ExistingOID, ExistingCOID}
-        ▼
-3. len(entries) == 0?  →  IncReconcileNoop → return (no commands)
-        │
-        ▼
-4. for each entry → applyEntry(ctx, entry, mc)
-        │
-        ├── DiffCreate  → applyCreate()
-        ├── DiffCancel  → applyCancel()
-        └── DiffCorrect → applyCancel() + tracker.QueueCorrection()
-```
-
-### Diff Actions
-
-| Action | Condition | Operation |
-| :--- | :--- | :--- |
-| `DiffCreate` | Level missing from tracker | Publish `OrderCreated`, set PENDING |
-| `DiffCancel` | Existing level no longer needed | Publish `OrderCancelRequested`, set CANCELLING |
-| `DiffCorrect` | Level exists but at wrong price | Cancel existing + queue replacement for after cancel confirms |
+| Mechanism | Configuration | Default | Purpose |
+| :--- | :--- | :--- | :--- |
+| `PENDING` Timeout | `PENDING_TIMEOUT` | 10s | Re-checks OS or retries Kafka publish |
+| Not Found Threshold | `notFoundThreshold` | 3 misses | Grace window for DB commit before marking liveness failure |
+| `CANCELLING` Timeout | `CANCELLING_TIMEOUT` | 30s | Checks OS for cancel confirmation; retries up to limit |
+| Cancel Retry Limit | `CANCEL_RETRY_LIMIT` | 3 | Transitions unresolvable cancel to `STALE` |
 
 ---
 
-## 5. `applyCreate` — Publishing a New MM Order
+## 5. Architectural Contracts & Guarantees
 
-```
-1. tracker.NextGeneration(levelID)       → gen (monotonically increasing)
-2. order.ClientOrderID(levelID, gen)     → "MM-BTC-USDT-BID-01-G3"
-3. uuid.New()                            → orderID (LE-assigned, becomes OS order ID)
-4. producer.PublishCreate(...)           → OrderCreated on orders.commands
-5. tracker.SetPending(levelID, ...)      → marks level as PENDING
-```
+1. **Kafka Delivery & Duplicate Suppression:**
+   - Trade event consumption follows an **At-Least-Once** delivery model.
+   - Kafka message offsets are committed manually only *after* all trade mutations (`inv.ApplyTrade`, tracker updates, dirty market flagging) are complete.
+   - Replay duplicate protection is provided via bounded in-memory `TradeID` deduplication (LRU up to 1,000 trades).
 
-If `PublishCreate` fails, `DecrementGeneration` is called to keep generation counter consistent.
+2. **`OS_REGISTERED → RESTING` Promotion Semantics (V1):**
+   - In V1, promotion from `OS_REGISTERED` to `RESTING` represents a **best-effort ME acceptance inference**:
+     $$\text{OS has persisted order} \land \text{ME liveness healthy} \land \text{Elapsed confirmation window} \implies \text{Order assumed RESTING}$$
+   - V2 will replace this time-based proxy with a direct `OrderRested` Kafka event emitted by the Matching Engine.
 
----
-
-## 6. `applyCancel` — Requesting an Order Cancellation
-
-```
-1. Validate e.ExistingOID != ""          → must have ME/OS-assigned UUID
-2. producer.PublishCancel(...)           → OrderCancelRequested on orders.commands
-3. tracker.SetCancelling(levelID)        → marks level as CANCELLING
-```
-
-The cancel command targets the **ME-assigned order_id** (UUID), never the `client_order_id`. The ME ignores cancel commands referencing unknown order IDs.
-
----
-
-## 7. PENDING Timeout Resolution (`CheckPendingTimeouts`)
-
-Called periodically by `engine.handlePendingCheck`. For each PENDING order older than `PendingTimeout`:
-
-```
-Query Order Service: GetOrderByClientID(client_order_id)
-    │
-    ├── Status == "OPEN" / "PARTIALLY_FILLED"
-    │       → SetResting(levelID, osState.OrderID, ...)
-    │       → reset consecutivePendingTimeouts[marketID] = 0
-    │
-    ├── Status == "FILLED"
-    │       → Remove(levelID)  (reconcile will recreate)
-    │       → IncOrdersFilled metric
-    │
-    ├── Status == "CANCELLED"
-    │       → Remove(levelID)  (reconcile will recreate)
-    │
-    ├── ErrOrderNotFound
-    │       → Remove(levelID) + timedOut = true
-    │
-    └── gRPC error
-            → log warning + timedOut = true
-```
-
-If `timedOut = true` at end of scan: `consecutivePendingTimeouts[marketID]++`.  
-The engine transitions to `PAUSED` when this count reaches `MELivenessThreshold`.
-
----
-
-## 8. CANCELLING Timeout Resolution (`CheckCancellingTimeouts` → `handleCancellingTimeout`)
-
-Called periodically by `engine.handleCancellingCheck`. For each CANCELLING order older than `CancellingTimeout`:
-
-```
-Query Order Service: GetOrderByClientID(client_order_id)
-    │
-    ├── Status == "CANCELLED"
-    │       → Remove(levelID)
-    │       └── QueuedCorrection present?
-    │               → PublishCreate for replacement
-    │
-    ├── Status == "FILLED" (fully)
-    │       → Remove(levelID) + IncOrdersFilled
-    │
-    ├── Status == "PARTIALLY_FILLED" (remaining > 0)
-    │       → retryCancelOrStale()
-    │
-    ├── Status == "OPEN" / "CANCELLING"
-    │       → retryCancelOrStale()
-    │
-    └── ErrOrderNotFound
-            → treat as CANCELLED, Remove(levelID)
-```
-
-### `retryCancelOrStale`
-
-```
-cancelRetries >= CancelRetryLimit?
-    YES → SetStale(levelID) + IncStaleOrders
-    NO  → PublishCancel (retry) + IncrementCancelRetry
-```
-
-**STALE** is a terminal state within the reconciler. A STALE order sits in the tracker but the reconciler cannot cancel it. The next periodic `syncAllMarkets` (full resync from Order Service) will clear it if the order no longer appears in the OS response.
-
----
-
-## 9. `SyncFromOrderService` — Full State Resync
-
-Called at startup (SYNCING state) and on every `evResyncTick` (every `ReconcileInterval × 10`).
-
-```
-ListMMOrders(ctx, marketID)           → all active MM orders from Order Service
-    │
-    ├── tracker.SyncFromOrders(marketID, osOrders)
-    │       → adds any OS orders not already in tracker (RESTING status)
-    │
-    └── For each RESTING order in tracker not in osOrders:
-            → Remove(levelID)  (order gone from OS — clean up stale tracker entry)
-```
-
-This is the authoritative recovery path. After an ME crash and recovery cycle, this clears any stale RESTING entries that ME no longer knows about.
-
----
-
-## 10. Concurrency
-
-All `Reconciler` methods must be called from the engine's **single event loop goroutine**. There is no internal locking.
-
----
-
-## 11. What This Package Does NOT Do
-
-- Does NOT call `pricing.GenerateLadder` outside of `ReconcileMarket` — pricing is requested on each cycle
-- Does NOT maintain its own ticker — all invocations are driven by the engine event loop
-- Does NOT write to any database — all state is ephemeral in the `order.Tracker`
-- Does NOT cancel all orders on shutdown — graceful shutdown is handled at the engine level
+3. **Order Service Authoritative Snapshot Contract:**
+   - A successful response from `ListMMOrders()` is treated as an authoritative and complete active order snapshot.
+   - Missing orders in `RESTING`, `OS_REGISTERED`, or `STALE` states are cleanly removed from the tracker. Missing `CANCELLING` orders trigger creation of any `QueuedCorrection` with a new generation and new `ClientOrderID`.
+   - In the event of an Order Service error, the resync aborts without mutating local tracker state.

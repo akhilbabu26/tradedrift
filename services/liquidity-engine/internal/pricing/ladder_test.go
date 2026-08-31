@@ -17,9 +17,8 @@ func btcMarket() *config.MarketConfig {
 		LotSize:         decimal.RequireFromString("0.00001"),
 		LevelCount:      12,
 		MinOrderSize:    decimal.RequireFromString("0.00001"),
-		SpreadBps:       4,
-		ReferencePrice:  decimal.RequireFromString("96450.00"),
-		MaxDeviationPct: decimal.RequireFromString("15"),
+		SpreadBps:      4,
+		ReferencePrice: decimal.RequireFromString("96450.00"),
 	}
 }
 

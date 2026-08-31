@@ -123,7 +123,10 @@ services:
       KAFKA_BROKERS: kafka:29092
       KAFKA_GROUP_ID: matching-engine
       REDIS_ADDR: redis:6379
+      HTTP_PORT: "8082"
       LOG_LEVEL: info
+    ports:
+      - "8082:8082"
     depends_on:
       kafka:
         condition: service_started
@@ -200,6 +203,7 @@ services:
       KAFKA_GROUP_ID: liquidity-engine-group
       WALLET_GRPC_ADDR: wallet:50052
       ORDER_GRPC_ADDR: order:50053
+      ME_HTTP_ADDR: http://matching-engine:8082
       BTC_PARTITION: 0
       ETH_PARTITION: 1
       SOL_PARTITION: 2

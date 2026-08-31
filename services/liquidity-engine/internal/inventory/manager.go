@@ -69,8 +69,15 @@ func (m *Manager) ApplyTrade(event kafka.TradeEvent) {
 	switch event.MMSide {
 	case "SELL":
 		// MM sold base asset (ask was filled) -> base decreases, quote increases
-		if bal, ok := m.projectedBalances[baseAsset(event.MarketID)]; ok {
-			m.projectedBalances[baseAsset(event.MarketID)] = maxZero(bal.Sub(qty))
+		bAsset := baseAsset(event.MarketID)
+		if bal, ok := m.projectedBalances[bAsset]; ok {
+			if bal.Sub(qty).IsNegative() {
+				m.logger.Warn("INSUFFICIENT_PROJECTED_BALANCE: trade deducted more than available projected balance",
+					zap.String("asset", bAsset),
+					zap.String("projected_balance", bal.String()),
+					zap.String("deduct_qty", qty.String()))
+			}
+			m.projectedBalances[bAsset] = maxZero(bal.Sub(qty))
 		}
 		if bal, ok := m.projectedBalances["USDT"]; ok {
 			m.projectedBalances["USDT"] = bal.Add(quoteValue)
@@ -83,10 +90,16 @@ func (m *Manager) ApplyTrade(event kafka.TradeEvent) {
 	case "BUY":
 		// MM bought base asset (bid was filled) -> quote decreases, base increases
 		if bal, ok := m.projectedBalances["USDT"]; ok {
+			if bal.Sub(quoteValue).IsNegative() {
+				m.logger.Warn("INSUFFICIENT_PROJECTED_BALANCE: trade deducted more USDT than available projected balance",
+					zap.String("projected_balance", bal.String()),
+					zap.String("deduct_quote", quoteValue.String()))
+			}
 			m.projectedBalances["USDT"] = maxZero(bal.Sub(quoteValue))
 		}
-		if bal, ok := m.projectedBalances[baseAsset(event.MarketID)]; ok {
-			m.projectedBalances[baseAsset(event.MarketID)] = bal.Add(qty)
+		bAsset := baseAsset(event.MarketID)
+		if bal, ok := m.projectedBalances[bAsset]; ok {
+			m.projectedBalances[bAsset] = bal.Add(qty)
 		}
 		m.logger.Info("inventory: MM BUY filled",
 			zap.String("market_id", event.MarketID),

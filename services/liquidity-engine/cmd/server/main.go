@@ -22,6 +22,7 @@ import (
 	"tradedrift/services/liquidity-engine/internal/health"
 	"tradedrift/services/liquidity-engine/internal/inventory"
 	"tradedrift/services/liquidity-engine/internal/kafka"
+	"tradedrift/services/liquidity-engine/internal/meclient"
 	"tradedrift/services/liquidity-engine/internal/metrics"
 	"tradedrift/services/liquidity-engine/internal/order"
 	"tradedrift/services/liquidity-engine/internal/orderservice"
@@ -72,6 +73,9 @@ func main() {
 	}
 	defer walletSvc.Close()
 
+	// ── ME Client ─────────────────────────────────────────────────────
+	meClient := meclient.New(cfg.MEHTTPAddr, logger)
+
 	// ── Tracker + Inventory ───────────────────────────────────────────
 	tracker := order.NewTracker()
 	inv := inventory.NewManager(tracker, logger)
@@ -88,14 +92,14 @@ func main() {
 	defer producer.Close()
 
 	// ── Kafka Consumer ────────────────────────────────────────────────
-	tradeEvents := make(chan kafka.TradeEvent, 256)
+	tradeEvents := make(chan kafka.TradeEnvelope, 256)
 	consumer := kafka.NewConsumer(cfg.KafkaBrokers, cfg.KafkaGroupID, tradeEvents, logger)
 
 	// ── Reconciler ────────────────────────────────────────────────────
 	rec := reconciler.NewReconciler(tracker, producer, orderSvc, &cfg, logger, m)
 
 	// ── Engine ────────────────────────────────────────────────────────
-	eng := engine.NewEngine(&cfg, tracker, inv, rec, producer, consumer, walletSvc, m, logger)
+	eng := engine.NewEngine(&cfg, tracker, inv, rec, producer, consumer, tradeEvents, walletSvc, meClient, m, logger)
 
 	// ── Context with graceful shutdown ────────────────────────────────
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

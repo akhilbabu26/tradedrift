@@ -13,6 +13,7 @@ import (
 type HealthChecker interface {
 	State() engine.EngineState
 	IsReady() bool
+	MarketStates() map[string]string
 	InventoryLastRefresh() time.Time
 	MaxBalanceStaleness() time.Duration
 }
@@ -48,7 +49,7 @@ func (s *Server) handleLiveness(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	state := s.checker.State()
-	if state == engine.StatePaused || state == engine.StateSyncing || state == engine.StateStarting {
+	if state == engine.StatePaused || state == engine.StateSyncing || state == engine.StateStarting || state == engine.StateStopped {
 		http.Error(w, state.String(), http.StatusServiceUnavailable)
 		return
 	}
@@ -70,6 +71,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]interface{}{
 		"state":                  s.checker.State().String(),
 		"ready":                  s.checker.IsReady(),
+		"markets":                s.checker.MarketStates(),
 		"inventory_last_refresh": lastRefresh.Format(time.RFC3339),
 		"inventory_stale":        isStale,
 		"uptime_s":               time.Since(startTime).Seconds(),

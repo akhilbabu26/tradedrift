@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -37,6 +41,7 @@ type appConfig struct {
 	KafkaGroupID string
 	PostgresDSN  string
 	RedisAddr    string
+	HTTPPort     string
 }
 
 func loadConfig() (appConfig, error) {
@@ -51,11 +56,17 @@ func loadConfig() (appConfig, error) {
 		brokers[i] = strings.TrimSpace(brokers[i])
 	}
 
+	httpPort := config.GetEnv("HTTP_PORT", "8082")
+	if !strings.HasPrefix(httpPort, ":") {
+		httpPort = ":" + httpPort
+	}
+
 	return appConfig{
 		KafkaBrokers: brokers,
 		KafkaGroupID: config.GetEnv("KAFKA_GROUP_ID", "matching-engine-group"),
 		PostgresDSN:  postgresDSN,
 		RedisAddr:    config.GetEnv("REDIS_ADDR", "localhost:6379"),
+		HTTPPort:     httpPort,
 	}, nil
 }
 
@@ -250,6 +261,54 @@ func run() error {
 		log.Printf("[server] publisher started for market: %s", e.MarketID)
 	}
 
+	var isReady atomic.Bool
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "alive"})
+	})
+	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if !isReady.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "recovering"})
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+	})
+	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		markets := make([]string, 0, len(manager.All()))
+		for _, eng := range manager.All() {
+			markets = append(markets, eng.MarketID)
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ready":   isReady.Load(),
+			"markets": markets,
+		})
+	})
+
+	httpServer := &http.Server{
+		Addr:    cfg.HTTPPort,
+		Handler: mux,
+	}
+
+	go func() {
+		log.Printf("[server] health HTTP server listening on %s", cfg.HTTPPort)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("[server] health HTTP server error: %v", err)
+		}
+	}()
+	defer func() {
+		sCtx, sCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer sCancel()
+		_ = httpServer.Shutdown(sCtx)
+	}()
+
 	consumer := intkafka.NewConsumer(intkafka.Config{
 		Brokers: cfg.KafkaBrokers,
 		GroupID: cfg.KafkaGroupID,
@@ -263,9 +322,11 @@ func run() error {
 	// Consumer Start takes cancel function for fail-closed graceful shutdown (Issue #10)
 	consumer.Start(consumerCtx, cancelConsumer)
 	log.Println("[server] kafka consumer started")
+	isReady.Store(true)
 	log.Println("[server] ✓ all systems live — matching engine ready")
 
 	<-opCtx.Done()
+	isReady.Store(false)
 
 	// DETERMINISTIC STAGED GRACEFUL SHUTDOWN (Issue #6)
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -168,8 +168,6 @@ func (c *Client) ListMMOrders(ctx context.Context, marketID string) ([]order.OSO
 			continue
 		}
 
-		_ = gen // generation is stored in tracker.generations, not in OSOrder
-
 		side := "BUY"
 		if o.Side == orderv1.OrderSide_ORDER_SIDE_SELL {
 			side = "SELL"
@@ -177,6 +175,7 @@ func (c *Client) ListMMOrders(ctx context.Context, marketID string) ([]order.OSO
 
 		result = append(result, order.OSOrder{
 			LevelID:       levelID,
+			Generation:    gen,
 			ClientOrderID: o.IdempotencyKey,
 			OrderID:       o.Id,
 			Side:          side,

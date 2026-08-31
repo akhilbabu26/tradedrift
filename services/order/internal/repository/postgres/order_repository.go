@@ -73,13 +73,15 @@ func (r *orderRepository) CreateOrder(ctx context.Context, o *repository.Order, 
 		return fmt.Errorf("failed to insert order: %w", err)
 	}
 
-	insertOutboxQuery := `
-		INSERT INTO outbox (aggregate_id, event_type, payload, partition_key)
-		VALUES ($1, 'OrderCreated', $2, $3)`
+	if len(outboxPayload) > 0 {
+		insertOutboxQuery := `
+			INSERT INTO outbox (aggregate_id, event_type, payload, partition_key)
+			VALUES ($1, 'OrderCreated', $2, $3)`
 
-	_, err = tx.Exec(ctx, insertOutboxQuery, o.ID, outboxPayload, o.MarketID)
-	if err != nil {
-		return fmt.Errorf("failed to insert outbox event: %w", err)
+		_, err = tx.Exec(ctx, insertOutboxQuery, o.ID, outboxPayload, o.MarketID)
+		if err != nil {
+			return fmt.Errorf("failed to insert outbox event: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

@@ -20,6 +20,9 @@ type Metrics struct {
 	ordersFilled       *prometheus.CounterVec
 	staleOrders        *prometheus.CounterVec
 	meLivenessTimeouts *prometheus.CounterVec
+	duplicateLevels    *prometheus.CounterVec
+	meHealthProbes     *prometheus.CounterVec
+	marketPauseEvents  *prometheus.CounterVec
 }
 
 // New creates and registers all LE Prometheus metrics.
@@ -85,6 +88,24 @@ func New() *Metrics {
 			Name:      "me_liveness_timeout_total",
 			Help:      "Total ME liveness threshold exceeded events",
 		}, []string{"market_id"}),
+
+		duplicateLevels: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "le",
+			Name:      "duplicate_level_total",
+			Help:      "Total duplicate MM LevelIDs detected in Order Service active snapshot",
+		}, []string{"market_id"}),
+
+		meHealthProbes: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "le",
+			Name:      "me_health_probe_total",
+			Help:      "Total Matching Engine health probe attempts",
+		}, []string{"status"}),
+
+		marketPauseEvents: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "le",
+			Name:      "market_pause_total",
+			Help:      "Total market pause and resume events",
+		}, []string{"market_id", "action"}),
 	}
 }
 
@@ -133,4 +154,16 @@ func (m *Metrics) IncStaleOrders(marketID string) {
 
 func (m *Metrics) IncMELivenessTimeout(marketID string) {
 	m.meLivenessTimeouts.WithLabelValues(marketID).Inc()
+}
+
+func (m *Metrics) IncDuplicateMMLevel(marketID string) {
+	m.duplicateLevels.WithLabelValues(marketID).Inc()
+}
+
+func (m *Metrics) IncMEHealthProbe(status string) {
+	m.meHealthProbes.WithLabelValues(status).Inc()
+}
+
+func (m *Metrics) IncMarketPause(marketID, action string) {
+	m.marketPauseEvents.WithLabelValues(marketID, action).Inc()
 }

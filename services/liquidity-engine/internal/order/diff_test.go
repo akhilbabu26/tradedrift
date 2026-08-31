@@ -64,10 +64,9 @@ func TestDiff_AllDesiredMissing(t *testing.T) {
 		TickSize:        decimal.RequireFromString("0.01"),
 		LotSize:         decimal.RequireFromString("0.00001"),
 		SpreadBps:       4,
-		ReferencePrice:  price("96450.00"),
-		LevelCount:      12,
-		MinOrderSize:    decimal.RequireFromString("0.00001"),
-		MaxDeviationPct: price("15"),
+		ReferencePrice: price("96450.00"),
+		LevelCount:     12,
+		MinOrderSize:   decimal.RequireFromString("0.00001"),
 	}
 	desired := pricing.GenerateLadder(cfg, 12, 12)
 

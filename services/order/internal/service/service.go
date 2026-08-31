@@ -158,32 +158,45 @@ func (s *orderService) CreateOrder(ctx context.Context, p *CreateOrderParams) (*
 		UpdatedAt:         now,
 	}
 
-	orderPayloadBytes, err := json.Marshal(map[string]any{
-		"order_id":   order.ID,
-		"user_id":    order.UserID,
-		"side":       order.Side,
-		"order_type": order.OrderType,
-		"price":      order.Price,
-		"quantity":   order.Quantity,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal order payload: %w", err)
-	}
-
-	envelopeBytes, err := json.Marshal(map[string]any{
-		"event_id":      uuid.NewString(),
-		"event_type":    "OrderCreated",
-		"event_version": 1,
-		"market_id":     order.MarketID,
-		"occurred_at":   now.UTC(),
-		"payload":       json.RawMessage(orderPayloadBytes),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal outbox envelope: %w", err)
-	}
-
 	const mmAccountUUID = "00000000-0000-0000-0000-000000000001"
 	isMMAccount := (p.UserID == mmAccountUUID)
+
+	var envelopeBytes []byte
+	if !isMMAccount {
+		// Normal user orders: generate outbox envelope for Kafka publishing
+		orderPayloadBytes, err := json.Marshal(map[string]any{
+			"order_id":   order.ID,
+			"user_id":    order.UserID,
+			"market_id":  order.MarketID,
+			"side":       order.Side,
+			"order_type": order.OrderType,
+			"price":      order.Price,
+			"quantity":   order.Quantity,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal order payload: %w", err)
+		}
+
+		envelopeBytes, err = json.Marshal(map[string]any{
+			"event_id":      uuid.NewString(),
+			"event_type":    "OrderCreated",
+			"event_version": 1,
+			"market_id":     order.MarketID,
+			"occurred_at":   now.UTC(),
+			"payload":       json.RawMessage(orderPayloadBytes),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal outbox envelope: %w", err)
+		}
+	} else {
+		// SYSTEM MM INVARIANT:
+		// Order Service acts purely as the authoritative recovery database for MM orders.
+		// The Liquidity Engine holds exclusive authority to publish OrderCreated commands
+		// to Kafka. Enqueuing outbox events for MM orders would cause duplicate Kafka emissions.
+		s.logger.Info("MM order registration: skipping outbox enqueue (LE is sole Kafka publisher)",
+			zap.String("order_id", orderID.String()),
+			zap.String("user_id", p.UserID))
+	}
 
 	// 8. Reserve Funds in Wallet Service (Network Call) — Skipped for MM account
 	if !isMMAccount {

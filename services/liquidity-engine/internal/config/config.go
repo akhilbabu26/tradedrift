@@ -31,8 +31,6 @@ type MarketConfig struct {
 	CriticalQuote  decimal.Decimal
 	SpreadBps      int             // base spread in basis points (default 4 bps per level)
 	ReferencePrice decimal.Decimal // V1 static reference price
-	// TODO(V2): MaxDeviationPct — pause if traded price deviates by more than this percentage
-	MaxDeviationPct decimal.Decimal
 }
 
 // Config is the full LE configuration.
@@ -44,6 +42,7 @@ type Config struct {
 	// External services
 	WalletGRPCAddr string
 	OrderGRPCAddr  string
+	MEHTTPAddr     string
 
 	// Markets
 	Markets []MarketConfig
@@ -103,11 +102,6 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("SOL_REFERENCE_PRICE: %w", err)
 	}
 
-	maxDevPct, err := getEnvDecimal("MAX_PRICE_DEVIATION_PCT", "15")
-	if err != nil {
-		return Config{}, fmt.Errorf("MAX_PRICE_DEVIATION_PCT: %w", err)
-	}
-
 	cancelRetry, err := platformconfig.GetEnvAsInt("CANCEL_RETRY_LIMIT", 3)
 	if err != nil {
 		return Config{}, fmt.Errorf("CANCEL_RETRY_LIMIT: %w", err)
@@ -159,6 +153,7 @@ func Load() (Config, error) {
 		KafkaGroupID:   platformconfig.GetEnv("KAFKA_GROUP_ID", "liquidity-engine-group"),
 		WalletGRPCAddr: platformconfig.GetEnv("WALLET_GRPC_ADDR", "localhost:50052"),
 		OrderGRPCAddr:  platformconfig.GetEnv("ORDER_GRPC_ADDR", "localhost:50053"),
+		MEHTTPAddr:     platformconfig.GetEnv("ME_HTTP_ADDR", "http://localhost:8082"),
 
 		WalletRefreshInterval:     walletRefresh,
 		MaxBalanceStaleness:       maxBalStaleness,
@@ -178,57 +173,54 @@ func Load() (Config, error) {
 		Markets: []MarketConfig{
 			{
 				// BTC-USDT — tick=0.01, lot=0.00001 (verified from ME main.go)
-				MarketID:        "BTC-USDT",
-				BaseAsset:       "BTC",
-				QuoteAsset:      "USDT",
-				TickSize:        decimal.RequireFromString("0.01"),
-				LotSize:         decimal.RequireFromString("0.00001"),
-				Partition:       btcPart,
-				LevelCount:      12,
-				MinOrderSize:    decimal.RequireFromString("0.00001"),
-				MinBase:         decimal.RequireFromString("30"),      // 30 BTC = normal inventory
-				CriticalBase:    decimal.RequireFromString("5"),       // 5 BTC = critical
-				MinQuote:        decimal.RequireFromString("1000000"), // $1M USDT = normal
-				CriticalQuote:   decimal.RequireFromString("100000"),
-				SpreadBps:       4,
-				ReferencePrice:  btcRef,
-				MaxDeviationPct: maxDevPct,
+				MarketID:       "BTC-USDT",
+				BaseAsset:      "BTC",
+				QuoteAsset:     "USDT",
+				TickSize:       decimal.RequireFromString("0.01"),
+				LotSize:        decimal.RequireFromString("0.00001"),
+				Partition:      btcPart,
+				LevelCount:     12,
+				MinOrderSize:   decimal.RequireFromString("0.00001"),
+				MinBase:        decimal.RequireFromString("30"),      // 30 BTC = normal inventory
+				CriticalBase:   decimal.RequireFromString("5"),       // 5 BTC = critical
+				MinQuote:       decimal.RequireFromString("1000000"), // $1M USDT = normal
+				CriticalQuote:  decimal.RequireFromString("100000"),
+				SpreadBps:      4,
+				ReferencePrice: btcRef,
 			},
 			{
 				// ETH-USDT — tick=0.01, lot=0.0001 (verified from ME main.go)
-				MarketID:        "ETH-USDT",
-				BaseAsset:       "ETH",
-				QuoteAsset:      "USDT",
-				TickSize:        decimal.RequireFromString("0.01"),
-				LotSize:         decimal.RequireFromString("0.0001"),
-				Partition:       ethPart,
-				LevelCount:      12,
-				MinOrderSize:    decimal.RequireFromString("0.0001"),
-				MinBase:         decimal.RequireFromString("100"),
-				CriticalBase:    decimal.RequireFromString("10"),
-				MinQuote:        decimal.RequireFromString("100000"),
-				CriticalQuote:   decimal.RequireFromString("10000"),
-				SpreadBps:       4,
-				ReferencePrice:  ethRef,
-				MaxDeviationPct: maxDevPct,
+				MarketID:       "ETH-USDT",
+				BaseAsset:      "ETH",
+				QuoteAsset:     "USDT",
+				TickSize:       decimal.RequireFromString("0.01"),
+				LotSize:        decimal.RequireFromString("0.0001"),
+				Partition:      ethPart,
+				LevelCount:     12,
+				MinOrderSize:   decimal.RequireFromString("0.0001"),
+				MinBase:        decimal.RequireFromString("100"),
+				CriticalBase:   decimal.RequireFromString("10"),
+				MinQuote:       decimal.RequireFromString("100000"),
+				CriticalQuote:  decimal.RequireFromString("10000"),
+				SpreadBps:      4,
+				ReferencePrice: ethRef,
 			},
 			{
 				// SOL-USDT — tick=0.001, lot=0.01 (verified from ME main.go)
-				MarketID:        "SOL-USDT",
-				BaseAsset:       "SOL",
-				QuoteAsset:      "USDT",
-				TickSize:        decimal.RequireFromString("0.001"),
-				LotSize:         decimal.RequireFromString("0.01"),
-				Partition:       solPart,
-				LevelCount:      12,
-				MinOrderSize:    decimal.RequireFromString("0.01"),
-				MinBase:         decimal.RequireFromString("500"),
-				CriticalBase:    decimal.RequireFromString("50"),
-				MinQuote:        decimal.RequireFromString("20000"),
-				CriticalQuote:   decimal.RequireFromString("2000"),
-				SpreadBps:       4,
-				ReferencePrice:  solRef,
-				MaxDeviationPct: maxDevPct,
+				MarketID:       "SOL-USDT",
+				BaseAsset:      "SOL",
+				QuoteAsset:     "USDT",
+				TickSize:       decimal.RequireFromString("0.001"),
+				LotSize:        decimal.RequireFromString("0.01"),
+				Partition:      solPart,
+				LevelCount:     12,
+				MinOrderSize:   decimal.RequireFromString("0.01"),
+				MinBase:        decimal.RequireFromString("500"),
+				CriticalBase:   decimal.RequireFromString("50"),
+				MinQuote:       decimal.RequireFromString("20000"),
+				CriticalQuote:  decimal.RequireFromString("2000"),
+				SpreadBps:      4,
+				ReferencePrice: solRef,
 			},
 		},
 	}

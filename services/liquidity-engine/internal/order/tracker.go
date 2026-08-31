@@ -11,7 +11,6 @@ package order
 
 import (
 	"fmt"
-	"sync"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -77,25 +76,23 @@ type LiveOrder struct {
 	// State
 	Status Status
 
+	// Kafka dispatch tracking (Fix 4)
+	KafkaPublished bool // true once successfully written to Kafka topic
+
 	// Timing and retry tracking
-	PendingSince        time.Time
-	OSRegisteredSince  time.Time // set when status transitions PENDING → OS_REGISTERED
-	CancellingSince    time.Time
-	CancelRetries      int
+	PendingSince      time.Time
+	OSRegisteredSince time.Time // set when status transitions PENDING → OS_REGISTERED
+	CancellingSince   time.Time
+	CancelRetries     int
 
 	// CORRECT flow: set when a CANCEL is issued to correct a wrong-price order.
 	// After cancel confirms, the reconciler creates a replacement using this level.
 	QueuedCorrection *pricing.PriceLevel
-
-	// Internal
-	mu sync.Mutex // protects CancelRetries and CancellingSince only (timer goroutine may update)
 }
 
-// IncrementCancelRetry atomically increments the retry counter and resets the timer.
-// Called from the CANCELLING timeout handler.
+// IncrementCancelRetry increments the retry counter and resets the timer.
+// Called from the CANCELLING timeout handler inside the single event loop.
 func (o *LiveOrder) IncrementCancelRetry() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
 	o.CancelRetries++
 	o.CancellingSince = time.Now()
 }
@@ -104,7 +101,6 @@ func (o *LiveOrder) IncrementCancelRetry() {
 // The zero value is not usable — use NewTracker().
 //
 // CONCURRENCY: All public methods must be called from the engine's single event loop.
-// The only exception is IncrementCancelRetry (locked internally).
 type Tracker struct {
 	// orders maps LevelID → LiveOrder across all markets.
 	orders map[string]*LiveOrder
@@ -126,23 +122,29 @@ func NewTracker() *Tracker {
 	}
 }
 
-// SetPending adds or updates a level as PENDING after an OrderCreate command is published.
-// orderID is the LE-generated UUID sent in the Kafka OrderCreated command payload.
-// After Fix 3 (RegisterMMOrder), this will be the OS-returned UUID.
+// SetPending adds or updates a level as PENDING after an OrderCreate is registered with Order Service.
 func (t *Tracker) SetPending(levelID, orderID, clientOrderID string, gen int, level pricing.PriceLevel) {
 	t.orders[levelID] = &LiveOrder{
-		LevelID:       levelID,
-		Generation:    gen,
-		OrderID:       orderID,
-		ClientOrderID: clientOrderID,
-		MarketID:      level.MarketID,
-		Side:          level.Side,
-		Price:         level.Price,
-		OriginalQty:   level.Quantity,
-		RemainingQty:  level.Quantity, // assumed full until Order Service confirms partial
-		FilledQty:     decimal.Zero,
-		Status:        StatusPending,
-		PendingSince:  time.Now(),
+		LevelID:        levelID,
+		Generation:     gen,
+		OrderID:        orderID,
+		ClientOrderID:  clientOrderID,
+		MarketID:       level.MarketID,
+		Side:           level.Side,
+		Price:          level.Price,
+		OriginalQty:    level.Quantity,
+		RemainingQty:   level.Quantity, // assumed full until Order Service confirms partial
+		FilledQty:      decimal.Zero,
+		Status:         StatusPending,
+		KafkaPublished: false,
+		PendingSince:   time.Now(),
+	}
+}
+
+// SetKafkaPublished marks Kafka dispatch as confirmed for a pending order.
+func (t *Tracker) SetKafkaPublished(levelID string, published bool) {
+	if o, ok := t.orders[levelID]; ok {
+		o.KafkaPublished = published
 	}
 }
 
@@ -330,11 +332,32 @@ func (t *Tracker) LastSuccessfulSync(marketID string) time.Time {
 }
 
 // SyncFromOrders populates the tracker from a set of live orders returned by ListMMOrders.
-// Existing PENDING or CANCELLING entries are preserved if they don't appear in the OS response.
-// STALE entries are resolved if the OS response clarifies them.
-func (t *Tracker) SyncFromOrders(marketID string, orders []OSOrder) int {
+// Generation numbers are recovered from client_order_id to preserve monotonic ordering across restarts.
+// Duplicate LevelIDs in the OS response are deduplicated by selecting the highest Generation.
+// Recovered orders enter StatusOSRegistered (awaiting ME confirmation window) rather than blindly assuming RESTING.
+// Returns (addedCount, duplicatesCount).
+func (t *Tracker) SyncFromOrders(marketID string, orders []OSOrder) (int, int) {
 	added := 0
+	duplicates := 0
+
+	// Deduplicate incoming orders by LevelID, choosing the highest generation
+	uniqueOrders := make(map[string]OSOrder, len(orders))
 	for _, o := range orders {
+		_, exists := uniqueOrders[o.LevelID]
+		if exists {
+			duplicates++
+		}
+		if !exists || o.Generation > uniqueOrders[o.LevelID].Generation {
+			uniqueOrders[o.LevelID] = o
+		}
+	}
+
+	for _, o := range uniqueOrders {
+		// Update generation map with the highest observed generation
+		if o.Generation > t.generations[o.LevelID] {
+			t.generations[o.LevelID] = o.Generation
+		}
+
 		existing := t.orders[o.LevelID]
 		if existing != nil {
 			// Update authoritative fields from OS response
@@ -342,42 +365,48 @@ func (t *Tracker) SyncFromOrders(marketID string, orders []OSOrder) int {
 			existing.OriginalQty = o.OriginalQty
 			existing.RemainingQty = o.RemainingQty
 			existing.FilledQty = o.OriginalQty.Sub(o.RemainingQty)
-			if existing.Status == StatusPending || existing.Status == StatusStale {
-				existing.Status = StatusResting
+			if existing.Status == StatusPending {
+				existing.Status = StatusOSRegistered
+				existing.OSRegisteredSince = time.Now()
 			}
 			continue
 		}
 
-		// New entry — not in tracker but found in Order Service
-		gen, ok := t.generations[o.LevelID]
-		if !ok {
+		// New entry — recovered from Order Service
+		gen := o.Generation
+		if gen <= 0 {
 			gen = 1
+		}
+		if gen > t.generations[o.LevelID] {
 			t.generations[o.LevelID] = gen
 		}
 
 		t.orders[o.LevelID] = &LiveOrder{
-			LevelID:       o.LevelID,
-			Generation:    gen,
-			ClientOrderID: o.ClientOrderID,
-			OrderID:       o.OrderID,
-			MarketID:      marketID,
-			Side:          o.Side,
-			Price:         o.Price,
-			OriginalQty:   o.OriginalQty,
-			RemainingQty:  o.RemainingQty,
-			FilledQty:     o.OriginalQty.Sub(o.RemainingQty),
-			Status:        StatusResting,
+			LevelID:           o.LevelID,
+			Generation:        gen,
+			ClientOrderID:     o.ClientOrderID,
+			OrderID:           o.OrderID,
+			MarketID:          marketID,
+			Side:              o.Side,
+			Price:             o.Price,
+			OriginalQty:       o.OriginalQty,
+			RemainingQty:      o.RemainingQty,
+			FilledQty:         o.OriginalQty.Sub(o.RemainingQty),
+			Status:            StatusOSRegistered, // recovered from OS, starts in OS_REGISTERED
+			KafkaPublished:    true,
+			OSRegisteredSince: time.Now(),
 		}
 		added++
 	}
 	t.RecordSync(marketID)
-	return added
+	return added, duplicates
 }
 
 // OSOrder is the minimal order representation received from the Order Service.
-// The LevelID is extracted from the idempotency_key field (which equals client_order_id).
+// The LevelID and Generation are extracted from the idempotency_key field (= client_order_id).
 type OSOrder struct {
 	LevelID       string          // extracted from ClientOrderID (prefix before last "-G")
+	Generation    int             // extracted from ClientOrderID (suffix after last "-G")
 	ClientOrderID string          // = idempotency_key from Order Service
 	OrderID       string          // ME/OS-assigned UUID
 	Side          string

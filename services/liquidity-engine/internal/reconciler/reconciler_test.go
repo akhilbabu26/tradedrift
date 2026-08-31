@@ -21,6 +21,7 @@ func (m *mockMetrics) IncReconcileCancel(marketID string)          {}
 func (m *mockMetrics) IncReconcileCorrect(marketID string)         {}
 func (m *mockMetrics) IncReconcileNoop(marketID string)            {}
 func (m *mockMetrics) IncOrdersFilled(marketID, side string)       {}
+func (m *mockMetrics) IncDuplicateMMLevel(marketID string)          {}
 
 func testConfig() *config.Config {
 	return &config.Config{
@@ -70,5 +71,40 @@ func TestRetryCancelOrStale_TransitionsToStale(t *testing.T) {
 	}
 	if tracker.Get(levelID) == nil {
 		t.Error("STALE order must NOT be removed from tracker")
+	}
+}
+
+func TestCheckOSRegisteredTimeouts_GatedByMEHealth(t *testing.T) {
+	tracker := order.NewTracker()
+	cfg := testConfig()
+	logger := zap.NewNop()
+
+	rec := NewReconciler(tracker, nil, nil, cfg, logger, &mockMetrics{})
+
+	levelID := "MM-BTC-USDT-BID-01"
+	orderID := "00000000-0000-0000-0000-000000000002"
+	tracker.SetPending(levelID, orderID, "MM-BTC-USDT-BID-01-G001", 1, pricing.PriceLevel{
+		LevelID:  levelID,
+		MarketID: "BTC-USDT",
+		Side:     "BUY",
+		Price:    decimal.RequireFromString("96400.00"),
+		Quantity: decimal.RequireFromString("1.0"),
+	})
+	tracker.SetOSRegistered(levelID, orderID, decimal.RequireFromString("1.0"), decimal.RequireFromString("1.0"))
+
+	liveOrder := tracker.Get(levelID)
+	// Simulate elapsed timeout
+	liveOrder.OSRegisteredSince = time.Now().Add(-1 * time.Second)
+
+	// Case A: ME is unhealthy -> must NOT promote to RESTING
+	rec.CheckOSRegisteredTimeouts("BTC-USDT", 10*time.Millisecond, false)
+	if liveOrder.Status != order.StatusOSRegistered {
+		t.Errorf("expected status to remain OS_REGISTERED when ME is unhealthy, got %s", liveOrder.Status)
+	}
+
+	// Case B: ME is healthy -> promotes to RESTING
+	rec.CheckOSRegisteredTimeouts("BTC-USDT", 10*time.Millisecond, true)
+	if liveOrder.Status != order.StatusResting {
+		t.Errorf("expected status to transition to RESTING when ME is healthy, got %s", liveOrder.Status)
 	}
 }

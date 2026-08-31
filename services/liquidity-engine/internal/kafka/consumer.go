@@ -53,16 +53,24 @@ type tradeExecutedMessage struct {
 	ExecutedAt   string `json:"executed_at"`
 }
 
-// Consumer reads from trades.executed and sends TradeEvents to the engine event channel.
+// TradeEnvelope wraps a TradeEvent with an acknowledgement channel.
+// The Kafka message offset is committed only after the engine's event loop
+// has completed all trade-derived state updates and closed Ack.
+type TradeEnvelope struct {
+	Event TradeEvent
+	Ack   chan struct{}
+}
+
+// Consumer reads from trades.executed and sends TradeEnvelopes to the engine event channel.
 // It runs in its own goroutine — it ONLY sends to the channel, never modifies state.
 type Consumer struct {
 	reader *kafkago.Reader
-	events chan<- TradeEvent
+	events chan<- TradeEnvelope
 	logger *zap.Logger
 }
 
-// NewConsumer creates a new trades.executed consumer.
-func NewConsumer(brokers []string, groupID string, events chan<- TradeEvent, logger *zap.Logger) *Consumer {
+// NewConsumer creates a new trades.executed consumer with explicit manual commit semantics.
+func NewConsumer(brokers []string, groupID string, events chan<- TradeEnvelope, logger *zap.Logger) *Consumer {
 	return &Consumer{
 		reader: kafkago.NewReader(kafkago.ReaderConfig{
 			Brokers:        brokers,
@@ -71,7 +79,7 @@ func NewConsumer(brokers []string, groupID string, events chan<- TradeEvent, log
 			MinBytes:       1,
 			MaxBytes:       10e6,
 			MaxWait:        500 * time.Millisecond,
-			CommitInterval: 1 * time.Second, // auto-commit — LE is idempotent on replay
+			CommitInterval: 0, // strict manual commit only — commit after engine processes
 		}),
 		events: events,
 		logger: logger,
@@ -104,19 +112,28 @@ func (c *Consumer) Run(ctx context.Context) {
 			continue
 		}
 
-		// Block until the event loop accepts the trade event.
-		// Do NOT drop events — a dropped trade permanently corrupts inventory
-		// until the next authoritative wallet refresh.
-		// Backpressure here is intentional: if the event loop is slow, the
-		// Kafka consumer waits. Commit only after event is accepted.
+		ack := make(chan struct{})
+		env := TradeEnvelope{
+			Event: *event,
+			Ack:   ack,
+		}
+
+		// Block until the event loop accepts the trade envelope.
 		select {
-		case c.events <- *event:
+		case c.events <- env:
 		case <-ctx.Done():
 			return
 		}
 
-		if err := c.reader.CommitMessages(ctx, msg); err != nil {
-			c.logger.Warn("failed to commit trade message", zap.Error(err))
+		// Wait for the engine event loop to finish all state mutations for this trade
+		// before committing the Kafka message offset.
+		select {
+		case <-ack:
+			if err := c.reader.CommitMessages(ctx, msg); err != nil {
+				c.logger.Warn("failed to commit trade message after processing", zap.Error(err))
+			}
+		case <-ctx.Done():
+			return
 		}
 	}
 }

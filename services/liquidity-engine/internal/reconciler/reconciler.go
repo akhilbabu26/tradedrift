@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"tradedrift/services/liquidity-engine/internal/config"
@@ -48,6 +47,7 @@ type ReconcilerMetrics interface {
 	IncReconcileCorrect(marketID string)
 	IncReconcileNoop(marketID string)
 	IncOrdersFilled(marketID, side string)
+	IncDuplicateMMLevel(marketID string)
 }
 
 // NewReconciler creates a new Reconciler.
@@ -137,7 +137,7 @@ func (r *Reconciler) applyCreate(ctx context.Context, e order.DiffEntry, mc *con
 	gen := r.tracker.NextGeneration(e.LevelID)
 	clientOrderID := order.ClientOrderID(e.LevelID, gen)
 
-	// Step 1: Register in Order Service (idempotent, skips wallet ReserveFunds for MM)
+	// Step 1: Register in Order Service (idempotent, skips wallet ReserveFunds and outbox for MM)
 	osOrder, err := r.orderSvc.CreateMMOrder(ctx,
 		mc.MarketID,
 		e.DesiredLevel.Side,
@@ -151,7 +151,7 @@ func (r *Reconciler) applyCreate(ctx context.Context, e order.DiffEntry, mc *con
 
 	orderID := osOrder.OrderID
 
-	// Step 2: Set PENDING in tracker with OS-assigned orderID
+	// Step 2: Set PENDING in tracker with OS-assigned orderID (KafkaPublished initially false)
 	r.tracker.SetPending(e.LevelID, orderID, clientOrderID, gen, *e.DesiredLevel)
 
 	// Step 3: Publish OrderCreated command to Kafka
@@ -165,13 +165,14 @@ func (r *Reconciler) applyCreate(ctx context.Context, e order.DiffEntry, mc *con
 		e.DesiredLevel.Quantity.String(),
 	)
 	if err != nil {
-		r.logger.Warn("kafka publish OrderCreated failed after OS registration — tracker is PENDING and will retry",
+		r.logger.Warn("kafka publish OrderCreated failed after OS registration — will retry with same orderID on next cycle",
 			zap.String("level_id", e.LevelID),
 			zap.String("order_id", orderID),
 			zap.Error(err))
 		return fmt.Errorf("publish OrderCreated for %s: %w", e.LevelID, err)
 	}
 
+	r.tracker.SetKafkaPublished(e.LevelID, true)
 	r.metrics.IncReconcileCreate(mc.MarketID)
 
 	r.logger.Info("published OrderCreated with OS registration",
@@ -228,10 +229,43 @@ func (r *Reconciler) CheckPendingTimeouts(ctx context.Context, marketID string) 
 			continue
 		}
 
+		// If Kafka publication previously failed, retry publishing the exact same command!
+		// INVARIANT: orderID, clientOrderID, and generation remain identical across retries.
+		if !o.KafkaPublished {
+			r.logger.Info("retrying Kafka publish for unconfirmed PENDING order",
+				zap.String("level_id", o.LevelID),
+				zap.String("order_id", o.OrderID),
+				zap.String("client_order_id", o.ClientOrderID))
+
+			err := r.producer.PublishCreate(ctx,
+				mc.MarketID,
+				mc.Partition,
+				o.OrderID,
+				o.ClientOrderID,
+				o.Side,
+				o.Price.String(),
+				o.OriginalQty.String(),
+			)
+			if err != nil {
+				r.logger.Warn("Kafka publish retry failed — will retry again on next check",
+					zap.String("level_id", o.LevelID),
+					zap.Error(err))
+				timedOut = true
+				continue
+			}
+			r.tracker.SetKafkaPublished(o.LevelID, true)
+			r.logger.Info("Kafka publish retry succeeded", zap.String("level_id", o.LevelID))
+		}
+
 		r.logger.Info("PENDING timeout — checking Order Service",
 			zap.String("level_id", o.LevelID),
 			zap.String("client_order_id", o.ClientOrderID),
 			zap.Duration("age", age))
+
+		if r.orderSvc == nil {
+			timedOut = true
+			continue
+		}
 
 		osState, err := r.orderSvc.GetOrderByClientID(ctx, o.ClientOrderID)
 		if err != nil {
@@ -298,11 +332,18 @@ func (r *Reconciler) CheckPendingTimeouts(ctx context.Context, marketID string) 
 	return r.consecutivePendingTimeouts[marketID]
 }
 
-// CheckOSRegisteredTimeouts promotes OS_REGISTERED orders to RESTING after MEConfirmationTimeout.
+// CheckOSRegisteredTimeouts promotes OS_REGISTERED orders to RESTING after MEConfirmationTimeout,
+// provided the Matching Engine is currently healthy (no consecutive ME timeouts).
 // This is the V1 proxy for ME confirmation: if OS has the order and ME is healthy,
 // we assume ME has accepted it after sufficient time has elapsed.
 // V2 should replace this with a direct OrderRested event from the ME.
-func (r *Reconciler) CheckOSRegisteredTimeouts(marketID string, meConfirmationTimeout time.Duration) {
+func (r *Reconciler) CheckOSRegisteredTimeouts(marketID string, meConfirmationTimeout time.Duration, meHealthy bool) {
+	if !meHealthy {
+		r.logger.Warn("ME is unhealthy — holding OS_REGISTERED orders without promoting to RESTING",
+			zap.String("market_id", marketID))
+		return
+	}
+
 	allOrders := r.tracker.All(marketID)
 	for _, o := range allOrders {
 		if o.Status != order.StatusOSRegistered {
@@ -311,7 +352,7 @@ func (r *Reconciler) CheckOSRegisteredTimeouts(marketID string, meConfirmationTi
 		if time.Since(o.OSRegisteredSince) < meConfirmationTimeout {
 			continue
 		}
-		r.logger.Info("OS_REGISTERED order promoted to RESTING (ME confirmation timeout)",
+		r.logger.Info("OS_REGISTERED order promoted to RESTING (ME healthy & confirmation timeout elapsed)",
 			zap.String("level_id", o.LevelID),
 			zap.String("order_id", o.OrderID),
 			zap.Duration("elapsed", time.Since(o.OSRegisteredSince)))
@@ -367,17 +408,31 @@ func (r *Reconciler) handleCancellingTimeout(ctx context.Context, o *order.LiveO
 			desired := *o.QueuedCorrection
 			gen := r.tracker.NextGeneration(o.LevelID)
 			clientOrderID := order.ClientOrderID(o.LevelID, gen)
-			orderID := uuid.New().String()
 
-			if err := r.producer.PublishCreate(ctx, mc.MarketID, mc.Partition,
-				orderID, clientOrderID, desired.Side,
-				desired.Price.String(), desired.Quantity.String()); err != nil {
-				r.logger.Error("failed to publish CORRECT replacement",
+			// Register replacement with Order Service
+			osOrder, err := r.orderSvc.CreateMMOrder(ctx, mc.MarketID, desired.Side,
+				desired.Price.String(), desired.Quantity.String(), clientOrderID)
+			if err != nil {
+				r.logger.Error("failed to register CORRECT replacement in Order Service",
 					zap.String("level_id", o.LevelID),
 					zap.Error(err))
 				return
 			}
+
+			orderID := osOrder.OrderID
 			r.tracker.SetPending(o.LevelID, orderID, clientOrderID, gen, desired)
+
+			if err := r.producer.PublishCreate(ctx, mc.MarketID, mc.Partition,
+				orderID, clientOrderID, desired.Side,
+				desired.Price.String(), desired.Quantity.String()); err != nil {
+				r.logger.Warn("failed to publish CORRECT replacement to Kafka — will retry in CheckPendingTimeouts",
+					zap.String("level_id", o.LevelID),
+					zap.String("order_id", orderID),
+					zap.Error(err))
+				return
+			}
+
+			r.tracker.SetKafkaPublished(o.LevelID, true)
 			r.logger.Info("CORRECT replacement published",
 				zap.String("level_id", o.LevelID),
 				zap.String("new_client_order_id", clientOrderID),
@@ -437,17 +492,34 @@ func (r *Reconciler) retryCancelOrStale(ctx context.Context, o *order.LiveOrder,
 }
 
 // SyncFromOrderService calls ListMMOrders and updates the tracker.
+// Missing orders are resolved based on their current status:
+// - RESTING, OS_REGISTERED, STALE: removed
+// - CANCELLING: removed, and any QueuedCorrection replacement is created
+// - PENDING: retained for CheckPendingTimeouts
 func (r *Reconciler) SyncFromOrderService(ctx context.Context, marketID string) error {
+	mc := r.cfg.ForMarket(marketID)
+	if mc == nil {
+		return fmt.Errorf("unknown market %s", marketID)
+	}
+
 	osOrders, err := r.orderSvc.ListMMOrders(ctx, marketID)
 	if err != nil {
 		return fmt.Errorf("ListMMOrders for %s: %w", marketID, err)
 	}
 
-	added := r.tracker.SyncFromOrders(marketID, osOrders)
+	added, duplicates := r.tracker.SyncFromOrders(marketID, osOrders)
+	if duplicates > 0 {
+		r.logger.Warn("duplicate LevelIDs detected in Order Service active response",
+			zap.String("market_id", marketID),
+			zap.Int("duplicate_count", duplicates))
+		r.metrics.IncDuplicateMMLevel(marketID)
+	}
+
 	r.logger.Info("synced from Order Service",
 		zap.String("market_id", marketID),
 		zap.Int("orders_found", len(osOrders)),
-		zap.Int("new_entries", added))
+		zap.Int("new_entries", added),
+		zap.Int("duplicates", duplicates))
 
 	osLevelIDs := make(map[string]bool, len(osOrders))
 	for _, o := range osOrders {
@@ -455,11 +527,62 @@ func (r *Reconciler) SyncFromOrderService(ctx context.Context, marketID string) 
 	}
 
 	for _, tracked := range r.tracker.All(marketID) {
-		if tracked.Status == order.StatusResting && !osLevelIDs[tracked.LevelID] {
-			r.logger.Info("order gone from OS — removing from tracker",
-				zap.String("level_id", tracked.LevelID),
-				zap.String("client_order_id", tracked.ClientOrderID))
-			r.tracker.Remove(tracked.LevelID)
+		if !osLevelIDs[tracked.LevelID] {
+			switch tracked.Status {
+			case order.StatusResting, order.StatusOSRegistered, order.StatusStale:
+				r.logger.Info("inactive order absent from OS — removing from tracker",
+					zap.String("level_id", tracked.LevelID),
+					zap.String("status", string(tracked.Status)),
+					zap.String("client_order_id", tracked.ClientOrderID))
+				r.tracker.Remove(tracked.LevelID)
+
+			case order.StatusCancelling:
+				r.logger.Info("CANCELLING order confirmed absent from OS — removing and handling queued correction",
+					zap.String("level_id", tracked.LevelID),
+					zap.String("client_order_id", tracked.ClientOrderID))
+				r.tracker.Remove(tracked.LevelID)
+
+				if tracked.QueuedCorrection != nil {
+					desired := *tracked.QueuedCorrection
+					gen := r.tracker.NextGeneration(tracked.LevelID)
+					clientOrderID := order.ClientOrderID(tracked.LevelID, gen)
+
+					// Register replacement order in Order Service (new generation, new COID, new OID)
+					osOrder, err := r.orderSvc.CreateMMOrder(ctx, mc.MarketID, desired.Side,
+						desired.Price.String(), desired.Quantity.String(), clientOrderID)
+					if err != nil {
+						r.logger.Error("failed to register queued replacement in Order Service during resync",
+							zap.String("level_id", tracked.LevelID),
+							zap.Error(err))
+						continue
+					}
+
+					orderID := osOrder.OrderID
+					r.tracker.SetPending(tracked.LevelID, orderID, clientOrderID, gen, desired)
+
+					if err := r.producer.PublishCreate(ctx, mc.MarketID, mc.Partition,
+						orderID, clientOrderID, desired.Side,
+						desired.Price.String(), desired.Quantity.String()); err != nil {
+						r.logger.Warn("failed to publish queued replacement to Kafka during resync — will retry in CheckPendingTimeouts",
+							zap.String("level_id", tracked.LevelID),
+							zap.String("order_id", orderID),
+							zap.Error(err))
+						continue
+					}
+
+					r.tracker.SetKafkaPublished(tracked.LevelID, true)
+					r.logger.Info("queued correction replacement registered and published during resync",
+						zap.String("level_id", tracked.LevelID),
+						zap.String("new_client_order_id", clientOrderID),
+						zap.String("order_id", orderID))
+				}
+
+			case order.StatusPending:
+				// Retain PENDING in tracker so CheckPendingTimeouts handles Kafka publish retry or OS verification
+				r.logger.Debug("retaining PENDING order during resync",
+					zap.String("level_id", tracked.LevelID),
+					zap.String("client_order_id", tracked.ClientOrderID))
+			}
 		}
 	}
 

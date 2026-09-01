@@ -10,6 +10,7 @@ type CreateOrderRequestDTO struct {
 	MarketID  string `json:"market_id"`
 	Side      string `json:"side"`       // "BUY" or "SELL"
 	OrderType string `json:"order_type"` // "LIMIT" or "MARKET"
+	Type      string `json:"type"`       // alias for order_type
 	Price     string `json:"price"`      // required for LIMIT
 	Quantity  string `json:"quantity"`
 }

@@ -1,80 +1,98 @@
-# `internal/orderservice` — Order Service gRPC Client
+# package `orderservice`
 
-**Package:** `orderservice`  
-**Service:** Liquidity Engine  
-**Last Updated:** August 2026
+## Purpose
 
----
+Provides a **read-only gRPC client** for the Order Service. The LE uses it for startup discovery, pending order verification, and cancellation confirmation. The LE also uses `CreateMMOrder` to register new orders in the OS before publishing Kafka commands — this is for crash recovery, not for order execution.
 
-## 1. What This Package Does
+## Problem It Solves
 
-This package provides a **gRPC client** for the Order Service. The Liquidity Engine uses it for two primary purposes:
-1. **MM Order Registration (`CreateMMOrder`)**: Prior to publishing an `OrderCreated` command to Kafka, the LE registers the order with the Order Service. This ensures the order is persisted in PostgreSQL with an authoritative UUID and `idempotency_key` (`client_order_id`) for crash recovery. For MM orders (`account.WalletUUIDStr`), the Order Service skips Wallet `ReserveFunds` and skips enqueuing an `outbox` record.
-2. **Authoritative State Queries & Recovery (`ListMMOrders`, `GetOrderByClientID`)**: Used on startup to populate the order tracker with existing orders and recover generation numbers (`-G003`), and during periodic resync and timeout resolution.
+If the LE crashes after publishing an `OrderCreated` Kafka command but before storing the order in any durable state, the order would be lost from the LE's tracker on restart. The ME would have it, but the LE would try to create a duplicate with the same level ID on next startup.
 
----
+The LE solves this by registering every new order in the Order Service (via gRPC `CreateOrder` with an idempotency key) **before** publishing to Kafka. On restart, `ListMMOrders` recovers all order entries, and the `client_order_id` (idempotency key) encodes the `LevelID` and `Generation` so the tracker can be fully reconstructed.
 
-## 2. Files In This Package
-
-| File | Purpose |
-| :--- | :--- |
-| `client.go` | `Client` struct, `OrderState`, `CreateMMOrder`, `ListMMOrders`, `GetOrderByClientID`, `IsAvailable` |
-| `README.md` | This documentation file |
-
----
-
-## 3. The Architecture Contract & Authority Split
+## How It Solves It
 
 ```
-                       Liquidity Engine
-                              │
-               1. Register    │ 2. Command
-               CreateMMOrder  │    Publish
-                              ▼
-┌──────────────────┐               ┌──────────────────┐
-│  Order Service   │               │   Kafka Topic    │
-│                  │               │ orders.commands  │
-│  PostgreSQL      │               └────────┬─────────┘
-│  (MM Order DB)   │                        │
-│                  │                        ▼
-│  - No Reserve    │               ┌──────────────────┐
-│  - No Outbox     │               │ Matching Engine  │
-└──────────────────┘               │                  │
-                                   │  idempotency by  │
-                                   │     orderID      │
-                                   └────────┬─────────┘
-                                            │
-                                            ▼
-                                       Order Book
-```
+Order Creation (3-step, crash-safe):
+  1. orderSvc.CreateMMOrder()   OS assigns UUID, stores order idempotently
+  2. tracker.SetPending()        in-memory state updated
+  3. producer.PublishCreate()    Kafka command sent to ME
 
-| Responsibility | Authoritative Service |
-| :--- | :--- |
-| MM Order Persistence & Recovery | Order Service (PostgreSQL) |
-| MM Command Publishing | Liquidity Engine (Sole Kafka publisher) |
-| Live Order Book & Execution | Matching Engine |
-| User Funds Reservation | Wallet Service / Order Service |
-| MM Inventory Tracking | Liquidity Engine / Wallet Service |
+Crash between step 2 and 3:
+  On restart, ListMMOrders() recovers the OS record.
+  tracker.SyncFromOrders() sets it to OS_REGISTERED.
+  CheckPendingTimeouts() retries the Kafka publish with the same orderID.
+```
 
 ---
 
-## 4. Method Overview
+## Flow: Startup Recovery via ListMMOrders
 
-| Method | Purpose | Called by |
-| :--- | :--- | :--- |
-| `CreateMMOrder` | Pre-register MM order before Kafka publish | `reconciler.applyCreate` |
-| `ListMMOrders` | Startup & periodic recovery of live MM orders | `reconciler.SyncFromOrderService` |
-| `GetOrderByClientID` | Query state by `client_order_id` (idempotency key) | `reconciler.CheckPendingTimeouts`, `handleCancellingTimeout` |
-| `IsAvailable` | Health probe checking reachability | `health.Server` |
+```
+engine.Run() StateSyncing
+         │
+         ▼
+  reconciler.SyncFromOrderService(ctx, marketID)
+         │
+         ▼
+  orderSvc.ListMMOrders(ctx, marketID)
+         │
+         ├── ListOrders(userId=MM-UUID, status=OPEN)
+         ├── ListOrders(userId=MM-UUID, status=PARTIALLY_FILLED)
+         │
+         └── for each order with idempotency_key:
+               parseLevelFromClientOrderID("MM-BTC-USDT-ASK-01-G003")
+               levelID="MM-BTC-USDT-ASK-01", gen=3
+               → []OSOrder
+         │
+         ▼
+  tracker.SyncFromOrders(marketID, osOrders)
+    tracker populated with OS_REGISTERED entries
+    generation counters restored
+```
 
 ---
 
-## 5. Generation Recovery Across Restarts
+## Flow: Pending Timeout Verification
 
-`client_order_id` follows the format:
 ```
-"MM-BTC-USDT-ASK-01-G003"
-    │               │
-    ├── LevelID     └── Generation = 3
+CheckPendingTimeouts() finds a PENDING order past timeout
+         │
+         ▼
+  orderSvc.GetOrderByClientID(ctx, "MM-BTC-USDT-ASK-01-G003")
+         │
+         ├── extracts marketID from levelID via parseMarketFromLevelID
+         ├── ListOrders(userId=MM-UUID, marketID=BTC-USDT)
+         └── scans result for matching idempotency_key
+               ├── found → return OrderState{Status, OrderID, Qty}
+               └── not found → return ErrOrderNotFound
 ```
-On engine startup, `ListMMOrders` extracts `Generation` and assigns it to `order.OSOrder`. The tracker initializes `generations[levelID] = max(generations[levelID], order.Generation)` so that subsequent replacements monotonically advance (e.g. `G004`).
+
+---
+
+## Files
+
+### [`client.go`](./client.go)
+
+| Symbol | Kind | Purpose |
+|:---|:---|:---|
+| `ErrOrderNotFound` | `var error` | Sentinel returned when no order matches the `client_order_id`. |
+| `OrderState` | `struct` | LE's view of one OS order: `OrderID`, `ClientOrderID`, `Status`, `OriginalQty`, `RemainingQty`. |
+| `Client` | `struct` | Thin wrapper around the Order Service gRPC client. |
+| `NewClient(addr, logger)` | `func` | Dials the Order Service (insecure). Returns error if dial fails. |
+| `Close()` | `func` | Closes the gRPC connection. |
+| `CreateMMOrder(ctx, ...)` | `func` | Registers an MM order in OS idempotently using `clientOrderID` as `IdempotencyKey`. Returns OS-assigned `OrderID`. Safe to retry with the same `clientOrderID`. |
+| `ListMMOrders(ctx, marketID)` | `func` | Fetches all OPEN + PARTIALLY_FILLED MM-001 orders. Parses `idempotency_key` to extract `LevelID`/`Generation`. Skips orders with missing or unparseable keys. Returns `[]order.OSOrder`. |
+| `GetOrderByClientID(ctx, clientOrderID)` | `func` | Looks up a single order by `client_order_id`. Extracts `marketID` from the level ID for a targeted query. Returns `ErrOrderNotFound` if absent. |
+| `IsAvailable(ctx)` | `func` | Lightweight reachability check. Returns `false` on any error. |
+| `parseLevelFromClientOrderID(id)` | `func` (internal) | Splits `"MM-BTC-USDT-ASK-01-G003"` into `levelID` and `gen`. Searches for the last `-G` suffix. |
+| `parseMarketFromLevelID(levelID)` | `func` (internal) | Extracts `"BTC-USDT"` from `"MM-BTC-USDT-ASK-01"`. |
+| `protoStatusToString(s)` | `func` (internal) | Converts Order Service proto `OrderStatus` enum to string. |
+
+---
+
+## Important Notes
+
+- The LE **never calls CancelOrder via gRPC** — cancels are sent as Kafka commands only.
+- All OS queries use `account.WalletUUIDStr` (UUID format). The string `"MM-001"` is only used in Kafka payloads.
+- `CreateMMOrder` bypasses the Wallet Service `ReserveFunds` path — MM orders are exempt from balance reservation inside the Order Service.

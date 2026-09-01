@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/shopspring/decimal"
+
+	"tradedrift/services/liquidity-engine/internal/pricing"
 )
 
 func TestTracker_GenerationRecovery(t *testing.T) {
@@ -144,5 +146,38 @@ func TestTracker_DuplicateLevelIDResolution(t *testing.T) {
 	}
 	if recovered.OrderID != "77777777-7777-7777-7777-777777777777" {
 		t.Errorf("expected OrderID 77777777..., got %s", recovered.OrderID)
+	}
+}
+
+func TestTracker_RestingCountVsActiveCount(t *testing.T) {
+	tr := NewTracker()
+
+	// Add a RESTING bid and an OS_REGISTERED bid
+	tr.SetPending("MM-BTC-USDT-BID-01", "ord-1", "MM-BTC-USDT-BID-01-G001", 1, pricing.PriceLevel{
+		LevelID:  "MM-BTC-USDT-BID-01",
+		MarketID: "BTC-USDT",
+		Side:     "BUY",
+		Price:    decimal.RequireFromString("95000"),
+		Quantity: decimal.RequireFromString("1.0"),
+	})
+	tr.SetResting("MM-BTC-USDT-BID-01", "ord-1", decimal.NewFromInt(1), decimal.NewFromInt(1))
+
+	tr.SetPending("MM-BTC-USDT-BID-02", "ord-2", "MM-BTC-USDT-BID-02-G001", 1, pricing.PriceLevel{
+		LevelID:  "MM-BTC-USDT-BID-02",
+		MarketID: "BTC-USDT",
+		Side:     "BUY",
+		Price:    decimal.RequireFromString("94900"),
+		Quantity: decimal.RequireFromString("1.0"),
+	})
+	tr.SetOSRegistered("MM-BTC-USDT-BID-02", "ord-2", decimal.NewFromInt(1), decimal.NewFromInt(1))
+
+	// ActiveCount includes both RESTING and OS_REGISTERED
+	if tr.ActiveCount("BTC-USDT", "BUY") != 2 {
+		t.Errorf("expected ActiveCount to be 2, got %d", tr.ActiveCount("BTC-USDT", "BUY"))
+	}
+
+	// RestingCount includes strictly RESTING
+	if tr.RestingCount("BTC-USDT", "BUY") != 1 {
+		t.Errorf("expected RestingCount to be 1, got %d", tr.RestingCount("BTC-USDT", "BUY"))
 	}
 }

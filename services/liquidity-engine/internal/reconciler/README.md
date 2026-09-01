@@ -1,80 +1,167 @@
-# `internal/reconciler` — MM Order Reconciliation Engine
+# package `reconciler`
 
-**Package:** `reconciler`  
-**Service:** Liquidity Engine  
-**Last Updated:** August 2026
+## Purpose
 
----
+Applies `Diff()` results as real Kafka commands and manages the full **PENDING → OS_REGISTERED → RESTING → CANCELLING → STALE** state machine via timeout handlers.
 
-## 1. What This Package Does
+## Problem It Solves
 
-This package is the **heart of reliable MM operation**. It takes the diff between the *desired* ladder state and the *actual* tracked state, then registers orders with Order Service and publishes the minimum necessary Kafka commands to close the gap. It also manages the full `PENDING → OS_REGISTERED → RESTING → CANCELLING → CANCELLED/STALE` order lifecycle with timeout-based resolution.
+Diff() tells us *what* needs to change. The reconciler answers *how* to make that change safely:
 
-The core invariant:
-> **No diff → No Kafka command.**  
-> The LE never blindly re-sends orders. It only acts when the actual state diverges from desired.
+1. **CREATE**: An order needs a stable idempotency key, an OS registration (for recovery across restarts), and a Kafka command — in that specific order.
+2. **CANCEL/CORRECT**: A cancel must use the ME-assigned order UUID (not the `client_order_id`), must be retried if the OS doesn't confirm in time, and must escalate to STALE if the retry limit is exceeded.
+3. **Timeout handling**: PENDING orders that never appear in OS, OS_REGISTERED orders waiting for ME confirmation, and CANCELLING orders that aren't confirmed all require periodic re-examination and specific resolution paths.
 
----
+## How It Solves It
 
-## 2. Files In This Package
-
-| File | Purpose |
-| :--- | :--- |
-| `reconciler.go` | `Reconciler` struct, `ReconcileMarket`, all lifecycle handlers |
-| `reconciler_test.go` | Unit tests for reconcile cycles |
-| `README.md` | This documentation file |
+The reconciler is split into three files:
+- **`reconciler.go`**: Runs the reconcile cycle and applies Diff entries.
+- **`sync.go`**: Pulls authoritative state from the Order Service.
+- **`timeouts.go`**: Handles stuck PENDING, OS_REGISTERED, and CANCELLING orders.
 
 ---
 
-## 3. Create Ordering & Safe Lifecycle
+## Flow: Full Reconcile Cycle
 
 ```
-1. CreateMMOrder (Order Service gRPC)
-   ↳ Order persisted in PostgreSQL (authoritative UUID assigned)
-   ↳ Outbox and wallet fund reservation skipped for MM UUID
-
-2. SetPending(levelID, orderID, clientOrderID, gen, desired)
-   ↳ LiveOrder created in tracker with StatusPending, KafkaPublished = false
-
-3. PublishCreate (Kafka orders.commands)
-   ↳ If success: tracker.SetKafkaPublished(levelID, true)
-   ↳ If failure: logged as warning; tracker retains KafkaPublished = false
-
-4. CheckPendingTimeouts
-   ↳ If !KafkaPublished: retry Kafka publish with SAME orderID, clientOrderID, gen
-   ↳ If KafkaPublished: query Order Service via GetOrderByClientID
-   ↳ When OS confirms OPEN: transition to OS_REGISTERED (notFoundCount reset to 0)
-
-5. CheckOSRegisteredTimeouts
-   ↳ After ME confirmation window with healthy ME liveness: transition to RESTING
+engine.runReconcileAll()
+         │
+         ▼
+  reconciler.ReconcileMarket(ctx, marketID, bidCount, askCount)
+         │
+         ├── pricing.GenerateLadder(mc, bidCount, askCount) → desired []PriceLevel
+         │
+         ├── order.Diff(desired, tracker, marketID, cfg) → []DiffEntry
+         │
+         └── for each DiffEntry:
+               │
+               ├─ DiffCreate ──→ applyCreate()
+               │                  1. orderSvc.CreateMMOrder() → get orderID
+               │                  2. tracker.SetPending()
+               │                  3. producer.PublishCreate() → Kafka
+               │                  4. tracker.SetKafkaPublished(true)
+               │
+               ├─ DiffCancel ──→ applyCancel()
+               │                  1. producer.PublishCancel() → Kafka
+               │                  2. tracker.SetCancelling()
+               │
+               └─ DiffCorrect → applyCancel() + tracker.QueueCorrection()
+                                  (replacement created after cancel confirmed)
 ```
 
 ---
 
-## 4. Timeout and Retry Thresholds
+## Flow: Pending Timeout Check
 
-| Mechanism | Configuration | Default | Purpose |
-| :--- | :--- | :--- | :--- |
-| `PENDING` Timeout | `PENDING_TIMEOUT` | 10s | Re-checks OS or retries Kafka publish |
-| Not Found Threshold | `notFoundThreshold` | 3 misses | Grace window for DB commit before marking liveness failure |
-| `CANCELLING` Timeout | `CANCELLING_TIMEOUT` | 30s | Checks OS for cancel confirmation; retries up to limit |
-| Cancel Retry Limit | `CANCEL_RETRY_LIMIT` | 3 | Transitions unresolvable cancel to `STALE` |
+```
+handlePendingCheck() [every PendingTimeout/2]
+         │
+         ▼
+  CheckPendingTimeouts(ctx, marketID)
+         │
+         └── for each PENDING order older than PendingTimeout:
+               │
+               ├── KafkaPublished == false?
+               │     → retry producer.PublishCreate() with same orderID/COID
+               │
+               └── KafkaPublished == true?
+                     → orderSvc.GetOrderByClientID()
+                           │
+                           ├── OPEN / PARTIALLY_FILLED → SetOSRegistered()
+                           ├── FILLED → Remove() + IncOrdersFilled
+                           ├── CANCELLED → Remove()
+                           └── NOT_FOUND (3 consecutive) → count liveness failure
+```
 
 ---
 
-## 5. Architectural Contracts & Guarantees
+## Flow: OS_REGISTERED Timeout
 
-1. **Kafka Delivery & Duplicate Suppression:**
-   - Trade event consumption follows an **At-Least-Once** delivery model.
-   - Kafka message offsets are committed manually only *after* all trade mutations (`inv.ApplyTrade`, tracker updates, dirty market flagging) are complete.
-   - Replay duplicate protection is provided via bounded in-memory `TradeID` deduplication (LRU up to 1,000 trades).
+```
+CheckOSRegisteredTimeouts(marketID, meConfirmationTimeout, meHealthy)
+         │
+         ├── meHealthy == false? → hold all OS_REGISTERED, do nothing
+         │
+         └── for each OS_REGISTERED older than meConfirmationTimeout:
+               → SetResting()
+               (ME assumed accepted after sufficient time with healthy ME probe)
+```
 
-2. **`OS_REGISTERED → RESTING` Promotion Semantics (V1):**
-   - In V1, promotion from `OS_REGISTERED` to `RESTING` represents a **best-effort ME acceptance inference**:
-     $$\text{OS has persisted order} \land \text{ME liveness healthy} \land \text{Elapsed confirmation window} \implies \text{Order assumed RESTING}$$
-   - V2 will replace this time-based proxy with a direct `OrderRested` Kafka event emitted by the Matching Engine.
+---
 
-3. **Order Service Authoritative Snapshot Contract:**
-   - A successful response from `ListMMOrders()` is treated as an authoritative and complete active order snapshot.
-   - Missing orders in `RESTING`, `OS_REGISTERED`, or `STALE` states are cleanly removed from the tracker. Missing `CANCELLING` orders trigger creation of any `QueuedCorrection` with a new generation and new `ClientOrderID`.
-   - In the event of an Order Service error, the resync aborts without mutating local tracker state.
+## Flow: Cancelling Timeout
+
+```
+CheckCancellingTimeouts(ctx, marketID) [every CancellingTimeout/2]
+         │
+         └── for each CANCELLING order older than CancellingTimeout:
+               → handleCancellingTimeout()
+                     │
+                     ├── orderSvc.GetOrderByClientID()
+                     │         │
+                     │         ├── CANCELLED → Remove()
+                     │         │     QueuedCorrection? → create replacement
+                     │         │
+                     │         ├── FILLED → Remove() + IncOrdersFilled
+                     │         │
+                     │         └── OPEN / CANCELLING → retryCancelOrStale()
+                     │
+                     └── retryCancelOrStale()
+                           retries < limit? → PublishCancel() + IncrementCancelRetry()
+                           retries >= limit? → SetStale() + IncStaleOrders
+```
+
+---
+
+## Flow: OS Resync
+
+```
+syncAllMarkets() [startup + every MaxOrderStateStaleness/2]
+         │
+         ▼
+  SyncFromOrderService(ctx, marketID)
+         │
+         ├── orderSvc.ListMMOrders() → []OSOrder (OPEN + PARTIALLY_FILLED)
+         ├── tracker.SyncFromOrders() → add new, update existing
+         │
+         └── for each tracked order NOT in OS response:
+               ├── RESTING / OS_REGISTERED / STALE → Remove()
+               ├── CANCELLING → Remove()
+               │     QueuedCorrection? → CreateMMOrder() + SetPending() + PublishCreate()
+               └── PENDING → retain (CheckPendingTimeouts handles it)
+```
+
+---
+
+## Files
+
+### [`reconciler.go`](./reconciler.go)
+
+| Symbol | Kind | Purpose |
+|:---|:---|:---|
+| `Reconciler` | `struct` | Holds tracker, producer, orderSvc, config, logger, metrics, and per-level NOT_FOUND counters. |
+| `NewReconciler(...)` | `func` | Wires all dependencies. |
+| `ReconcileMarket(ctx, marketID, bidCount, askCount)` | `func` | Full reconcile: generate ladder → diff → apply entries. Returns commands published. |
+| `applyEntry(ctx, e, mc)` | `func` (internal) | Routes DiffEntry to `applyCreate`, `applyCancel`, or cancel + QueueCorrection. |
+| `applyCreate(ctx, e, mc)` | `func` (internal) | 3-step: OS register → SetPending → Kafka publish. Idempotent on retry (same orderID, same COID). |
+| `applyCancel(ctx, e, mc)` | `func` (internal) | Publishes `OrderCancelRequested` with the ME-assigned UUID. Sets tracker to CANCELLING. |
+
+---
+
+### [`sync.go`](./sync.go)
+
+| Symbol | Kind | Purpose |
+|:---|:---|:---|
+| `SyncFromOrderService(ctx, marketID)` | `func` | Authoritative OS resync. Resolves missing orders: remove RESTING/OS_REGISTERED/STALE, handle CANCELLING with queued corrections, retain PENDING. |
+
+---
+
+### [`timeouts.go`](./timeouts.go)
+
+| Symbol | Kind | Purpose |
+|:---|:---|:---|
+| `CheckPendingTimeouts(ctx, marketID)` | `func` | Examines PENDING orders past `PendingTimeout`. Retries Kafka publish if not confirmed. Queries OS and transitions state or counts NOT_FOUND toward liveness threshold. |
+| `CheckOSRegisteredTimeouts(marketID, timeout, meHealthy)` | `func` | Promotes OS_REGISTERED → RESTING after timeout elapses, only if ME is currently healthy. V1 proxy for a direct ME confirmation event. |
+| `CheckCancellingTimeouts(ctx, marketID)` | `func` | Examines CANCELLING orders past `CancellingTimeout`. Resolves via `handleCancellingTimeout`. |
+| `handleCancellingTimeout(ctx, o, mc)` | `func` (internal) | Queries OS for cancel status. Confirms, handles fills, or calls `retryCancelOrStale`. |
+| `retryCancelOrStale(ctx, o, mc)` | `func` (internal) | Retries cancel command under the limit; transitions to STALE at the limit. |

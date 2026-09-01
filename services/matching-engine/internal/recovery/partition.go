@@ -29,8 +29,14 @@ func (r *Replayer) replayPartition(ctx context.Context, topic string, partition 
 
 	if checkpointOffset < 0 {
 		log.Printf("[recovery] partition=%d — no checkpoint exists, nothing to replay", partition)
+		var marketIDs []string
 		for _, engine := range marketsOnPartition {
+			marketIDs = append(marketIDs, engine.MarketID)
 			marketLastSeenOffset[engine.MarketID] = -1
+		}
+		if len(marketIDs) > 0 {
+			_, _ = r.db.Exec(ctx, `DELETE FROM market_sequences WHERE market_id = ANY($1)`, marketIDs)
+			_, _ = r.db.Exec(ctx, `DELETE FROM market_snapshots WHERE market_id = ANY($1)`, marketIDs)
 		}
 		return nil
 	}
@@ -52,17 +58,23 @@ func (r *Replayer) replayPartition(ctx context.Context, topic string, partition 
 		); err != nil {
 			return fmt.Errorf("clear stale checkpoint (partition=%d): %w", partition, err)
 		}
-		if _, err := r.db.Exec(ctx,
-			`DELETE FROM market_snapshots WHERE market_id IN (SELECT market_id FROM market_sequences WHERE partition = $1)`,
-			partition,
-		); err != nil {
-			return fmt.Errorf("clear stale snapshots (partition=%d): %w", partition, err)
+		var marketIDs []string
+		for _, engine := range marketsOnPartition {
+			marketIDs = append(marketIDs, engine.MarketID)
 		}
-		if _, err := r.db.Exec(ctx,
-			`DELETE FROM market_sequences WHERE partition = $1`,
-			partition,
-		); err != nil {
-			return fmt.Errorf("clear stale sequences (partition=%d): %w", partition, err)
+		if len(marketIDs) > 0 {
+			if _, err := r.db.Exec(ctx,
+				`DELETE FROM market_snapshots WHERE market_id = ANY($1)`,
+				marketIDs,
+			); err != nil {
+				return fmt.Errorf("clear stale snapshots (partition=%d): %w", partition, err)
+			}
+			if _, err := r.db.Exec(ctx,
+				`DELETE FROM market_sequences WHERE market_id = ANY($1)`,
+				marketIDs,
+			); err != nil {
+				return fmt.Errorf("clear stale sequences (partition=%d): %w", partition, err)
+			}
 		}
 		for _, engine := range marketsOnPartition {
 			marketLastSeenOffset[engine.MarketID] = -1

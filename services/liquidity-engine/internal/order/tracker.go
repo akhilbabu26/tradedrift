@@ -271,6 +271,18 @@ func (t *Tracker) ActiveCount(marketID, side string) int {
 	return count
 }
 
+// RestingCount returns the number of orders in strictly StatusResting status for a market and side.
+// Used exclusively for readiness checks (/readyz) to ensure liquidity actually rests in the ME book.
+func (t *Tracker) RestingCount(marketID, side string) int {
+	count := 0
+	for _, o := range t.orders {
+		if o.MarketID == marketID && o.Side == side && o.Status == StatusResting {
+			count++
+		}
+	}
+	return count
+}
+
 // PendingCount returns the count of PENDING and OS_REGISTERED orders for a market.
 func (t *Tracker) PendingCount(marketID string) int {
 	count := 0

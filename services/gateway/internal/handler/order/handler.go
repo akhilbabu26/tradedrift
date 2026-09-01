@@ -40,7 +40,11 @@ func (h *Handler) CreateOrder(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	protoSide := parseProtoSide(req.Side)
-	protoType := parseProtoType(req.OrderType)
+	orderType := req.OrderType
+	if orderType == "" {
+		orderType = req.Type
+	}
+	protoType := parseProtoType(orderType)
 
 	res, err := h.client.CreateOrder(ctx, &orderv1.CreateOrderRequest{
 		UserId:         userID,

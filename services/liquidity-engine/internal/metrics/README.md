@@ -1,109 +1,101 @@
-# `internal/metrics` — Prometheus Instrumentation
+# package `metrics`
 
-**Package:** `metrics`  
-**Service:** Liquidity Engine  
-**Last Updated:** August 2026
+## Purpose
 
----
+Provides **Prometheus instrumentation** for the Liquidity Engine. All counters, gauges, and histograms used across the engine, reconciler, and handlers are registered here.
 
-## 1. What This Package Does
+## Problem It Solves
 
-This package registers and exposes **Prometheus metrics** for the Liquidity Engine. The `Metrics` struct satisfies both `engine.EngineMetrics` and `reconciler.ReconcilerMetrics` interfaces, so it is wired into the engine and reconciler at startup.
+Without metrics, there's no way to answer operational questions like:
+- Is the engine currently RUNNING or DEGRADED?
+- How many MM levels are active per market and side?
+- How often is the reconcile cycle producing NO-OPs vs creates/cancels?
+- How many fills have been processed?
+- Are there STALE orders building up?
+- Is the ME probe succeeding or failing?
 
----
+## How It Solves It
 
-## 2. Files In This Package
-
-| File | Purpose |
-| :--- | :--- |
-| `metrics.go` | `Metrics` struct, metric registration, all interface method implementations |
-| `README.md` | This documentation file |
-
----
-
-## 3. Registered Metrics
-
-All metrics use the `le_` namespace (Liquidity Engine).
-
-| Metric Name | Type | Labels | Description |
-| :--- | :--- | :--- | :--- |
-| `le_engine_state` | Gauge | `state` | Current engine state. One label is set to `1.0`, others to `0.0` |
-| `le_active_levels` | Gauge | `market_id`, `side` | Number of active MM order levels (BUY or SELL) per market |
-| `le_reconcile_duration_ms` | Histogram | `market_id` | Reconcile cycle duration in milliseconds. Buckets: 1, 5, 10, 25, 50, 100, 250, 500 |
-| `le_reconcile_create_total` | Counter | `market_id` | Total `OrderCreated` commands published |
-| `le_reconcile_cancel_total` | Counter | `market_id` | Total `OrderCancelRequested` commands published |
-| `le_reconcile_correct_total` | Counter | `market_id` | Total CORRECT operations (cancel + queued replacement) |
-| `le_reconcile_noop_total` | Counter | `market_id` | Total reconcile cycles where desired == actual (no commands) |
-| `le_orders_filled_total` | Counter | `market_id`, `side` | Total MM orders confirmed fully filled |
-| `le_stale_orders_total` | Counter | `market_id` | Total orders that entered STALE state (cancel retry limit exceeded) |
-| `le_me_liveness_timeout_total` | Counter | `market_id` | Total ME liveness threshold exceeded events |
+`New()` registers all metrics once at startup using `promauto` (auto-registers with the default Prometheus registry). The `*Metrics` struct implements both `engine.EngineMetrics` and `reconciler.ReconcilerMetrics` interfaces, so the engine and reconciler depend only on the interface — not on the concrete Prometheus implementation. This makes unit testing easy (mock implementations in tests).
 
 ---
 
-## 4. Engine State Gauge
+## Prometheus Metrics Reference
 
-`le_engine_state` uses an **exclusive set pattern**: every state transition sets exactly one label value to `1.0` and all others to `0.0`. This makes it Grafana-friendly — you can plot `le_engine_state{state="RUNNING"}` and get a 0/1 series without needing `offset` tricks.
+| Metric | Type | Labels | Description |
+|:---|:---|:---|:---|
+| `le_engine_state` | Gauge | `state` | Current engine state. Only the active state is 1.0; all others are 0.0. |
+| `le_active_levels` | Gauge | `market_id`, `side` | Target level count per market side (from `ComputeSkew`). |
+| `le_reconcile_duration_ms` | Histogram | `market_id` | Reconcile cycle duration in ms. Buckets: 1, 5, 10, 25, 50, 100, 250, 500. |
+| `le_reconcile_create_total` | Counter | `market_id` | OrderCreated commands published. |
+| `le_reconcile_cancel_total` | Counter | `market_id` | OrderCancelRequested commands published. |
+| `le_reconcile_correct_total` | Counter | `market_id` | CORRECT operations (cancel + replace) performed. |
+| `le_reconcile_noop_total` | Counter | `market_id` | Reconcile cycles with zero diff (desired == actual). |
+| `le_orders_filled_total` | Counter | `market_id`, `side` | MM orders fully filled. |
+| `le_stale_orders_total` | Counter | `market_id` | Orders that entered STALE state (cancel retry limit exceeded). |
+| `le_me_liveness_timeout_total` | Counter | `market_id` | Times ME liveness threshold was exceeded (market paused). |
+| `le_duplicate_level_total` | Counter | `market_id` | Duplicate LevelIDs detected in OS active order response. |
+| `le_me_health_probe_total` | Counter | `status` | ME HTTP health probe attempts (labels: `"success"`, `"failure"`). |
+| `le_market_pause_total` | Counter | `market_id`, `action` | Market pause/resume events (labels: `"pause"`, `"resume"`). |
+
+---
+
+## Flow: Engine State Gauge Update
 
 ```
-le_engine_state{state="STARTING"}  = 0
-le_engine_state{state="SYNCING"}   = 0
-le_engine_state{state="RUNNING"}   = 1   ← current state
-le_engine_state{state="DEGRADED"}  = 0
-le_engine_state{state="PAUSED"}    = 0
-le_engine_state{state="STOPPED"}   = 0
+engine.setState(StateRunning)
+         │
+         ▼
+  metrics.SetEngineState("RUNNING")
+         │
+         └── for each state [STARTING, SYNCING, RUNNING, DEGRADED, PAUSED, STOPPED]:
+               engineState{state=X}.Set(0.0)
+               if X == "RUNNING": Set(1.0)
+
+Grafana: le_engine_state{state="RUNNING"} == 1
 ```
 
 ---
 
-## 5. Key Monitoring Queries
+## Files
+
+### [`metrics.go`](./metrics.go)
+
+| Symbol | Kind | Purpose |
+|:---|:---|:---|
+| `Metrics` | `struct` | Holds all registered Prometheus metric objects. |
+| `New()` | `func` | Registers all metrics with `promauto`. Call once at startup. |
+| `SetEngineState(state)` | `func` | Sets the active state to 1.0 and all others to 0.0 (mutual-exclusion gauge pattern). |
+| `SetLevelCount(marketID, side, count)` | `func` | Sets `le_active_levels` gauge. |
+| `ObserveReconcileDuration(marketID, ms)` | `func` | Records reconcile duration in histogram. |
+| `IncReconcileCreate(marketID)` | `func` | Increments `le_reconcile_create_total`. |
+| `IncReconcileCancel(marketID)` | `func` | Increments `le_reconcile_cancel_total`. |
+| `IncReconcileCorrect(marketID)` | `func` | Increments `le_reconcile_correct_total`. |
+| `IncReconcileNoop(marketID)` | `func` | Increments `le_reconcile_noop_total`. |
+| `IncOrdersFilled(marketID, side)` | `func` | Increments `le_orders_filled_total`. |
+| `IncStaleOrders(marketID)` | `func` | Increments `le_stale_orders_total`. |
+| `IncMELivenessTimeout(marketID)` | `func` | Increments `le_me_liveness_timeout_total`. |
+| `IncDuplicateMMLevel(marketID)` | `func` | Increments `le_duplicate_level_total`. |
+| `IncMEHealthProbe(status)` | `func` | Increments `le_me_health_probe_total` with `"success"` or `"failure"`. |
+| `IncMarketPause(marketID, action)` | `func` | Increments `le_market_pause_total` with `"pause"` or `"resume"`. |
+
+---
+
+## Useful Grafana Queries
 
 ```promql
--- Reconcile health: noop rate should be very high in steady state
-rate(le_reconcile_noop_total[5m]) / rate(le_reconcile_duration_ms_count[5m])
+# Is the engine running?
+le_engine_state{state="RUNNING"}
 
--- Order fill rate per market
-rate(le_orders_filled_total[5m])
+# Active bid levels for BTC-USDT
+le_active_levels{market_id="BTC-USDT", side="BUY"}
 
--- Active ask levels (should be 12 when healthy)
-le_active_levels{side="SELL"}
+# Reconcile create rate
+rate(le_reconcile_create_total[5m])
 
--- Detect engine pause
-le_engine_state{state="PAUSED"} == 1
+# ME probe failure rate
+rate(le_me_health_probe_total{status="failure"}[5m])
 
--- ME liveness timeout rate (>0 means ME is degraded)
-rate(le_me_liveness_timeout_total[5m])
-
--- Stale order accumulation (should be near 0)
+# STALE orders accumulating?
 increase(le_stale_orders_total[1h])
 ```
-
----
-
-## 6. Interfaces Implemented
-
-### `engine.EngineMetrics`
-
-```go
-SetEngineState(state string)
-SetLevelCount(marketID, side string, count int)
-ObserveReconcileDuration(marketID string, ms float64)
-IncMELivenessTimeout(marketID string)
-// + all ReconcilerMetrics
-```
-
-### `reconciler.ReconcilerMetrics`
-
-```go
-IncStaleOrders(marketID string)
-IncReconcileCreate(marketID string)
-IncReconcileCancel(marketID string)
-IncReconcileCorrect(marketID string)
-IncReconcileNoop(marketID string)
-IncOrdersFilled(marketID, side string)
-```
-
----
-
-## 7. Prometheus Endpoint
-
-Metrics are served at `:{METRICS_PORT}/metrics` (default port `9090`) by the standard Prometheus HTTP handler registered in `cmd/server/main.go`.

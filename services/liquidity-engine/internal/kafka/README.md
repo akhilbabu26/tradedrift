@@ -1,177 +1,98 @@
-# `internal/kafka` — Kafka Producer & Consumer
+# package `kafka`
 
-**Package:** `kafka`  
-**Service:** Liquidity Engine  
-**Last Updated:** August 2026
+## Purpose
 
----
+Provides the **Kafka producer** (writes order commands to `orders.commands`) and the **Kafka consumer** (reads trade events from `trades.executed`). These are the LE's only two Kafka I/O surfaces.
 
-## 1. What This Package Does
+## Problem It Solves
 
-This package has two distinct responsibilities:
+The LE must send order commands to the Matching Engine and react to trade fills — both asynchronously via Kafka. Two specific problems require careful design:
 
-1. **Producer** (`producer.go`): Publishes `OrderCreated` and `OrderCancelRequested` command envelopes to the `orders.commands` Kafka topic. Every message it produces must pass the Matching Engine's strict validation rules.
+1. **Command routing correctness**: The ME's command consumer partitions its event loop by `(market_id, partition)`. If the LE sends a BTC command to partition 1 instead of partition 0, the ME will ignore it or misroute it during recovery.
+2. **At-least-once trade processing**: If the LE commits a Kafka offset before finishing all state mutations (inventory update, tracker update, targeted reconcile), a crash would cause those mutations to be lost — resulting in incorrect inventory accounting.
 
-2. **Consumer** (`consumer.go`): Reads `TradeExecuted` events from the `trades.executed` Kafka topic and forwards them to the engine event channel for fast in-memory inventory updates.
+## How It Solves It
 
----
-
-## 2. Files In This Package
-
-| File | Purpose |
-| :--- | :--- |
-| `producer.go` | `Producer` struct, `CommandEnvelope`, `PublishCreate`, `PublishCancel` |
-| `consumer.go` | `Consumer` struct, `TradeEvent`, `Run` read loop, `parseTradeMessage` |
-| `README.md` | This documentation file |
+- **Producer**: Each market has its own `kafka.Writer` pre-configured with the correct partition. Commands are always serialised with `msg.Key = marketID` (required by ME). Uses `RequireAll` acknowledgements to prevent silent write failures.
+- **Consumer**: Uses a `TradeEnvelope` with an `Ack chan struct{}`. The consumer **blocks** after sending the envelope to the event loop, waiting for `Ack` to be closed. The engine closes `Ack` only after completing all state mutations. Only then does the consumer commit the Kafka offset.
 
 ---
 
-## 3. Topics
+## Flow: OrderCreated Command
 
-| Topic | Direction | Purpose |
-| :--- | :--- | :--- |
-| `orders.commands` | **Write** | Publish MM order create / cancel commands |
-| `trades.executed` | **Read** | Consume trade fills to update inventory state |
+```
+reconciler.applyCreate()
+         │
+         ▼
+  producer.PublishCreate(ctx, marketID, partition, orderID, clientOrderID, side, price, qty)
+         │
+         ├── marshal orderCreatedPayload
+         │     {order_id, user_id=MM-UUID, side, order_type="LIMIT", price, qty, client_order_id}
+         │
+         ├── wrap in CommandEnvelope
+         │     {event_id=newUUID, event_type="OrderCreated", event_version=1, market_id, ...}
+         │
+         └── kafka.Writer.WriteMessages()
+               msg.Key = []byte(marketID)   INVARIANT: must equal envelope.market_id
+               msg.Partition = partition     market-specific from config
+               msg.Value = JSON(envelope)
+```
 
 ---
 
-## 4. Producer
-
-### `CommandEnvelope` Schema
-
-Every command published to `orders.commands` is wrapped in a standard envelope. The ME consumer validates every field strictly.
-
-```json
-{
-  "event_id":      "uuid-v4",
-  "event_type":    "OrderCreated" | "OrderCancelRequested",
-  "event_version": 1,
-  "market_id":     "BTC-USDT",
-  "occurred_at":   "2026-08-31T08:00:00Z",
-  "payload":       { ... }
-}
-```
-
-### `OrderCreated` Payload
-
-```json
-{
-  "order_id":        "uuid-v4",
-  "user_id":         "MM-001",
-  "side":            "BUY" | "SELL",
-  "order_type":      "LIMIT",
-  "price":           "96430.12",
-  "quantity":        "0.85000",
-  "client_order_id": "MM-BTC-USDT-BID-01-G3"
-}
-```
-
-### `OrderCancelRequested` Payload
-
-```json
-{
-  "order_id": "uuid-from-ME",
-  "user_id":  "MM-001"
-}
-```
-
-### Critical Invariants (ME Validation Rules)
+## Flow: Trade Fill Processing (at-least-once guarantee)
 
 ```
-msg.Key == []byte(env.MarketID)   ← ME fails-closed if key mismatches
-env.EventVersion == 1              ← ME rejects other versions
-env.EventID must be a valid UUID
-price must be tick-rounded string
-quantity must be lot-rounded string
-order_id must be a valid UUID
-user_id must be "MM-001"
+ME publishes to trades.executed
+         │
+         ▼
+  consumer.Run() [goroutine]
+         │
+         ├── FetchMessage() → raw Kafka message
+         ├── parseTradeMessage() → TradeEvent
+         │     ├── deserialise JSON
+         │     ├── parse price/quantity as decimal
+         │     └── detect MM involvement:
+         │           buyer_user_id == MM-UUID? → MMSide="BUY"
+         │           seller_user_id == MM-UUID? → MMSide="SELL"
+         │
+         ├── send TradeEnvelope{Event, Ack} to e.tradeEvents channel
+         │
+         ├── BLOCK waiting for Ack
+         │         │
+         │   engine.handleTrade() closes Ack after all state mutations complete
+         │
+         └── CommitMessages() ← only after Ack, guarantees at-least-once
 ```
-
-### Per-Market Writers
-
-The Producer creates one `kafka-go.Writer` per market to enforce partition affinity. The ME consumer expects all BTC-USDT orders on partition 0, ETH-USDT on partition 1, etc.
-
-```go
-type Producer struct {
-    writers map[string]*kafkago.Writer // marketID → partition-pinned Writer
-    logger  *zap.Logger
-}
-```
-
-Writer configuration:
-- `RequiredAcks = RequireAll` — waits for all in-sync replicas before ack
-- `WriteTimeout = 10s`
-- `AllowAutoTopicCreation = false`
 
 ---
 
-## 5. Consumer
+## Files
 
-### `TradeEvent`
+### [`producer.go`](./producer.go)
 
-The LE's internal representation of a trade fill. Derived fields (`MMSide`, `MMIsMaker`, `MMIsTaker`) are computed during parsing.
-
-```go
-type TradeEvent struct {
-    TradeID      string
-    MarketID     string
-    MakerOrderID string
-    TakerOrderID string
-    BuyerUserID  string
-    SellerUserID string
-    Price        decimal.Decimal
-    Quantity     decimal.Decimal
-    ExecutedAt   time.Time
-
-    MMIsMaker bool   // MM-001 was the resting (maker) side
-    MMIsTaker bool   // MM-001 was the aggressor (taker) side
-    MMSide    string // "BUY" | "SELL" | "" (empty if MM not involved)
-}
-```
-
-### MM Involvement Detection
-
-```
-trades.executed message arrives
-    │
-    ├── BuyerUserID == "MM-001"  →  MMSide = "BUY"
-    │       ├── MakerOrderID == BuyOrderID  →  MMIsMaker = true
-    │       └── else                         →  MMIsTaker = true
-    │
-    ├── SellerUserID == "MM-001" →  MMSide = "SELL"
-    │       ├── MakerOrderID == SellOrderID →  MMIsMaker = true
-    │       └── else                         →  MMIsTaker = true
-    │
-    └── Neither →  MMSide = "" (MM not involved — engine ignores this event)
-```
-
-### Important: Consumer Is Read-Only
-
-```
-Consumer goroutine:
-    Fetch message → parse → send to e.events channel
-
-Consumer NEVER:
-    - Calls tracker methods
-    - Calls inventory methods
-    - Mutates any engine state
-
-State mutation only happens inside the single event loop goroutine.
-```
-
-### Back-Pressure Handling
-
-If the event channel is full, the consumer does **not** block indefinitely. It selects with a 5-second timeout and drops the event with a warning log. The engine then self-heals via the next `evReconcileTick`.
-
-### Commit Strategy
-
-The consumer uses auto-commit (`CommitInterval: 1s`). The LE is designed to be idempotent on replay — receiving a duplicate trade event will find the order already updated in the tracker and apply a no-op re-computation.
+| Symbol | Kind | Purpose |
+|:---|:---|:---|
+| `TopicOrderCommands` | `const` | `"orders.commands"` — ME command ingress topic. |
+| `TopicTradesExecuted` | `const` | `"trades.executed"` — ME trade event topic. |
+| `CommandEnvelope` | `struct` | Standard wrapper: `event_id`, `event_type`, `event_version=1`, `market_id`, `occurred_at`, `payload`. |
+| `Producer` | `struct` | Map of `marketID → kafka.Writer`, one per market, each pre-configured for its partition. |
+| `NewProducer(brokers, markets, logger)` | `func` | Creates one `kafka.Writer` per market. `AllowAutoTopicCreation=false` — fails fast if topic missing. |
+| `PublishCreate(...)` | `func` | Builds and sends `OrderCreated`. Embeds `account.WalletUUIDStr` as `user_id` — ME parses it as a UUID. |
+| `PublishCancel(...)` | `func` | Builds and sends `OrderCancelRequested`. Uses the ME-assigned order UUID (not `client_order_id`). |
+| `publish(ctx, marketID, partition, env)` | `func` (internal) | Serialises envelope to JSON, sets `msg.Key = marketID`, sets explicit partition, writes to Kafka. |
+| `Close()` | `func` | Flushes and closes all writers. |
 
 ---
 
-## 6. What This Package Does NOT Do
+### [`consumer.go`](./consumer.go)
 
-- Does NOT validate Kafka offsets or manage checkpoints (no ME-style checkpoint coordinator)
-- Does NOT subscribe to `orders.events` — order state is tracked in-memory via `order.Tracker`
-- Does NOT handle ME status events (`ME_LIVE`, `ME_RECOVERING`) — V1 uses pending timeout detection for ME liveness
-- Does NOT enforce partition ordering at the consumer level — `trades.executed` is consumed as a simple fan-in
+| Symbol | Kind | Purpose |
+|:---|:---|:---|
+| `TradeEvent` | `struct` | LE's internal trade representation with the derived `MMSide` field (`"BUY"`, `"SELL"`, or `""`). |
+| `TradeEnvelope` | `struct` | Wraps `TradeEvent` with `Ack chan struct{}`. Consumer blocks until engine closes `Ack` before committing. |
+| `Consumer` | `struct` | `kafka.Reader` configured for `CommitInterval=0` (strict manual commit). |
+| `NewConsumer(brokers, groupID, events, logger)` | `func` | Creates a manual-commit reader for `trades.executed`. |
+| `Run(ctx)` | `func` | Main loop: fetch → parse → send envelope → block on Ack → commit. Retries on fetch error with 500ms backoff. |
+| `Close()` | `func` | Closes the Kafka reader. |
+| `parseTradeMessage(raw)` | `func` (internal) | Deserialises JSON and computes `MMSide` by matching buyer/seller UUID against `account.WalletUUIDStr`. |

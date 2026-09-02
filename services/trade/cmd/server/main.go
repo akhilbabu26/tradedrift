@@ -114,11 +114,11 @@ func main() {
 	<-ctx.Done()
 	appLogger.Info("Shutdown signal received, stopping Trade Service...")
 
-	// Stop gRPC gracefully — finishes in-flight RPCs before accepting the WaitGroup.
+	// Stop gRPC gracefully — finishes in-flight RPCs before returning.
 	grpcServer.GracefulStop()
 
-	// ctx cancellation propagates to the Kafka consumer's FetchMessage loop.
-	// Any in-flight process() call (single fast DB INSERT) completes before wg.Done().
+	// Context cancellation stops new message fetches and terminates in-flight
+	// processing. Any uncommitted Kafka offsets will be cleanly replayed on startup.
 	wg.Wait()
 
 	if err := consumer.Close(); err != nil {

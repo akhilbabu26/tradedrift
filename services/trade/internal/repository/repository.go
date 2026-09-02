@@ -16,6 +16,9 @@ import (
 // The consumer maps this to a *PoisonError and routes it to the DLQ.
 var ErrSequenceConflict = errors.New("me_sequence already exists for this market")
 
+// ErrTradeNotFound is returned when a trade does not exist in the repository.
+var ErrTradeNotFound = errors.New("trade not found")
+
 // Trade is the domain entity owned by Trade Service.
 // It is immutable after creation — no UPDATE or DELETE ever executes on it.
 type Trade struct {
@@ -51,7 +54,8 @@ type Repository interface {
 	//   - Any other error → retryable DB/network failure.
 	Create(ctx context.Context, t *Trade) error
 
-	// GetByID returns the trade with the given id, or nil if not found.
+	// GetByID returns the trade with the given id.
+	// Returns ErrTradeNotFound when the trade does not exist.
 	GetByID(ctx context.Context, id uuid.UUID) (*Trade, error)
 
 	// ListByUser returns trades where userID is buyer OR seller,

@@ -253,8 +253,10 @@ type GetTradeRequest struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	TradeId string                 `protobuf:"bytes,1,opt,name=trade_id,json=tradeId,proto3" json:"trade_id,omitempty"`
 	// caller_user_id is extracted from the JWT by the API Gateway and forwarded here.
-	// Trade Service enforces: caller must be buyer_id or seller_id (or admin role).
-	CallerUserId  string `protobuf:"bytes,2,opt,name=caller_user_id,json=callerUserId,proto3" json:"caller_user_id,omitempty"`
+	// Trade Service enforces: caller must be buyer_id or seller_id, unless is_admin is true.
+	CallerUserId string `protobuf:"bytes,2,opt,name=caller_user_id,json=callerUserId,proto3" json:"caller_user_id,omitempty"`
+	// is_admin: if true, bypasses buyer/seller party checks (e.g. for back-office or admin roles).
+	IsAdmin       bool `protobuf:"varint,3,opt,name=is_admin,json=isAdmin,proto3" json:"is_admin,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -301,6 +303,13 @@ func (x *GetTradeRequest) GetCallerUserId() string {
 		return x.CallerUserId
 	}
 	return ""
+}
+
+func (x *GetTradeRequest) GetIsAdmin() bool {
+	if x != nil {
+		return x.IsAdmin
+	}
+	return false
 }
 
 type GetTradeResponse struct {
@@ -621,10 +630,11 @@ const file_trade_v1_trade_proto_rawDesc = "" +
 	"\x05price\x18\x05 \x01(\tR\x05price\x12\x1a\n" +
 	"\bquantity\x18\x06 \x01(\tR\bquantity\x12\x1f\n" +
 	"\vexecuted_at\x18\a \x01(\tR\n" +
-	"executedAt\"R\n" +
+	"executedAt\"m\n" +
 	"\x0fGetTradeRequest\x12\x19\n" +
 	"\btrade_id\x18\x01 \x01(\tR\atradeId\x12$\n" +
-	"\x0ecaller_user_id\x18\x02 \x01(\tR\fcallerUserId\"D\n" +
+	"\x0ecaller_user_id\x18\x02 \x01(\tR\fcallerUserId\x12\x19\n" +
+	"\bis_admin\x18\x03 \x01(\bR\aisAdmin\"D\n" +
 	"\x10GetTradeResponse\x120\n" +
 	"\x05trade\x18\x01 \x01(\v2\x1a.tradedrift.trade.v1.TradeR\x05trade\"{\n" +
 	"\x15ListUserTradesRequest\x12\x17\n" +

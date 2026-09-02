@@ -38,8 +38,7 @@ func (h *GRPCHandler) GetTrade(ctx context.Context, req *tradev1.GetTradeRequest
 		return nil, status.Errorf(codes.InvalidArgument, "invalid trade_id: %v", err)
 	}
 
-	// caller_user_id may be empty for admin callers routed via service mesh;
-	// when present, enforce party membership (TI-8).
+	// caller_user_id is parsed when present; if is_admin is true, party check is bypassed.
 	var callerID uuid.UUID
 	if req.CallerUserId != "" {
 		callerID, err = uuid.Parse(req.CallerUserId)
@@ -48,16 +47,16 @@ func (h *GRPCHandler) GetTrade(ctx context.Context, req *tradev1.GetTradeRequest
 		}
 	}
 
-	t, err := h.svc.GetTrade(ctx, tradeID, callerID)
+	t, err := h.svc.GetTrade(ctx, tradeID, callerID, req.IsAdmin)
 	if err != nil {
+		if errors.Is(err, repository.ErrTradeNotFound) {
+			return nil, status.Errorf(codes.NotFound, "trade %s not found", req.TradeId)
+		}
 		if errors.Is(err, service.ErrNotParty) {
 			return nil, status.Error(codes.PermissionDenied, "caller is not a party to this trade")
 		}
 		h.log.Error("GetTrade failed", zap.String("trade_id", req.TradeId), zap.Error(err))
 		return nil, status.Error(codes.Internal, "internal error")
-	}
-	if t == nil {
-		return nil, status.Errorf(codes.NotFound, "trade %s not found", req.TradeId)
 	}
 	return &tradev1.GetTradeResponse{Trade: toProtoTrade(t)}, nil
 }

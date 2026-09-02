@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"tradedrift/services/trade/internal/repository"
+	// "tradedrift/services/trade/internal/metrics"
 )
 
 // ── Poison error ──────────────────────────────────────────────────────────────
@@ -70,6 +71,7 @@ type TradeSettledEvent struct {
 type Consumer struct {
 	reader    *kafkago.Reader
 	dlqWriter *kafkago.Writer
+	dlqTopic  string
 	repo      repository.Repository
 	log       *zap.Logger
 }
@@ -104,7 +106,13 @@ func NewConsumer(
 		zap.String("topic", topic),
 		zap.String("dlq_topic", dlqTopic),
 	)
-	return &Consumer{reader: reader, dlqWriter: dlqWriter, repo: repo, log: log}
+	return &Consumer{
+		reader:    reader,
+		dlqWriter: dlqWriter,
+		dlqTopic:  dlqTopic,
+		repo:      repo,
+		log:       log,
+	}
 }
 
 // Start begins the sequential consume loop. Blocks until ctx is cancelled.
@@ -145,7 +153,7 @@ func (c *Consumer) Start(ctx context.Context) {
 		if err := c.process(ctx, event); err != nil {
 			var poison *PoisonError
 			if errors.As(err, &poison) {
-				// Poison — write to DLQ, then ACK. Never retry.
+				// Poison — write to DLQ, then ACK. Never retry process(), but ensure DLQ write succeeds.
 				c.log.Error("poison TradeSettled event — routing to DLQ",
 					zap.String("trade_id", event.TradeID),
 					zap.String("market_id", event.MarketID),
@@ -154,7 +162,13 @@ func (c *Consumer) Start(ctx context.Context) {
 					zap.Int64("offset", msg.Offset),
 					zap.Error(err),
 				)
-				c.sendToDLQ(ctx, msg, err.Error())
+				if dlqErr := c.sendToDLQ(ctx, msg, err.Error()); dlqErr != nil {
+					c.log.Error("CRITICAL: failed to route poison event to DLQ — offset NOT committed, will retry",
+						zap.Int64("offset", msg.Offset),
+						zap.Error(dlqErr),
+					)
+					continue
+				}
 				c.commitMsg(ctx, msg)
 				continue
 			}
@@ -265,9 +279,9 @@ func (c *Consumer) process(ctx context.Context, event TradeSettledEvent) error {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 // sendToDLQ writes the original Kafka message bytes plus error context to the
-// DLQ topic. Non-fatal — a DLQ write failure is logged but does NOT change the
-// ACK decision (we still ACK the original to unblock the partition).
-func (c *Consumer) sendToDLQ(ctx context.Context, original kafkago.Message, reason string) {
+// DLQ topic. Returns an error if the write to DLQ fails, allowing the caller to avoid
+// committing the original offset and causing a data-loss scenario.
+func (c *Consumer) sendToDLQ(ctx context.Context, original kafkago.Message, reason string) error {
 	dlqMsg := kafkago.Message{
 		Key:   original.Key,
 		Value: original.Value,
@@ -279,12 +293,14 @@ func (c *Consumer) sendToDLQ(ctx context.Context, original kafkago.Message, reas
 		},
 	}
 	if err := c.dlqWriter.WriteMessages(ctx, dlqMsg); err != nil {
-		c.log.Error("failed to write to DLQ — event may be lost",
+		c.log.Error("failed to write to DLQ",
 			zap.Int64("offset", original.Offset),
 			zap.String("reason", reason),
 			zap.Error(err),
 		)
+		return fmt.Errorf("write to dlq topic %s: %w", c.dlqTopic, err)
 	}
+	return nil
 }
 
 // commitMsg commits the Kafka offset. Non-fatal — ON CONFLICT absorbs redelivery.

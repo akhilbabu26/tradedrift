@@ -71,7 +71,7 @@ func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*repository.Tra
 	t, err := scanOne(row)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
+			return nil, repository.ErrTradeNotFound
 		}
 		return nil, fmt.Errorf("get trade %s: %w", id, err)
 	}
@@ -195,8 +195,14 @@ func scanOne(row rowScanner) (*repository.Trade, error) {
 	if err != nil {
 		return nil, err
 	}
-	t.Price, _ = decimal.NewFromString(priceStr)
-	t.Quantity, _ = decimal.NewFromString(qtyStr)
+	t.Price, err = decimal.NewFromString(priceStr)
+	if err != nil {
+		return nil, fmt.Errorf("parse trade %s price %q: %w", t.ID, priceStr, err)
+	}
+	t.Quantity, err = decimal.NewFromString(qtyStr)
+	if err != nil {
+		return nil, fmt.Errorf("parse trade %s quantity %q: %w", t.ID, qtyStr, err)
+	}
 	return t, nil
 }
 

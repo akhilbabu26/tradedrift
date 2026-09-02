@@ -44,8 +44,10 @@ message MarketTrade {
 message GetTradeRequest {
     string trade_id       = 1;
     // caller_user_id is extracted from the JWT by the API Gateway and forwarded here.
-    // Trade Service enforces: caller must be buyer_id or seller_id (or admin role).
+    // Trade Service enforces: caller must be buyer_id or seller_id, unless is_admin is true.
     string caller_user_id = 2;
+    // is_admin: if true, bypasses buyer/seller party checks (e.g. for back-office or admin roles).
+    bool   is_admin       = 3;
 }
 
 message GetTradeResponse {

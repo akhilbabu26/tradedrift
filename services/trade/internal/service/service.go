@@ -34,21 +34,16 @@ func NewService(repo repository.Repository, log *zap.Logger) *Service {
 }
 
 // GetTrade returns a single trade by ID.
-// Returns nil, nil if the trade does not exist (caller maps to NOT_FOUND).
-// Returns an error if the callerUserID is neither buyer nor seller — the gRPC
-// handler maps this to PERMISSION_DENIED.
-func (s *Service) GetTrade(ctx context.Context, tradeID uuid.UUID, callerUserID uuid.UUID) (*repository.Trade, error) {
+// If the trade does not exist, returns repository.ErrTradeNotFound.
+// If the caller is not an admin and is neither the buyer nor the seller,
+// returns ErrNotParty (mapped by handler to PERMISSION_DENIED).
+func (s *Service) GetTrade(ctx context.Context, tradeID uuid.UUID, callerUserID uuid.UUID, isAdmin bool) (*repository.Trade, error) {
 	t, err := s.repo.GetByID(ctx, tradeID)
 	if err != nil {
-		return nil, fmt.Errorf("get trade: %w", err)
-	}
-	if t == nil {
-		return nil, nil // handler returns NOT_FOUND
+		return nil, err // Returns repository.ErrTradeNotFound or DB error
 	}
 	// TI-8: only buyer, seller, or admin may view a trade.
-	// Admin role enforcement is done at the gateway (JWT claim); here we
-	// enforce the party-membership rule for normal users.
-	if callerUserID != t.BuyerID && callerUserID != t.SellerID {
+	if !isAdmin && callerUserID != t.BuyerID && callerUserID != t.SellerID {
 		return nil, ErrNotParty
 	}
 	return t, nil

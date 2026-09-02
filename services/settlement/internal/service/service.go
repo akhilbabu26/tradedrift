@@ -28,7 +28,11 @@ type TradeExecutedEvent struct {
 	SellerUserID string `json:"seller_user_id"`
 	Price        string `json:"price"`
 	Quantity     string `json:"quantity"`
-	ExecutedAt   string `json:"executed_at"` // RFC3339Nano
+	// Sequence is the ME's per-market monotonic counter (> 0).
+	// Carried through Settlement → Wallet so the outbox payload received by Trade Service,
+	// Portfolio Service, and Notification Service includes the authoritative ME sequence.
+	Sequence   uint64 `json:"sequence"`
+	ExecutedAt string `json:"executed_at"` // RFC3339Nano
 }
 
 // WalletSettler is the interface the Service uses to call the Wallet Service.
@@ -199,6 +203,8 @@ func (s *Service) Settle(ctx context.Context, event TradeExecutedEvent) error {
 		Price:       event.Price,
 		Quantity:    event.Quantity,
 		MarketID:    event.MarketID,
+		Sequence:    event.Sequence,   // ME monotonic counter — forwarded to wallet outbox
+		ExecutedAt:  event.ExecutedAt, // ME clock — forwarded to wallet outbox
 	}); err != nil {
 		// Do NOT return nil — caller must NOT ACK the Kafka offset.
 		return fmt.Errorf("phase 2 wallet settle: %w", err)

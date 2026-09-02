@@ -64,18 +64,26 @@ func (h *GRPCHandler) ReleaseFunds(ctx context.Context, req *walletv1.ReleaseFun
 
 func (h *GRPCHandler) SettleTrade(ctx context.Context, req *walletv1.SettleTradeRequest) (*walletv1.SettleTradeResponse, error) {
 	if req.TradeId == "" || req.BuyerId == "" || req.SellerId == "" ||
-		req.SellOrderId == "" || req.BaseAsset == "" || req.Quantity == "" {
-		return nil, status.Error(codes.InvalidArgument, "trade_id, buyer_id, seller_id, sell_order_id, base_asset and quantity are required")
+		req.BuyOrderId == "" || req.SellOrderId == "" ||
+		req.BaseAsset == "" || req.Price == "" || req.Quantity == "" || req.MarketId == "" {
+		return nil, status.Error(codes.InvalidArgument,
+			"trade_id, buyer_id, seller_id, buy_order_id, sell_order_id, market_id, base_asset, price and quantity are required")
 	}
 	settlReq := service.TradeSettlementRequest{
 		TradeID:       req.TradeId,
 		BuyerUserID:   req.BuyerId,
 		SellerUserID:  req.SellerId,
+		BuyOrderID:    req.BuyOrderId,
 		SellerOrderID: req.SellOrderId,
+		MarketID:      req.MarketId,
 		BaseAsset:     req.BaseAsset,
 		QuoteAsset:    req.QuoteAsset,
-		BaseAmount:    req.Quantity, // quantity of base asset (e.g. BTC)
-		QuoteAmount:   req.Price,    // Settlement Service computes total; passed as-is
+		BaseAmount:    req.Quantity,     // quantity of base asset (e.g. BTC)
+		QuoteAmount:   req.Price,        // total quote; Settlement Service computes; passed as-is
+		Price:         req.Price,        // authoritative match price
+		Quantity:      req.Quantity,     // authoritative match quantity
+		Sequence:      req.Sequence,     // ME per-market monotonic counter
+		ExecutedAt:    req.ExecutedAt,   // RFC3339Nano — ME clock
 	}
 	if err := h.svc.SettleTrade(ctx, settlReq); err != nil {
 		return nil, mapToGRPCError(err)

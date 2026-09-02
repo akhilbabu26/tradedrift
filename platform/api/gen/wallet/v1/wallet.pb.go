@@ -470,17 +470,23 @@ func (x *ReleaseFundsResponse) GetSuccess() bool {
 }
 
 type SettleTradeRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	TradeId       string                 `protobuf:"bytes,1,opt,name=trade_id,json=tradeId,proto3" json:"trade_id,omitempty"`
-	BuyerId       string                 `protobuf:"bytes,2,opt,name=buyer_id,json=buyerId,proto3" json:"buyer_id,omitempty"`
-	SellerId      string                 `protobuf:"bytes,3,opt,name=seller_id,json=sellerId,proto3" json:"seller_id,omitempty"`
-	BuyOrderId    string                 `protobuf:"bytes,4,opt,name=buy_order_id,json=buyOrderId,proto3" json:"buy_order_id,omitempty"`
-	SellOrderId   string                 `protobuf:"bytes,5,opt,name=sell_order_id,json=sellOrderId,proto3" json:"sell_order_id,omitempty"`
-	BaseAsset     string                 `protobuf:"bytes,6,opt,name=base_asset,json=baseAsset,proto3" json:"base_asset,omitempty"`
-	QuoteAsset    string                 `protobuf:"bytes,7,opt,name=quote_asset,json=quoteAsset,proto3" json:"quote_asset,omitempty"`
-	Price         string                 `protobuf:"bytes,8,opt,name=price,proto3" json:"price,omitempty"`
-	Quantity      string                 `protobuf:"bytes,9,opt,name=quantity,proto3" json:"quantity,omitempty"`
-	MarketId      string                 `protobuf:"bytes,10,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	TradeId     string                 `protobuf:"bytes,1,opt,name=trade_id,json=tradeId,proto3" json:"trade_id,omitempty"`
+	BuyerId     string                 `protobuf:"bytes,2,opt,name=buyer_id,json=buyerId,proto3" json:"buyer_id,omitempty"`
+	SellerId    string                 `protobuf:"bytes,3,opt,name=seller_id,json=sellerId,proto3" json:"seller_id,omitempty"`
+	BuyOrderId  string                 `protobuf:"bytes,4,opt,name=buy_order_id,json=buyOrderId,proto3" json:"buy_order_id,omitempty"`
+	SellOrderId string                 `protobuf:"bytes,5,opt,name=sell_order_id,json=sellOrderId,proto3" json:"sell_order_id,omitempty"`
+	BaseAsset   string                 `protobuf:"bytes,6,opt,name=base_asset,json=baseAsset,proto3" json:"base_asset,omitempty"`
+	QuoteAsset  string                 `protobuf:"bytes,7,opt,name=quote_asset,json=quoteAsset,proto3" json:"quote_asset,omitempty"`
+	Price       string                 `protobuf:"bytes,8,opt,name=price,proto3" json:"price,omitempty"`
+	Quantity    string                 `protobuf:"bytes,9,opt,name=quantity,proto3" json:"quantity,omitempty"`
+	MarketId    string                 `protobuf:"bytes,10,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	// sequence: ME per-market monotonic counter (> 0). Stored in the outbox payload
+	// so downstream consumers (Trade Service, Portfolio) receive it without a separate lookup.
+	Sequence uint64 `protobuf:"varint,11,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	// executed_at: RFC3339Nano — Matching Engine clock. Stored in the outbox payload
+	// so Trade Service and Portfolio can record the authoritative execution timestamp.
+	ExecutedAt    string `protobuf:"bytes,12,opt,name=executed_at,json=executedAt,proto3" json:"executed_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -581,6 +587,20 @@ func (x *SettleTradeRequest) GetQuantity() string {
 func (x *SettleTradeRequest) GetMarketId() string {
 	if x != nil {
 		return x.MarketId
+	}
+	return ""
+}
+
+func (x *SettleTradeRequest) GetSequence() uint64 {
+	if x != nil {
+		return x.Sequence
+	}
+	return 0
+}
+
+func (x *SettleTradeRequest) GetExecutedAt() string {
+	if x != nil {
+		return x.ExecutedAt
 	}
 	return ""
 }
@@ -1009,7 +1029,7 @@ const file_wallet_v1_wallet_proto_rawDesc = "" +
 	"\x13ReleaseFundsRequest\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\tR\aorderId\"0\n" +
 	"\x14ReleaseFundsResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess\"\xbc\x02\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"\xf9\x02\n" +
 	"\x12SettleTradeRequest\x12\x19\n" +
 	"\btrade_id\x18\x01 \x01(\tR\atradeId\x12\x19\n" +
 	"\bbuyer_id\x18\x02 \x01(\tR\abuyerId\x12\x1b\n" +
@@ -1024,7 +1044,10 @@ const file_wallet_v1_wallet_proto_rawDesc = "" +
 	"\x05price\x18\b \x01(\tR\x05price\x12\x1a\n" +
 	"\bquantity\x18\t \x01(\tR\bquantity\x12\x1b\n" +
 	"\tmarket_id\x18\n" +
-	" \x01(\tR\bmarketId\"/\n" +
+	" \x01(\tR\bmarketId\x12\x1a\n" +
+	"\bsequence\x18\v \x01(\x04R\bsequence\x12\x1f\n" +
+	"\vexecuted_at\x18\f \x01(\tR\n" +
+	"executedAt\"/\n" +
 	"\x13SettleTradeResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\"B\n" +
 	"\x11GetBalanceRequest\x12\x17\n" +

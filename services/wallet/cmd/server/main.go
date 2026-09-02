@@ -5,6 +5,8 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -14,8 +16,10 @@ import (
 	walletv1 "tradedrift/platform/api/gen/wallet/v1"
 	"tradedrift/platform/config"
 	"tradedrift/platform/logger"
-	"tradedrift/platform/postgres"
+	platformpg "tradedrift/platform/postgres"
 	"tradedrift/services/wallet/internal/handler"
+	"tradedrift/services/wallet/internal/publisher"
+	walletpg "tradedrift/services/wallet/internal/repository/postgres"
 	"tradedrift/services/wallet/internal/service"
 )
 
@@ -34,28 +38,34 @@ func main() {
 	appLogger.Info("Starting Wallet Service...")
 
 	// 2. Config
-	dbDSN    := config.GetEnv("WALLET_POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/tradedrift?sslmode=disable")
-	grpcPort := config.GetEnv("WALLET_PORT", ":50052")
+	dbDSN        := config.GetEnv("WALLET_POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/tradedrift?sslmode=disable")
+	grpcPort     := config.GetEnv("WALLET_PORT", ":50052")
 	migrationDir := config.GetEnv("WALLET_MIGRATIONS_DIR", "services/wallet/migration")
+	kafkaBrokers := parseBrokers(config.GetEnv("KAFKA_BROKERS", "localhost:9092"))
+	kafkaTopic   := config.GetEnv("KAFKA_TOPIC_TRADE_SETTLED", "trades.settled.v1")
+
 	if _, err := os.Stat(migrationDir); os.IsNotExist(err) {
 		if _, err := os.Stat("migration"); err == nil {
 			migrationDir = "migration"
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// 3. Graceful shutdown context
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
-	// 3. Run migrations
+	// 4. Migrations
 	appLogger.Info("Running wallet migrations...", zap.String("dir", migrationDir))
-	if err := postgres.RunMigrations(dbDSN, migrationDir); err != nil {
+	if err := platformpg.RunMigrations(dbDSN, migrationDir); err != nil {
 		appLogger.Fatal("Failed to apply wallet migrations", zap.Error(err))
 	}
 	appLogger.Info("Wallet migrations applied")
 
-	// 4. Postgres pool
-	dbPool, err := postgres.NewPool(ctx, dbDSN, postgres.PoolConfig{
-		MaxConns: 20, // Wallet gets more connections — high-frequency reads
+	// 5. Postgres pool
+	poolCtx, cancelPool := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelPool()
+	dbPool, err := platformpg.NewPool(poolCtx, dbDSN, platformpg.PoolConfig{
+		MaxConns: 20, // Wallet gets more connections — high-frequency reads + publisher
 	})
 	if err != nil {
 		appLogger.Fatal("Failed to connect to PostgreSQL", zap.Error(err))
@@ -63,31 +73,69 @@ func main() {
 	defer dbPool.Close()
 	appLogger.Info("Connected to PostgreSQL")
 
-	// 5. Wire service and handler
+	// 6. Wire service and handler
 	walletService := service.NewService(dbPool, appLogger)
-	grpcHandler  := handler.NewGRPCHandler(walletService, appLogger)
+	grpcHandler   := handler.NewGRPCHandler(walletService, appLogger)
 
-	// 6. gRPC server (no auth interceptor — internal service, protected by network policy)
+	var wg sync.WaitGroup
+
+	// 7. gRPC server
 	lis, err := net.Listen("tcp", grpcPort)
 	if err != nil {
 		appLogger.Fatal("Failed to bind TCP port", zap.String("port", grpcPort), zap.Error(err))
 	}
-
 	grpcServer := grpc.NewServer()
 	walletv1.RegisterWalletServiceServer(grpcServer, grpcHandler)
 
-	// 7. Graceful shutdown
+	wg.Add(1)
 	go func() {
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
-		appLogger.Info("Shutting down Wallet Service gracefully...")
-		grpcServer.GracefulStop()
-		appLogger.Info("Wallet Service stopped")
+		defer wg.Done()
+		appLogger.Info("Wallet gRPC server listening", zap.String("port", grpcPort))
+		if err := grpcServer.Serve(lis); err != nil && err != grpc.ErrServerStopped {
+			appLogger.Error("gRPC server failed", zap.Error(err))
+		}
 	}()
 
-	appLogger.Info("Wallet gRPC server listening", zap.String("port", grpcPort))
-	if err := grpcServer.Serve(lis); err != nil && err != grpc.ErrServerStopped {
-		appLogger.Fatal("gRPC server failed", zap.Error(err))
+	// 8. Outbox publisher — polls the outbox table and publishes to trades.settled.v1
+	outboxRepo := walletpg.NewOutboxRepository(dbPool)
+	outboxPub  := publisher.NewOutboxPublisher(outboxRepo, kafkaBrokers, kafkaTopic, appLogger)
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		outboxPub.Run(ctx)
+	}()
+
+	appLogger.Info("Wallet Service running",
+		zap.String("grpc_port", grpcPort),
+		zap.Strings("kafka_brokers", kafkaBrokers),
+		zap.String("kafka_topic", kafkaTopic),
+	)
+
+	// 9. Block until shutdown signal
+	<-ctx.Done()
+	appLogger.Info("Shutdown signal received, stopping Wallet Service...")
+
+	// GracefulStop finishes in-flight gRPC calls before returning.
+	grpcServer.GracefulStop()
+
+	// ctx cancellation propagates to outbox publisher's Run() loop — it exits cleanly.
+	wg.Wait()
+
+	if err := outboxPub.Close(); err != nil {
+		appLogger.Error("Outbox publisher close error", zap.Error(err))
 	}
+
+	appLogger.Info("Wallet Service stopped cleanly")
+}
+
+func parseBrokers(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if trimmed := strings.TrimSpace(p); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
 }

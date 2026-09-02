@@ -13,16 +13,20 @@ import (
 // SettleRequest holds all fields needed for one Wallet.SettleTrade gRPC call.
 // Field names map directly to the TradeExecuted Kafka event payload.
 type SettleRequest struct {
-	TradeID      string
-	BuyerID      string
-	SellerID     string
-	BuyOrderID   string
-	SellOrderID  string
-	BaseAsset    string
-	QuoteAsset   string
-	Price        string
-	Quantity     string
-	MarketID     string
+	TradeID     string
+	BuyerID     string
+	SellerID    string
+	BuyOrderID  string
+	SellOrderID string
+	BaseAsset   string
+	QuoteAsset  string
+	Price       string
+	Quantity    string
+	MarketID    string
+	// Sequence and ExecutedAt are passed through from the TradeExecuted event so the
+	// Wallet Service can embed them in the outbox payload for downstream consumers.
+	Sequence   uint64
+	ExecutedAt string // RFC3339Nano — ME clock
 }
 
 // WalletClient wraps the generated gRPC WalletServiceClient.
@@ -59,6 +63,8 @@ func (c *WalletClient) SettleTrade(ctx context.Context, req SettleRequest) error
 		Price:       req.Price,
 		Quantity:    req.Quantity,
 		MarketId:    req.MarketID,
+		Sequence:    req.Sequence,
+		ExecutedAt:  req.ExecutedAt,
 	})
 	if err != nil {
 		return fmt.Errorf("wallet SettleTrade gRPC: %w", err)

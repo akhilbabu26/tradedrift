@@ -69,6 +69,12 @@ message SettleTradeRequest {
     string price         = 8;
     string quantity      = 9;
     string market_id     = 10;
+    // sequence: ME per-market monotonic counter (> 0). Stored in the outbox payload
+    // so downstream consumers (Trade Service, Portfolio) receive it without a separate lookup.
+    uint64 sequence      = 11;
+    // executed_at: RFC3339Nano — Matching Engine clock. Stored in the outbox payload
+    // so Trade Service and Portfolio can record the authoritative execution timestamp.
+    string executed_at   = 12;
 }
 
 message SettleTradeResponse { bool success = 1; }

@@ -13,17 +13,25 @@ import (
 	platformuuid "tradedrift/platform/uuid"
 )
 
-// TradeSettlementRequest holds all data needed to settle a single side of a trade.
+// TradeSettlementRequest holds all data needed to settle a single trade.
+// All fields are required unless noted. They flow from Settlement Service → Wallet Service
+// via the SettleTrade gRPC call, and from there into the outbox payload published to
+// trades.settled.v1 for downstream consumers (Trade Service, Portfolio, Notification).
 type TradeSettlementRequest struct {
-	TradeID         string // Unique trade ID (idempotency key)
-	BuyerUserID     string
-	BuyerWalletID   string // pre-fetched for performance
-	SellerUserID    string
-	SellerOrderID   string // Used to look up the seller's reservation
-	BaseAsset       string // e.g. "BTC" — what changes hands
-	QuoteAsset      string // e.g. "USDT" — what was paid
-	BaseAmount      string // How much BTC the buyer receives
-	QuoteAmount     string // How much USDT the seller receives
+	TradeID      string // UUIDv7 — Matching Engine generated, idempotency key
+	BuyerUserID  string // buyer's user UUID
+	SellerUserID string // seller's user UUID
+	BuyOrderID   string // matched buy order UUID
+	SellerOrderID string // matched sell order UUID (used to look up the reservation)
+	MarketID     string // e.g. "BTC-USDT"
+	BaseAsset    string // e.g. "BTC" — what changes hands
+	QuoteAsset   string // e.g. "USDT" — what was paid
+	BaseAmount   string // How much BTC the buyer receives (= quantity)
+	QuoteAmount  string // How much USDT the seller receives (= price × quantity)
+	Price        string // authoritative match price (decimal string)
+	Quantity     string // authoritative match quantity (decimal string)
+	Sequence     uint64 // ME per-market monotonic counter (> 0)
+	ExecutedAt   string // RFC3339Nano — Matching Engine clock
 }
 
 // SettleTrade atomically settles a matched trade:
@@ -132,19 +140,42 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 		}
 	}
 
-	// Step 7: Write outbox event (published to Kafka by background worker)
+	// Step 7: Write outbox event (published to Kafka by background outbox publisher).
+	// Payload must match TradeSettledEvent exactly — consumed by Trade Service,
+	// Portfolio Service, and Notification Service.
 	eventID, err := platformuuid.New()
 	if err != nil {
 		return fmt.Errorf("failed to generate outbox event ID: %w", err)
 	}
-	payload, err := json.Marshal(map[string]string{
-		"trade_id":      req.TradeID,
-		"buyer_user_id": req.BuyerUserID,
-		"seller_user_id": req.SellerUserID,
-		"base_asset":    req.BaseAsset,
-		"base_amount":   req.BaseAmount,
-		"quote_asset":   req.QuoteAsset,
-		"quote_amount":  req.QuoteAmount,
+	type tradeSettledPayload struct {
+		TradeID     string `json:"trade_id"`
+		BuyerID     string `json:"buyer_id"`
+		SellerID    string `json:"seller_id"`
+		BuyOrderID  string `json:"buy_order_id"`
+		SellOrderID string `json:"sell_order_id"`
+		MarketID    string `json:"market_id"`
+		BaseAsset   string `json:"base_asset"`
+		QuoteAsset  string `json:"quote_asset"`
+		Price       string `json:"price"`
+		Quantity    string `json:"quantity"`
+		Sequence    uint64 `json:"sequence"`
+		ExecutedAt  string `json:"executed_at"` // RFC3339Nano — ME clock
+		SettledAt   string `json:"settled_at"`  // RFC3339Nano — Wallet clock
+	}
+	payload, err := json.Marshal(tradeSettledPayload{
+		TradeID:     req.TradeID,
+		BuyerID:     req.BuyerUserID,
+		SellerID:    req.SellerUserID,
+		BuyOrderID:  req.BuyOrderID,
+		SellOrderID: req.SellerOrderID,
+		MarketID:    req.MarketID,
+		BaseAsset:   req.BaseAsset,
+		QuoteAsset:  req.QuoteAsset,
+		Price:       req.Price,
+		Quantity:    req.Quantity,
+		Sequence:    req.Sequence,
+		ExecutedAt:  req.ExecutedAt,
+		SettledAt:   now.Format(time.RFC3339Nano), // Wallet clock: when balances moved
 	})
 	if err != nil {
 		return fmt.Errorf("failed to marshal outbox payload: %w", err)
@@ -152,9 +183,9 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 	outboxEvent := &repository.OutboxEvent{
 		ID:           eventID,
 		AggregateID:  req.TradeID,
-		EventType:    "UserTradeSettled",
+		EventType:    "TradeSettled",
 		Payload:      payload,
-		PartitionKey: req.BuyerUserID,
+		PartitionKey: req.BuyerUserID, // partition by buyer — consistent with ME partition key
 		CreatedAt:    now,
 	}
 	if err := s.outboxRepo.Insert(ctx, outboxEvent); err != nil {

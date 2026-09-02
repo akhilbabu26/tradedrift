@@ -14,17 +14,19 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	authv1 "tradedrift/platform/api/gen/auth/v1"
+	authv1   "tradedrift/platform/api/gen/auth/v1"
 	marketv1 "tradedrift/platform/api/gen/market/v1"
-	orderv1 "tradedrift/platform/api/gen/order/v1"
+	orderv1  "tradedrift/platform/api/gen/order/v1"
+	tradev1  "tradedrift/platform/api/gen/trade/v1"
 	walletv1 "tradedrift/platform/api/gen/wallet/v1"
 	"tradedrift/platform/config"
 	platformjwt "tradedrift/platform/jwt"
 	"tradedrift/platform/logger"
 
-	authhandler "tradedrift/services/gateway/internal/handler/auth"
+	authhandler   "tradedrift/services/gateway/internal/handler/auth"
 	markethandler "tradedrift/services/gateway/internal/handler/market"
-	orderhandler "tradedrift/services/gateway/internal/handler/order"
+	orderhandler  "tradedrift/services/gateway/internal/handler/order"
+	tradehandler  "tradedrift/services/gateway/internal/handler/trade"
 	wallethandler "tradedrift/services/gateway/internal/handler/wallet"
 	"tradedrift/services/gateway/internal/middleware"
 	"tradedrift/services/gateway/internal/ws"
@@ -54,9 +56,10 @@ func main() {
 	// 2. Config
 	httpPort   := config.GetEnv("GATEWAY_PORT", ":8080")
 	authAddr   := formatTarget(config.GetEnv("AUTH_ADDR",    "127.0.0.1:50051"))
-	walletAddr := formatTarget(config.GetEnv("WALLET_ADDR",  "127.0.0.1:50052"))
-	orderAddr  := formatTarget(config.GetEnv("ORDER_ADDR",   "127.0.0.1:50053"))
-	marketAddr := formatTarget(config.GetEnv("MARKET_ADDR",  "127.0.0.1:50054"))
+	walletAddr := formatTarget(config.GetEnv("WALLET_ADDR", "127.0.0.1:50052"))
+	orderAddr  := formatTarget(config.GetEnv("ORDER_ADDR",  "127.0.0.1:50053"))
+	marketAddr := formatTarget(config.GetEnv("MARKET_ADDR", "127.0.0.1:50054"))
+	tradeAddr  := formatTarget(config.GetEnv("TRADE_ADDR",  "127.0.0.1:50057"))
 	allowedOrigins := []string{
 		config.GetEnv("CORS_ORIGIN", "http://localhost:5173"),
 	}
@@ -91,11 +94,18 @@ func main() {
 	}
 	defer marketConn.Close()
 
+	tradeConn, err := grpc.NewClient(tradeAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		appLogger.Fatal("Failed to connect to Trade service", zap.String("addr", tradeAddr), zap.Error(err))
+	}
+	defer tradeConn.Close()
+
 	// 4. Instantiate Handlers
 	authH   := authhandler.NewHandler(authv1.NewAuthServiceClient(authConn))
 	walletH := wallethandler.NewHandler(walletv1.NewWalletServiceClient(walletConn))
 	orderH  := orderhandler.NewHandler(orderv1.NewOrderServiceClient(orderConn))
 	marketH := markethandler.NewHandler(marketv1.NewMarketServiceClient(marketConn))
+	tradeH  := tradehandler.NewHandler(tradev1.NewTradeServiceClient(tradeConn))
 
 	// 5. Redis and WebSocket Subsystem Setup
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -180,10 +190,16 @@ func main() {
 	mux.Handle("POST /api/v1/orders/{id}/cancel",   protected(http.HandlerFunc(orderH.CancelOrder)))
 
 	// Market — public
-	mux.HandleFunc("GET /api/v1/markets",             marketH.ListMarkets)
-	mux.HandleFunc("GET /api/v1/markets/{id}",        marketH.GetMarket)
+	mux.HandleFunc("GET /api/v1/markets",              marketH.ListMarkets)
+	mux.HandleFunc("GET /api/v1/markets/{id}",         marketH.GetMarket)
 	mux.HandleFunc("GET /api/v1/markets/{id}/ticker",  marketH.GetTicker)
 	mux.HandleFunc("GET /api/v1/markets/{id}/candles", marketH.GetCandles)
+	// Market trade tape — public (TI-7: no buyer_id/seller_id in response)
+	mux.HandleFunc("GET /api/v1/markets/{id}/trades",  tradeH.ListMarketTrades)
+
+	// Trades — protected
+	mux.Handle("GET /api/v1/trades",     protected(http.HandlerFunc(tradeH.ListUserTrades)))
+	mux.Handle("GET /api/v1/trades/{id}", protected(http.HandlerFunc(tradeH.GetTrade)))
 
 	// 7. HTTP Server
 	srv := &http.Server{

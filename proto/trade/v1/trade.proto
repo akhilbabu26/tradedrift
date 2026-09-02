@@ -1,0 +1,111 @@
+syntax = "proto3";
+
+package tradedrift.trade.v1;
+
+option go_package = "tradedrift/platform/api/gen/trade/v1;tradev1";
+
+// ─────────────────────────────────────────────
+// Shared message types
+// ─────────────────────────────────────────────
+
+// Trade is the full trade record, returned to authenticated callers (buyer or seller).
+// buyer_id and seller_id are included — callers are authorised server-side.
+message Trade {
+    string trade_id      = 1;
+    string buyer_id      = 2;
+    string seller_id     = 3;
+    string buy_order_id  = 4;
+    string sell_order_id = 5;
+    string market_id     = 6;
+    string base_asset    = 7;
+    string quote_asset   = 8;
+    string price         = 9;  // decimal string, MONETARY_PRECISION
+    string quantity      = 10; // decimal string, MONETARY_PRECISION
+    string executed_at   = 11; // RFC3339Nano — Matching Engine clock
+    string settled_at    = 12; // RFC3339Nano — Wallet Service clock
+}
+
+// MarketTrade is the public-safe subset returned on the market tape endpoint.
+// buyer_id and seller_id are NEVER included — anonymous callers may not see user identity.
+message MarketTrade {
+    string trade_id    = 1;
+    string market_id   = 2;
+    string base_asset  = 3;
+    string quote_asset = 4;
+    string price       = 5;
+    string quantity    = 6;
+    string executed_at = 7; // RFC3339Nano — Matching Engine clock
+}
+
+// ─────────────────────────────────────────────
+// GetTrade
+// ─────────────────────────────────────────────
+
+message GetTradeRequest {
+    string trade_id       = 1;
+    // caller_user_id is extracted from the JWT by the API Gateway and forwarded here.
+    // Trade Service enforces: caller must be buyer_id or seller_id (or admin role).
+    string caller_user_id = 2;
+}
+
+message GetTradeResponse {
+    Trade trade = 1;
+}
+
+// ─────────────────────────────────────────────
+// ListUserTrades
+// ─────────────────────────────────────────────
+
+message ListUserTradesRequest {
+    // user_id comes from JWT claims — API Gateway forwards it; caller may only query their own trades.
+    string user_id   = 1;
+    // cursor is a base64-encoded keyset cursor (empty = first page).
+    // Encodes (executed_at, trade_id) for stable pagination under concurrent inserts.
+    string cursor    = 2;
+    // limit: default 20, max 100. Values outside range are clamped server-side.
+    int32  limit     = 3;
+    // market_id: optional. When set, restricts results to a single market.
+    string market_id = 4;
+}
+
+message ListUserTradesResponse {
+    repeated Trade trades = 1;
+    // next_cursor is empty when the caller has reached the last page.
+    string next_cursor    = 2;
+}
+
+// ─────────────────────────────────────────────
+// ListMarketTrades
+// ─────────────────────────────────────────────
+
+message ListMarketTradesRequest {
+    string market_id = 1;
+    string cursor    = 2;
+    // limit: default 50, max 200.
+    int32  limit     = 3;
+}
+
+message ListMarketTradesResponse {
+    // MarketTrade has no buyer_id / seller_id — safe for anonymous callers.
+    repeated MarketTrade trades = 1;
+    string next_cursor          = 2;
+}
+
+// ─────────────────────────────────────────────
+// Service
+// ─────────────────────────────────────────────
+
+service TradeService {
+    // GetTrade returns a single trade by ID.
+    // Returns NOT_FOUND if the trade doesn't exist.
+    // Returns PERMISSION_DENIED if caller is not buyer or seller.
+    rpc GetTrade(GetTradeRequest) returns (GetTradeResponse);
+
+    // ListUserTrades returns the authenticated user's fill history, newest-first.
+    // The user appears either as buyer or seller across the results.
+    rpc ListUserTrades(ListUserTradesRequest) returns (ListUserTradesResponse);
+
+    // ListMarketTrades returns the public market trade tape for a market, newest-first.
+    // buyer_id and seller_id are stripped from the response.
+    rpc ListMarketTrades(ListMarketTradesRequest) returns (ListMarketTradesResponse);
+}

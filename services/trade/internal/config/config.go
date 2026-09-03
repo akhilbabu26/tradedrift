@@ -13,9 +13,10 @@ type Config struct {
 	MigrationsDir string
 	KafkaBrokers  []string
 	KafkaGroupID  string
-	KafkaTopic    string   // trades.settled.v1
-	KafkaDLQTopic string   // trades.settled.dlq
+	KafkaTopic    string // trades.settled.v1
+	KafkaDLQTopic string // trades.settled.dlq
 	GRPCPort      string
+	MetricsPort   string
 	LogLevel      string
 }
 
@@ -41,6 +42,7 @@ func Load() (Config, error) {
 		KafkaTopic:    config.GetEnv("KAFKA_TOPIC_TRADE_SETTLED", "trades.settled.v1"),
 		KafkaDLQTopic: config.GetEnv("KAFKA_TOPIC_TRADE_DLQ", "trades.settled.dlq"),
 		GRPCPort:      config.GetEnv("TRADE_GRPC_PORT", ":50057"),
+		MetricsPort:   config.GetEnv("TRADE_METRICS_PORT", ":9090"),
 		LogLevel:      config.GetEnv("LOG_LEVEL", "info"),
 	}, nil
 }

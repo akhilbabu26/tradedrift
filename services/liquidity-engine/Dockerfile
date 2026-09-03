@@ -20,6 +20,7 @@ COPY services/market/           ./services/market/
 COPY services/matching-engine/  ./services/matching-engine/
 COPY services/settlement/       ./services/settlement/
 COPY services/liquidity-engine/ ./services/liquidity-engine/
+COPY services/trade/            ./services/trade/
 
 # Download dependencies via workspace
 RUN go work sync

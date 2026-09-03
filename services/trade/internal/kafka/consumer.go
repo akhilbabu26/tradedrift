@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,8 +13,8 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 
+	"tradedrift/services/trade/internal/metrics"
 	"tradedrift/services/trade/internal/repository"
-	// "tradedrift/services/trade/internal/metrics"
 )
 
 // ── Poison error ──────────────────────────────────────────────────────────────
@@ -137,6 +138,9 @@ func (c *Consumer) Start(ctx context.Context) {
 		// ── Deserialise ───────────────────────────────────────────────────────
 		var event TradeSettledEvent
 		if err := json.Unmarshal(msg.Value, &event); err != nil {
+			metrics.EventsConsumedTotal.WithLabelValues("poison").Inc()
+			metrics.DLQEventsTotal.WithLabelValues("malformed_json").Inc()
+
 			// Malformed JSON — not retryable. Log safe fields only (no raw payload).
 			c.log.Error("malformed TradeSettled JSON — routing to DLQ",
 				zap.Int("partition", msg.Partition),
@@ -144,15 +148,30 @@ func (c *Consumer) Start(ctx context.Context) {
 				zap.Error(err),
 				// NOTE: do NOT log msg.Value — contains buyer_id, seller_id, amounts.
 			)
-			c.sendToDLQ(ctx, msg, "malformed JSON: "+err.Error())
+			if dlqErr := c.sendToDLQ(ctx, msg, "malformed JSON: "+err.Error()); dlqErr != nil {
+				c.log.Error("CRITICAL: failed to route malformed JSON to DLQ — offset NOT committed, will retry",
+					zap.Int64("offset", msg.Offset),
+					zap.Error(dlqErr),
+				)
+				continue
+			}
 			c.commitMsg(ctx, msg)
 			continue
+		}
+
+		// Record event freshness / age
+		if t, parseErr := time.Parse(time.RFC3339Nano, event.SettledAt); parseErr == nil {
+			age := time.Since(t).Seconds()
+			metrics.ConsumerEventAgeSeconds.WithLabelValues(fmt.Sprintf("%d", msg.Partition)).Set(age)
 		}
 
 		// ── Process ───────────────────────────────────────────────────────────
 		if err := c.process(ctx, event); err != nil {
 			var poison *PoisonError
 			if errors.As(err, &poison) {
+				metrics.EventsConsumedTotal.WithLabelValues("poison").Inc()
+				metrics.DLQEventsTotal.WithLabelValues(classifyReason(err.Error())).Inc()
+
 				// Poison — write to DLQ, then ACK. Never retry process(), but ensure DLQ write succeeds.
 				c.log.Error("poison TradeSettled event — routing to DLQ",
 					zap.String("trade_id", event.TradeID),
@@ -174,6 +193,7 @@ func (c *Consumer) Start(ctx context.Context) {
 			}
 
 			// Retryable — do NOT ACK. Kafka redelivers. ON CONFLICT absorbs duplicate.
+			metrics.EventsConsumedTotal.WithLabelValues("retryable_error").Inc()
 			c.log.Error("trade insert failed — retryable, offset not committed",
 				zap.String("trade_id", event.TradeID),
 				zap.String("market_id", event.MarketID),
@@ -184,6 +204,7 @@ func (c *Consumer) Start(ctx context.Context) {
 		}
 
 		// ── ACK ───────────────────────────────────────────────────────────────
+		metrics.EventsConsumedTotal.WithLabelValues("success").Inc()
 		c.commitMsg(ctx, msg)
 	}
 }
@@ -318,3 +339,22 @@ func (c *Consumer) Close() error {
 	_ = c.dlqWriter.Close()
 	return c.reader.Close()
 }
+
+// classifyReason maps error messages to low-cardinality Prometheus label values.
+func classifyReason(errStr string) string {
+	switch {
+	case strings.Contains(errStr, "invalid trade_id") || strings.Contains(errStr, "invalid buyer_id") || strings.Contains(errStr, "invalid seller_id"):
+		return "invalid_uuid"
+	case strings.Contains(errStr, "self-trade"):
+		return "self_trade"
+	case strings.Contains(errStr, "invalid sequence"):
+		return "zero_sequence"
+	case strings.Contains(errStr, "invalid price") || strings.Contains(errStr, "invalid quantity"):
+		return "invalid_financials"
+	case strings.Contains(errStr, "sequence conflict"):
+		return "sequence_conflict"
+	default:
+		return "unknown"
+	}
+}
+

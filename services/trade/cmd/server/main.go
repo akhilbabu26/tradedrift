@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"net"
+	"net/http"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 
@@ -51,8 +53,6 @@ func main() {
 	poolCtx, cancelPool := context.WithTimeout(ctx, 10*time.Second)
 	defer cancelPool()
 	dbPool, err := platformpg.NewPool(poolCtx, cfg.PostgresDSN, platformpg.PoolConfig{
-		// 15 connections: up to ~3 Kafka partition writers (INSERT) +
-		// headroom for concurrent gRPC read queries.
 		MaxConns: 15,
 	})
 	if err != nil {
@@ -85,7 +85,39 @@ func main() {
 		}
 	}()
 
-	// ── 7. Kafka consumer ─────────────────────────────────────────────────────
+	// ── 7. Metrics & Health HTTP Server (:9090) ──────────────────────────────
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsMux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("OK"))
+	})
+	metricsMux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		if err := dbPool.Ping(r.Context()); err != nil {
+			http.Error(w, "database unreachable", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("READY"))
+	})
+
+	metricsServer := &http.Server{
+		Addr:         cfg.MetricsPort,
+		Handler:      metricsMux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+	}
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		appLogger.Info("Trade metrics & health server listening", zap.String("port", cfg.MetricsPort))
+		if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			appLogger.Error("metrics server failed", zap.Error(err))
+		}
+	}()
+
+	// ── 8. Kafka consumer ─────────────────────────────────────────────────────
 	consumer := tradekafka.NewConsumer(
 		cfg.KafkaBrokers,
 		cfg.KafkaGroupID,
@@ -101,21 +133,27 @@ func main() {
 		consumer.Start(ctx)
 	}()
 
-	// ── 8. Running ────────────────────────────────────────────────────────────
+	// ── 9. Running ────────────────────────────────────────────────────────────
 	appLogger.Info("Trade Service running",
 		zap.String("grpc_port", cfg.GRPCPort),
+		zap.String("metrics_port", cfg.MetricsPort),
 		zap.Strings("brokers", cfg.KafkaBrokers),
 		zap.String("topic", cfg.KafkaTopic),
 		zap.String("dlq_topic", cfg.KafkaDLQTopic),
 		zap.String("group", cfg.KafkaGroupID),
 	)
 
-	// ── 9. Block until shutdown signal ────────────────────────────────────────
+	// ── 10. Block until shutdown signal ───────────────────────────────────────
 	<-ctx.Done()
 	appLogger.Info("Shutdown signal received, stopping Trade Service...")
 
 	// Stop gRPC gracefully — finishes in-flight RPCs before returning.
 	grpcServer.GracefulStop()
+
+	// Stop metrics HTTP server.
+	metricsShutdownCtx, cancelMetrics := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelMetrics()
+	_ = metricsServer.Shutdown(metricsShutdownCtx)
 
 	// Context cancellation stops new message fetches and terminates in-flight
 	// processing. Any uncommitted Kafka offsets will be cleanly replayed on startup.
@@ -127,3 +165,4 @@ func main() {
 
 	appLogger.Info("Trade Service stopped cleanly")
 }
+

@@ -14,8 +14,9 @@ COPY services/gateway/         ./services/gateway/
 COPY services/order/           ./services/order/
 COPY services/market/          ./services/market/
 COPY services/matching-engine/ ./services/matching-engine/
-COPY services/settlement/      ./services/settlement/
+COPY services/settlement/       ./services/settlement/
 COPY services/liquidity-engine/ ./services/liquidity-engine/
+COPY services/trade/            ./services/trade/
 
 # Build binary using Go module cache mount
 RUN --mount=type=cache,target=/go/pkg/mod \

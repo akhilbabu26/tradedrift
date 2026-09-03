@@ -35,9 +35,11 @@ func NewKafkaProducer(brokers []string, logger *zap.Logger) (*KafkaProducer, err
 	}
 
 	w := &kafkago.Writer{
-		Addr:                   kafkago.TCP(brokers...),
-		AllowAutoTopicCreation: true,
-		RequiredAcks:           kafkago.RequireOne,
+		Addr:         kafkago.TCP(brokers...),
+		RequiredAcks: kafkago.RequireOne,
+		// Balancer must be nil so that explicit msg.Partition is respected.
+		// With any Balancer set, kafka-go ignores the Partition field.
+		Balancer: nil,
 	}
 
 	return &KafkaProducer{

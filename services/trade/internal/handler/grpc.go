@@ -5,11 +5,13 @@ import (
 	"errors"
 
 	"github.com/google/uuid"
+	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	tradev1 "tradedrift/platform/api/gen/trade/v1"
+	"tradedrift/services/trade/internal/metrics"
 	"tradedrift/services/trade/internal/repository"
 	"tradedrift/services/trade/internal/service"
 )
@@ -30,11 +32,16 @@ func NewGRPCHandler(svc *service.Service, log *zap.Logger) *GRPCHandler {
 // The API Gateway forwards caller_user_id from the JWT so Trade Service can
 // enforce TI-8 (only buyer or seller may view their own trade).
 func (h *GRPCHandler) GetTrade(ctx context.Context, req *tradev1.GetTradeRequest) (*tradev1.GetTradeResponse, error) {
+	timer := prometheus.NewTimer(metrics.GRPCDurationSeconds.WithLabelValues("GetTrade"))
+	defer timer.ObserveDuration()
+
 	if req.TradeId == "" {
+		metrics.GRPCRequestsTotal.WithLabelValues("GetTrade", "InvalidArgument").Inc()
 		return nil, status.Error(codes.InvalidArgument, "trade_id is required")
 	}
 	tradeID, err := uuid.Parse(req.TradeId)
 	if err != nil {
+		metrics.GRPCRequestsTotal.WithLabelValues("GetTrade", "InvalidArgument").Inc()
 		return nil, status.Errorf(codes.InvalidArgument, "invalid trade_id: %v", err)
 	}
 
@@ -43,6 +50,7 @@ func (h *GRPCHandler) GetTrade(ctx context.Context, req *tradev1.GetTradeRequest
 	if req.CallerUserId != "" {
 		callerID, err = uuid.Parse(req.CallerUserId)
 		if err != nil {
+			metrics.GRPCRequestsTotal.WithLabelValues("GetTrade", "InvalidArgument").Inc()
 			return nil, status.Errorf(codes.InvalidArgument, "invalid caller_user_id: %v", err)
 		}
 	}
@@ -50,30 +58,41 @@ func (h *GRPCHandler) GetTrade(ctx context.Context, req *tradev1.GetTradeRequest
 	t, err := h.svc.GetTrade(ctx, tradeID, callerID, req.IsAdmin)
 	if err != nil {
 		if errors.Is(err, repository.ErrTradeNotFound) {
+			metrics.GRPCRequestsTotal.WithLabelValues("GetTrade", "NotFound").Inc()
 			return nil, status.Errorf(codes.NotFound, "trade %s not found", req.TradeId)
 		}
 		if errors.Is(err, service.ErrNotParty) {
+			metrics.GRPCRequestsTotal.WithLabelValues("GetTrade", "PermissionDenied").Inc()
 			return nil, status.Error(codes.PermissionDenied, "caller is not a party to this trade")
 		}
+		metrics.GRPCRequestsTotal.WithLabelValues("GetTrade", "Internal").Inc()
 		h.log.Error("GetTrade failed", zap.String("trade_id", req.TradeId), zap.Error(err))
 		return nil, status.Error(codes.Internal, "internal error")
 	}
+
+	metrics.GRPCRequestsTotal.WithLabelValues("GetTrade", "OK").Inc()
 	return &tradev1.GetTradeResponse{Trade: toProtoTrade(t)}, nil
 }
 
 // ListUserTrades returns the authenticated user's trade history, newest-first.
 // Cursor-paginated — pass next_cursor from the previous response to advance pages.
 func (h *GRPCHandler) ListUserTrades(ctx context.Context, req *tradev1.ListUserTradesRequest) (*tradev1.ListUserTradesResponse, error) {
+	timer := prometheus.NewTimer(metrics.GRPCDurationSeconds.WithLabelValues("ListUserTrades"))
+	defer timer.ObserveDuration()
+
 	if req.UserId == "" {
+		metrics.GRPCRequestsTotal.WithLabelValues("ListUserTrades", "InvalidArgument").Inc()
 		return nil, status.Error(codes.InvalidArgument, "user_id is required")
 	}
 	userID, err := uuid.Parse(req.UserId)
 	if err != nil {
+		metrics.GRPCRequestsTotal.WithLabelValues("ListUserTrades", "InvalidArgument").Inc()
 		return nil, status.Errorf(codes.InvalidArgument, "invalid user_id: %v", err)
 	}
 
 	trades, nextCursor, err := h.svc.ListUserTrades(ctx, userID, req.MarketId, req.Cursor, req.Limit)
 	if err != nil {
+		metrics.GRPCRequestsTotal.WithLabelValues("ListUserTrades", "Internal").Inc()
 		h.log.Error("ListUserTrades failed", zap.String("user_id", req.UserId), zap.Error(err))
 		return nil, status.Error(codes.Internal, "internal error")
 	}
@@ -82,6 +101,7 @@ func (h *GRPCHandler) ListUserTrades(ctx context.Context, req *tradev1.ListUserT
 	for i := range trades {
 		protoTrades[i] = toProtoTrade(&trades[i])
 	}
+	metrics.GRPCRequestsTotal.WithLabelValues("ListUserTrades", "OK").Inc()
 	return &tradev1.ListUserTradesResponse{
 		Trades:     protoTrades,
 		NextCursor: nextCursor,
@@ -91,12 +111,17 @@ func (h *GRPCHandler) ListUserTrades(ctx context.Context, req *tradev1.ListUserT
 // ListMarketTrades returns the public market trade tape.
 // buyer_id and seller_id are NOT included in the response (MarketTrade message).
 func (h *GRPCHandler) ListMarketTrades(ctx context.Context, req *tradev1.ListMarketTradesRequest) (*tradev1.ListMarketTradesResponse, error) {
+	timer := prometheus.NewTimer(metrics.GRPCDurationSeconds.WithLabelValues("ListMarketTrades"))
+	defer timer.ObserveDuration()
+
 	if req.MarketId == "" {
+		metrics.GRPCRequestsTotal.WithLabelValues("ListMarketTrades", "InvalidArgument").Inc()
 		return nil, status.Error(codes.InvalidArgument, "market_id is required")
 	}
 
 	trades, nextCursor, err := h.svc.ListMarketTrades(ctx, req.MarketId, req.Cursor, req.Limit)
 	if err != nil {
+		metrics.GRPCRequestsTotal.WithLabelValues("ListMarketTrades", "Internal").Inc()
 		h.log.Error("ListMarketTrades failed", zap.String("market_id", req.MarketId), zap.Error(err))
 		return nil, status.Error(codes.Internal, "internal error")
 	}
@@ -105,6 +130,7 @@ func (h *GRPCHandler) ListMarketTrades(ctx context.Context, req *tradev1.ListMar
 	for i := range trades {
 		protoTrades[i] = toProtoMarketTrade(&trades[i])
 	}
+	metrics.GRPCRequestsTotal.WithLabelValues("ListMarketTrades", "OK").Inc()
 	return &tradev1.ListMarketTradesResponse{
 		Trades:     protoTrades,
 		NextCursor: nextCursor,

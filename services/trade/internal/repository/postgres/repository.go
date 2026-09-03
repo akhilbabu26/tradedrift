@@ -9,8 +9,10 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/shopspring/decimal"
 
+	"tradedrift/services/trade/internal/metrics"
 	"tradedrift/services/trade/internal/repository"
 )
 
@@ -35,6 +37,9 @@ func NewRepository(pool *pgxpool.Pool) *Repository {
 //     for a DIFFERENT trade_id — producer integrity bug, not retryable
 //   - any other error             → transient DB/network failure, retryable
 func (r *Repository) Create(ctx context.Context, t *repository.Trade) error {
+	timer := prometheus.NewTimer(metrics.DBDurationSeconds.WithLabelValues("create"))
+	defer timer.ObserveDuration()
+
 	const q = `
 		INSERT INTO trades (
 			id, buyer_id, seller_id, buy_order_id, sell_order_id,
@@ -58,8 +63,12 @@ func (r *Repository) Create(ctx context.Context, t *repository.Trade) error {
 	return nil
 }
 
-// GetByID returns the trade with the given id, or nil if not found.
+// GetByID returns the trade with the given id.
+// Returns ErrTradeNotFound when the trade does not exist.
 func (r *Repository) GetByID(ctx context.Context, id uuid.UUID) (*repository.Trade, error) {
+	timer := prometheus.NewTimer(metrics.DBDurationSeconds.WithLabelValues("get_by_id"))
+	defer timer.ObserveDuration()
+
 	const q = `
 		SELECT id, buyer_id, seller_id, buy_order_id, sell_order_id,
 		       market_id, base_asset, quote_asset, price, quantity,
@@ -88,6 +97,9 @@ func (r *Repository) ListByUser(
 	after *repository.Cursor,
 	limit int,
 ) ([]repository.Trade, error) {
+	timer := prometheus.NewTimer(metrics.DBDurationSeconds.WithLabelValues("list_by_user"))
+	defer timer.ObserveDuration()
+
 	var (
 		q    string
 		args []any
@@ -142,6 +154,9 @@ func (r *Repository) ListByMarket(
 	after *repository.Cursor,
 	limit int,
 ) ([]repository.Trade, error) {
+	timer := prometheus.NewTimer(metrics.DBDurationSeconds.WithLabelValues("list_by_market"))
+	defer timer.ObserveDuration()
+
 	const q = `
 		SELECT id, buyer_id, seller_id, buy_order_id, sell_order_id,
 		       market_id, base_asset, quote_asset, price, quantity,

@@ -68,9 +68,14 @@ services:
       WALLET_POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_wallet?sslmode=disable
       WALLET_PORT: ":50052"
       WALLET_MIGRATIONS_DIR: services/wallet/migration
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC_TRADE_SETTLED: trades.settled.v1
       LOG_LEVEL: info
     ports:
       - "50052:50052"
+    depends_on:
+      kafka:
+        condition: service_started
 
   order:
     build:
@@ -144,7 +149,7 @@ services:
       SETTLEMENT_POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_settlement?sslmode=disable
       SETTLEMENT_MIGRATIONS_DIR: services/settlement/migration
       KAFKA_BROKERS: kafka:29092
-      KAFKA_GROUP_ID: settlement-service-group
+      KAFKA_GROUP_ID: settlement-service-group-v2
       KAFKA_TOPIC_TRADE_EXECUTED: trades.executed
       WALLET_GRPC_ADDR: wallet:50052
       WALLET_GRPC_TIMEOUT: 5s
@@ -155,6 +160,29 @@ services:
       wallet:
         condition: service_started
 
+
+  trade:
+    build:
+      context: .
+      dockerfile: services/trade/Dockerfile
+    container_name: tradedrift-trade
+    restart: unless-stopped
+    environment:
+      TRADE_POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_trade?sslmode=disable
+      TRADE_MIGRATIONS_DIR: services/trade/migration
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: trade-service-group
+      KAFKA_TOPIC_TRADE_SETTLED: trades.settled.v1
+      KAFKA_TOPIC_TRADE_DLQ: trades.settled.dlq
+      TRADE_GRPC_PORT: ":50057"
+      TRADE_METRICS_PORT: ":9090"
+      LOG_LEVEL: info
+    ports:
+      - "50057:50057"
+      - "9090:9090"
+    depends_on:
+      kafka:
+        condition: service_started
 
   gateway:
     build:
@@ -168,6 +196,7 @@ services:
       WALLET_ADDR:  "wallet:50052"
       ORDER_ADDR:   "order:50053"
       MARKET_ADDR:  "market:50054"
+      TRADE_ADDR:   "trade:50057"
       REDIS_ADDR:   "redis:6379"
       KAFKA_BROKERS: "kafka:29092"
       JWT_SECRET:   "super-secret-jwt-key-tradedrift-dev-32bytes"
@@ -187,6 +216,8 @@ services:
       order:
         condition: service_started
       market:
+        condition: service_started
+      trade:
         condition: service_started
       matching-engine:
         condition: service_started

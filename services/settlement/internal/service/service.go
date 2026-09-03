@@ -274,6 +274,7 @@ func (s *Service) RecoverStalePending(ctx context.Context) {
 			Price:       t.Price,
 			Quantity:    t.Quantity,
 			MarketID:    t.MarketID,
+			ExecutedAt:  t.ExecutedAt.Format(time.RFC3339Nano),
 		})
 		cancel() // release resources immediately after each RPC, not at function return
 

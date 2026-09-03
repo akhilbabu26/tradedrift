@@ -40,10 +40,12 @@ Write-Host "    kafka_checkpoints, market_snapshots, market_sequences cleared." 
 if ($ResetDB) {
     Write-Host "==> Full DB reset -- wiping all service databases..." -ForegroundColor Yellow
     $services = @(
-        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_auth?sslmode=disable";    tables = "users, refresh_tokens" },
-        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_wallet?sslmode=disable";  tables = "wallets, transactions" },
-        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_orders?sslmode=disable";  tables = "orders" },
-        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_market?sslmode=disable";  tables = "markets" }
+        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_auth?sslmode=disable";       tables = "users, refresh_tokens" },
+        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_wallet?sslmode=disable";     tables = "wallets, transactions, outbox" },
+        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_order?sslmode=disable";      tables = "orders, outbox" },
+        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_market?sslmode=disable";     tables = "markets" },
+        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_settlement?sslmode=disable"; tables = "settled_trades" },
+        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_trade?sslmode=disable";      tables = "trades" }
     )
     foreach ($svc in $services) {
         try {

@@ -37,9 +37,12 @@ func NewKafkaProducer(brokers []string, logger *zap.Logger) (*KafkaProducer, err
 	w := &kafkago.Writer{
 		Addr:         kafkago.TCP(brokers...),
 		RequiredAcks: kafkago.RequireOne,
-		// Balancer must be nil so that explicit msg.Partition is respected.
-		// With any Balancer set, kafka-go ignores the Partition field.
-		Balancer: nil,
+		// Explicit partition balancer: kafka-go defaults to RoundRobin if Balancer is nil,
+		// which ignores msg.Partition. By providing a BalancerFunc that returns msg.Partition,
+		// we guarantee the message is delivered to its exact assigned market partition.
+		Balancer: kafkago.BalancerFunc(func(msg kafkago.Message, partitions ...int) int {
+			return msg.Partition
+		}),
 	}
 
 	return &KafkaProducer{

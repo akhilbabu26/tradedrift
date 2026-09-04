@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
@@ -85,30 +84,43 @@ func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.Trad
 	}
 	defer tx.Rollback(ctx)
 
-	// 2. Idempotency Check: Was trade already processed?
-	var exists bool
-	err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM processed_trades WHERE trade_id = $1)", in.TradeID).Scan(&exists)
+	// 2. Atomic Idempotency Check & Registration
+	// INSERT ... ON CONFLICT (trade_id) DO NOTHING guarantees atomic check-and-reserve.
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO processed_trades (trade_id, user_id, market_id, sequence, processed_at)
+		VALUES ($1, $2, $3, $4, NOW())
+		ON CONFLICT (trade_id) DO NOTHING;
+	`, in.TradeID, in.BuyerID, in.MarketID, in.Sequence)
 	if err != nil {
-		return nil, fmt.Errorf("check processed_trades: %w", err)
+		return nil, fmt.Errorf("insert processed_trades: %w", err)
 	}
-	if exists {
+	if tag.RowsAffected() == 0 {
 		return nil, repository.ErrTradeAlreadyProcessed
 	}
 
 	// 3. Deterministic Row-Locking to eliminate deadlocks (Alice <-> Bob)
 	firstUser, secondUser := in.BuyerID, in.SellerID
 	if firstUser > secondUser {
-		firstUser, secondUser = in.SellerID, in.BuyerID
+		firstUser, secondUser = secondUser, firstUser
 	}
 
-	buyerHolding, err := lockHoldingRow(ctx, tx, in.BuyerID, in.BaseAsset)
+	firstHolding, err := lockHoldingRow(ctx, tx, firstUser, in.BaseAsset)
 	if err != nil {
-		return nil, fmt.Errorf("lock buyer holding: %w", err)
+		return nil, fmt.Errorf("lock first holding (%s): %w", firstUser, err)
 	}
 
-	sellerHolding, err := lockHoldingRow(ctx, tx, in.SellerID, in.BaseAsset)
+	secondHolding, err := lockHoldingRow(ctx, tx, secondUser, in.BaseAsset)
 	if err != nil {
-		return nil, fmt.Errorf("lock seller holding: %w", err)
+		return nil, fmt.Errorf("lock second holding (%s): %w", secondUser, err)
+	}
+
+	var buyerHolding, sellerHolding repository.Holding
+	if firstUser == in.BuyerID {
+		buyerHolding = firstHolding
+		sellerHolding = secondHolding
+	} else {
+		sellerHolding = firstHolding
+		buyerHolding = secondHolding
 	}
 
 	// 4. Buyer Accounting: Weighted average cost basis
@@ -143,7 +155,7 @@ func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.Trad
 		sellerHolding.TotalCost = decimal.Zero
 	}
 
-	// 6. Upsert Buyer & Seller Holdings
+	// 6. Update Buyer & Seller Holdings in database
 	if err := upsertHolding(ctx, tx, buyerHolding); err != nil {
 		return nil, fmt.Errorf("upsert buyer holding: %w", err)
 	}
@@ -151,16 +163,7 @@ func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.Trad
 		return nil, fmt.Errorf("upsert seller holding: %w", err)
 	}
 
-	// 7. Record Processed Trade
-	_, err = tx.Exec(ctx,
-		"INSERT INTO processed_trades (trade_id, user_id, processed_at) VALUES ($1, $2, NOW())",
-		in.TradeID, in.BuyerID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("insert processed_trades: %w", err)
-	}
-
-	// 8. Generate Outbox Events with stable event_id
+	// 7. Generate Outbox Events with stable event_id
 	now := time.Now().UTC()
 	buyerOutbox, err := createOutboxMessage(ctx, tx, buyerHolding, now)
 	if err != nil {
@@ -172,7 +175,7 @@ func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.Trad
 		return nil, fmt.Errorf("create seller outbox event: %w", err)
 	}
 
-	// 9. Commit the 1-atomic transaction
+	// 8. Commit the 1-atomic transaction
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit accounting transaction: %w", err)
 	}
@@ -180,8 +183,21 @@ func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.Trad
 	return []repository.OutboxMessage{buyerOutbox, sellerOutbox}, nil
 }
 
-// lockHoldingRow selects a holding row with FOR UPDATE. If no row exists, returns an initialized zero-state holding.
+// lockHoldingRow ensures the holding row exists and acquires an exclusive row lock (FOR UPDATE).
+// If the row does not exist, an initial zero-state row is inserted first (ON CONFLICT DO NOTHING),
+// ensuring SELECT ... FOR UPDATE always acquires a real lock even for first-time buyers/sellers.
 func lockHoldingRow(ctx context.Context, tx pgx.Tx, userID, assetCode string) (repository.Holding, error) {
+	// 1. Guarantee row exists in holdings table
+	ensureQuery := `
+		INSERT INTO holdings (user_id, asset_code, quantity, total_cost, realized_pnl, updated_at)
+		VALUES ($1, $2, 0, 0, 0, NOW())
+		ON CONFLICT (user_id, asset_code) DO NOTHING;
+	`
+	if _, err := tx.Exec(ctx, ensureQuery, userID, assetCode); err != nil {
+		return repository.Holding{}, fmt.Errorf("ensure holding row: %w", err)
+	}
+
+	// 2. Lock physical row exclusively
 	query := `
 		SELECT user_id, asset_code, quantity, total_cost, realized_pnl, updated_at
 		FROM holdings
@@ -197,33 +213,22 @@ func lockHoldingRow(ctx context.Context, tx pgx.Tx, userID, assetCode string) (r
 		&h.RealizedPnL,
 		&h.UpdatedAt,
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return repository.Holding{
-			UserID:      userID,
-			AssetCode:   assetCode,
-			Quantity:    decimal.Zero,
-			TotalCost:   decimal.Zero,
-			RealizedPnL: decimal.Zero,
-			UpdatedAt:   time.Now().UTC(),
-		}, nil
-	}
 	if err != nil {
-		return repository.Holding{}, err
+		return repository.Holding{}, fmt.Errorf("scan locked holding row: %w", err)
 	}
 	return h, nil
 }
 
 func upsertHolding(ctx context.Context, tx pgx.Tx, h repository.Holding) error {
 	query := `
-		INSERT INTO holdings (user_id, asset_code, quantity, total_cost, realized_pnl, updated_at)
-		VALUES ($1, $2, $3, $4, $5, NOW())
-		ON CONFLICT (user_id, asset_code) DO UPDATE SET
-			quantity     = EXCLUDED.quantity,
-			total_cost   = EXCLUDED.total_cost,
-			realized_pnl = EXCLUDED.realized_pnl,
-			updated_at   = NOW();
+		UPDATE holdings SET
+			quantity     = $1,
+			total_cost   = $2,
+			realized_pnl = $3,
+			updated_at   = NOW()
+		WHERE user_id = $4 AND asset_code = $5;
 	`
-	_, err := tx.Exec(ctx, query, h.UserID, h.AssetCode, h.Quantity, h.TotalCost, h.RealizedPnL)
+	_, err := tx.Exec(ctx, query, h.Quantity, h.TotalCost, h.RealizedPnL, h.UserID, h.AssetCode)
 	return err
 }
 
@@ -235,6 +240,7 @@ func createOutboxMessage(ctx context.Context, tx pgx.Tx, h repository.Holding, n
 		"user_id":             h.UserID,
 		"asset_code":          h.AssetCode,
 		"quantity":            h.Quantity.String(),
+		"total_cost":          h.TotalCost.String(),
 		"average_entry_price": h.AverageEntryPrice().String(),
 		"realized_pnl":        h.RealizedPnL.String(),
 		"timestamp":           now.Format(time.RFC3339Nano),
@@ -267,24 +273,32 @@ func createOutboxMessage(ctx context.Context, tx pgx.Tx, h repository.Holding, n
 	return msg, nil
 }
 
-// FetchPendingOutbox returns up to limit unhandled outbox events using FOR UPDATE SKIP LOCKED.
+// FetchPendingOutbox atomically claims up to limit unhandled outbox events using
+// a transition to 'PROCESSING' with lease timeout recovery (1 minute) and FOR UPDATE SKIP LOCKED.
 func (r *Repository) FetchPendingOutbox(ctx context.Context, limit int) ([]repository.OutboxMessage, error) {
 	timer := metrics.DBDurationSeconds.WithLabelValues("fetch_pending_outbox")
 	start := time.Now()
 	defer func() { timer.Observe(time.Since(start).Seconds()) }()
 
 	query := `
-		SELECT id, aggregate_id, event_type, payload, partition_key, status, created_at
-		FROM portfolio_outbox
-		WHERE status = 'PENDING'
-		ORDER BY created_at ASC
-		LIMIT $1
-		FOR UPDATE SKIP LOCKED;
+		WITH claimable AS (
+			SELECT id
+			FROM portfolio_outbox
+			WHERE (status = 'PENDING')
+			   OR (status = 'PROCESSING' AND claimed_at < NOW() - INTERVAL '1 minute')
+			ORDER BY created_at ASC
+			LIMIT $1
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE portfolio_outbox
+		SET status = 'PROCESSING', claimed_at = NOW()
+		WHERE id IN (SELECT id FROM claimable)
+		RETURNING id, aggregate_id, event_type, payload, partition_key, status, claimed_at, created_at;
 	`
 
 	rows, err := r.pool.Query(ctx, query, limit)
 	if err != nil {
-		return nil, fmt.Errorf("query pending outbox: %w", err)
+		return nil, fmt.Errorf("claim pending outbox: %w", err)
 	}
 	defer rows.Close()
 
@@ -298,6 +312,7 @@ func (r *Repository) FetchPendingOutbox(ctx context.Context, limit int) ([]repos
 			&m.Payload,
 			&m.PartitionKey,
 			&m.Status,
+			&m.ClaimedAt,
 			&m.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan outbox row: %w", err)

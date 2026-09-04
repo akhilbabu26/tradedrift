@@ -21,6 +21,7 @@ COPY services/matching-engine/  ./services/matching-engine/
 COPY services/settlement/       ./services/settlement/
 COPY services/liquidity-engine/ ./services/liquidity-engine/
 COPY services/trade/            ./services/trade/
+COPY services/portfolio/        ./services/portfolio/
 
 # Download dependencies via workspace
 RUN go work sync

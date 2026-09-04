@@ -7,16 +7,17 @@ WORKDIR /workspace
 COPY go.work go.work.sum ./
 
 # Copy all modules referenced in go.work
-COPY platform/                 ./platform/
-COPY services/auth/            ./services/auth/
-COPY services/wallet/          ./services/wallet/
-COPY services/gateway/         ./services/gateway/
-COPY services/order/           ./services/order/
-COPY services/market/          ./services/market/
-COPY services/matching-engine/ ./services/matching-engine/
+COPY platform/                  ./platform/
+COPY services/auth/             ./services/auth/
+COPY services/wallet/           ./services/wallet/
+COPY services/gateway/          ./services/gateway/
+COPY services/order/            ./services/order/
+COPY services/market/           ./services/market/
+COPY services/matching-engine/  ./services/matching-engine/
 COPY services/settlement/       ./services/settlement/
 COPY services/liquidity-engine/ ./services/liquidity-engine/
 COPY services/trade/            ./services/trade/
+COPY services/portfolio/        ./services/portfolio/
 
 # Build binary using Go module cache mount
 RUN --mount=type=cache,target=/go/pkg/mod \

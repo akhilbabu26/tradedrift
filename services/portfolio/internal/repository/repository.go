@@ -33,21 +33,24 @@ func (h Holding) AverageEntryPrice() decimal.Decimal {
 	return h.TotalCost.Div(h.Quantity)
 }
 
-// ProcessedTrade records idempotency to prevent double-counting on Kafka replays.
+// ProcessedTrade records idempotency and audit metadata to prevent double-counting on Kafka replays.
 type ProcessedTrade struct {
 	TradeID     string    `json:"trade_id"`
 	UserID      string    `json:"user_id"`
+	MarketID    string    `json:"market_id"`
+	Sequence    uint64    `json:"sequence"`
 	ProcessedAt time.Time `json:"processed_at"`
 }
 
-// OutboxMessage represents a pending or published PortfolioUpdated event.
+// OutboxMessage represents a pending, processing, or published PortfolioUpdated event.
 type OutboxMessage struct {
 	ID           string     `json:"id"`
 	AggregateID  string     `json:"aggregate_id"`  // user_id
 	EventType    string     `json:"event_type"`    // "PortfolioUpdated"
 	Payload      []byte     `json:"payload"`
 	PartitionKey string     `json:"partition_key"` // user_id
-	Status       string     `json:"status"`        // "PENDING" | "PUBLISHED"
+	Status       string     `json:"status"`        // "PENDING" | "PROCESSING" | "PUBLISHED"
+	ClaimedAt    *time.Time `json:"claimed_at,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	PublishedAt  *time.Time `json:"published_at,omitempty"`
 }
@@ -62,6 +65,7 @@ type TradeSettledInput struct {
 	QuoteAsset   string
 	Price        decimal.Decimal
 	Quantity     decimal.Decimal
+	Sequence     uint64
 	ExecutedAt   time.Time
 	SettledAt    time.Time
 }

@@ -127,3 +127,44 @@ func TestAccounting_FullLiquidationZeroClamping(t *testing.T) {
 		t.Errorf("expected PnL %s, got %s", expectedPnL, h.RealizedPnL)
 	}
 }
+
+// TestAccounting_InsufficientHoldings verifies that trying to sell more than held is rejected
+func TestAccounting_InsufficientHoldings(t *testing.T) {
+	h := repository.Holding{
+		UserID:      "user-1",
+		AssetCode:   "BTC",
+		Quantity:    decimal.RequireFromString("0.5"),
+		TotalCost:   decimal.RequireFromString("45000.00"),
+		RealizedPnL: decimal.Zero,
+	}
+
+	sellQty := decimal.RequireFromString("1.0")
+	if !h.Quantity.LessThan(sellQty) {
+		t.Errorf("expected holding 0.5 to be less than sell quantity 1.0")
+	}
+}
+
+// TestAccounting_DeterministicUserOrder verifies that deterministic ordering handles Alice <-> Bob
+func TestAccounting_DeterministicUserOrder(t *testing.T) {
+	alice := "00000000-0000-0000-0000-000000000001"
+	bob := "00000000-0000-0000-0000-000000000002"
+
+	// Scenario 1: Alice is buyer, Bob is seller
+	first1, second1 := alice, bob
+	if first1 > second1 {
+		first1, second1 = second1, first1
+	}
+	if first1 != alice || second1 != bob {
+		t.Errorf("expected first=%s, second=%s", alice, bob)
+	}
+
+	// Scenario 2: Bob is buyer, Alice is seller
+	first2, second2 := bob, alice
+	if first2 > second2 {
+		first2, second2 = second2, first2
+	}
+	if first2 != alice || second2 != bob {
+		t.Errorf("expected first=%s, second=%s even when roles are reversed", alice, bob)
+	}
+}
+

@@ -149,14 +149,40 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafkago.Message) erro
 		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
 		return poisonf("invalid seller_id UUID %q: %w", event.SellerID, err)
 	}
+	if _, err := uuid.Parse(event.BuyOrderID); err != nil {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		return poisonf("invalid buy_order_id UUID %q: %w", event.BuyOrderID, err)
+	}
+	if _, err := uuid.Parse(event.SellOrderID); err != nil {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		return poisonf("invalid sell_order_id UUID %q: %w", event.SellOrderID, err)
+	}
 
-	// 2. Invariant Validation: Self-Trade strictly rejected
+	// 2. Invariant Validation: Identifiers & Sequence
+	if event.MarketID == "" {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", "unknown").Inc()
+		return poisonf("missing market_id in event %s", event.TradeID)
+	}
+	if event.BaseAsset == "" {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		return poisonf("missing base_asset in event %s", event.TradeID)
+	}
+	if event.QuoteAsset == "" {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		return poisonf("missing quote_asset in event %s", event.TradeID)
+	}
+	if event.Sequence == 0 {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		return poisonf("invalid sequence for trade %s: must be > 0", event.TradeID)
+	}
+
+	// 3. Invariant Validation: Self-Trade strictly rejected
 	if event.BuyerID == event.SellerID {
 		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
 		return poisonf("self-trade detected: buyer_id equals seller_id (%s)", event.BuyerID)
 	}
 
-	// 3. Invariant Validation: Positive decimal values
+	// 4. Invariant Validation: Positive decimal values
 	price, err := decimal.NewFromString(event.Price)
 	if err != nil || price.IsZero() || price.IsNegative() {
 		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
@@ -169,14 +195,17 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafkago.Message) erro
 		return poisonf("invalid quantity %q: must be positive decimal", event.Quantity)
 	}
 
+	// 5. Strict Timestamps Parsing (Fatal if invalid -> DLQ)
 	executedAt, err := time.Parse(time.RFC3339Nano, event.ExecutedAt)
 	if err != nil {
-		executedAt = time.Now().UTC()
+		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		return poisonf("invalid executed_at %q: %w", event.ExecutedAt, err)
 	}
 
 	settledAt, err := time.Parse(time.RFC3339Nano, event.SettledAt)
 	if err != nil {
-		settledAt = time.Now().UTC()
+		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		return poisonf("invalid settled_at %q: %w", event.SettledAt, err)
 	}
 
 	input := repository.TradeSettledInput{
@@ -188,6 +217,7 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafkago.Message) erro
 		QuoteAsset: event.QuoteAsset,
 		Price:      price,
 		Quantity:   qty,
+		Sequence:   event.Sequence,
 		ExecutedAt: executedAt,
 		SettledAt:  settledAt,
 	}

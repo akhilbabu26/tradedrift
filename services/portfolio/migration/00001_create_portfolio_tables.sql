@@ -16,16 +16,19 @@ CREATE INDEX IF NOT EXISTS idx_holdings_user ON holdings(user_id);
 CREATE TABLE IF NOT EXISTS processed_trades (
     trade_id            UUID PRIMARY KEY,
     user_id             UUID NOT NULL,
+    market_id           VARCHAR(20) NOT NULL DEFAULT '',
+    sequence            BIGINT NOT NULL DEFAULT 0,
     processed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS portfolio_outbox (
-    id                  UUID PRIMARY KEY,
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     aggregate_id        UUID NOT NULL,
     event_type          VARCHAR(50) NOT NULL,
     payload             JSONB NOT NULL,
     partition_key       VARCHAR(50) NOT NULL,
     status              VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    claimed_at          TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     published_at        TIMESTAMPTZ
 );
@@ -33,9 +36,13 @@ CREATE TABLE IF NOT EXISTS portfolio_outbox (
 CREATE INDEX IF NOT EXISTS idx_portfolio_outbox_pending ON portfolio_outbox(created_at)
     WHERE status = 'PENDING';
 
+CREATE INDEX IF NOT EXISTS idx_portfolio_outbox_processing ON portfolio_outbox(claimed_at)
+    WHERE status = 'PROCESSING';
+
 -- +goose Down
 -- SQL in section 'Down' is executed when this migration is rolled back
 
+DROP INDEX IF EXISTS idx_portfolio_outbox_processing;
 DROP INDEX IF EXISTS idx_portfolio_outbox_pending;
 DROP TABLE IF EXISTS portfolio_outbox;
 DROP TABLE IF EXISTS processed_trades;

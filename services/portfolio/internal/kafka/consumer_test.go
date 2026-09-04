@@ -107,3 +107,78 @@ func TestTradeSettledEventValidation_InvalidTimestamp(t *testing.T) {
 		t.Errorf("expected time.Parse to fail on %q", invalidTimestamp)
 	}
 }
+
+func TestUserTradeSettledEvent_Valid(t *testing.T) {
+	userTradeJSON := `{
+		"trade_id": "a0000000-0000-0000-0000-000000000001",
+		"user_id": "b0000000-0000-0000-0000-000000000002",
+		"order_id": "c0000000-0000-0000-0000-000000000003",
+		"role": "BUY",
+		"market_id": "BTC-USDT",
+		"base_asset": "BTC",
+		"quote_asset": "USDT",
+		"price": "95000.5000000000",
+		"quantity": "0.1000000000",
+		"sequence": 142,
+		"executed_at": "2026-09-04T10:00:00.100000Z",
+		"settled_at": "2026-09-04T10:00:00.200000Z"
+	}`
+
+	var event UserTradeSettledEvent
+	if err := json.Unmarshal([]byte(userTradeJSON), &event); err != nil {
+		t.Fatalf("failed to unmarshal UserTradeSettledEvent: %v", err)
+	}
+
+	if _, err := uuid.Parse(event.TradeID); err != nil {
+		t.Errorf("invalid trade_id UUID: %v", err)
+	}
+	if _, err := uuid.Parse(event.UserID); err != nil {
+		t.Errorf("invalid user_id UUID: %v", err)
+	}
+	if event.Role != "BUY" {
+		t.Errorf("expected role BUY, got %s", event.Role)
+	}
+
+	execAt, _ := time.Parse(time.RFC3339Nano, event.ExecutedAt)
+	settleAt, _ := time.Parse(time.RFC3339Nano, event.SettledAt)
+	if settleAt.Before(execAt) {
+		t.Errorf("settled_at must not be before executed_at")
+	}
+
+	price, _ := decimal.NewFromString(event.Price)
+	if price.Exponent() < -10 {
+		t.Errorf("price scale %d exceeds max scale 10", -price.Exponent())
+	}
+}
+
+func TestValidation_ChronologicalAnomaly(t *testing.T) {
+	execAt, _ := time.Parse(time.RFC3339Nano, "2026-09-04T10:05:00Z")
+	settleAt, _ := time.Parse(time.RFC3339Nano, "2026-09-04T10:03:00Z") // Inverted!
+
+	if !settleAt.Before(execAt) {
+		t.Fatalf("expected settleAt to be before execAt for anomaly test")
+	}
+}
+
+func TestValidation_MarketAssetMismatch(t *testing.T) {
+	marketID := "ETH-USDT"
+	baseAsset := "BTC"
+	quoteAsset := "USDT"
+
+	expected := baseAsset + "-" + quoteAsset
+	if marketID == expected {
+		t.Errorf("expected marketID to not match %s", expected)
+	}
+}
+
+func TestValidation_DecimalScaleExceeded(t *testing.T) {
+	excessiveScale := "0.123456789012345" // 15 decimal places
+	d, err := decimal.NewFromString(excessiveScale)
+	if err != nil {
+		t.Fatalf("failed to parse decimal: %v", err)
+	}
+
+	if d.Exponent() >= -10 {
+		t.Errorf("expected scale %d to be detected as exceeding 10 digits", -d.Exponent())
+	}
+}

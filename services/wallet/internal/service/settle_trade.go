@@ -9,8 +9,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"tradedrift/services/wallet/internal/repository"
 	platformuuid "tradedrift/platform/uuid"
+	"tradedrift/services/wallet/internal/repository"
 )
 
 // TradeSettlementRequest holds all data needed to settle a single trade.
@@ -18,20 +18,20 @@ import (
 // via the SettleTrade gRPC call, and from there into the outbox payload published to
 // trades.settled.v1 for downstream consumers (Trade Service, Portfolio, Notification).
 type TradeSettlementRequest struct {
-	TradeID      string // UUIDv7 — Matching Engine generated, idempotency key
-	BuyerUserID  string // buyer's user UUID
-	SellerUserID string // seller's user UUID
-	BuyOrderID   string // matched buy order UUID
+	TradeID       string // UUIDv7 — Matching Engine generated, idempotency key
+	BuyerUserID   string // buyer's user UUID
+	SellerUserID  string // seller's user UUID
+	BuyOrderID    string // matched buy order UUID
 	SellerOrderID string // matched sell order UUID (used to look up the reservation)
-	MarketID     string // e.g. "BTC-USDT"
-	BaseAsset    string // e.g. "BTC" — what changes hands
-	QuoteAsset   string // e.g. "USDT" — what was paid
-	BaseAmount   string // How much BTC the buyer receives (= quantity)
-	QuoteAmount  string // How much USDT the seller receives (= price × quantity)
-	Price        string // authoritative match price (decimal string)
-	Quantity     string // authoritative match quantity (decimal string)
-	Sequence     uint64 // ME per-market monotonic counter (> 0)
-	ExecutedAt   string // RFC3339Nano — Matching Engine clock
+	MarketID      string // e.g. "BTC-USDT"
+	BaseAsset     string // e.g. "BTC" — what changes hands
+	QuoteAsset    string // e.g. "USDT" — what was paid
+	BaseAmount    string // How much BTC the buyer receives (= quantity)
+	QuoteAmount   string // How much USDT the seller receives (= price × quantity)
+	Price         string // authoritative match price (decimal string)
+	Quantity      string // authoritative match quantity (decimal string)
+	Sequence      uint64 // ME per-market monotonic counter (> 0)
+	ExecutedAt    string // RFC3339Nano — Matching Engine clock
 }
 
 // SettleTrade atomically settles a matched trade:
@@ -190,6 +190,90 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 	}
 	if err := s.outboxRepo.Insert(ctx, outboxEvent); err != nil {
 		return fmt.Errorf("failed to insert outbox event: %w", err)
+	}
+
+	// Dual user-scoped accounting events for Portfolio Service:
+	// Guarantees all events for a given user land on the same Kafka partition,
+	// preserving Kafka log order per user and eliminating out-of-order execution hazards.
+	type userTradePayload struct {
+		TradeID    string `json:"trade_id"`
+		UserID     string `json:"user_id"`
+		OrderID    string `json:"order_id"`
+		Role       string `json:"role"` // "BUY" or "SELL"
+		MarketID   string `json:"market_id"`
+		BaseAsset  string `json:"base_asset"`
+		QuoteAsset string `json:"quote_asset"`
+		Price      string `json:"price"`
+		Quantity   string `json:"quantity"`
+		Sequence   uint64 `json:"sequence"`
+		ExecutedAt string `json:"executed_at"`
+		SettledAt  string `json:"settled_at"`
+	}
+
+	// Buyer Leg
+	buyerEventID, err := platformuuid.New()
+	if err != nil {
+		return fmt.Errorf("failed to generate buyer portfolio outbox ID: %w", err)
+	}
+	buyerPayload, err := json.Marshal(userTradePayload{
+		TradeID:    req.TradeID,
+		UserID:     req.BuyerUserID,
+		OrderID:    req.BuyOrderID,
+		Role:       "BUY",
+		MarketID:   req.MarketID,
+		BaseAsset:  req.BaseAsset,
+		QuoteAsset: req.QuoteAsset,
+		Price:      req.Price,
+		Quantity:   req.Quantity,
+		Sequence:   req.Sequence,
+		ExecutedAt: req.ExecutedAt,
+		SettledAt:  now.Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal buyer portfolio payload: %w", err)
+	}
+	if err := s.outboxRepo.Insert(ctx, &repository.OutboxEvent{
+		ID:           buyerEventID,
+		AggregateID:  req.TradeID,
+		EventType:    "PortfolioUserTrade",
+		Payload:      buyerPayload,
+		PartitionKey: req.BuyerUserID,
+		CreatedAt:    now,
+	}); err != nil {
+		return fmt.Errorf("failed to insert buyer portfolio outbox event: %w", err)
+	}
+
+	// Seller Leg
+	sellerEventID, err := platformuuid.New()
+	if err != nil {
+		return fmt.Errorf("failed to generate seller portfolio outbox ID: %w", err)
+	}
+	sellerPayload, err := json.Marshal(userTradePayload{
+		TradeID:    req.TradeID,
+		UserID:     req.SellerUserID,
+		OrderID:    req.SellerOrderID,
+		Role:       "SELL",
+		MarketID:   req.MarketID,
+		BaseAsset:  req.BaseAsset,
+		QuoteAsset: req.QuoteAsset,
+		Price:      req.Price,
+		Quantity:   req.Quantity,
+		Sequence:   req.Sequence,
+		ExecutedAt: req.ExecutedAt,
+		SettledAt:  now.Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal seller portfolio payload: %w", err)
+	}
+	if err := s.outboxRepo.Insert(ctx, &repository.OutboxEvent{
+		ID:           sellerEventID,
+		AggregateID:  req.TradeID,
+		EventType:    "PortfolioUserTrade",
+		Payload:      sellerPayload,
+		PartitionKey: req.SellerUserID,
+		CreatedAt:    now,
+	}); err != nil {
+		return fmt.Errorf("failed to insert seller portfolio outbox event: %w", err)
 	}
 
 	s.log.Info("trade settled",

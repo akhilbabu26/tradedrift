@@ -7,8 +7,8 @@ The **Portfolio Service** is the personal financial accounting, position trackin
 Within the trading lifecycle:
 1. The **Matching Engine** matches crossed orders at deterministic price-time priority and emits `trades.executed`.
 2. The **Settlement Service** coordinates multi-phase settlement and commands the **Wallet Service** via gRPC.
-3. The **Wallet Service** transfers asset balances atomically and writes `TradeSettled` events to its transactional outbox.
-4. The **Portfolio Service** consumes `TradeSettled` events from Kafka (`trades.settled.v1`), updates cumulative user holdings, calculates weighted-average cost basis and realized PnL, records matching-engine sequence audit logs, and writes outbox events to stream live balance updates to the **Notification & WebSocket Service**.
+3. The **Wallet Service** transfers asset balances atomically and writes user-scoped accounting events to its transactional outbox (`portfolio.user.trades.v1` keyed by `user_id`) as well as trade ledger events (`trades.settled.v1` keyed by `trade_id`).
+4. The **Portfolio Service** consumes user-scoped trade events from Kafka (`portfolio.user.trades.v1`), updates cumulative user holdings, calculates weighted-average cost basis and realized PnL, asserts matching-engine sequence uniqueness, increments monotonic position version, and writes outbox events to stream live balance updates to the **Notification & WebSocket Service**.
 5. When queried by the **API Gateway** (`GET /api/v1/portfolio/summary` and `GET /api/v1/portfolio/holdings`), the Portfolio Service dynamically blends local crypto holdings with live cash balances from the **Wallet Service** and live mark prices from the **Market Service** to compute total portfolio equity and unrealized PnL on demand.
 
 ```
@@ -19,9 +19,9 @@ Within the trading lifecycle:
                                                                                      ▼
 ┌─────────────────┐      gRPC        ┌────────────────────┐   Kafka Event   ┌─────────────────┐
 │   API Gateway   │◄─────────────────┤ Portfolio Service  │◄────────────────┤  Kafka Topic    │
-│  (:8080 HTTP)   │     (:50058)     │ (Accounting Engine)│ (trades.settled)│trades.settled.v1│
-└─────────────────┘                  └─────────┬──────────┘                 └─────────────────┘
-                                               │
+│  (:8080 HTTP)   │     (:50058)     │ (Accounting Engine)│ (user-partition)│portfolio.user.  │
+└─────────────────┘                  └─────────┬──────────┘                 │    trades.v1    │
+                                               │                            └─────────────────┘
                            ┌───────────────────┴───────────────────┐
                            ▼                                       ▼
                  ┌────────────────────┐                 ┌────────────────────┐
@@ -61,6 +61,7 @@ services/portfolio/
 │   │   ├── README.md
 │   │   ├── consumer.go
 │   │   ├── consumer_test.go
+│   │   ├── partition_ordering_test.go # Mathematical proof of hash partition affinity
 │   │   └── publisher.go
 │   ├── metrics/                  # Prometheus instrumentation & collectors
 │   │   ├── README.md
@@ -70,7 +71,8 @@ services/portfolio/
 │   │   ├── accounting_test.go    # Unit tests for weighted-average math & zero clamping
 │   │   ├── repository.go         # Domain entity & storage interface
 │   │   └── postgres/
-│   │       └── repository.go     # Deterministic row locking, CTE outbox claiming & deduplication
+│   │       ├── repository.go     # Single-row locking, CTE outbox claiming, version tracking
+│   │       └── repository_test.go # Comprehensive PostgreSQL integration test suite
 │   └── service/                  # Domain valuation & dynamic pricing service
 │       ├── README.md
 │       ├── service.go            # Valuation math (Wallet cash + Market tickers)
@@ -88,25 +90,26 @@ services/portfolio/
 |---|---|---|
 | **PI-1** | **No Cash Persistence** | `USDT` cash balances are **never stored** in the Portfolio database. Cash is dynamically queried from the Wallet Service via gRPC to prevent cash drift across deposits, withdrawals, and fee deductions. |
 | **PI-2** | **No Unrealized PnL Persistence** | Unrealized PnL and total portfolio equity are **computed purely on read**. Market prices fluctuate constantly; computing on demand eliminates write amplification. |
-| **PI-3** | **Deterministic Row-Locking** | When locking buyer and seller holding rows, user IDs are strictly sorted alphabetically (`min(buyer, seller) -> max(buyer, seller)`), eliminating PostgreSQL `40P01` deadlocks. |
-| **PI-4** | **1-Atomic Transaction** | Trade deduplication (`processed_trades`), holding updates (`holdings`), and outbox events (`portfolio_outbox`) are committed inside **1 single atomic database transaction**. |
-| **PI-5** | **Poison Error Quarantining (DLQ)** | Invariant violations (insufficient balance, self-trades, malformed UUIDs, zero sequences) route to `trades.settled.dlq`. The offset is committed only after the DLQ write succeeds. |
-| **PI-6** | **Strict Per-User Outbox Partitioning** | Outbound `portfolios.updated.v1` events use `PartitionKey = user_id`, guaranteeing that all position updates for a single trader land in the exact same Kafka partition for in-order WebSocket delivery. |
-| **PI-7** | **Full Liquidation Zero-Reset** | When a position is fully sold ($\text{quantity} = 0$), both quantity and total cost basis are clamped to exactly `0` to prevent floating-point epsilon drift. |
+| **PI-3** | **Per-User Kafka Partition Affinity** | Accounting events are emitted to `portfolio.user.trades.v1` partitioned by `user_id`. All accounting events for a given user are routed to the same Kafka partition, preserving their Kafka log order for that user and preventing causal order inversions (e.g. Sell arriving before Buy). |
+| **PI-4** | **1-Atomic Transaction** | Trade leg deduplication (`processed_user_trades`), sequence collision protection (`processed_market_sequences`), holding adjustments (`holdings`), and outbox records (`portfolio_outbox`) are committed inside **1 single atomic database transaction**. |
+| **PI-5** | **Poison Error Quarantining (DLQ)** | Invariant violations (insufficient balance, malformed UUIDs, decimal precision overflow > 10 places, timestamp inversion, sequence collisions) route to `trades.settled.dlq`. The Kafka offset is committed only after DLQ write succeeds. |
+| **PI-6** | **Monotonic Portfolio Versioning** | Every holding modification increments `version = version + 1`. This monotonic version is included in outbound `portfolios.updated.v1` events, allowing downstream WebSocket and UI clients to discard stale or out-of-order snapshots. |
+| **PI-7** | **Zero Silent Clamping & Full Liquidation Reset** | Negative balance conditions are treated as fatal errors (`ErrInsufficientHoldings`) and never silently clamped to zero. When a position is legitimately fully liquidated ($\text{quantity} = 0$), quantity and total cost are reset to exactly 0 to eliminate floating-point epsilon drift. |
 
 ---
 
 ## 4. End-to-End System Flows
 
-### 4.1 Write Path: Settled Trade Ingestion & Accounting
-1. Kafka message arrives on `trades.settled.v1`.
-2. `kafka.Consumer` verifies UUIDs, positive prices/quantities, `Sequence > 0`, and strict RFC3339 timestamps.
-3. `postgres.Repository` begins a database transaction:
-   * Inserts into `processed_trades` (`ON CONFLICT DO NOTHING`). If already processed, exits harmlessly.
-   * Locks `min(buyer, seller)` then `max(buyer, seller)` holding rows.
-   * Buyer: increases quantity, adds execution cost to total cost basis, updates average entry price.
-   * Seller: verifies balance $\ge$ sold quantity, calculates cost of sold using average entry, credits realized PnL, subtracts quantity and cost, clamps to 0 if fully closed.
-   * Writes two `PortfolioUpdated` events to `portfolio_outbox` (`status = 'PENDING'`).
+### 4.1 Write Path: User Trade Ingestion & Accounting
+1. Kafka message arrives on `portfolio.user.trades.v1` (partition key: `user_id`).
+2. `kafka.Consumer` verifies UUIDs, role (`BUY` or `SELL`), market ID consistency (`market_id == BaseAsset + "-" + QuoteAsset`), strict USDT quote asset, scale limits ($\le 10$ decimal digits), positive prices/quantities, sequence $> 0$, and chronological sanity (`SettledAt >= ExecutedAt`).
+3. `postgres.Repository.ProcessUserTrade` begins a database transaction:
+   * Asserts sequence collision integrity in `processed_market_sequences` (`market_id`, `sequence`). Rejects reuse across differing trade IDs.
+   * Inserts into `processed_user_trades` (`trade_id`, `user_id`) (`ON CONFLICT DO NOTHING`). If already processed, exits harmlessly.
+   * Pre-emptively initializes holding row if first-time trader (`ON CONFLICT DO NOTHING`) and acquires exclusive row lock `FOR UPDATE` on `(user_id, asset_code)`.
+   * **BUY**: increases quantity, adds execution cost to total cost basis, updates average entry price, increments `version = version + 1`.
+   * **SELL**: verifies balance $\ge$ sold quantity (returns `ErrInsufficientHoldings` $\rightarrow$ DLQ if insufficient), calculates cost of sold using average entry, credits realized PnL, subtracts quantity and cost, clamps cost to 0 if fully closed, increments `version = version + 1`.
+   * Writes single `PortfolioUpdated` event to `portfolio_outbox` (`status = 'PENDING'`) containing `portfolio_version`.
    * Commits the atomic transaction.
 4. Consumer commits Kafka offset.
 

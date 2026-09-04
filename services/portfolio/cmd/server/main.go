@@ -139,7 +139,7 @@ func main() {
 	consumer := portfoliokafka.NewConsumer(
 		cfg.KafkaBrokers,
 		cfg.KafkaGroupID,
-		cfg.KafkaTopicTradeSettled,
+		cfg.KafkaTopicPortfolioUserTrades,
 		cfg.KafkaTopicTradeDLQ,
 		repo,
 		appLogger,

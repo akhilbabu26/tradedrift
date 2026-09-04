@@ -21,6 +21,9 @@ type mockRepo struct {
 func (m *mockRepo) GetHoldingsByUser(ctx context.Context, userID string) ([]repository.Holding, error) {
 	return m.holdings, nil
 }
+func (m *mockRepo) ProcessUserTrade(ctx context.Context, in repository.UserTradeInput) (*repository.OutboxMessage, error) {
+	return nil, nil
+}
 func (m *mockRepo) ProcessTradeSettled(ctx context.Context, in repository.TradeSettledInput) ([]repository.OutboxMessage, error) {
 	return nil, nil
 }

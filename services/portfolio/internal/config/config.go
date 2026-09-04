@@ -8,18 +8,18 @@ import (
 )
 
 type Config struct {
-	PostgresDSN           string
-	MigrationsDir         string
-	KafkaBrokers          []string
-	KafkaGroupID          string
-	KafkaTopicTradeSettled string
-	KafkaTopicPortfolioUpdated string
-	KafkaTopicTradeDLQ    string
-	WalletGRPCAddr        string
-	MarketGRPCAddr        string
-	GRPCPort              string
-	MetricsPort           string
-	LogLevel              string
+	PostgresDSN                   string
+	MigrationsDir                 string
+	KafkaBrokers                  []string
+	KafkaGroupID                  string
+	KafkaTopicPortfolioUserTrades string
+	KafkaTopicPortfolioUpdated    string
+	KafkaTopicTradeDLQ            string
+	WalletGRPCAddr                string
+	MarketGRPCAddr                string
+	GRPCPort                      string
+	MetricsPort                   string
+	LogLevel                      string
 }
 
 func Load() (Config, error) {
@@ -38,13 +38,13 @@ func Load() (Config, error) {
 	marketAddr := config.GetEnv("MARKET_GRPC_ADDR", "localhost:50054")
 
 	return Config{
-		PostgresDSN:                dsn,
-		MigrationsDir:              config.GetEnv("PORTFOLIO_MIGRATIONS_DIR", "services/portfolio/migration"),
-		KafkaBrokers:               brokers,
-		KafkaGroupID:               config.GetEnv("KAFKA_GROUP_ID", "portfolio-service-group"),
-		KafkaTopicTradeSettled:     config.GetEnv("KAFKA_TOPIC_TRADE_SETTLED", "trades.settled.v1"),
-		KafkaTopicPortfolioUpdated: config.GetEnv("KAFKA_TOPIC_PORTFOLIO_UPDATED", "portfolios.updated.v1"),
-		KafkaTopicTradeDLQ:         config.GetEnv("KAFKA_TOPIC_TRADE_DLQ", "trades.settled.dlq"),
+		PostgresDSN:                   dsn,
+		MigrationsDir:                 config.GetEnv("PORTFOLIO_MIGRATIONS_DIR", "services/portfolio/migration"),
+		KafkaBrokers:                  brokers,
+		KafkaGroupID:                  config.GetEnv("KAFKA_GROUP_ID", "portfolio-service-group"),
+		KafkaTopicPortfolioUserTrades: config.GetEnv("KAFKA_TOPIC_PORTFOLIO_USER_TRADES", "portfolio.user.trades.v1"),
+		KafkaTopicPortfolioUpdated:    config.GetEnv("KAFKA_TOPIC_PORTFOLIO_UPDATED", "portfolios.updated.v1"),
+		KafkaTopicTradeDLQ:            config.GetEnv("KAFKA_TOPIC_TRADE_DLQ", "trades.settled.dlq"),
 		WalletGRPCAddr:             walletAddr,
 		MarketGRPCAddr:             marketAddr,
 		GRPCPort:                   config.GetEnv("PORTFOLIO_GRPC_PORT", ":50058"),

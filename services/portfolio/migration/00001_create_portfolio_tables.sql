@@ -7,18 +7,28 @@ CREATE TABLE IF NOT EXISTS holdings (
     quantity            DECIMAL(30,10) NOT NULL DEFAULT 0 CHECK (quantity >= 0),
     total_cost          DECIMAL(30,10) NOT NULL DEFAULT 0 CHECK (total_cost >= 0),
     realized_pnl        DECIMAL(30,10) NOT NULL DEFAULT 0,
+    version             BIGINT NOT NULL DEFAULT 0,
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (user_id, asset_code)
 );
 
 CREATE INDEX IF NOT EXISTS idx_holdings_user ON holdings(user_id);
 
-CREATE TABLE IF NOT EXISTS processed_trades (
-    trade_id            UUID PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS processed_user_trades (
+    trade_id            UUID NOT NULL,
     user_id             UUID NOT NULL,
     market_id           VARCHAR(20) NOT NULL DEFAULT '',
     sequence            BIGINT NOT NULL DEFAULT 0,
-    processed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    processed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (trade_id, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS processed_market_sequences (
+    market_id           VARCHAR(20) NOT NULL,
+    sequence            BIGINT NOT NULL,
+    trade_id            UUID NOT NULL,
+    recorded_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (market_id, sequence)
 );
 
 CREATE TABLE IF NOT EXISTS portfolio_outbox (
@@ -45,6 +55,7 @@ CREATE INDEX IF NOT EXISTS idx_portfolio_outbox_processing ON portfolio_outbox(c
 DROP INDEX IF EXISTS idx_portfolio_outbox_processing;
 DROP INDEX IF EXISTS idx_portfolio_outbox_pending;
 DROP TABLE IF EXISTS portfolio_outbox;
-DROP TABLE IF EXISTS processed_trades;
+DROP TABLE IF EXISTS processed_market_sequences;
+DROP TABLE IF EXISTS processed_user_trades;
 DROP INDEX IF EXISTS idx_holdings_user;
 DROP TABLE IF EXISTS holdings;

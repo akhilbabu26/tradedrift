@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -30,7 +31,7 @@ func (r *Repository) GetHoldingsByUser(ctx context.Context, userID string) ([]re
 	defer func() { timer.Observe(time.Since(start).Seconds()) }()
 
 	query := `
-		SELECT user_id, asset_code, quantity, total_cost, realized_pnl, updated_at
+		SELECT user_id, asset_code, quantity, total_cost, realized_pnl, version, updated_at
 		FROM holdings
 		WHERE user_id = $1 AND quantity > 0
 		ORDER BY asset_code ASC;
@@ -51,6 +52,7 @@ func (r *Repository) GetHoldingsByUser(ctx context.Context, userID string) ([]re
 			&h.Quantity,
 			&h.TotalCost,
 			&h.RealizedPnL,
+			&h.Version,
 			&h.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan holding row: %w", err)
@@ -65,8 +67,133 @@ func (r *Repository) GetHoldingsByUser(ctx context.Context, userID string) ([]re
 	return holdings, nil
 }
 
-// ProcessTradeSettled executes the 1-atomic transaction:
-// Check dedup -> Lock rows in deterministic order -> Buyer leg -> Seller leg -> Outbox -> ProcessedTrade.
+// ProcessUserTrade executes the atomic single-user position mutation transaction:
+// 1. Assert (market_id, sequence) integrity via processed_market_sequences
+// 2. Atomic idempotency check on (trade_id, user_id) via processed_user_trades
+// 3. Exclusively lock the single user holding row FOR UPDATE on (user_id, base_asset)
+// 4. Apply BUY or SELL accounting formulas
+// 5. Assert invariant: quantity >= 0 (fatal if violated)
+// 6. Monotonically increment version and upsert holding
+// 7. Enqueue outbox message with portfolio_version
+func (r *Repository) ProcessUserTrade(ctx context.Context, in repository.UserTradeInput) (*repository.OutboxMessage, error) {
+	timer := metrics.DBDurationSeconds.WithLabelValues("process_user_trade")
+	start := time.Now()
+	defer func() { timer.Observe(time.Since(start).Seconds()) }()
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Global Market Sequence Integrity: Ensure (market_id, sequence) is bound to this trade_id.
+	// Uses ON CONFLICT DO NOTHING to avoid unnecessary WAL write amplification / dead row creation.
+	var registeredTradeID string
+	err = tx.QueryRow(ctx, `
+		INSERT INTO processed_market_sequences (market_id, sequence, trade_id, recorded_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (market_id, sequence) DO NOTHING
+		RETURNING trade_id;
+	`, in.MarketID, in.Sequence, in.TradeID).Scan(&registeredTradeID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Row already existed — fetch existing trade_id to verify sequence integrity
+			err = tx.QueryRow(ctx, `
+				SELECT trade_id
+				FROM processed_market_sequences
+				WHERE market_id = $1 AND sequence = $2;
+			`, in.MarketID, in.Sequence).Scan(&registeredTradeID)
+			if err != nil {
+				return nil, fmt.Errorf("fetch existing sequence trade_id: %w", err)
+			}
+		} else {
+			return nil, fmt.Errorf("assert market sequence integrity: %w", err)
+		}
+	}
+	if registeredTradeID != in.TradeID {
+		metrics.AccountingViolationsTotal.WithLabelValues("sequence_collision").Inc()
+		return nil, fmt.Errorf("%w on market %s seq %d: claimed by %s, attempted by %s",
+			repository.ErrSequenceCollision, in.MarketID, in.Sequence, registeredTradeID, in.TradeID)
+	}
+
+	// 2. User Leg Idempotency Check & Registration
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO processed_user_trades (trade_id, user_id, market_id, sequence, processed_at)
+		VALUES ($1, $2, $3, $4, NOW())
+		ON CONFLICT (trade_id, user_id) DO NOTHING;
+	`, in.TradeID, in.UserID, in.MarketID, in.Sequence)
+	if err != nil {
+		return nil, fmt.Errorf("insert processed_user_trades: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return nil, repository.ErrTradeAlreadyProcessed
+	}
+
+	// 3. Exclusively lock the single user holding row (zero cross-user deadlocks!)
+	holding, err := lockHoldingRow(ctx, tx, in.UserID, in.BaseAsset)
+	if err != nil {
+		return nil, fmt.Errorf("lock holding row for user %s: %w", in.UserID, err)
+	}
+
+	// 4. Role-specific Accounting
+	switch in.Role {
+	case "BUY":
+		tradeCost := in.Quantity.Mul(in.Price)
+		holding.Quantity = holding.Quantity.Add(in.Quantity)
+		holding.TotalCost = holding.TotalCost.Add(tradeCost)
+
+	case "SELL":
+		if holding.Quantity.LessThan(in.Quantity) {
+			metrics.AccountingViolationsTotal.WithLabelValues("insufficient_holdings").Inc()
+			return nil, fmt.Errorf("%w: user %s has %s %s, needed %s",
+				repository.ErrInsufficientHoldings, in.UserID, holding.Quantity.String(), in.BaseAsset, in.Quantity.String())
+		}
+
+		avgEntryPrice := holding.AverageEntryPrice()
+		costOfSold := in.Quantity.Mul(avgEntryPrice)
+		tradeRevenue := in.Quantity.Mul(in.Price)
+		realizedDelta := tradeRevenue.Sub(costOfSold)
+
+		holding.Quantity = holding.Quantity.Sub(in.Quantity)
+		holding.TotalCost = holding.TotalCost.Sub(costOfSold)
+		holding.RealizedPnL = holding.RealizedPnL.Add(realizedDelta)
+
+		// Fatal accounting invariant: negative quantity must never be silently masked
+		if holding.Quantity.IsNegative() {
+			metrics.AccountingViolationsTotal.WithLabelValues("negative_quantity_invariant").Inc()
+			return nil, fmt.Errorf("FATAL accounting invariant violation: user %s negative balance %s",
+				in.UserID, holding.Quantity.String())
+		}
+
+		if holding.Quantity.IsZero() {
+			holding.TotalCost = decimal.Zero
+		}
+
+	default:
+		return nil, fmt.Errorf("unsupported trade role: %q", in.Role)
+	}
+
+	// 5. Update Holding in database & increment version
+	if err := upsertHolding(ctx, tx, &holding); err != nil {
+		return nil, fmt.Errorf("upsert holding: %w", err)
+	}
+
+	// 6. Generate Outbox Event with portfolio_version
+	now := time.Now().UTC()
+	outboxMsg, err := createOutboxMessage(ctx, tx, holding, now)
+	if err != nil {
+		return nil, fmt.Errorf("create outbox event: %w", err)
+	}
+
+	// 7. Commit transaction
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit transaction: %w", err)
+	}
+
+	return &outboxMsg, nil
+}
+
+// ProcessTradeSettled executes the 1-atomic transaction for dual-participant trades (legacy/audit):
 func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.TradeSettledInput) ([]repository.OutboxMessage, error) {
 	timer := metrics.DBDurationSeconds.WithLabelValues("process_trade_settled")
 	start := time.Now()
@@ -84,21 +211,47 @@ func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.Trad
 	}
 	defer tx.Rollback(ctx)
 
-	// 2. Atomic Idempotency Check & Registration
-	// INSERT ... ON CONFLICT (trade_id) DO NOTHING guarantees atomic check-and-reserve.
+	// 2. Global Market Sequence Integrity
+	var registeredTradeID string
+	err = tx.QueryRow(ctx, `
+		INSERT INTO processed_market_sequences (market_id, sequence, trade_id, recorded_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (market_id, sequence) DO UPDATE SET sequence = EXCLUDED.sequence
+		RETURNING trade_id;
+	`, in.MarketID, in.Sequence, in.TradeID).Scan(&registeredTradeID)
+	if err != nil {
+		return nil, fmt.Errorf("assert market sequence integrity: %w", err)
+	}
+	if registeredTradeID != in.TradeID {
+		metrics.AccountingViolationsTotal.WithLabelValues("sequence_collision").Inc()
+		return nil, fmt.Errorf("sequence collision detected on market %s seq %d: claimed by %s, attempted by %s",
+			in.MarketID, in.Sequence, registeredTradeID, in.TradeID)
+	}
+
+	// 3. User Leg Idempotency Check (Buyer)
 	tag, err := tx.Exec(ctx, `
-		INSERT INTO processed_trades (trade_id, user_id, market_id, sequence, processed_at)
+		INSERT INTO processed_user_trades (trade_id, user_id, market_id, sequence, processed_at)
 		VALUES ($1, $2, $3, $4, NOW())
-		ON CONFLICT (trade_id) DO NOTHING;
+		ON CONFLICT (trade_id, user_id) DO NOTHING;
 	`, in.TradeID, in.BuyerID, in.MarketID, in.Sequence)
 	if err != nil {
-		return nil, fmt.Errorf("insert processed_trades: %w", err)
+		return nil, fmt.Errorf("insert buyer processed_user_trades: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return nil, repository.ErrTradeAlreadyProcessed
 	}
 
-	// 3. Deterministic Row-Locking to eliminate deadlocks (Alice <-> Bob)
+	// Register Seller leg
+	_, err = tx.Exec(ctx, `
+		INSERT INTO processed_user_trades (trade_id, user_id, market_id, sequence, processed_at)
+		VALUES ($1, $2, $3, $4, NOW())
+		ON CONFLICT (trade_id, user_id) DO NOTHING;
+	`, in.TradeID, in.SellerID, in.MarketID, in.Sequence)
+	if err != nil {
+		return nil, fmt.Errorf("insert seller processed_user_trades: %w", err)
+	}
+
+	// 4. Deterministic Row-Locking to eliminate deadlocks (Alice <-> Bob)
 	firstUser, secondUser := in.BuyerID, in.SellerID
 	if firstUser > secondUser {
 		firstUser, secondUser = secondUser, firstUser
@@ -123,23 +276,18 @@ func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.Trad
 		buyerHolding = secondHolding
 	}
 
-	// 4. Buyer Accounting: Weighted average cost basis
-	// qty_new = qty_prev + trade.qty
-	// cost_new = cost_prev + (trade.qty * trade.price)
+	// 5. Buyer Accounting: Weighted average cost basis
 	buyerTradeCost := in.Quantity.Mul(in.Price)
 	buyerHolding.Quantity = buyerHolding.Quantity.Add(in.Quantity)
 	buyerHolding.TotalCost = buyerHolding.TotalCost.Add(buyerTradeCost)
-	// realized_pnl unchanged for buyer
 
-	// 5. Seller Accounting: Asset reduction & PnL realization
-	// Invariant: seller must have sufficient holdings
+	// 6. Seller Accounting: Asset reduction & PnL realization
 	if sellerHolding.Quantity.LessThan(in.Quantity) {
 		metrics.AccountingViolationsTotal.WithLabelValues("insufficient_holdings").Inc()
 		return nil, fmt.Errorf("%w: user %s has %s %s, needed %s",
 			repository.ErrInsufficientHoldings, in.SellerID, sellerHolding.Quantity.String(), in.BaseAsset, in.Quantity.String())
 	}
 
-	// Calculate cost of sold quantity using average entry price
 	avgEntryPrice := sellerHolding.AverageEntryPrice()
 	costOfSold := in.Quantity.Mul(avgEntryPrice)
 	tradeRevenue := in.Quantity.Mul(in.Price)
@@ -149,21 +297,26 @@ func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.Trad
 	sellerHolding.TotalCost = sellerHolding.TotalCost.Sub(costOfSold)
 	sellerHolding.RealizedPnL = sellerHolding.RealizedPnL.Add(realizedDelta)
 
-	// Safety clamping: If position is fully liquidated, reset cost to exactly zero
-	if sellerHolding.Quantity.IsZero() || sellerHolding.Quantity.IsNegative() {
-		sellerHolding.Quantity = decimal.Zero
+	// Fatal accounting invariant: negative quantity must never be silently masked
+	if sellerHolding.Quantity.IsNegative() {
+		metrics.AccountingViolationsTotal.WithLabelValues("negative_quantity_invariant").Inc()
+		return nil, fmt.Errorf("FATAL accounting invariant violation: seller %s negative balance %s",
+			in.SellerID, sellerHolding.Quantity.String())
+	}
+
+	if sellerHolding.Quantity.IsZero() {
 		sellerHolding.TotalCost = decimal.Zero
 	}
 
-	// 6. Update Buyer & Seller Holdings in database
-	if err := upsertHolding(ctx, tx, buyerHolding); err != nil {
+	// 7. Update Buyer & Seller Holdings in database & increment versions
+	if err := upsertHolding(ctx, tx, &buyerHolding); err != nil {
 		return nil, fmt.Errorf("upsert buyer holding: %w", err)
 	}
-	if err := upsertHolding(ctx, tx, sellerHolding); err != nil {
+	if err := upsertHolding(ctx, tx, &sellerHolding); err != nil {
 		return nil, fmt.Errorf("upsert seller holding: %w", err)
 	}
 
-	// 7. Generate Outbox Events with stable event_id
+	// 8. Generate Outbox Events with stable event_id and portfolio_version
 	now := time.Now().UTC()
 	buyerOutbox, err := createOutboxMessage(ctx, tx, buyerHolding, now)
 	if err != nil {
@@ -175,7 +328,7 @@ func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.Trad
 		return nil, fmt.Errorf("create seller outbox event: %w", err)
 	}
 
-	// 8. Commit the 1-atomic transaction
+	// 9. Commit the 1-atomic transaction
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit accounting transaction: %w", err)
 	}
@@ -184,22 +337,18 @@ func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.Trad
 }
 
 // lockHoldingRow ensures the holding row exists and acquires an exclusive row lock (FOR UPDATE).
-// If the row does not exist, an initial zero-state row is inserted first (ON CONFLICT DO NOTHING),
-// ensuring SELECT ... FOR UPDATE always acquires a real lock even for first-time buyers/sellers.
 func lockHoldingRow(ctx context.Context, tx pgx.Tx, userID, assetCode string) (repository.Holding, error) {
-	// 1. Guarantee row exists in holdings table
 	ensureQuery := `
-		INSERT INTO holdings (user_id, asset_code, quantity, total_cost, realized_pnl, updated_at)
-		VALUES ($1, $2, 0, 0, 0, NOW())
+		INSERT INTO holdings (user_id, asset_code, quantity, total_cost, realized_pnl, version, updated_at)
+		VALUES ($1, $2, 0, 0, 0, 0, NOW())
 		ON CONFLICT (user_id, asset_code) DO NOTHING;
 	`
 	if _, err := tx.Exec(ctx, ensureQuery, userID, assetCode); err != nil {
 		return repository.Holding{}, fmt.Errorf("ensure holding row: %w", err)
 	}
 
-	// 2. Lock physical row exclusively
 	query := `
-		SELECT user_id, asset_code, quantity, total_cost, realized_pnl, updated_at
+		SELECT user_id, asset_code, quantity, total_cost, realized_pnl, version, updated_at
 		FROM holdings
 		WHERE user_id = $1 AND asset_code = $2
 		FOR UPDATE;
@@ -211,6 +360,7 @@ func lockHoldingRow(ctx context.Context, tx pgx.Tx, userID, assetCode string) (r
 		&h.Quantity,
 		&h.TotalCost,
 		&h.RealizedPnL,
+		&h.Version,
 		&h.UpdatedAt,
 	)
 	if err != nil {
@@ -219,26 +369,30 @@ func lockHoldingRow(ctx context.Context, tx pgx.Tx, userID, assetCode string) (r
 	return h, nil
 }
 
-func upsertHolding(ctx context.Context, tx pgx.Tx, h repository.Holding) error {
+func upsertHolding(ctx context.Context, tx pgx.Tx, h *repository.Holding) error {
 	query := `
 		UPDATE holdings SET
 			quantity     = $1,
 			total_cost   = $2,
 			realized_pnl = $3,
+			version      = version + 1,
 			updated_at   = NOW()
-		WHERE user_id = $4 AND asset_code = $5;
+		WHERE user_id = $4 AND asset_code = $5
+		RETURNING version;
 	`
-	_, err := tx.Exec(ctx, query, h.Quantity, h.TotalCost, h.RealizedPnL, h.UserID, h.AssetCode)
-	return err
+	return tx.QueryRow(ctx, query, h.Quantity, h.TotalCost, h.RealizedPnL, h.UserID, h.AssetCode).Scan(&h.Version)
 }
 
 func createOutboxMessage(ctx context.Context, tx pgx.Tx, h repository.Holding, now time.Time) (repository.OutboxMessage, error) {
 	eventID := uuid.New().String()
 
 	payloadMap := map[string]any{
-		"event_id":            eventID,
-		"user_id":             h.UserID,
-		"asset_code":          h.AssetCode,
+		"event_id":   eventID,
+		"user_id":    h.UserID,
+		"asset_code": h.AssetCode,
+		// Note: portfolio_version is strictly scoped to (user_id, asset_code), representing
+		// the monotonic revision of this specific asset holding for the user (not a global portfolio version).
+		"portfolio_version":   h.Version,
 		"quantity":            h.Quantity.String(),
 		"total_cost":          h.TotalCost.String(),
 		"average_entry_price": h.AverageEntryPrice().String(),

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -28,20 +29,35 @@ func poisonf(format string, args ...any) *PoisonError {
 	return &PoisonError{Err: fmt.Errorf(format, args...)}
 }
 
+type UserTradeSettledEvent struct {
+	TradeID     string `json:"trade_id"`
+	UserID      string `json:"user_id"`
+	OrderID     string `json:"order_id"`
+	Role        string `json:"role"` // "BUY" | "SELL"
+	MarketID    string `json:"market_id"`
+	BaseAsset   string `json:"base_asset"`
+	QuoteAsset  string `json:"quote_asset"`
+	Price       string `json:"price"`
+	Quantity    string `json:"quantity"`
+	Sequence    uint64 `json:"sequence"`
+	ExecutedAt  string `json:"executed_at"`
+	SettledAt   string `json:"settled_at"`
+}
+
 type TradeSettledEvent struct {
-	TradeID      string `json:"trade_id"`
-	BuyerID      string `json:"buyer_id"`
-	SellerID     string `json:"seller_id"`
-	BuyOrderID   string `json:"buy_order_id"`
-	SellOrderID  string `json:"sell_order_id"`
-	MarketID     string `json:"market_id"`
-	BaseAsset    string `json:"base_asset"`
-	QuoteAsset   string `json:"quote_asset"`
-	Price        string `json:"price"`
-	Quantity     string `json:"quantity"`
-	Sequence     uint64 `json:"sequence"`
-	ExecutedAt   string `json:"executed_at"`
-	SettledAt    string `json:"settled_at"`
+	TradeID     string `json:"trade_id"`
+	BuyerID     string `json:"buyer_id"`
+	SellerID    string `json:"seller_id"`
+	BuyOrderID  string `json:"buy_order_id"`
+	SellOrderID string `json:"sell_order_id"`
+	MarketID    string `json:"market_id"`
+	BaseAsset   string `json:"base_asset"`
+	QuoteAsset  string `json:"quote_asset"`
+	Price       string `json:"price"`
+	Quantity    string `json:"quantity"`
+	Sequence    uint64 `json:"sequence"`
+	ExecutedAt  string `json:"executed_at"`
+	SettledAt   string `json:"settled_at"`
 }
 
 type Consumer struct {
@@ -130,91 +146,106 @@ func (c *Consumer) Start(ctx context.Context) error {
 }
 
 func (c *Consumer) processMessage(ctx context.Context, msg kafkago.Message) error {
-	var event TradeSettledEvent
+	var event UserTradeSettledEvent
 	if err := json.Unmarshal(msg.Value, &event); err != nil {
 		metrics.EventsConsumedTotal.WithLabelValues("poison", "unknown").Inc()
-		return poisonf("failed to unmarshal TradeSettledEvent: %w", err)
+		return poisonf("failed to unmarshal UserTradeSettledEvent: %w", err)
 	}
 
-	// 1. Invariant Validation: Valid UUIDs
+	// 1. UUID Validation
 	if _, err := uuid.Parse(event.TradeID); err != nil {
 		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
 		return poisonf("invalid trade_id UUID %q: %w", event.TradeID, err)
 	}
-	if _, err := uuid.Parse(event.BuyerID); err != nil {
+	if _, err := uuid.Parse(event.UserID); err != nil {
 		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
-		return poisonf("invalid buyer_id UUID %q: %w", event.BuyerID, err)
+		return poisonf("invalid user_id UUID %q: %w", event.UserID, err)
 	}
-	if _, err := uuid.Parse(event.SellerID); err != nil {
+	if _, err := uuid.Parse(event.OrderID); err != nil {
 		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
-		return poisonf("invalid seller_id UUID %q: %w", event.SellerID, err)
-	}
-	if _, err := uuid.Parse(event.BuyOrderID); err != nil {
-		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
-		return poisonf("invalid buy_order_id UUID %q: %w", event.BuyOrderID, err)
-	}
-	if _, err := uuid.Parse(event.SellOrderID); err != nil {
-		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
-		return poisonf("invalid sell_order_id UUID %q: %w", event.SellOrderID, err)
+		return poisonf("invalid order_id UUID %q: %w", event.OrderID, err)
 	}
 
-	// 2. Invariant Validation: Identifiers & Sequence
-	if event.MarketID == "" {
+	// 2. Role Validation
+	role := strings.ToUpper(strings.TrimSpace(event.Role))
+	if role != "BUY" && role != "SELL" {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		return poisonf("invalid trade role %q: must be BUY or SELL", event.Role)
+	}
+
+	// 3. Market & Asset Consistency Validation
+	base := strings.ToUpper(strings.TrimSpace(event.BaseAsset))
+	quote := strings.ToUpper(strings.TrimSpace(event.QuoteAsset))
+	market := strings.ToUpper(strings.TrimSpace(event.MarketID))
+
+	if base == "" || quote == "" || market == "" {
 		metrics.EventsConsumedTotal.WithLabelValues("poison", "unknown").Inc()
-		return poisonf("missing market_id in event %s", event.TradeID)
+		return poisonf("missing base_asset, quote_asset, or market_id in event %s", event.TradeID)
 	}
-	if event.BaseAsset == "" {
-		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
-		return poisonf("missing base_asset in event %s", event.TradeID)
+
+	expectedMarket := fmt.Sprintf("%s-%s", base, quote)
+	if market != expectedMarket {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
+		return poisonf("market_id %q does not match %s-%s", event.MarketID, base, quote)
 	}
-	if event.QuoteAsset == "" {
-		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
-		return poisonf("missing quote_asset in event %s", event.TradeID)
+
+	if quote != "USDT" {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
+		return poisonf("unsupported quote_asset %q: Portfolio V1 strictly requires USDT denomination", event.QuoteAsset)
 	}
+
 	if event.Sequence == 0 {
-		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
 		return poisonf("invalid sequence for trade %s: must be > 0", event.TradeID)
 	}
 
-	// 3. Invariant Validation: Self-Trade strictly rejected
-	if event.BuyerID == event.SellerID {
-		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
-		return poisonf("self-trade detected: buyer_id equals seller_id (%s)", event.BuyerID)
-	}
-
-	// 4. Invariant Validation: Positive decimal values
+	// 4. Positive Decimal & Scale Validation (PostgreSQL DECIMAL(30,10))
 	price, err := decimal.NewFromString(event.Price)
 	if err != nil || price.IsZero() || price.IsNegative() {
-		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
 		return poisonf("invalid price %q: must be positive decimal", event.Price)
+	}
+	if price.Exponent() < -10 {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
+		return poisonf("price %s exceeds maximum supported scale of 10 decimal digits", event.Price)
 	}
 
 	qty, err := decimal.NewFromString(event.Quantity)
 	if err != nil || qty.IsZero() || qty.IsNegative() {
-		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
 		return poisonf("invalid quantity %q: must be positive decimal", event.Quantity)
 	}
+	if qty.Exponent() < -10 {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
+		return poisonf("quantity %s exceeds maximum supported scale of 10 decimal digits", event.Quantity)
+	}
 
-	// 5. Strict Timestamps Parsing (Fatal if invalid -> DLQ)
+	// 5. Strict Chronological Timestamp Validation
 	executedAt, err := time.Parse(time.RFC3339Nano, event.ExecutedAt)
 	if err != nil {
-		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
 		return poisonf("invalid executed_at %q: %w", event.ExecutedAt, err)
 	}
 
 	settledAt, err := time.Parse(time.RFC3339Nano, event.SettledAt)
 	if err != nil {
-		metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
 		return poisonf("invalid settled_at %q: %w", event.SettledAt, err)
 	}
 
-	input := repository.TradeSettledInput{
+	if settledAt.Before(executedAt) {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
+		return poisonf("chronological anomaly: settled_at (%s) is before executed_at (%s)", event.SettledAt, event.ExecutedAt)
+	}
+
+	input := repository.UserTradeInput{
 		TradeID:    event.TradeID,
-		BuyerID:    event.BuyerID,
-		SellerID:   event.SellerID,
-		MarketID:   event.MarketID,
-		BaseAsset:  event.BaseAsset,
-		QuoteAsset: event.QuoteAsset,
+		UserID:     event.UserID,
+		OrderID:    event.OrderID,
+		Role:       role,
+		MarketID:   market,
+		BaseAsset:  base,
+		QuoteAsset: quote,
 		Price:      price,
 		Quantity:   qty,
 		Sequence:   event.Sequence,
@@ -222,23 +253,25 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafkago.Message) erro
 		SettledAt:  settledAt,
 	}
 
-	// 4. Process in 1 Atomic Database Transaction
-	_, err = c.repo.ProcessTradeSettled(ctx, input)
+	_, err = c.repo.ProcessUserTrade(ctx, input)
 	if err != nil {
 		if errors.Is(err, repository.ErrTradeAlreadyProcessed) {
-			metrics.EventsConsumedTotal.WithLabelValues("duplicate", event.MarketID).Inc()
-			c.logger.Debug("trade already processed; skipping as harmless duplicate", zap.String("trade_id", event.TradeID))
+			metrics.EventsConsumedTotal.WithLabelValues("duplicate", market).Inc()
+			c.logger.Debug("trade already processed for user; skipping as harmless duplicate",
+				zap.String("trade_id", event.TradeID),
+				zap.String("user_id", event.UserID),
+			)
 			return nil
 		}
-		if errors.Is(err, repository.ErrInsufficientHoldings) || errors.Is(err, repository.ErrSelfTrade) {
-			metrics.EventsConsumedTotal.WithLabelValues("poison", event.MarketID).Inc()
+		if errors.Is(err, repository.ErrInsufficientHoldings) || errors.Is(err, repository.ErrSequenceCollision) {
+			metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
 			return poisonf("accounting violation: %v", err)
 		}
-		metrics.EventsConsumedTotal.WithLabelValues("error", event.MarketID).Inc()
+		metrics.EventsConsumedTotal.WithLabelValues("error", market).Inc()
 		return err
 	}
 
-	metrics.EventsConsumedTotal.WithLabelValues("success", event.MarketID).Inc()
+	metrics.EventsConsumedTotal.WithLabelValues("success", market).Inc()
 	return nil
 }
 

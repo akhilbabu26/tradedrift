@@ -38,11 +38,12 @@ func main() {
 	appLogger.Info("Starting Wallet Service...")
 
 	// 2. Config
-	dbDSN        := config.GetEnv("WALLET_POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/tradedrift?sslmode=disable")
-	grpcPort     := config.GetEnv("WALLET_PORT", ":50052")
+	dbDSN := config.GetEnv("WALLET_POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/tradedrift?sslmode=disable")
+	grpcPort := config.GetEnv("WALLET_PORT", ":50052")
 	migrationDir := config.GetEnv("WALLET_MIGRATIONS_DIR", "services/wallet/migration")
 	kafkaBrokers := parseBrokers(config.GetEnv("KAFKA_BROKERS", "localhost:9092"))
-	kafkaTopic   := config.GetEnv("KAFKA_TOPIC_TRADE_SETTLED", "trades.settled.v1")
+	kafkaTopicTradeSettled := config.GetEnv("KAFKA_TOPIC_TRADE_SETTLED", "trades.settled.v1")
+	kafkaTopicPortfolioUserTrades := config.GetEnv("KAFKA_TOPIC_PORTFOLIO_USER_TRADES", "portfolio.user.trades.v1")
 
 	if _, err := os.Stat(migrationDir); os.IsNotExist(err) {
 		if _, err := os.Stat("migration"); err == nil {
@@ -75,7 +76,7 @@ func main() {
 
 	// 6. Wire service and handler
 	walletService := service.NewService(dbPool, appLogger)
-	grpcHandler   := handler.NewGRPCHandler(walletService, appLogger)
+	grpcHandler := handler.NewGRPCHandler(walletService, appLogger)
 
 	var wg sync.WaitGroup
 
@@ -96,9 +97,9 @@ func main() {
 		}
 	}()
 
-	// 8. Outbox publisher — polls the outbox table and publishes to trades.settled.v1
+	// 8. Outbox publisher — polls the outbox table and publishes to trades.settled.v1 & portfolio.user.trades.v1
 	outboxRepo := walletpg.NewOutboxRepository(dbPool)
-	outboxPub  := publisher.NewOutboxPublisher(outboxRepo, kafkaBrokers, kafkaTopic, appLogger)
+	outboxPub := publisher.NewOutboxPublisher(outboxRepo, kafkaBrokers, kafkaTopicTradeSettled, kafkaTopicPortfolioUserTrades, appLogger)
 
 	wg.Add(1)
 	go func() {
@@ -109,7 +110,8 @@ func main() {
 	appLogger.Info("Wallet Service running",
 		zap.String("grpc_port", grpcPort),
 		zap.Strings("kafka_brokers", kafkaBrokers),
-		zap.String("kafka_topic", kafkaTopic),
+		zap.String("kafka_topic_trade_settled", kafkaTopicTradeSettled),
+		zap.String("kafka_topic_portfolio_user_trades", kafkaTopicPortfolioUserTrades),
 	)
 
 	// 9. Block until shutdown signal

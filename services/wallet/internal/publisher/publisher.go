@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	pollInterval  = 500 * time.Millisecond // polling cadence when outbox has events
-	idleInterval  = 2 * time.Second        // cadence when outbox is empty
-	batchSize     = 50                     // max events per poll cycle
-	maxRetries    = 3                      // Kafka write retries before MarkFailed
+	pollInterval = 500 * time.Millisecond // polling cadence when outbox has events
+	idleInterval = 2 * time.Second        // cadence when outbox is empty
+	batchSize    = 50                     // max events per poll cycle
+	maxRetries   = 3                      // Kafka write retries before MarkFailed
 )
 
 // OutboxPublisher polls the outbox table and publishes pending events to Kafka.
@@ -28,39 +28,43 @@ const (
 //
 // Topic routing:
 //   - EventType "TradeSettled" → trades.settled.v1
+//   - EventType "PortfolioUserTrade" → portfolio.user.trades.v1
 //   - Unknown event types are MarkFailed and logged — not retried indefinitely.
 //
-// Partition key: outbox.partition_key (buyer_user_id) — matches the ME partition strategy.
+// Partition key: outbox.partition_key (user_id) — preserves strict per-user FIFO ordering.
 type OutboxPublisher struct {
-	outbox repository.OutboxRepository
-	writer *kafkago.Writer
-	topic  string
-	log    *zap.Logger
+	outbox                   repository.OutboxRepository
+	writer                   *kafkago.Writer
+	topicTradeSettled        string
+	topicPortfolioUserTrades string
+	log                      *zap.Logger
 }
 
-// NewOutboxPublisher creates an OutboxPublisher that writes to the given Kafka topic.
+// NewOutboxPublisher creates an OutboxPublisher that routes events to their appropriate Kafka topics.
 func NewOutboxPublisher(
 	outbox repository.OutboxRepository,
 	brokers []string,
-	topic string,
+	topicTradeSettled string,
+	topicPortfolioUserTrades string,
 	log *zap.Logger,
 ) *OutboxPublisher {
 	writer := &kafkago.Writer{
 		Addr:         kafkago.TCP(brokers...),
-		Topic:        topic,
-		Balancer:     &kafkago.Hash{}, // partition by message key (buyer_user_id)
+		Balancer:     &kafkago.Hash{}, // partition by message key (user_id)
 		RequiredAcks: kafkago.RequireOne,
 		MaxAttempts:  1, // we manage retries manually per-event
 	}
 	log.Info("Outbox publisher initialised",
 		zap.Strings("brokers", brokers),
-		zap.String("topic", topic),
+		zap.String("topic_trade_settled", topicTradeSettled),
+		zap.String("topic_portfolio_user_trades", topicPortfolioUserTrades),
 	)
 	return &OutboxPublisher{
-		outbox: outbox,
-		writer: writer,
-		topic:  topic,
-		log:    log,
+		outbox:                   outbox,
+		writer:                   writer,
+		topicTradeSettled:        topicTradeSettled,
+		topicPortfolioUserTrades: topicPortfolioUserTrades,
+		log:                      log,
 	}
 }
 
@@ -117,8 +121,24 @@ func (p *OutboxPublisher) publishBatch(ctx context.Context) (int, error) {
 // publishOne writes one outbox event to Kafka, retrying up to maxRetries times.
 // On persistent failure the event is MarkFailed and an alert is logged.
 func (p *OutboxPublisher) publishOne(ctx context.Context, event *repository.OutboxEvent) error {
+	var targetTopic string
+	switch event.EventType {
+	case "TradeSettled":
+		targetTopic = p.topicTradeSettled
+	case "PortfolioUserTrade":
+		targetTopic = p.topicPortfolioUserTrades
+	default:
+		p.log.Error("unknown outbox event type; marking failed",
+			zap.String("outbox_id", event.ID),
+			zap.String("event_type", event.EventType),
+		)
+		p.outbox.MarkFailed(ctx, event.ID, "unknown event type: "+event.EventType)
+		return nil
+	}
+
 	msg := kafkago.Message{
-		Key:   []byte(event.PartitionKey), // buyer_user_id — consistent with ME partition key
+		Topic: targetTopic,
+		Key:   []byte(event.PartitionKey), // user_id — preserves strict per-user FIFO ordering
 		Value: event.Payload,
 		Headers: []kafkago.Header{
 			{Key: "event-type", Value: []byte(event.EventType)},
@@ -147,6 +167,7 @@ func (p *OutboxPublisher) publishOne(ctx context.Context, event *repository.Outb
 				zap.String("outbox_id", event.ID),
 				zap.String("trade_id", event.AggregateID),
 				zap.String("event_type", event.EventType),
+				zap.String("topic", targetTopic),
 			)
 			return nil
 		}
@@ -174,7 +195,7 @@ func (p *OutboxPublisher) publishOne(ctx context.Context, event *repository.Outb
 		zap.String("outbox_id", event.ID),
 		zap.String("trade_id", event.AggregateID),
 		zap.String("event_type", event.EventType),
-		zap.String("topic", p.topic),
+		zap.String("topic", targetTopic),
 		zap.Error(lastErr),
 	)
 	if err := p.outbox.MarkFailed(ctx, event.ID, reason); err != nil {

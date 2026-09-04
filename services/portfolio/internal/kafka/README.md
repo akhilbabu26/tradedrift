@@ -5,10 +5,12 @@
 The `services/portfolio/internal/kafka` package manages all asynchronous event-driven communication for the **Portfolio Service**.
 
 It encapsulates two primary decoupled messaging engines:
-1. **Inbound Settled Trade Ingestion ([`consumer.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/portfolio/internal/kafka/consumer.go))**:
-   * Reads settled trade events from topic `trades.settled.v1` emitted by the Wallet Service outbox.
-   * Enforces strict financial invariant validations.
-   * Dispatches valid trades to the repository for atomic accounting.
+1. **Inbound User Trade Ingestion ([`consumer.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/portfolio/internal/kafka/consumer.go))**:
+   * Reads user-scoped trade accounting events from topic `portfolio.user.trades.v1` emitted by the Wallet Service transactional outbox.
+   * Leverages Kafka partition routing keyed by `user_id`: **All accounting events for a given user are routed to the same Kafka partition, preserving their Kafka log order for that user**.
+   * Note: The broader exchange ledger topic `trades.settled.v1` (keyed by `trade_id`) remains intact for the Trade Service.
+   * Enforces strict cross-field invariant validations (UUIDs, `BUY`/`SELL` role, `market_id` correlation, `USDT` quote asset, $\le 10$ decimal digits scale, chronological sanity `SettledAt >= ExecutedAt`, sequence $> 0$).
+   * Dispatches valid user trade legs to the repository for atomic accounting.
    * Quarantines malformed or poisoned events to `trades.settled.dlq`.
    * Manages manual offset commits to guarantee zero message loss.
 2. **Outbound Transactional Outbox Publisher ([`publisher.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/portfolio/internal/kafka/publisher.go))**:
@@ -18,15 +20,15 @@ It encapsulates two primary decoupled messaging engines:
    * Enforces per-user partition keying (`user_id`) to preserve strict chronological event delivery to the downstream **Notification & WebSocket Service**.
 
 ```
-                           Kafka Topic: trades.settled.v1
+                   Kafka Topic: portfolio.user.trades.v1 (Key: user_id)
                                         │
                                         ▼
                    ┌─────────────────────────────────────────┐
                    │             kafka.Consumer              │
                    │                                         │
                    │  1. Fetch Message (Manual Commit Mode)  │
-                   │  2. Strict Validation (UUIDs, Sequence) │
-                   │  3. Settle Trade (Atomic Repository)    │
+                   │  2. Strict Validation (UUIDs, Role, etc)│
+                   │  3. Settle User Trade (Atomic Repo)     │
                    └───────────┬─────────────────┬───────────┘
                                │                 │
                 Valid Trade    │                 │ Poison / Accounting Error
@@ -74,9 +76,12 @@ It encapsulates two primary decoupled messaging engines:
   c.commitMsg(ctx, msg) // Only commit after DLQ ACK
   ```
 
-### 2.3 Strict Chronological Ordering per User
-* **The Problem**: If a user executes multiple trades in rapid succession (e.g. Buy 1 BTC $\rightarrow$ Sell 0.5 BTC $\rightarrow$ Buy 2 BTC), and the resulting `PortfolioUpdated` events are written to different Kafka partitions, the downstream WebSocket Service could process them out of order, displaying flashing, backwards balances on client user interfaces.
-* **How It Solves It**: The `OutboxPublisher` explicitly sets `msg.Key = []byte(msg.PartitionKey)` (which is the trader's `user_id`) and uses `kafkago.Hash{}` balancer:
+### 2.3 Strict Partition Ordering per User
+* **The Problem**: If a user executes multiple trades in rapid succession (e.g. Buy 1 BTC $\rightarrow$ Sell 0.5 BTC $\rightarrow$ Buy 2 BTC), and events for that user were written to different Kafka partitions, they could be delivered out of order. A sell event could arrive before the preceding buy event, causing an erroneous `ErrInsufficientHoldings` rejection.
+* **How It Solves It**: The Wallet Service emits accounting events to `portfolio.user.trades.v1` explicitly keyed by `user_id`. Kafka guarantees that:
+  > **All accounting events for a given user are routed to the same Kafka partition, preserving their Kafka log order for that user.**
+  
+  Similarly, the `OutboxPublisher` explicitly sets `msg.Key = []byte(msg.PartitionKey)` (which is the trader's `user_id`) and uses `kafkago.Hash{}` balancer:
   ```go
   kafkaMessages = append(kafkaMessages, kafkago.Message{
       Key:   []byte(msg.PartitionKey), // user_id
@@ -88,7 +93,7 @@ It encapsulates two primary decoupled messaging engines:
       },
   })
   ```
-  Kafka guarantees that all records with the same partition key land on the same partition, preserving strict chronological arrival order.
+  Verified by [`partition_ordering_test.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/portfolio/internal/kafka/partition_ordering_test.go), hashing guarantees identical partition assignment across 10,000 randomized user keys.
 
 ### 2.4 Idempotent Delivery with Stable Event IDs
 * **The Problem**: In network partitions or publisher restarts, outbox messages may be re-published (at-least-once delivery semantics).
@@ -131,14 +136,17 @@ func (c *Consumer) Start(ctx context.Context) error
 ```go
 func (c *Consumer) processMessage(ctx context.Context, msg kafkago.Message) error
 ```
-* **Purpose**: Unmarshals JSON payload into `TradeSettledEvent` and enforces strict pre-flight invariant validations:
-  1. Valid UUIDs for `TradeID`, `BuyerID`, `SellerID`, `BuyOrderID`, `SellOrderID`.
-  2. Non-empty `MarketID`, `BaseAsset`, `QuoteAsset`.
-  3. Strict monotonic sequence verification (`Sequence > 0`).
-  4. Self-trade rejection (`BuyerID != SellerID`).
-  5. Positive decimal amounts for `Price` and `Quantity`.
-  6. Strict RFC3339Nano parsing for `ExecutedAt` and `SettledAt` (fatal error $\rightarrow$ DLQ if invalid).
-  7. Invokes `repo.ProcessTradeSettled(ctx, input)`. Handles harmless duplicates (`ErrTradeAlreadyProcessed`) without errors.
+* **Purpose**: Unmarshals JSON payload into `UserTradeSettledEvent` and enforces strict pre-flight invariant validations:
+  1. Valid UUIDs for `TradeID`, `UserID`, `OrderID`.
+  2. Role verification: must be strictly `"BUY"` or `"SELL"`.
+  3. Market ID correlation: `MarketID == BaseAsset + "-" + QuoteAsset`.
+  4. Quote Asset verification: must be strictly `"USDT"`.
+  5. Scale limit enforcement: `Price`, `Quantity`, `Fee` must not exceed 10 decimal digits (`value.Exponent() >= -10`).
+  6. Positive amounts: `Price > 0` and `Quantity > 0`.
+  7. Strict monotonic sequence verification (`Sequence > 0`).
+  8. Chronological order verification (`SettledAt >= ExecutedAt`).
+  9. Strict RFC3339Nano parsing for timestamps (fatal error $\rightarrow$ DLQ if invalid).
+  10. Invokes `repo.ProcessUserTrade(ctx, input)`. Handles harmless duplicates (`ErrTradeAlreadyProcessed`) without errors.
 
 #### `sendToDLQ`
 ```go
@@ -146,7 +154,7 @@ func (c *Consumer) sendToDLQ(ctx context.Context, original kafkago.Message, reas
 ```
 * **Purpose**: Packages the poisoned message and dispatches it to `trades.settled.dlq` with tracing headers:
   * `dlq-reason`: Text description of the invariant failure.
-  * `dlq-source-topic`: `trades.settled.v1`.
+  * `dlq-source-topic`: `portfolio.user.trades.v1`.
   * `dlq-partition`: Partition number of the original message.
   * `dlq-offset`: Offset of the original message.
   * `dlq-timestamp`: Time of DLQ routing.
@@ -198,28 +206,33 @@ func (p *OutboxPublisher) Close() error
 
 ## 4. End-to-End Architectural Flows
 
-### Flow 1: Inbound Consumption, Invariant Check & DLQ Routing
+### Flow 1: Inbound User Trade Consumption, Invariant Check & DLQ Routing
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Kafka as Kafka (trades.settled.v1)
+    participant Kafka as Kafka (portfolio.user.trades.v1)
     participant Consumer as kafka.Consumer
     participant Repo as postgres.Repository
     participant DLQ as Kafka (trades.settled.dlq)
 
     Kafka->>Consumer: FetchMessage(ctx)
-    Consumer->>Consumer: Unmarshal & Validate Invariants
+    Consumer->>Consumer: Unmarshal & Validate Invariants (Role, Scale <= 10, Timestamps)
     
-    alt Invariant Failed (Zero Sequence / Bad UUID / Corrupt Date)
+    alt Invariant Failed (Bad UUID / Scale > 10 / Inverted Timestamps / Role Error)
         Consumer->>DLQ: WriteMessages(trades.settled.dlq, headers=[dlq-reason])
         DLQ-->>Consumer: ACK
         Consumer->>Kafka: CommitMessages(offset)
     else Valid Event
-        Consumer->>Repo: ProcessTradeSettled(input)
+        Consumer->>Repo: ProcessUserTrade(input)
         alt Transient DB Error
             Repo-->>Consumer: error (connection timeout)
             Consumer->>Consumer: Sleep 250ms & Retry (Do NOT commit offset)
+        else Poison / Insufficient Balance
+            Repo-->>Consumer: ErrInsufficientHoldings / ErrSequenceCollision
+            Consumer->>DLQ: WriteMessages(trades.settled.dlq, headers=[dlq-reason])
+            DLQ-->>Consumer: ACK
+            Consumer->>Kafka: CommitMessages(offset)
         else Success or Duplicate
             Repo-->>Consumer: Success
             Consumer->>Kafka: CommitMessages(offset)
@@ -258,6 +271,7 @@ sequenceDiagram
 
 | Topic Name | Producer | Consumer | Partition Key | Guarantees |
 |---|---|---|---|---|
-| `trades.settled.v1` | Wallet Service Outbox | Portfolio Service (`kafka.Consumer`) | `trade_id` | At-least-once, immutable settlement event |
+| `portfolio.user.trades.v1` | Wallet Service Outbox | Portfolio Service (`kafka.Consumer`) | `user_id` | At-least-once, **strict per-user partition order** |
+| `trades.settled.v1` | Wallet Service Outbox | Trade Service | `trade_id` | At-least-once, immutable trade ledger |
 | `trades.settled.dlq` | Portfolio Service (`kafka.Consumer`) | Operational Admin / Audit Replay | Original Key | At-least-once, diagnostic headers included |
-| `portfolios.updated.v1` | Portfolio Service (`kafka.OutboxPublisher`) | Notification & WebSocket Service | `user_id` | At-least-once, **strict per-user order** |
+| `portfolios.updated.v1` | Portfolio Service (`kafka.OutboxPublisher`) | Notification & WebSocket Service | `user_id` | At-least-once, **strict per-user partition order with monotonic portfolio_version** |

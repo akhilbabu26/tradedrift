@@ -204,18 +204,98 @@ ENUMs are stored as integers internally — faster than VARCHAR comparisons. The
 
 ---
 
-## Why Two Files Instead of One?
+---
 
-| What it contains | File | Can deploy without the other? |
+## Migration 00003 — Seed Market Maker Wallet
+
+Seeds initial liquidity into the platform's primary market maker (`MM001`) with 10,000,000 USDT and 1,000 BTC to allow bid/ask book seeding on system bootstrap.
+
+---
+
+## Migration 00004 — Outbox Processing, Lease Recovery & Transaction Uniqueness Fix
+
+This migration hardens the transactional outbox and the double-entry ledger for production concurrency.
+
+### 1. Outbox Status Constraint Expansion
+- Expands `outbox.status` check constraint from `('PENDING', 'PROCESSED', 'FAILED')` to `('PENDING', 'PROCESSING', 'PROCESSED', 'FAILED')`.
+- Allows outbox publisher workers to atomically mark rows as `PROCESSING` while publishing to Kafka.
+
+### 2. Lease Column (`claimed_at`) & Partial Index
+- Adds `claimed_at TIMESTAMPTZ` column.
+- Adds partial index:
+  ```sql
+  CREATE INDEX idx_outbox_claiming ON outbox(created_at) WHERE status IN ('PENDING', 'PROCESSING');
+  ```
+- **Crash Recovery:** Enables atomic CTE claiming with `FOR UPDATE SKIP LOCKED` and 1-minute lease expiration recovery (`status = 'PROCESSING' AND (claimed_at IS NULL OR claimed_at < NOW() - INTERVAL '1 minute')`).
+
+### 3. Ledger Uniqueness Constraint Fix
+- **Previous Constraint:** `UNIQUE (reference_id, reference_type, asset)` on `wallet_transactions`.
+  - **Bug:** During settlement of a BTC trade, both seller (DEBIT) and buyer (CREDIT) attempted to write `(TradeID, 'SETTLEMENT', 'BTC')`, causing the buyer's ledger row to collide with the seller's and be dropped!
+- **New Constraint:**
+  ```sql
+  ALTER TABLE wallet_transactions DROP CONSTRAINT IF EXISTS wallet_transactions_reference_id_reference_type_asset_key;
+  ALTER TABLE wallet_transactions ADD CONSTRAINT wallet_transactions_wallet_ref_type_key
+      UNIQUE (wallet_id, reference_id, reference_type);
+  ```
+  - Allows both seller and buyer to write their respective settlement records.
+  - Guarantees strict per-wallet settlement idempotency against double-debits.
+
+---
+
+---
+
+## Migration 00005 — Settled Trades Primary Idempotency Table
+
+This migration introduces a dedicated, explicit table for trade settlement idempotency.
+
+### Table: `settled_trades`
+
+```sql
+CREATE TABLE IF NOT EXISTS settled_trades (
+    trade_id    UUID PRIMARY KEY,
+    market_id   VARCHAR(20) NOT NULL,
+    sequence    BIGINT NOT NULL,
+    settled_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+### Why a dedicated `settled_trades` table?
+- **Explicit Settlement Identity:** Previously, settlement idempotency relied on checking `wallet_transactions` collisions. That conflated ledger records with settlement lifecycle identity.
+- **First Step in Transaction:** `SettleTrade` performs `INSERT INTO settled_trades ... ON CONFLICT (trade_id) DO NOTHING` as its very first operation. If 0 rows were affected, the transaction immediately exits with `nil`, completely avoiding reservation row locks and wallet balance mutations.
+- **Atomic Rollback:** If any balance debit, credit, or outbox insert fails during settlement, rolling back the PostgreSQL transaction automatically rolls back the `settled_trades` row, allowing future retries of the trade to execute cleanly.
+
+---
+
+## Migration 00006 — Outbox Deterministic Ordering Index
+
+This migration hardens outbox claim ordering to guarantee deterministic FIFO claiming even when timestamps tie.
+
+### Deterministic Index: `idx_outbox_claiming`
+
+```sql
+DROP INDEX IF EXISTS idx_outbox_claiming;
+
+CREATE INDEX idx_outbox_claiming
+ON outbox(created_at ASC, id ASC)
+WHERE status IN ('PENDING', 'PROCESSING');
+```
+
+### Why tie-break by `id ASC`?
+- Under high settlement throughput, multiple outbox records can be committed with identical `created_at` timestamps within the same millisecond/transaction.
+- Adding `id ASC` to the index and query ensures PostgreSQL index scans and atomic claiming CTEs produce identical, deterministic row order across all queries (`ORDER BY created_at ASC, id ASC`).
+
+---
+
+## Migration Summary
+
+| File | What it contains | Purpose |
 |---|---|---|
-| Core trading: reserves, settlements, initialization, ledger, outbox | `00001` | ✅ Yes — the exchange can fully operate |
-| External funding: deposits, withdrawals | `00002` | ✅ Yes — users trade with seeded USDT |
-
-**Benefits of splitting:**
-1. You can test the entire trading flow end-to-end with only `00001` applied.
-2. Deposit/withdrawal can ship later as a separate feature — no risk to the core.
-3. If `00002` has a bug, rolling back (`goose down`) only drops `wallet_transfers` — the trading core is untouched.
-4. Clearer code reviews — a reviewer reading `00002` knows exactly what scope changed.
+| `00001` | Core trading tables (`wallets`, `reservations`, `transactions`, `outbox`, `assets`) | The financial ledger and invariant enforcement |
+| `00002` | External funding (`wallet_transfers`) | Deposit & withdrawal lifecycle tracking |
+| `00003` | Market maker seed (`MM001`) | Bootstraps market maker liquidity |
+| `00004` | Outbox lease claiming & ledger uniqueness fix | Multi-instance outbox safety, crash recovery, and settlement idempotency |
+| `00005` | Settled trades table (`settled_trades`) | Explicit primary settlement identity and deduplication |
+| `00006` | Outbox deterministic ordering index | Guarantees deterministic FIFO claiming order `(created_at ASC, id ASC)` |
 
 ---
 
@@ -231,7 +311,10 @@ supported_assets          ← no dependencies
               ├── wallet_reservations   ← no FK to wallets, but logically depends on it
               ├── wallet_transactions   ← FK → wallets.id
               ├── outbox                ← no FK (standalone)
-              └── wallet_transfers      ← FK → wallets.id  (migration 00002)
+              ├── wallet_transfers      ← FK → wallets.id  (migration 00002)
+              └── settled_trades        ← standalone idempotency barrier (migration 00005)
 ```
 
 The `-- +goose Down` section drops tables in **reverse order** to satisfy these FK constraints.
+
+

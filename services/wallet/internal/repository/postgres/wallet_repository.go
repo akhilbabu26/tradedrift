@@ -6,17 +6,20 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"tradedrift/services/wallet/internal/repository"
 )
 
 type WalletRepository struct {
-	db *pgxpool.Pool
+	db repository.DBTX
 }
 
-func NewWalletRepository(db *pgxpool.Pool) *WalletRepository {
+func NewWalletRepository(db repository.DBTX) *WalletRepository {
 	return &WalletRepository{db: db}
+}
+
+func (r *WalletRepository) WithTx(tx pgx.Tx) repository.WalletRepository {
+	return &WalletRepository{db: tx}
 }
 
 func (r *WalletRepository) GetByUserAndAsset(ctx context.Context, userID, asset string) (*repository.Wallet, error) {
@@ -152,13 +155,14 @@ func (r *WalletRepository) MoveFromReserved(ctx context.Context, walletID, amoun
 		    available_balance = available_balance + $1::DECIMAL,
 		    updated_at        = NOW()
 		WHERE id = $2
+		  AND reserved_balance >= $1::DECIMAL
 	`
 	res, err := r.db.Exec(ctx, query, amount, walletID)
 	if err != nil {
 		return fmt.Errorf("failed to move funds from reserved: %w", err)
 	}
 	if res.RowsAffected() == 0 {
-		return fmt.Errorf("wallet not found: %s", walletID)
+		return repository.ErrInsufficientBalance
 	}
 	return nil
 }
@@ -170,13 +174,14 @@ func (r *WalletRepository) DebitReserved(ctx context.Context, walletID, amount s
 		    total_balance     = total_balance    - $1::DECIMAL,
 		    updated_at        = NOW()
 		WHERE id = $2
+		  AND reserved_balance >= $1::DECIMAL
 	`
 	res, err := r.db.Exec(ctx, query, amount, walletID)
 	if err != nil {
 		return fmt.Errorf("failed to debit reserved balance: %w", err)
 	}
 	if res.RowsAffected() == 0 {
-		return fmt.Errorf("wallet not found: %s", walletID)
+		return repository.ErrInsufficientBalance
 	}
 	return nil
 }
@@ -220,3 +225,7 @@ func (r *WalletRepository) UnfreezeWallet(ctx context.Context, walletID string) 
 	}
 	return nil
 }
+
+// Compile-time check.
+var _ repository.WalletRepository = (*WalletRepository)(nil)
+

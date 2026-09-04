@@ -156,7 +156,7 @@ Every mutation is safe to call multiple times. Retried gRPC calls never create d
 | `InitializeWallet` | `(user_id, asset_code)` | Check existing wallet before creating |
 | `ReserveFunds` | `order_id` | `UNIQUE(order_id)` on `wallet_reservations` |
 | `ReleaseFunds` | reservation `status` | Check `status != RELEASED` before crediting |
-| `SettleTrade` | `(trade_id, SETTLEMENT, asset)` | `UNIQUE(reference_id, reference_type, asset)` on `wallet_transactions` |
+| `SettleTrade` | `trade_id` | Primary: `PRIMARY KEY (trade_id)` on `settled_trades` (Migration 00005); Secondary: `UNIQUE(wallet_id, reference_id, reference_type)` on `wallet_transactions` (Migration 00004) |
 
 ### 2. Double-Entry Ledger
 
@@ -197,14 +197,32 @@ available += remaining   (returned to spendable)
 
 This prevents double-spending without distributed locks: two concurrent orders both see the same `available_balance`, but only one can successfully decrement it (the SQL `WHERE available >= amount` ensures atomicity).
 
-### 4. Transactional Outbox Pattern
+### 4. 1-Atomic Settlement Transaction & Transactional Outbox
 
-Kafka events (`UserTradeSettled`) are written to the `outbox` table **inside the same database transaction** as the balance change. A background publisher reads pending outbox rows and delivers them to Kafka.
+`SettleTrade` executes inside a **single atomic PostgreSQL transaction** (`pgx.Tx`):
+1. **Primary Idempotency Registration:** Attempts `INSERT INTO settled_trades (trade_id, market_id, sequence, settled_at) VALUES (...) ON CONFLICT (trade_id) DO NOTHING`. If already present, exits immediately with success.
+2. **Deterministic Reservation Locking:** Locks both the buy reservation (`BuyOrderID`) and the sell reservation (`SellerOrderID`) in deterministic sorted order using `SELECT ... FOR UPDATE` (eliminating deadlock hazards on concurrent crossed trades).
+3. **Leg 1 (Base Asset Transfer):**
+   - Debits seller's `reserved_balance` of `BaseAsset` (e.g. BTC).
+   - Atomically decrements seller reservation's `remaining_amount` in SQL with `RowsAffected() == 1` validation.
+   - Credits buyer's `available_balance` of `BaseAsset`.
+4. **Leg 2 (Quote Asset Transfer):**
+   - Debits buyer's `reserved_balance` of `QuoteAsset` (e.g. USDT).
+   - Atomically decrements buyer reservation's `remaining_amount` in SQL with `RowsAffected() == 1` validation.
+   - Credits seller's `available_balance` of `QuoteAsset`.
+5. **Ledger Entries:** Inserts **4 immutable ledger records** (Seller Base DEBIT, Buyer Base CREDIT, Buyer Quote DEBIT, Seller Quote CREDIT) enforced by DB unique constraint `UNIQUE (wallet_id, reference_id, reference_type)`.
+6. **Writes 3 Outbox Events** atomically into the `outbox` table:
+   - `TradeSettled` (topic: `trades.settled.v1`, partition key: `buyer_id`) $\rightarrow$ consumed by Trade Service
+   - `PortfolioUserTrade` BUY (topic: `portfolio.user.trades.v1`, partition key: `buyer_id`) $\rightarrow$ consumed by Portfolio Service
+   - `PortfolioUserTrade` SELL (topic: `portfolio.user.trades.v1`, partition key: `seller_id`) $\rightarrow$ consumed by Portfolio Service
+7. **Commits the transaction:** If any step fails, all balance debits/credits, reservation consumptions, ledger rows, `settled_trades` row, and outbox rows roll back completely.
 
-This guarantees:
-- If the DB commits → the event will eventually be published (even if Kafka is down for hours)
-- If the DB rolls back → no event is published
-- Events are never lost and never duplicated (published exactly once)
+**Outbox Multi-Worker Safety, Crash Recovery & Ordering Preservation (Migrations 00004 & 00006):**
+- Outbox claiming uses an atomic CTE with `FOR UPDATE SKIP LOCKED` ordered deterministically by `(created_at ASC, id ASC)`. It marks rows `PROCESSING` and sets `claimed_at = NOW()`.
+- **Transient Kafka Failure Handling (Ordering Preservation):** If a transient Kafka write failure occurs during batch publishing, the publisher immediately halts the batch and releases all remaining claimed events back to `PENDING` (`status = 'PENDING', claimed_at = NULL`). It never continues to subsequent events in the batch. On the next poll, the failed event is reclaimed first (oldest `created_at ASC, id ASC`), ensuring strict chronological FIFO delivery per user partition without out-of-order delivery.
+- **Lease Recovery:** If a publisher process crashes mid-flight, an expired lease condition (`claimed_at < NOW() - INTERVAL '1 minute'`) safely recovers the uncompleted events.
+- **State-Aware Status Transitions:** `MarkPublished` and `MarkFailed` strictly check `WHERE id = $1 AND status = 'PROCESSING'` and clear `claimed_at = NULL` to prevent stale workers from overwriting reclaimed rows.
+- **Operational Invariant (V1):** Run a single active publisher instance for the Wallet Service to preserve per-user Kafka partition ordering (`ORDER BY created_at ASC, id ASC` published sequentially). If horizontal publisher scaling is introduced in the future, claiming must partition work by `partition_key` (e.g. `MOD(HASHTEXT(partition_key), N)`) to prevent concurrent workers from interleaving events for the same user across the network.
 
 ### 5. Decimal Precision
 
@@ -245,6 +263,7 @@ All balances are `DECIMAL(30,10)` in PostgreSQL and `string` in Go. This prevent
 | `wallet_transactions` | Immutable ledger — every balance change, forever |
 | `outbox` | Pending Kafka events (Transactional Outbox pattern) |
 | `wallet_transfers` | Deposit/withdrawal lifecycle tracking |
+| `settled_trades` | Dedicated trade settlement primary idempotency table (Migration 00005) |
 
 See [migration/README.md](./migration/README.md) for full table documentation.
 

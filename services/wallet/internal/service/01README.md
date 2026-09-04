@@ -23,13 +23,14 @@
 
 ```go
 type Service struct {
-    db          *pgxpool.Pool
-    walletRepo  repository.WalletRepository
-    reservRepo  repository.ReservationRepository
-    txnRepo     repository.TransactionRepository
-    assetRepo   repository.AssetRepository
-    outboxRepo  repository.OutboxRepository
-    log         *zap.Logger
+    db               *pgxpool.Pool
+    walletRepo       repository.WalletRepository
+    reservRepo       repository.ReservationRepository
+    txnRepo          repository.TransactionRepository
+    assetRepo        repository.AssetRepository
+    outboxRepo       repository.OutboxRepository
+    settledTradeRepo repository.SettledTradeRepository
+    log              *zap.Logger
 }
 ```
 
@@ -37,7 +38,8 @@ The service holds **interfaces**, not concrete types. This means:
 - Unit tests can inject mock repositories — no real database needed
 - The postgres implementation can be swapped for a different database without touching business logic
 
-`NewService(db, log)` is the only constructor — it wires all 5 postgres implementations internally.
+`NewService(db, log)` is the only constructor — it wires all 6 postgres implementations internally.
+
 
 ---
 
@@ -122,25 +124,37 @@ An order may have been partially filled before cancellation. `remaining_amount =
 func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) error
 ```
 
-**Purpose:** After a trade matches, debit the seller's reserved BaseAsset and credit the buyer's BaseAsset.
+**Purpose:** After a trade match, execute atomic multi-asset two-sided balance movement (both BaseAsset and QuoteAsset) between buyer and seller, write double-entry ledger records, and emit 3 outbox events.
 
-**Idempotent:** If `tradeID` already settled, returns success immediately.
+**Idempotent:** Primary idempotency barrier is `INSERT INTO settled_trades ... ON CONFLICT (trade_id) DO NOTHING` (Migration 00005). Backed up by DB unique constraint `UNIQUE (wallet_id, reference_id, reference_type)` on `wallet_transactions` (Migration 00004). Duplicate calls return success immediately without double debits.
 
-### Steps:
-1. `txnRepo.ExistsByKey(tradeID, SETTLEMENT, baseAsset)` — already settled? Return
-2. `reservRepo.GetByOrderID(sellerOrderID)` — fetch seller's reservation
-3. `walletRepo.GetByUserAndAsset(sellerUserID, baseAsset)` — fetch seller wallet
-4. `walletRepo.DebitReserved(sellerWalletID, baseAmount)` — seller's BTC reserved → consumed
-5. `reservRepo.UpdateConsumed()` — update consumed/remaining on seller's reservation
-6. `walletRepo.GetByUserAndAsset(buyerUserID, baseAsset)` — fetch buyer wallet
-7. `walletRepo.CreditAvailable(buyerWalletID, baseAmount)` — buyer receives BTC
-8. `txnRepo.CreateBatch()` — write 2 ledger entries atomically (seller DEBIT + buyer CREDIT)
-9. `outboxRepo.Insert()` — write `UserTradeSettled` event (published to Kafka by background worker)
-10. Log and return
+### 1-Atomic Transaction Steps:
+1. **Validation:** Rejects self-trades, identical buy/sell order IDs, non-positive amounts, or missing IDs (`ErrInvalidSettlement`).
+2. **Begin Transaction:** `tx, err := s.db.Begin(ctx)` with `defer tx.Rollback(ctx)`. Repositories are transaction-scoped via `WithTx(tx)`.
+3. **Primary Idempotency Registration:** `settledTradeRepo.RegisterSettlement(tradeID, marketID, sequence)`. If row already exists (`!inserted`), logs debug and returns `nil`.
+4. **Deterministic Reservation Locking:** Sorts `BuyOrderID` and `SellerOrderID` alphabetically before fetching via `reservRepo.GetByOrderIDForUpdate()` (`SELECT ... FOR UPDATE`). Completely prevents deadlocks between concurrent crossed trades.
+5. **Domain Validation:** Asserts both reservations exist, are not released, match their corresponding assets (seller=BaseAsset, buyer=QuoteAsset), and belong to their respective users.
+6. **Leg 1 (Base Asset Transfer: Seller → Buyer):**
+   - Debits seller's `reserved_balance` for `BaseAsset`.
+   - `reservRepo.ConsumeRemaining()` atomically decrements seller reservation remaining amount in SQL.
+   - Credits buyer's `available_balance` for `BaseAsset`.
+7. **Leg 2 (Quote Asset Transfer: Buyer → Seller):**
+   - Debits buyer's `reserved_balance` for `QuoteAsset`.
+   - `reservRepo.ConsumeRemaining()` atomically decrements buyer reservation remaining amount in SQL.
+   - Credits seller's `available_balance` for `QuoteAsset`.
+8. **Write Ledger Entries:** `txnRepo.CreateBatch()` writes 4 records:
+   - Seller Base DEBIT
+   - Buyer Base CREDIT
+   - Buyer Quote DEBIT
+   - Seller Quote CREDIT
+   If DB unique constraint violation occurs, it is handled gracefully as idempotent replay.
+9. **Write 3 Outbox Events:**
+    - `TradeSettled` (partition key: `BuyerUserID`, topic: `trades.settled.v1`) $\rightarrow$ consumed by Trade Service
+    - `PortfolioUserTrade` BUY leg (partition key: `BuyerUserID`, role: `BUY`, topic: `portfolio.user.trades.v1`) $\rightarrow$ consumed by Portfolio Service
+    - `PortfolioUserTrade` SELL leg (partition key: `SellerUserID`, role: `SELL`, topic: `portfolio.user.trades.v1`) $\rightarrow$ consumed by Portfolio Service
+10. **Commit Transaction:** `tx.Commit(ctx)`. If any step fails, all balance debits/credits, reservation consumptions, ledger records, `settled_trades` row, and outbox events roll back completely.
 
-**Why `CreateBatch` for the two ledger entries?** Both the seller debit and buyer credit must be recorded together. If one succeeded and the crash happened before the other, the ledger would be unbalanced. `CreateBatch` inserts both in one statement.
 
-**Why outbox instead of direct Kafka publish?** Kafka publish happens outside the DB transaction. If the service crashes after the balance change but before the Kafka publish, the event is lost forever. With the outbox, the event row is committed with the balance change — a background worker retries until Kafka confirms delivery.
 
 ---
 
@@ -181,7 +195,8 @@ Every state-changing method guards against duplicate calls at **two levels**:
 | Level | Mechanism | What it catches |
 |---|---|---|
 | Application | Check reservation status or `ExistsByKey` before touching balances | The normal retry case |
-| Database | `UNIQUE` constraint on `wallet_transactions(reference_id, reference_type, asset)` | Race condition — two concurrent calls both passed the app check |
+| Database | `UNIQUE(wallet_id, reference_id, reference_type)` on `wallet_transactions` (Migration 00004) | Race condition — two concurrent calls both passed the app check |
+
 
 ### Typed Constants
 
@@ -221,4 +236,5 @@ Every method logs success at `Info` level and idempotent skips at `Debug` level.
 | `InitializeWallet` | `(user_id, asset_code)` | Check existing wallet before create |
 | `ReserveFunds` | `order_id` | Return existing reservation if found |
 | `ReleaseFunds` | reservation `status` | Skip if `RELEASED` or `CONSUMED` |
-| `SettleTrade` | `(trade_id, SETTLEMENT, asset)` | `ExistsByKey` before any balance change |
+| `SettleTrade` | `trade_id` | Primary: `RegisterSettlement` on `settled_trades`; Secondary: `UNIQUE(wallet_id, reference_id, reference_type)` on `wallet_transactions` |
+

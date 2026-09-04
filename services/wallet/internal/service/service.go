@@ -10,24 +10,27 @@ import (
 
 // Service holds all dependencies for wallet business logic.
 type Service struct {
-	db          *pgxpool.Pool
-	walletRepo  repository.WalletRepository
-	reservRepo  repository.ReservationRepository
-	txnRepo     repository.TransactionRepository
-	assetRepo   repository.AssetRepository
-	outboxRepo  repository.OutboxRepository
-	log         *zap.Logger
+	db               *pgxpool.Pool
+	walletRepo       repository.WalletRepository
+	reservRepo       repository.ReservationRepository
+	txnRepo          repository.TransactionRepository
+	assetRepo        repository.AssetRepository
+	outboxRepo       repository.OutboxRepository
+	settledTradeRepo repository.SettledTradeRepository
+	log              *zap.Logger
 }
 
 // NewService creates a new Service instance with all dependencies wired.
 func NewService(db *pgxpool.Pool, log *zap.Logger) *Service {
 	return &Service{
-		db:         db,
-		walletRepo: postgresRepo.NewWalletRepository(db),
-		reservRepo: postgresRepo.NewReservationRepository(db),
-		txnRepo:    postgresRepo.NewTransactionRepository(db),
-		assetRepo:  postgresRepo.NewAssetRepository(db),
-		outboxRepo: postgresRepo.NewOutboxRepository(db),
-		log:        log,
+		db:               db,
+		walletRepo:       postgresRepo.NewWalletRepository(db),
+		reservRepo:       postgresRepo.NewReservationRepository(db),
+		txnRepo:          postgresRepo.NewTransactionRepository(db),
+		assetRepo:        postgresRepo.NewAssetRepository(db),
+		outboxRepo:       postgresRepo.NewOutboxRepository(db),
+		settledTradeRepo: postgresRepo.NewSettledTradeRepository(db),
+		log:              log,
 	}
 }
+

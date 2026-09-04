@@ -5,18 +5,22 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"tradedrift/services/wallet/internal/repository"
 )
 
 type TransactionRepository struct {
-	db *pgxpool.Pool
+	db repository.DBTX
 }
 
-func NewTransactionRepository(db *pgxpool.Pool) *TransactionRepository {
+func NewTransactionRepository(db repository.DBTX) *TransactionRepository {
 	return &TransactionRepository{db: db}
+}
+
+func (r *TransactionRepository) WithTx(tx pgx.Tx) repository.TransactionRepository {
+	return &TransactionRepository{db: tx}
 }
 
 func (r *TransactionRepository) Create(ctx context.Context, t *repository.WalletTransaction) error {
@@ -65,3 +69,6 @@ func (r *TransactionRepository) CreateBatch(ctx context.Context, txns []*reposit
 	}
 	return nil
 }
+
+// Compile-time check.
+var _ repository.TransactionRepository = (*TransactionRepository)(nil)

@@ -11,13 +11,16 @@ Each file owns exactly one domain concept. They don't overlap:
 
 | File | Owns | Database table |
 |---|---|---|
+| `dbtx.go` | DBTX interface abstraction for pool and tx | — (shared interface) |
 | `wallet.go` | Balance state per user per asset | `wallets` |
 | `reservation.go` | Fund locks per order | `wallet_reservations` |
 | `transaction.go` | Immutable ledger entries | `wallet_transactions` |
 | `asset.go` | Platform asset configuration | `supported_assets` |
 | `outbox.go` | Pending Kafka events | `outbox` |
+| `settled_trade.go` | Primary settlement identity and deduplication | `settled_trades` |
 | `errors.go` | Domain sentinel errors | — (no table, shared by all) |
 | `constants.go` | Typed string constants | — (no table, shared by all) |
+
 
 **Why not one big file?**
 - Each file can be read, tested, and modified independently.
@@ -123,9 +126,16 @@ CONSUMED             ← fully filled, nothing to return
 RELEASED             ← cancelled, remaining returned to available
 ```
 
-**Why `UpdateConsumed` instead of re-calculating in code?**
+**Key methods on `ReservationRepository`:**
+- `GetByOrderID(ctx, orderID)`: Lookup reservation by matched order.
+- `GetByOrderIDForUpdate(ctx, orderID)`: Row-level lock (`SELECT ... FOR UPDATE`) serializing concurrent partial fills.
+- `ConsumeRemaining(ctx, reservationID, amount)`: Atomic SQL decrement ensuring `remaining_amount >= amount` and asserting `RowsAffected() == 1`.
+- `UpdateStatus(ctx, reservationID, status)`: Transition state machine.
 
-The `remaining_amount = reserved_amount - consumed_amount` calculation happens inside the SQL UPDATE, not in Go code. This prevents any race between read → calculate → write where two concurrent fills could both read the same consumed_amount and both write the same (wrong) result.
+**Why `ConsumeRemaining` inside SQL?**
+
+The `remaining_amount = remaining_amount - $1::DECIMAL` decrement and `status` transitions happen inside the SQL `UPDATE`, not in Go code. This prevents race conditions where concurrent fills could overwrite consumed amounts or cause negative balances.
+
 
 ---
 
@@ -173,10 +183,13 @@ Clean, readable, database-agnostic.
 
 ```go
 var (
-    ErrDuplicate           = errors.New("duplicate: already processed")
-    ErrNotFound            = errors.New("not found")
-    ErrInsufficientBalance = errors.New("insufficient balance")
-    ErrWalletFrozen        = errors.New("wallet is frozen")
+    ErrDuplicate               = errors.New("duplicate: already processed")
+    ErrNotFound                = errors.New("not found")
+    ErrInsufficientBalance     = errors.New("insufficient balance")
+    ErrWalletFrozen            = errors.New("wallet is frozen")
+    ErrInsufficientReservation = errors.New("insufficient reservation remaining amount")
+    ErrReservationNotFound     = errors.New("reservation not found")
+    ErrInvalidSettlement       = errors.New("invalid settlement parameters")
 )
 ```
 
@@ -186,14 +199,13 @@ Sentinel errors are used with `errors.Is()` — the idiomatic Go way to check er
 
 | Sentinel error | gRPC status code | Meaning to the caller |
 |---|---|---|
-| `ErrNotFound` | `codes.NotFound` | Wallet or reservation doesn't exist |
+| `ErrNotFound` | `codes.NotFound` | Wallet doesn't exist |
+| `ErrReservationNotFound` | `codes.NotFound` | Reservation doesn't exist for order |
 | `ErrInsufficientBalance` | `codes.FailedPrecondition` | Not enough available balance |
+| `ErrInsufficientReservation` | `codes.FailedPrecondition` | Not enough remaining reservation |
 | `ErrWalletFrozen` | `codes.FailedPrecondition` | Account is under a freeze |
+| `ErrInvalidSettlement` | `codes.InvalidArgument` | Malformed parameters or self-trade |
 | `ErrDuplicate` | `codes.AlreadyExists` | Already processed (idempotent) |
-
-**Why not in `platform/errors`?**
-
-`platform/errors` contains HTTP/gRPC-level structured errors (the `PlatformError` type) used by handlers to send codes to clients. These wallet sentinel errors are **database-layer domain errors** — they tell the service what went wrong in Postgres. Putting wallet-specific concepts like `ErrInsufficientBalance` in platform would make the platform package aware of wallet-domain concepts, breaking the dependency direction.
 
 ---
 
@@ -218,36 +230,6 @@ const (
 )
 ```
 
-**Why typed constants instead of plain strings?**
-
-Without constants, every file that sets a reservation status would write `"ACTIVE"`, `"RELEASED"` etc. as magic strings. A typo like `"RELASED"` compiles fine but writes corrupt data to the database silently. With constants, `repository.ReservationReleased` is a compile-time-checked reference — the compiler catches the typo.
-
-**Why in `repository/` not `service/`?**
-
-These strings are values that map directly to database column values (`status`, `reference_type`, `transaction_type`). They belong in the repository package because they represent the vocabulary of the data layer. Both the service layer and the postgres implementations import them from here.
-
-```go
-type SupportedAsset struct { ... }
-type AssetRepository interface { ... }
-```
-
-**The `SupportedAsset` struct** mirrors one row from `supported_assets`.
-
-**Why is this a separate repository?**
-
-`InitializeWallet` needs to know: *"What assets does this platform support right now?"* It cannot hardcode `["USDT", "BTC", "ETH", "SOL"]` — that would require a code change every time a new asset is added.
-
-Instead it calls `assetRepo.GetEnabled()`, gets the live list from the database, and creates wallet rows for each one. Adding a new asset becomes a data operation, not a code operation.
-
-**`GetAll` vs `GetEnabled`:**
-
-| Method | Returns | Used by |
-|---|---|---|
-| `GetAll` | All assets, including disabled ones | Admin UI, audit tools |
-| `GetEnabled` | Only `is_enabled = true` assets | `InitializeWallet`, trading operations |
-
-This distinction matters: if you disable an asset (e.g. SOL maintenance), new user wallets should not get a SOL wallet, but existing SOL wallets and their history must still be readable.
-
 ---
 
 ### `outbox.go` — Transactional Outbox
@@ -263,19 +245,29 @@ type OutboxRepository interface { ... }
 
 Because publishing to Kafka must happen *after* the database commits — and must be *guaranteed* even if the service crashes immediately after the commit.
 
-The repository's `Insert` method writes the event row **inside the same transaction** as the balance change. Either both commit or neither commits. A separate background goroutine (the outbox publisher) then reads `PENDING` rows and publishes to Kafka.
+The repository's `Insert` method writes the event row **inside the same transaction** as the balance change. Either both commit or neither commits.
 
-**The `PartitionKey` field:**
+**Atomic CTE Claiming & Lease Recovery (Migration 00004):**
+- `FetchPending(limit)` executes an atomic PostgreSQL CTE statement:
+  ```sql
+  WITH claimable AS (
+      SELECT id FROM outbox
+      WHERE status = 'PENDING'
+         OR (status = 'PROCESSING' AND (claimed_at IS NULL OR claimed_at < NOW() - INTERVAL '1 minute'))
+      ORDER BY created_at ASC
+      LIMIT $1
+      FOR UPDATE SKIP LOCKED
+  )
+  UPDATE outbox
+  SET status = 'PROCESSING', claimed_at = NOW()
+  WHERE id IN (SELECT id FROM claimable)
+  RETURNING id, aggregate_id, event_type, payload, partition_key, created_at;
+  ```
+- **Multi-Instance Safe:** `FOR UPDATE SKIP LOCKED` ensures concurrent publishers claim disjoint batches with zero double-processing.
+- **Worker Crash Recovery:** If a worker crashes, the 1-minute lease expiration safely allows other workers to reclaim and deliver the event.
+- **Topic Routing:** Routes `TradeSettled` $\rightarrow$ `trades.settled.v1` and dual user-scoped `PortfolioUserTrade` (BUY/SELL legs) $\rightarrow$ `portfolio.user.trades.v1`.
+- **Transient vs Permanent Failure Policy:** Transient Kafka write errors remain in `PROCESSING` for lease recovery (never permanently dropped). Only permanent poison pills are marked `FAILED`.
 
-Kafka partitions events by key. Events with the same `partition_key` always go to the same partition, guaranteeing ordering. For `UserTradeSettled`:
-- Buyer's event → `partition_key = buyer_id`
-- Seller's event → `partition_key = seller_id`
-
-This means all events for a given user are processed in order by downstream consumers (Portfolio Service, Notification Service).
-
-**`Payload []byte` instead of `interface{}`?**
-
-The payload is already serialized to JSON before being passed to the repository. The repository just stores raw bytes. This keeps the repository layer ignorant of business event schemas — it just persists bytes and lets the publisher push them as-is.
 
 ---
 

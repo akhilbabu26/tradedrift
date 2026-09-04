@@ -4,18 +4,18 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"tradedrift/services/wallet/internal/repository"
 )
 
+
 type AssetRepository struct {
-	db *pgxpool.Pool
+	db repository.DBTX
 }
 
-func NewAssetRepository(db *pgxpool.Pool) *AssetRepository {
+func NewAssetRepository(db repository.DBTX) *AssetRepository {
 	return &AssetRepository{db: db}
 }
+
 
 func (r *AssetRepository) GetAll(ctx context.Context) ([]*repository.SupportedAsset, error) {
 	return r.query(ctx, `

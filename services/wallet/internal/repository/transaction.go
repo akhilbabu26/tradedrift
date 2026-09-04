@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // WalletTransaction is an immutable ledger entry for a balance change.
@@ -19,9 +21,13 @@ type WalletTransaction struct {
 
 // TransactionRepository defines the persistence contract for the immutable ledger.
 type TransactionRepository interface {
+	// WithTx binds the repository to an active PostgreSQL transaction.
+	WithTx(tx pgx.Tx) TransactionRepository
+
 	// Create inserts a new transaction row.
-	// Returns an error wrapping ErrDuplicate if UNIQUE(reference_id, reference_type, asset) is violated.
+	// Returns an error wrapping ErrDuplicate if UNIQUE(wallet_id, reference_id, reference_type) is violated.
 	Create(ctx context.Context, t *WalletTransaction) error
+
 
 	// ExistsByKey checks if a transaction row already exists for the given key.
 	// Used for upfront idempotency checks before touching balances.

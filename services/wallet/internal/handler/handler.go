@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -65,10 +66,21 @@ func (h *GRPCHandler) ReleaseFunds(ctx context.Context, req *walletv1.ReleaseFun
 func (h *GRPCHandler) SettleTrade(ctx context.Context, req *walletv1.SettleTradeRequest) (*walletv1.SettleTradeResponse, error) {
 	if req.TradeId == "" || req.BuyerId == "" || req.SellerId == "" ||
 		req.BuyOrderId == "" || req.SellOrderId == "" ||
-		req.BaseAsset == "" || req.Price == "" || req.Quantity == "" || req.MarketId == "" {
+		req.BaseAsset == "" || req.QuoteAsset == "" || req.Price == "" || req.Quantity == "" || req.MarketId == "" {
 		return nil, status.Error(codes.InvalidArgument,
-			"trade_id, buyer_id, seller_id, buy_order_id, sell_order_id, market_id, base_asset, price and quantity are required")
+			"trade_id, buyer_id, seller_id, buy_order_id, sell_order_id, market_id, base_asset, quote_asset, price and quantity are required")
 	}
+
+	priceDec, err := decimal.NewFromString(req.Price)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid price %q: %v", req.Price, err)
+	}
+	qtyDec, err := decimal.NewFromString(req.Quantity)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid quantity %q: %v", req.Quantity, err)
+	}
+	quoteAmount := priceDec.Mul(qtyDec).String()
+
 	settlReq := service.TradeSettlementRequest{
 		TradeID:       req.TradeId,
 		BuyerUserID:   req.BuyerId,
@@ -78,12 +90,12 @@ func (h *GRPCHandler) SettleTrade(ctx context.Context, req *walletv1.SettleTrade
 		MarketID:      req.MarketId,
 		BaseAsset:     req.BaseAsset,
 		QuoteAsset:    req.QuoteAsset,
-		BaseAmount:    req.Quantity,     // quantity of base asset (e.g. BTC)
-		QuoteAmount:   req.Price,        // total quote; Settlement Service computes; passed as-is
-		Price:         req.Price,        // authoritative match price
-		Quantity:      req.Quantity,     // authoritative match quantity
-		Sequence:      req.Sequence,     // ME per-market monotonic counter
-		ExecutedAt:    req.ExecutedAt,   // RFC3339Nano — ME clock
+		BaseAmount:    req.Quantity,   // quantity of base asset (e.g. BTC)
+		QuoteAmount:   quoteAmount,    // price * quantity of quote asset (e.g. USDT)
+		Price:         req.Price,      // authoritative match price
+		Quantity:      req.Quantity,   // authoritative match quantity
+		Sequence:      req.Sequence,   // ME per-market monotonic counter
+		ExecutedAt:    req.ExecutedAt, // RFC3339Nano — ME clock
 	}
 	if err := h.svc.SettleTrade(ctx, settlReq); err != nil {
 		return nil, mapToGRPCError(err)

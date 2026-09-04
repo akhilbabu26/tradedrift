@@ -24,8 +24,10 @@ Main Entrypoint (main.go)
   ├─> 5. Instantiate Repositories and Services
   ├─> 6. Bind TCP Port (:50052)
   ├─> 7. Register gRPC Server (walletv1.WalletServiceServer)
-  └─> 8. Graceful Shutdown Signal Trap (SIGTERM / SIGINT)
+  ├─> 8. Start Outbox Publisher (trades.settled.v1 & portfolio.user.trades.v1)
+  └─> 9. Graceful Shutdown Signal Trap (SIGTERM / SIGINT)
 ```
+
 
 ---
 

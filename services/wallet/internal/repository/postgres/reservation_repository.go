@@ -6,17 +6,20 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"tradedrift/services/wallet/internal/repository"
 )
 
 type ReservationRepository struct {
-	db *pgxpool.Pool
+	db repository.DBTX
 }
 
-func NewReservationRepository(db *pgxpool.Pool) *ReservationRepository {
+func NewReservationRepository(db repository.DBTX) *ReservationRepository {
 	return &ReservationRepository{db: db}
+}
+
+func (r *ReservationRepository) WithTx(tx pgx.Tx) repository.ReservationRepository {
+	return &ReservationRepository{db: tx}
 }
 
 func (r *ReservationRepository) Create(ctx context.Context, res *repository.Reservation) error {
@@ -61,6 +64,32 @@ func (r *ReservationRepository) GetByOrderID(ctx context.Context, orderID string
 	return &res, nil
 }
 
+// GetByOrderIDForUpdate locks the reservation row using SELECT ... FOR UPDATE.
+// Serializes concurrent partial fills against the same order.
+func (r *ReservationRepository) GetByOrderIDForUpdate(ctx context.Context, orderID string) (*repository.Reservation, error) {
+	query := `
+		SELECT id, order_id, user_id, asset,
+		       reserved_amount, consumed_amount, remaining_amount,
+		       status, created_at
+		FROM wallet_reservations
+		WHERE order_id = $1
+		FOR UPDATE
+	`
+	var res repository.Reservation
+	err := r.db.QueryRow(ctx, query, orderID).Scan(
+		&res.ID, &res.OrderID, &res.UserID, &res.Asset,
+		&res.ReservedAmount, &res.ConsumedAmount, &res.RemainingAmount,
+		&res.Status, &res.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to query reservation by order_id for update: %w", err)
+	}
+	return &res, nil
+}
+
 func (r *ReservationRepository) UpdateStatus(ctx context.Context, reservationID, status string) error {
 	query := `
 		UPDATE wallet_reservations
@@ -97,3 +126,31 @@ func (r *ReservationRepository) UpdateConsumed(ctx context.Context, reservationI
 	}
 	return nil
 }
+
+// ConsumeRemaining atomically increments consumed_amount and decrements remaining_amount in SQL.
+// Ensures remaining_amount >= amount via WHERE condition.
+// Returns ErrInsufficientReservation if RowsAffected == 0.
+func (r *ReservationRepository) ConsumeRemaining(ctx context.Context, reservationID, amount string) error {
+	query := `
+		UPDATE wallet_reservations
+		SET consumed_amount  = consumed_amount + $1::DECIMAL,
+		    remaining_amount = remaining_amount - $1::DECIMAL,
+		    status = CASE
+		        WHEN remaining_amount - $1::DECIMAL <= 0 THEN 'CONSUMED'
+		        ELSE 'PARTIALLY_CONSUMED'
+		    END
+		WHERE id = $2
+		  AND remaining_amount >= $1::DECIMAL
+	`
+	res, err := r.db.Exec(ctx, query, amount, reservationID)
+	if err != nil {
+		return fmt.Errorf("failed to consume reservation remaining: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		return repository.ErrInsufficientReservation
+	}
+	return nil
+}
+
+// Compile-time check.
+var _ repository.ReservationRepository = (*ReservationRepository)(nil)

@@ -3,6 +3,8 @@ package repository
 import (
 	"context"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // Wallet represents a single (user, asset) balance record.
@@ -23,7 +25,9 @@ type Wallet struct{
 }
 
 // WalletRepository defines the persistence contract for wallet balances.
-type WalletRepository interface{
+type WalletRepository interface {
+	// WithTx binds the repository to an active PostgreSQL transaction.
+	WithTx(tx pgx.Tx) WalletRepository
 	// GetByUserAndAsset retrieves a single wallet for a (user, asset) pair.
 	// Returns nil, nil if not found.
 	GetByUserAndAsset(ctx context.Context, userID, asset string) (*Wallet, error)
@@ -45,4 +49,4 @@ type WalletRepository interface{
 	MoveFromReserved(ctx context.Context, walletID, amount string) error
 	// DebitReserved subtracts amount from reserved_balance (used during settlement).
 	DebitReserved(ctx context.Context, walletID, amount string) error
-}
+}

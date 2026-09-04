@@ -5,6 +5,7 @@ go 1.26.3
 require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/segmentio/kafka-go v0.4.51
+	github.com/shopspring/decimal v1.4.0
 	go.uber.org/zap v1.28.0
 	google.golang.org/grpc v1.83.2
 )

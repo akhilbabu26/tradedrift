@@ -21,17 +21,23 @@ const (
 // OutboxPublisher polls the outbox table and publishes pending events to Kafka.
 //
 // Design:
-//   - Polls outbox WHERE status='PENDING' ORDER BY created_at ASC LIMIT batchSize
+//   - Polls and claims outbox events via atomic CTE transition to 'PROCESSING' with claimed_at = NOW()
 //   - For each event: write to Kafka → MarkPublished (PROCESSED)
-//   - On Kafka failure: retry up to maxRetries → MarkFailed (FAILED) + log alert
-//   - Uses FOR UPDATE SKIP LOCKED — safe to run multiple instances without double-publish
-//
-// Topic routing:
+//   - On transient Kafka failure: retry locally up to maxRetries, then leave row in 'PROCESSING'
+//     where the 1-minute lease expiration recovers it on a subsequent poll cycle
+//   - Uses FOR UPDATE SKIP LOCKED for atomic row claiming and crash recovery.
+//   - Operational Invariant (V1): Run a single active outbox publisher instance for the Wallet Service.
+//     A single publisher polling chronologically (ORDER BY created_at ASC) and publishing sequentially
+//     preserves strict chronological ordering per user partition in Kafka.
+//   - Multi-Instance Scaling (Future): If multiple publisher instances are deployed for higher throughput,
+//     claiming must be partitioned by partition_key (e.g. MOD(HASHTEXT(partition_key), N) or consistent hashing).
+//     Running unpartitioned concurrent publishers with SKIP LOCKED can lead to network interleaving on Kafka,
+//     where Event 2 for User A reaches Kafka before Event 1 despite correct database insertion order.
 //   - EventType "TradeSettled" → trades.settled.v1
 //   - EventType "PortfolioUserTrade" → portfolio.user.trades.v1
-//   - Unknown event types are MarkFailed and logged — not retried indefinitely.
 //
-// Partition key: outbox.partition_key (user_id) — preserves strict per-user FIFO ordering.
+// Partition key: outbox.partition_key (user_id) — routes all accounting events for a given user to the same Kafka partition.
+
 type OutboxPublisher struct {
 	outbox                   repository.OutboxRepository
 	writer                   *kafkago.Writer
@@ -108,10 +114,24 @@ func (p *OutboxPublisher) publishBatch(ctx context.Context) (int, error) {
 	}
 
 	published := 0
-	for _, event := range events {
+	for i, event := range events {
 		if err := p.publishOne(ctx, event); err != nil {
-			// Error already logged and event MarkFailed inside publishOne.
-			continue
+			// Transient publish failure: release claims on this failed event and all remaining
+			// unattempted events in this batch back to PENDING.
+			// Halting batch processing immediately preserves strict chronological FIFO ordering:
+			// on the next poll cycle, this event is retried first (ORDER BY created_at ASC, id ASC)
+			// rather than allowing later events to reach Kafka ahead of it.
+			remainingIDs := make([]string, 0, len(events)-i)
+			for _, ev := range events[i:] {
+				remainingIDs = append(remainingIDs, ev.ID)
+			}
+			if relErr := p.outbox.ReleaseClaims(ctx, remainingIDs); relErr != nil {
+				p.log.Error("failed to release claims for uncompleted outbox events",
+					zap.Int("count", len(remainingIDs)),
+					zap.Error(relErr),
+				)
+			}
+			return published, err
 		}
 		published++
 	}
@@ -155,8 +175,6 @@ func (p *OutboxPublisher) publishOne(ctx context.Context, event *repository.Outb
 		if lastErr == nil {
 			// Successfully published — mark as PROCESSED.
 			if err := p.outbox.MarkPublished(ctx, event.ID); err != nil {
-				// MarkPublished failure means the event will be retried on next poll.
-				// ON CONFLICT in Trade Service absorbs the duplicate — safe.
 				p.log.Error("failed to mark outbox event published — will redeliver safely",
 					zap.String("outbox_id", event.ID),
 					zap.String("trade_id", event.AggregateID),
@@ -188,24 +206,20 @@ func (p *OutboxPublisher) publishOne(ctx context.Context, event *repository.Outb
 		}
 	}
 
-	// All retries exhausted — mark as FAILED for operational investigation.
-	// 🚨 This is an alert condition: a settled trade event cannot be published.
-	reason := fmt.Sprintf("kafka write failed after %d attempts: %v", maxRetries, lastErr)
-	p.log.Error("🚨 OUTBOX PUBLISH FAILED — TRADE EVENT LOST FROM KAFKA",
+	// All local retries exhausted due to transient Kafka/network failure.
+	// Returning error causes publishBatch to release this event and remaining batch items back to PENDING,
+	// halting the poll loop so the event is retried immediately on the next poll cycle without out-of-order delivery.
+	p.log.Error("⚠️ outbox publish temporary failure; halting batch to preserve ordering",
 		zap.String("outbox_id", event.ID),
 		zap.String("trade_id", event.AggregateID),
 		zap.String("event_type", event.EventType),
 		zap.String("topic", targetTopic),
+		zap.Int("attempts", maxRetries),
 		zap.Error(lastErr),
 	)
-	if err := p.outbox.MarkFailed(ctx, event.ID, reason); err != nil {
-		p.log.Error("failed to MarkFailed outbox event",
-			zap.String("outbox_id", event.ID),
-			zap.Error(err),
-		)
-	}
 	return lastErr
 }
+
 
 // Close flushes pending writes and releases the Kafka writer.
 func (p *OutboxPublisher) Close() error {

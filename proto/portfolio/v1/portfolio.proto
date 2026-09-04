@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package tradedrift.portfolio.v1;
+
+option go_package = "tradedrift/platform/api/gen/portfolio/v1;portfoliov1";
+
+service PortfolioService {
+    // Computes aggregate PnL and cash valuation on demand.
+    rpc GetPortfolioSummary(GetPortfolioSummaryRequest) returns (PortfolioSummaryResponse);
+
+    // Returns user's holding assets list with average entry costs and current values.
+    rpc GetPortfolioHoldings(GetPortfolioHoldingsRequest) returns (PortfolioHoldingsResponse);
+}
+
+message GetPortfolioSummaryRequest {
+    string user_id = 1;
+}
+
+message PortfolioSummaryResponse {
+    string user_id        = 1;
+    string total_value    = 2;  // USDT cash balance + current assets value (Decimal string)
+    string realized_pnl   = 3;  // Total realized PnL (Decimal string)
+    string unrealized_pnl = 4;  // Total unrealized PnL based on current market (Decimal string)
+    string cash_balance   = 5;  // Dynamically pulled from Wallet USDT (Decimal string)
+    string updated_at     = 6;  // RFC3339 timestamp
+}
+
+message GetPortfolioHoldingsRequest {
+    string user_id = 1;
+}
+
+message HoldingDetail {
+    string asset               = 1; // e.g. "BTC", "ETH", "SOL"
+    string total_quantity      = 2; // (Decimal string)
+    string average_entry_price = 3; // (Decimal string)
+    string current_price       = 4; // Fetched from MarketService (Decimal string)
+    string unrealized_pnl      = 5; // (Decimal string)
+}
+
+message PortfolioHoldingsResponse {
+    string user_id                  = 1;
+    repeated HoldingDetail holdings = 2;
+}

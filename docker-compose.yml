@@ -184,6 +184,37 @@ services:
       kafka:
         condition: service_started
 
+  portfolio:
+    build:
+      context: .
+      dockerfile: services/portfolio/Dockerfile
+    container_name: tradedrift-portfolio
+    restart: unless-stopped
+    environment:
+      PORTFOLIO_POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_portfolio?sslmode=disable
+      PORTFOLIO_MIGRATIONS_DIR: services/portfolio/migration
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_GROUP_ID: portfolio-service-group
+      KAFKA_TOPIC_TRADE_SETTLED: trades.settled.v1
+      KAFKA_TOPIC_PORTFOLIO_UPDATED: portfolios.updated.v1
+      KAFKA_TOPIC_TRADE_DLQ: trades.settled.dlq
+      WALLET_GRPC_ADDR: wallet:50052
+      MARKET_GRPC_ADDR: market:50054
+      PORTFOLIO_GRPC_PORT: ":50058"
+      PORTFOLIO_METRICS_PORT: ":9091"
+      LOG_LEVEL: info
+    ports:
+      - "50058:50058"
+      - "9091:9091"
+    depends_on:
+      kafka:
+        condition: service_started
+      wallet:
+        condition: service_started
+      market:
+        condition: service_started
+
+
   gateway:
     build:
       context: .
@@ -197,6 +228,7 @@ services:
       ORDER_ADDR:   "order:50053"
       MARKET_ADDR:  "market:50054"
       TRADE_ADDR:   "trade:50057"
+      PORTFOLIO_ADDR: "portfolio:50058"
       REDIS_ADDR:   "redis:6379"
       KAFKA_BROKERS: "kafka:29092"
       JWT_SECRET:   "super-secret-jwt-key-tradedrift-dev-32bytes"
@@ -220,6 +252,8 @@ services:
       trade:
         condition: service_started
       matching-engine:
+        condition: service_started
+      portfolio:
         condition: service_started
 
   liquidity-engine:

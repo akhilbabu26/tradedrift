@@ -11,6 +11,7 @@ use (
 	./services/market
 	./services/matching-engine
 	./services/order
+	./services/portfolio
 	./services/settlement
 	./services/trade
 	./services/wallet

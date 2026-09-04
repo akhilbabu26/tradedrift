@@ -45,7 +45,8 @@ if ($ResetDB) {
         @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_order?sslmode=disable";      tables = "orders, outbox" },
         @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_market?sslmode=disable";     tables = "markets" },
         @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_settlement?sslmode=disable"; tables = "settled_trades" },
-        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_trade?sslmode=disable";      tables = "trades" }
+        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_trade?sslmode=disable";      tables = "trades" },
+        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_portfolio?sslmode=disable";  tables = "holdings, portfolio_outbox, processed_trades" }
     )
     foreach ($svc in $services) {
         try {

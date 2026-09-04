@@ -17,6 +17,7 @@ import (
 	authv1   "tradedrift/platform/api/gen/auth/v1"
 	marketv1 "tradedrift/platform/api/gen/market/v1"
 	orderv1  "tradedrift/platform/api/gen/order/v1"
+	portfoliov1 "tradedrift/platform/api/gen/portfolio/v1"
 	tradev1  "tradedrift/platform/api/gen/trade/v1"
 	walletv1 "tradedrift/platform/api/gen/wallet/v1"
 	"tradedrift/platform/config"
@@ -27,6 +28,7 @@ import (
 	markethandler "tradedrift/services/gateway/internal/handler/market"
 	orderhandler  "tradedrift/services/gateway/internal/handler/order"
 	tradehandler  "tradedrift/services/gateway/internal/handler/trade"
+	portfoliohandler "tradedrift/services/gateway/internal/handler/portfolio"
 	wallethandler "tradedrift/services/gateway/internal/handler/wallet"
 	"tradedrift/services/gateway/internal/middleware"
 	"tradedrift/services/gateway/internal/ws"
@@ -60,6 +62,7 @@ func main() {
 	orderAddr  := formatTarget(config.GetEnv("ORDER_ADDR",  "127.0.0.1:50053"))
 	marketAddr := formatTarget(config.GetEnv("MARKET_ADDR", "127.0.0.1:50054"))
 	tradeAddr  := formatTarget(config.GetEnv("TRADE_ADDR",  "127.0.0.1:50057"))
+	portfolioAddr := formatTarget(config.GetEnv("PORTFOLIO_ADDR", "127.0.0.1:50058"))
 	allowedOrigins := []string{
 		config.GetEnv("CORS_ORIGIN", "http://localhost:5173"),
 	}
@@ -98,6 +101,13 @@ func main() {
 	if err != nil {
 		appLogger.Fatal("Failed to connect to Trade service", zap.String("addr", tradeAddr), zap.Error(err))
 	}
+
+	portfolioConn, err := grpc.NewClient(portfolioAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		appLogger.Fatal("Failed to connect to Portfolio service", zap.String("addr", portfolioAddr), zap.Error(err))
+	}
+	defer portfolioConn.Close()
+
 	defer tradeConn.Close()
 
 	// 4. Instantiate Handlers
@@ -106,6 +116,7 @@ func main() {
 	orderH  := orderhandler.NewHandler(orderv1.NewOrderServiceClient(orderConn))
 	marketH := markethandler.NewHandler(marketv1.NewMarketServiceClient(marketConn))
 	tradeH  := tradehandler.NewHandler(tradev1.NewTradeServiceClient(tradeConn))
+	portfolioH := portfoliohandler.NewHandler(portfoliov1.NewPortfolioServiceClient(portfolioConn))
 
 	// 5. Redis and WebSocket Subsystem Setup
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -200,6 +211,10 @@ func main() {
 	// Trades — protected
 	mux.Handle("GET /api/v1/trades",     protected(http.HandlerFunc(tradeH.ListUserTrades)))
 	mux.Handle("GET /api/v1/trades/{id}", protected(http.HandlerFunc(tradeH.GetTrade)))
+
+	// Portfolio — protected
+	mux.Handle("GET /api/v1/portfolio/summary",  protected(http.HandlerFunc(portfolioH.GetPortfolioSummary)))
+	mux.Handle("GET /api/v1/portfolio/holdings", protected(http.HandlerFunc(portfolioH.GetPortfolioHoldings)))
 
 	// 7. HTTP Server
 	srv := &http.Server{

@@ -49,4 +49,13 @@ compile:
 		--go-grpc_opt=paths=source_relative \
 		trade/v1/trade.proto
 
+	@echo "Compiling portfolio protos..."
+	protoc \
+		--proto_path=$(PROTO_ROOT) \
+		--go_out=$(OUT_ROOT) \
+		--go_opt=paths=source_relative \
+		--go-grpc_out=$(OUT_ROOT) \
+		--go-grpc_opt=paths=source_relative \
+		portfolio/v1/portfolio.proto
+
 	@echo "Done."

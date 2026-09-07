@@ -19,4 +19,8 @@ type AssetRepository interface {
 
 	// GetEnabled returns only assets where is_enabled = true.
 	GetEnabled(ctx context.Context) ([]*SupportedAsset, error)
+
+	// GetByCode returns a single asset by its asset_code.
+	// Returns nil, nil if not found.
+	GetByCode(ctx context.Context, assetCode string) (*SupportedAsset, error)
 }

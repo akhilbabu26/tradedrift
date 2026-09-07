@@ -226,6 +226,47 @@ func (r *WalletRepository) UnfreezeWallet(ctx context.Context, walletID string) 
 	return nil
 }
 
+// LockByIDs acquires FOR UPDATE locks on all specified wallet rows in a single deterministic query.
+// Rows are returned sorted by id ASC — the same order PostgreSQL acquired the locks —
+// so any concurrent transaction that calls LockByIDs with an overlapping set will wait
+// for locks in an identical global order, eliminating the A-waits-for-B / B-waits-for-A deadlock
+// pattern that can occur when two settlement transactions independently lock the same wallets.
+//
+// Must be called within an active pgx.Tx; calling on a pool connection without a transaction
+// has no persistent locking effect.
+func (r *WalletRepository) LockByIDs(ctx context.Context, ids []string) ([]*repository.Wallet, error) {
+	query := `
+		SELECT id, user_id, asset, available_balance, reserved_balance,
+		       is_frozen, frozen_at, frozen_by, freeze_reason,
+		       initial_balance, total_balance, created_at, updated_at
+		FROM wallets
+		WHERE id = ANY($1)
+		ORDER BY id
+		FOR UPDATE
+	`
+	rows, err := r.db.Query(ctx, query, ids)
+	if err != nil {
+		return nil, fmt.Errorf("failed to lock wallet rows: %w", err)
+	}
+	defer rows.Close()
+
+	var wallets []*repository.Wallet
+	for rows.Next() {
+		var w repository.Wallet
+		if err := rows.Scan(
+			&w.ID, &w.UserID, &w.Asset, &w.AvailableBalance, &w.ReservedBalance,
+			&w.IsFrozen, &w.FrozenAt, &w.FrozenBy, &w.FreezeReason,
+			&w.InitialBalance, &w.TotalBalance, &w.CreatedAt, &w.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("failed to scan locked wallet row: %w", err)
+		}
+		wallets = append(wallets, &w)
+	}
+	if rows.Err() != nil {
+		return nil, fmt.Errorf("error iterating locked wallet rows: %w", rows.Err())
+	}
+	return wallets, nil
+}
+
 // Compile-time check.
 var _ repository.WalletRepository = (*WalletRepository)(nil)
-

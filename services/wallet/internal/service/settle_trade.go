@@ -2,10 +2,8 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -36,19 +34,23 @@ type TradeSettlementRequest struct {
 }
 
 // SettleTrade atomically settles a matched trade within a single PostgreSQL transaction:
-//   - Registers settlement identity in settled_trades (ON CONFLICT DO NOTHING for primary idempotency)
-//   - Locks both seller and buyer reservations in sorted order using SELECT ... FOR UPDATE (preventing deadlocks)
-//   - Debits seller's reserved BaseAsset and consumes seller's reservation
-//   - Credits buyer's available BaseAsset
-//   - Debits buyer's reserved QuoteAsset and consumes buyer's reservation
-//   - Credits seller's available QuoteAsset
+//
+//   - Validates all request fields and financial invariants (see settle_trade_validate.go)
+//   - Registers settlement identity in settled_trades (ON CONFLICT DO NOTHING — primary idempotency)
+//   - Locks both reservations in sorted order (SELECT ... FOR UPDATE — prevents reservation deadlocks)
+//   - Locks all four wallet rows in sorted id order (LockByIDs — prevents wallet deadlocks)
+//   - Leg 1: Debits seller reserved BaseAsset, consumes seller reservation, credits buyer available BaseAsset
+//   - Leg 2: Debits buyer reserved QuoteAsset, consumes buyer reservation, credits seller available QuoteAsset
 //   - Writes 4 immutable ledger entries (seller Base DEBIT, buyer Base CREDIT, buyer Quote DEBIT, seller Quote CREDIT)
-//   - Writes 3 outbox events (1 TradeSettled for Trade Service, 2 PortfolioUserTrade for buyer/seller legs)
+//   - Writes 3 outbox events (TradeSettled for Trade Service, PortfolioUserTrade×2 for buyer/seller)
+//     (see settle_trade_events.go for payload schemas and builders)
 //
 // All mutations commit atomically or roll back completely on failure.
 func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) error {
-	// Step 0: Validate domain invariants
-	if req.TradeID == "" || req.BuyerUserID == "" || req.SellerUserID == "" || req.BuyOrderID == "" || req.SellerOrderID == "" {
+	// ── Step 0: Domain invariant validation (pure in-memory, no I/O) ──────────────────────────────
+
+	if req.TradeID == "" || req.BuyerUserID == "" || req.SellerUserID == "" ||
+		req.BuyOrderID == "" || req.SellerOrderID == "" {
 		return fmt.Errorf("%w: missing required trade identifiers", repository.ErrInvalidSettlement)
 	}
 	if req.BuyerUserID == req.SellerUserID {
@@ -60,28 +62,35 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 	if req.BaseAsset == "" || req.QuoteAsset == "" {
 		return fmt.Errorf("%w: base_asset and quote_asset are required", repository.ErrInvalidSettlement)
 	}
-	if req.BaseAmount == "" || req.BaseAmount == "0" || strings.HasPrefix(req.BaseAmount, "-") {
-		return fmt.Errorf("%w: invalid base amount %q", repository.ErrInvalidSettlement, req.BaseAmount)
+	if req.MarketID == "" {
+		return fmt.Errorf("%w: market_id is required", repository.ErrInvalidSettlement)
 	}
-	if req.QuoteAmount == "" || req.QuoteAmount == "0" || strings.HasPrefix(req.QuoteAmount, "-") {
-		return fmt.Errorf("%w: invalid quote amount %q", repository.ErrInvalidSettlement, req.QuoteAmount)
+	if req.Sequence == 0 {
+		return fmt.Errorf("%w: sequence must be > 0", repository.ErrInvalidSettlement)
+	}
+	// Financial field validation: decimal parsing, positivity, scale, cross-field invariants.
+	if err := validateSettlementAmounts(req); err != nil {
+		return err
 	}
 
-	// Step 1: Begin single atomic PostgreSQL transaction
+	// ── Step 1: Begin atomic PostgreSQL transaction ───────────────────────────────────────────────
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to begin settlement transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	// Bind transaction to repository instances
 	walletRepo := s.walletRepo.WithTx(tx)
 	reservRepo := s.reservRepo.WithTx(tx)
 	txnRepo := s.txnRepo.WithTx(tx)
 	outboxRepo := s.outboxRepo.WithTx(tx)
 	settledTradeRepo := s.settledTradeRepo.WithTx(tx)
 
-	// Step 2: Idempotency check via dedicated settled_trades table
+	// ── Step 2: Idempotency — register settlement (ON CONFLICT DO NOTHING) ───────────────────────
+	// Returns (false, ErrSettlementConflict) if the same TradeID arrives with different
+	// market_id or sequence — indicating upstream replay corruption, not a safe duplicate.
+
 	inserted, err := settledTradeRepo.RegisterSettlement(ctx, req.TradeID, req.MarketID, req.Sequence)
 	if err != nil {
 		return fmt.Errorf("failed to register settled trade: %w", err)
@@ -91,8 +100,9 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 		return nil
 	}
 
-	// Step 3: Lock both reservations in deterministic sorted order (SELECT ... FOR UPDATE)
-	// Eliminates deadlock hazards when concurrent crossed orders settle simultaneously.
+	// ── Step 3: Lock reservations in deterministic sorted order (SELECT ... FOR UPDATE) ──────────
+	// Acquiring in min(buyOrderID, sellOrderID) order prevents crossed-order deadlocks.
+
 	firstOrderID, secondOrderID := req.BuyOrderID, req.SellerOrderID
 	if firstOrderID > secondOrderID {
 		firstOrderID, secondOrderID = secondOrderID, firstOrderID
@@ -121,8 +131,8 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 		buyerRes, sellerRes = res2, res1
 	}
 
-	// Step 4: Validate reservations
-	// Seller must have reserved BaseAsset (BTC)
+	// ── Step 4: Validate reservation state and ownership ─────────────────────────────────────────
+
 	if sellerRes.Status == repository.ReservationReleased {
 		return fmt.Errorf("%w: seller reservation already released for order %s", repository.ErrInsufficientReservation, req.SellerOrderID)
 	}
@@ -133,7 +143,6 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 		return fmt.Errorf("%w: seller reservation user_id %s does not match seller %s", repository.ErrInvalidSettlement, sellerRes.UserID, req.SellerUserID)
 	}
 
-	// Buyer must have reserved QuoteAsset (USDT)
 	if buyerRes.Status == repository.ReservationReleased {
 		return fmt.Errorf("%w: buyer reservation already released for order %s", repository.ErrInsufficientReservation, req.BuyOrderID)
 	}
@@ -144,8 +153,8 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 		return fmt.Errorf("%w: buyer reservation user_id %s does not match buyer %s", repository.ErrInvalidSettlement, buyerRes.UserID, req.BuyerUserID)
 	}
 
-	// Step 5: Leg 1 — Base Asset Transfer (Seller -> Buyer)
-	// 5a. Debit seller's reserved BaseAsset
+	// ── Step 5: Fetch all four affected wallet IDs (read-only, no lock yet) ──────────────────────
+
 	sellerBaseWallet, err := walletRepo.GetByUserAndAsset(ctx, req.SellerUserID, req.BaseAsset)
 	if err != nil {
 		return fmt.Errorf("failed to fetch seller base wallet: %w", err)
@@ -153,16 +162,7 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 	if sellerBaseWallet == nil {
 		return fmt.Errorf("seller base wallet not found for asset %s", req.BaseAsset)
 	}
-	if err := walletRepo.DebitReserved(ctx, sellerBaseWallet.ID, req.BaseAmount); err != nil {
-		return fmt.Errorf("failed to debit seller reserved base balance: %w", err)
-	}
 
-	// 5b. Atomically consume seller reservation remaining amount
-	if err := reservRepo.ConsumeRemaining(ctx, sellerRes.ID, req.BaseAmount); err != nil {
-		return fmt.Errorf("failed to consume seller reservation: %w", err)
-	}
-
-	// 5c. Credit buyer's available BaseAsset
 	buyerBaseWallet, err := walletRepo.GetByUserAndAsset(ctx, req.BuyerUserID, req.BaseAsset)
 	if err != nil {
 		return fmt.Errorf("failed to fetch buyer base wallet: %w", err)
@@ -170,12 +170,7 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 	if buyerBaseWallet == nil {
 		return fmt.Errorf("buyer base wallet not found for asset %s", req.BaseAsset)
 	}
-	if err := walletRepo.CreditAvailable(ctx, buyerBaseWallet.ID, req.BaseAmount); err != nil {
-		return fmt.Errorf("failed to credit buyer available base balance: %w", err)
-	}
 
-	// Step 6: Leg 2 — Quote Asset Transfer (Buyer -> Seller)
-	// 6a. Debit buyer's reserved QuoteAsset
 	buyerQuoteWallet, err := walletRepo.GetByUserAndAsset(ctx, req.BuyerUserID, req.QuoteAsset)
 	if err != nil {
 		return fmt.Errorf("failed to fetch buyer quote wallet: %w", err)
@@ -183,16 +178,7 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 	if buyerQuoteWallet == nil {
 		return fmt.Errorf("buyer quote wallet not found for asset %s", req.QuoteAsset)
 	}
-	if err := walletRepo.DebitReserved(ctx, buyerQuoteWallet.ID, req.QuoteAmount); err != nil {
-		return fmt.Errorf("failed to debit buyer reserved quote balance: %w", err)
-	}
 
-	// 6b. Atomically consume buyer reservation remaining amount
-	if err := reservRepo.ConsumeRemaining(ctx, buyerRes.ID, req.QuoteAmount); err != nil {
-		return fmt.Errorf("failed to consume buyer reservation: %w", err)
-	}
-
-	// 6c. Credit seller's available QuoteAsset
 	sellerQuoteWallet, err := walletRepo.GetByUserAndAsset(ctx, req.SellerUserID, req.QuoteAsset)
 	if err != nil {
 		return fmt.Errorf("failed to fetch seller quote wallet: %w", err)
@@ -200,13 +186,61 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 	if sellerQuoteWallet == nil {
 		return fmt.Errorf("seller quote wallet not found for asset %s", req.QuoteAsset)
 	}
+
+	// ── Step 5b: Per-asset decimal precision check ─────────────────────────────────────────────
+	// supported_assets.decimals is the authoritative precision for each asset.
+	// The global maxDecimalScale check in validateSettlementAmounts is a hard outer cap;
+	// per-asset decimals adds a tighter domain constraint (e.g. USDT=2, BTC=8, SOL=9).
+	if err := validateAssetPrecision(ctx, s.assetRepo, req.BaseAsset, "base_amount", req.BaseAmount); err != nil {
+		return err
+	}
+	if err := validateAssetPrecision(ctx, s.assetRepo, req.QuoteAsset, "quote_amount", req.QuoteAmount); err != nil {
+		return err
+	}
+
+	// ── Step 6: Lock all four wallet rows in sorted id order (SELECT ... FOR UPDATE) ─────────────
+	// Single deterministic query prevents the crossed-lock deadlock where two concurrent
+	// transactions acquire the same wallet rows in opposite order.
+
+	if _, err := walletRepo.LockByIDs(ctx, []string{
+		sellerBaseWallet.ID,
+		buyerBaseWallet.ID,
+		buyerQuoteWallet.ID,
+		sellerQuoteWallet.ID,
+	}); err != nil {
+		return fmt.Errorf("failed to acquire deterministic wallet row locks: %w", err)
+
+	}
+
+	// ── Step 7: Leg 1 — Base Asset Transfer (Seller → Buyer) ─────────────────────────────────────
+
+	if err := walletRepo.DebitReserved(ctx, sellerBaseWallet.ID, req.BaseAmount); err != nil {
+		return fmt.Errorf("failed to debit seller reserved base balance: %w", err)
+	}
+	if err := reservRepo.ConsumeRemaining(ctx, sellerRes.ID, req.BaseAmount); err != nil {
+		return fmt.Errorf("failed to consume seller reservation: %w", err)
+	}
+	if err := walletRepo.CreditAvailable(ctx, buyerBaseWallet.ID, req.BaseAmount); err != nil {
+		return fmt.Errorf("failed to credit buyer available base balance: %w", err)
+	}
+
+	// ── Step 8: Leg 2 — Quote Asset Transfer (Buyer → Seller) ────────────────────────────────────
+
+	if err := walletRepo.DebitReserved(ctx, buyerQuoteWallet.ID, req.QuoteAmount); err != nil {
+		return fmt.Errorf("failed to debit buyer reserved quote balance: %w", err)
+	}
+	if err := reservRepo.ConsumeRemaining(ctx, buyerRes.ID, req.QuoteAmount); err != nil {
+		return fmt.Errorf("failed to consume buyer reservation: %w", err)
+	}
 	if err := walletRepo.CreditAvailable(ctx, sellerQuoteWallet.ID, req.QuoteAmount); err != nil {
 		return fmt.Errorf("failed to credit seller available quote balance: %w", err)
 	}
 
 	now := time.Now().UTC()
 
-	// Step 7: Write 4 ledger entries (Seller Base DEBIT, Buyer Base CREDIT, Buyer Quote DEBIT, Seller Quote CREDIT)
+	// ── Step 9: Write 4 ledger entries ───────────────────────────────────────────────────────────
+	// Seller Base DEBIT | Buyer Base CREDIT | Buyer Quote DEBIT | Seller Quote CREDIT
+
 	sellerBaseTxnID, err := platformuuid.New()
 	if err != nil {
 		return fmt.Errorf("failed to generate seller base transaction ID: %w", err)
@@ -225,46 +259,10 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 	}
 
 	txns := []*repository.WalletTransaction{
-		{
-			ID:              sellerBaseTxnID,
-			WalletID:        sellerBaseWallet.ID,
-			ReferenceID:     req.TradeID,
-			ReferenceType:   repository.RefSettlement,
-			TransactionType: repository.TxnTypeDebit,
-			Asset:           req.BaseAsset,
-			Amount:          req.BaseAmount,
-			CreatedAt:       now,
-		},
-		{
-			ID:              buyerBaseTxnID,
-			WalletID:        buyerBaseWallet.ID,
-			ReferenceID:     req.TradeID,
-			ReferenceType:   repository.RefSettlement,
-			TransactionType: repository.TxnTypeCredit,
-			Asset:           req.BaseAsset,
-			Amount:          req.BaseAmount,
-			CreatedAt:       now,
-		},
-		{
-			ID:              buyerQuoteTxnID,
-			WalletID:        buyerQuoteWallet.ID,
-			ReferenceID:     req.TradeID,
-			ReferenceType:   repository.RefSettlement,
-			TransactionType: repository.TxnTypeDebit,
-			Asset:           req.QuoteAsset,
-			Amount:          req.QuoteAmount,
-			CreatedAt:       now,
-		},
-		{
-			ID:              sellerQuoteTxnID,
-			WalletID:        sellerQuoteWallet.ID,
-			ReferenceID:     req.TradeID,
-			ReferenceType:   repository.RefSettlement,
-			TransactionType: repository.TxnTypeCredit,
-			Asset:           req.QuoteAsset,
-			Amount:          req.QuoteAmount,
-			CreatedAt:       now,
-		},
+		{ID: sellerBaseTxnID, WalletID: sellerBaseWallet.ID, ReferenceID: req.TradeID, ReferenceType: repository.RefSettlement, TransactionType: repository.TxnTypeDebit, Asset: req.BaseAsset, Amount: req.BaseAmount, CreatedAt: now},
+		{ID: buyerBaseTxnID, WalletID: buyerBaseWallet.ID, ReferenceID: req.TradeID, ReferenceType: repository.RefSettlement, TransactionType: repository.TxnTypeCredit, Asset: req.BaseAsset, Amount: req.BaseAmount, CreatedAt: now},
+		{ID: buyerQuoteTxnID, WalletID: buyerQuoteWallet.ID, ReferenceID: req.TradeID, ReferenceType: repository.RefSettlement, TransactionType: repository.TxnTypeDebit, Asset: req.QuoteAsset, Amount: req.QuoteAmount, CreatedAt: now},
+		{ID: sellerQuoteTxnID, WalletID: sellerQuoteWallet.ID, ReferenceID: req.TradeID, ReferenceType: repository.RefSettlement, TransactionType: repository.TxnTypeCredit, Asset: req.QuoteAsset, Amount: req.QuoteAmount, CreatedAt: now},
 	}
 	if err := txnRepo.CreateBatch(ctx, txns); err != nil {
 		if errors.Is(err, repository.ErrDuplicate) {
@@ -276,141 +274,37 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 		return fmt.Errorf("failed to write settlement ledger entries: %w", err)
 	}
 
-	// Step 8: Write 3 Outbox Events inside the same transaction
+	// ── Step 10: Write 3 outbox events (see settle_trade_events.go for payload schemas) ──────────
+	// TradeSettled → trades.settled.v1 (Trade Service)
+	// PortfolioUserTrade BUY  → portfolio.user.trades.v1 (Portfolio Service, buyer partition)
+	// PortfolioUserTrade SELL → portfolio.user.trades.v1 (Portfolio Service, seller partition)
 
-	// Event 1: TradeSettled (consumed by Trade Service, partitioned by BuyerUserID)
-	eventID, err := platformuuid.New()
+	tradeSettledEvent, err := buildTradeSettledEvent(req, now)
 	if err != nil {
-		return fmt.Errorf("failed to generate outbox event ID: %w", err)
+		return err
 	}
-	type tradeSettledPayload struct {
-		TradeID     string `json:"trade_id"`
-		BuyerID     string `json:"buyer_id"`
-		SellerID    string `json:"seller_id"`
-		BuyOrderID  string `json:"buy_order_id"`
-		SellOrderID string `json:"sell_order_id"`
-		MarketID    string `json:"market_id"`
-		BaseAsset   string `json:"base_asset"`
-		QuoteAsset  string `json:"quote_asset"`
-		Price       string `json:"price"`
-		Quantity    string `json:"quantity"`
-		Sequence    uint64 `json:"sequence"`
-		ExecutedAt  string `json:"executed_at"` // RFC3339Nano — ME clock
-		SettledAt   string `json:"settled_at"`  // RFC3339Nano — Wallet clock
-	}
-	tradeSettledBytes, err := json.Marshal(tradeSettledPayload{
-		TradeID:     req.TradeID,
-		BuyerID:     req.BuyerUserID,
-		SellerID:    req.SellerUserID,
-		BuyOrderID:  req.BuyOrderID,
-		SellOrderID: req.SellerOrderID,
-		MarketID:    req.MarketID,
-		BaseAsset:   req.BaseAsset,
-		QuoteAsset:  req.QuoteAsset,
-		Price:       req.Price,
-		Quantity:    req.Quantity,
-		Sequence:    req.Sequence,
-		ExecutedAt:  req.ExecutedAt,
-		SettledAt:   now.Format(time.RFC3339Nano),
-	})
-	if err != nil {
-		return fmt.Errorf("failed to marshal TradeSettled payload: %w", err)
-	}
-	if err := outboxRepo.Insert(ctx, &repository.OutboxEvent{
-		ID:           eventID,
-		AggregateID:  req.TradeID,
-		EventType:    "TradeSettled",
-		Payload:      tradeSettledBytes,
-		PartitionKey: req.BuyerUserID,
-		CreatedAt:    now,
-	}); err != nil {
+	if err := outboxRepo.Insert(ctx, tradeSettledEvent); err != nil {
 		return fmt.Errorf("failed to insert TradeSettled outbox event: %w", err)
 	}
 
-	// Events 2 & 3: Dual user-scoped accounting events for Portfolio Service.
-	// Preserves strict Kafka log order per user and eliminates dual-participant partition hazards.
-	type userTradePayload struct {
-		TradeID    string `json:"trade_id"`
-		UserID     string `json:"user_id"`
-		OrderID    string `json:"order_id"`
-		Role       string `json:"role"` // "BUY" or "SELL"
-		MarketID   string `json:"market_id"`
-		BaseAsset  string `json:"base_asset"`
-		QuoteAsset string `json:"quote_asset"`
-		Price      string `json:"price"`
-		Quantity   string `json:"quantity"`
-		Sequence   uint64 `json:"sequence"`
-		ExecutedAt string `json:"executed_at"`
-		SettledAt  string `json:"settled_at"`
+	buyerPortfolioEvent, err := buildPortfolioEvent(req, req.BuyerUserID, req.BuyOrderID, "BUY", now)
+	if err != nil {
+		return err
+	}
+	if err := outboxRepo.Insert(ctx, buyerPortfolioEvent); err != nil {
+		return fmt.Errorf("failed to insert buyer PortfolioUserTrade outbox event: %w", err)
 	}
 
-	// Buyer Leg (BUY)
-	buyerEventID, err := platformuuid.New()
+	sellerPortfolioEvent, err := buildPortfolioEvent(req, req.SellerUserID, req.SellerOrderID, "SELL", now)
 	if err != nil {
-		return fmt.Errorf("failed to generate buyer portfolio outbox ID: %w", err)
+		return err
 	}
-	buyerPayload, err := json.Marshal(userTradePayload{
-		TradeID:    req.TradeID,
-		UserID:     req.BuyerUserID,
-		OrderID:    req.BuyOrderID,
-		Role:       "BUY",
-		MarketID:   req.MarketID,
-		BaseAsset:  req.BaseAsset,
-		QuoteAsset: req.QuoteAsset,
-		Price:      req.Price,
-		Quantity:   req.Quantity,
-		Sequence:   req.Sequence,
-		ExecutedAt: req.ExecutedAt,
-		SettledAt:  now.Format(time.RFC3339Nano),
-	})
-	if err != nil {
-		return fmt.Errorf("failed to marshal buyer portfolio payload: %w", err)
-	}
-	if err := outboxRepo.Insert(ctx, &repository.OutboxEvent{
-		ID:           buyerEventID,
-		AggregateID:  req.TradeID,
-		EventType:    "PortfolioUserTrade",
-		Payload:      buyerPayload,
-		PartitionKey: req.BuyerUserID,
-		CreatedAt:    now,
-	}); err != nil {
-		return fmt.Errorf("failed to insert buyer portfolio outbox event: %w", err)
+	if err := outboxRepo.Insert(ctx, sellerPortfolioEvent); err != nil {
+		return fmt.Errorf("failed to insert seller PortfolioUserTrade outbox event: %w", err)
 	}
 
-	// Seller Leg (SELL)
-	sellerEventID, err := platformuuid.New()
-	if err != nil {
-		return fmt.Errorf("failed to generate seller portfolio outbox ID: %w", err)
-	}
-	sellerPayload, err := json.Marshal(userTradePayload{
-		TradeID:    req.TradeID,
-		UserID:     req.SellerUserID,
-		OrderID:    req.SellerOrderID,
-		Role:       "SELL",
-		MarketID:   req.MarketID,
-		BaseAsset:  req.BaseAsset,
-		QuoteAsset: req.QuoteAsset,
-		Price:      req.Price,
-		Quantity:   req.Quantity,
-		Sequence:   req.Sequence,
-		ExecutedAt: req.ExecutedAt,
-		SettledAt:  now.Format(time.RFC3339Nano),
-	})
-	if err != nil {
-		return fmt.Errorf("failed to marshal seller portfolio payload: %w", err)
-	}
-	if err := outboxRepo.Insert(ctx, &repository.OutboxEvent{
-		ID:           sellerEventID,
-		AggregateID:  req.TradeID,
-		EventType:    "PortfolioUserTrade",
-		Payload:      sellerPayload,
-		PartitionKey: req.SellerUserID,
-		CreatedAt:    now,
-	}); err != nil {
-		return fmt.Errorf("failed to insert seller portfolio outbox event: %w", err)
-	}
+	// ── Step 11: Commit ───────────────────────────────────────────────────────────────────────────
 
-	// Step 9: Commit all changes atomically
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("failed to commit settlement transaction: %w", err)
 	}

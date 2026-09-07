@@ -33,6 +33,11 @@ type WalletRepository interface {
 	GetByUserAndAsset(ctx context.Context, userID, asset string) (*Wallet, error)
 	// GetAllByUser retrieves all wallets owned by a user.
 	GetAllByUser(ctx context.Context, userID string) ([]*Wallet, error)
+	// LockByIDs acquires SELECT ... FOR UPDATE locks on all wallet rows with the given IDs
+	// in deterministic ascending ID order. Must be called within a transaction.
+	// Returns wallets in the same sorted order. Used in settlement to prevent wallet row deadlocks
+	// when concurrent trades involve the same pair of users.
+	LockByIDs(ctx context.Context, ids []string) ([]*Wallet, error)
 	// FreezeWallet marks a wallet as frozen, blocking all balance changes.
 	FreezeWallet(ctx context.Context, walletID, frozenBy, reason string) error
 	// UnfreezeWallet removes the freeze from a wallet.

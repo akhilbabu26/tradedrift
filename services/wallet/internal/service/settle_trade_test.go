@@ -3,7 +3,9 @@ package service_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"go.uber.org/zap"
 
 	platformuuid "tradedrift/platform/uuid"
+	"tradedrift/services/wallet/internal/repository"
 	"tradedrift/services/wallet/internal/service"
 )
 
@@ -775,3 +778,369 @@ func TestSettleTrade_AtomicRollbackOnOutboxFailure(t *testing.T) {
 		t.Fatalf("expected 0 settled_trades rows after rollback, got %d", settledCount)
 	}
 }
+
+// TestSettleTrade_RejectsQuoteAmountMismatch verifies that Wallet rejects a settlement request
+// where QuoteAmount does not match Price × Quantity, before touching any database state.
+// This is the critical financial boundary guard: a caller cannot under/over-pay the seller.
+func TestSettleTrade_RejectsQuoteAmountMismatch(t *testing.T) {
+	pool, cleanup := getWalletServiceTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	svc := service.NewService(pool, zap.NewNop())
+
+	buyerID, _ := platformuuid.New()
+	sellerID, _ := platformuuid.New()
+	buyOrderID, _ := platformuuid.New()
+	sellerOrderID, _ := platformuuid.New()
+	tradeID, _ := platformuuid.New()
+
+	setupTestWalletsAndReservation(t, ctx, pool, buyerID, sellerID, buyOrderID, sellerOrderID, "1.0000000000", "50000.0000000000")
+
+	// Price = 50000, Quantity = 1, but QuoteAmount is only 49000 — deliberately wrong.
+	req := service.TradeSettlementRequest{
+		TradeID:       tradeID,
+		BuyerUserID:   buyerID,
+		SellerUserID:  sellerID,
+		BuyOrderID:    buyOrderID,
+		SellerOrderID: sellerOrderID,
+		MarketID:      "BTC-USDT",
+		BaseAsset:     "BTC",
+		QuoteAsset:    "USDT",
+		BaseAmount:    "1.0000000000",
+		QuoteAmount:   "49000.0000000000", // ❌ Wrong: should be 50000
+		Price:         "50000.0000000000",
+		Quantity:      "1.0000000000",
+		Sequence:      1,
+		ExecutedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+	}
+
+	err := svc.SettleTrade(ctx, req)
+	if err == nil {
+		t.Fatal("expected ErrInvalidSettlement for mismatched QuoteAmount, but SettleTrade succeeded")
+	}
+
+	// Verify balances are completely unchanged — no DB mutation occurred.
+	var sellerReservedBTC string
+	_ = pool.QueryRow(ctx, "SELECT reserved_balance FROM wallets WHERE user_id = $1 AND asset = 'BTC'", sellerID).Scan(&sellerReservedBTC)
+	if !decimal.RequireFromString(sellerReservedBTC).Equal(decimal.NewFromInt(1)) {
+		t.Fatalf("seller reserved BTC was mutated despite validation failure; got %s", sellerReservedBTC)
+	}
+
+	var buyerReservedUSDT string
+	_ = pool.QueryRow(ctx, "SELECT reserved_balance FROM wallets WHERE user_id = $1 AND asset = 'USDT'", buyerID).Scan(&buyerReservedUSDT)
+	if !decimal.RequireFromString(buyerReservedUSDT).Equal(decimal.NewFromInt(50000)) {
+		t.Fatalf("buyer reserved USDT was mutated despite validation failure; got %s", buyerReservedUSDT)
+	}
+
+	var txnCount, outboxCount, settledCount int
+	_ = pool.QueryRow(ctx, "SELECT count(*) FROM wallet_transactions WHERE reference_id = $1", tradeID).Scan(&txnCount)
+	_ = pool.QueryRow(ctx, "SELECT count(*) FROM outbox WHERE aggregate_id = $1", tradeID).Scan(&outboxCount)
+	_ = pool.QueryRow(ctx, "SELECT count(*) FROM settled_trades WHERE trade_id = $1", tradeID).Scan(&settledCount)
+
+	if txnCount != 0 || outboxCount != 0 || settledCount != 0 {
+		t.Fatalf("expected 0 ledger/outbox/settled rows, got txn=%d outbox=%d settled=%d", txnCount, outboxCount, settledCount)
+	}
+
+	t.Logf("Verified: QuoteAmount mismatch rejected before any DB mutation (err: %v)", err)
+}
+
+// TestSettleTrade_RejectsNonDecimalAmount verifies that SettleTrade rejects requests with
+// non-parsable decimal values ("abc", "1e5", ".", " 1 ") before any DB mutation.
+func TestSettleTrade_RejectsNonDecimalAmount(t *testing.T) {
+	pool, cleanup := getWalletServiceTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	svc := service.NewService(pool, zap.NewNop())
+
+	buyerID, _ := platformuuid.New()
+	sellerID, _ := platformuuid.New()
+
+	cases := []struct {
+		name          string
+		baseAmount    string
+		quoteAmount   string
+		price         string
+		quantity      string
+	}{
+		{"non-numeric base_amount", "abc", "50000.0000000000", "50000.0000000000", "1.0000000000"},
+		{"scientific notation quote_amount", "1.0000000000", "5e4", "50000.0000000000", "1.0000000000"},
+		{"bare dot", ".", "50000.0000000000", "50000.0000000000", "1.0000000000"},
+		{"whitespace amount", " 1 ", "50000.0000000000", "50000.0000000000", " 1 "},
+		{"zero base_amount", "0", "50000.0000000000", "50000.0000000000", "0"},
+		{"negative price", "1.0000000000", "50000.0000000000", "-50000.0000000000", "1.0000000000"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			buyOrderID, _ := platformuuid.New()
+			sellerOrderID, _ := platformuuid.New()
+			tradeID, _ := platformuuid.New()
+
+			req := service.TradeSettlementRequest{
+				TradeID:       tradeID,
+				BuyerUserID:   buyerID,
+				SellerUserID:  sellerID,
+				BuyOrderID:    buyOrderID,
+				SellerOrderID: sellerOrderID,
+				MarketID:      "BTC-USDT",
+				BaseAsset:     "BTC",
+				QuoteAsset:    "USDT",
+				BaseAmount:    tc.baseAmount,
+				QuoteAmount:   tc.quoteAmount,
+				Price:         tc.price,
+				Quantity:      tc.quantity,
+				Sequence:      1,
+				ExecutedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+			}
+
+			err := svc.SettleTrade(ctx, req)
+			if err == nil {
+				t.Fatalf("case %q: expected ErrInvalidSettlement, but SettleTrade succeeded", tc.name)
+			}
+			t.Logf("Verified case %q rejected: %v", tc.name, err)
+		})
+	}
+}
+
+// TestSettleTrade_RejectsExcessiveDecimalScale verifies that amounts with more than 10 decimal places
+// are rejected before any DB mutation, matching DECIMAL(30,10) column precision.
+func TestSettleTrade_RejectsExcessiveDecimalScale(t *testing.T) {
+	pool, cleanup := getWalletServiceTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	svc := service.NewService(pool, zap.NewNop())
+
+	buyerID, _ := platformuuid.New()
+	sellerID, _ := platformuuid.New()
+	buyOrderID, _ := platformuuid.New()
+	sellerOrderID, _ := platformuuid.New()
+	tradeID, _ := platformuuid.New()
+
+	req := service.TradeSettlementRequest{
+		TradeID:       tradeID,
+		BuyerUserID:   buyerID,
+		SellerUserID:  sellerID,
+		BuyOrderID:    buyOrderID,
+		SellerOrderID: sellerOrderID,
+		MarketID:      "BTC-USDT",
+		BaseAsset:     "BTC",
+		QuoteAsset:    "USDT",
+		BaseAmount:    "1.12345678901", // 11 decimal places — exceeds DECIMAL(30,10)
+		QuoteAmount:   "50000.0000000000",
+		Price:         "50000.0000000000",
+		Quantity:      "1.12345678901",
+		Sequence:      1,
+		ExecutedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+	}
+
+	err := svc.SettleTrade(ctx, req)
+	if err == nil {
+		t.Fatal("expected ErrInvalidSettlement for 11 decimal places, but SettleTrade succeeded")
+	}
+	t.Logf("Verified: 11-decimal-place amount rejected before any DB mutation (err: %v)", err)
+}
+
+// TestSettleTrade_ConcurrentCrossedWallets verifies that the deterministic wallet row locking strategy
+// (LockByIDs ORDER BY id) prevents deadlocks when two concurrent settlement transactions involve
+// the same pair of users and wallets but different orders.
+//
+// This specifically validates the scenario the review raised:
+//   - Txn A: locks sellerBaseWallet → tries buyerBaseWallet
+//   - Txn B: locks buyerBaseWallet  → tries sellerBaseWallet
+//
+// With deterministic locking, both transactions acquire the wallet locks in the same id-sorted order,
+// so one waits for the other instead of deadlocking.
+func TestSettleTrade_ConcurrentCrossedWallets(t *testing.T) {
+	pool, cleanup := getWalletServiceTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	svc := service.NewService(pool, zap.NewNop())
+
+	buyerID, _ := platformuuid.New()
+	sellerID, _ := platformuuid.New()
+
+	// Trade 1: buyer buys 0.5 BTC at 50000 USDT/BTC
+	buyOrderID1, _ := platformuuid.New()
+	sellerOrderID1, _ := platformuuid.New()
+	tradeID1, _ := platformuuid.New()
+
+	// Trade 2: same buyer and seller, different orders
+	buyOrderID2, _ := platformuuid.New()
+	sellerOrderID2, _ := platformuuid.New()
+	tradeID2, _ := platformuuid.New()
+
+	// Setup wallets with enough reserved balance for both trades.
+	// Seller has 1.0 BTC reserved (0.5 for each trade), buyer has 100000 USDT reserved.
+	setupTestWalletsAndReservation(t, ctx, pool, buyerID, sellerID, buyOrderID1, sellerOrderID1, "0.5000000000", "25000.0000000000")
+
+	// Add second pair of reservations on top of existing wallets.
+	sellerResID2, _ := platformuuid.New()
+	_, err := pool.Exec(ctx, `
+		INSERT INTO wallet_reservations (id, order_id, user_id, asset, reserved_amount, consumed_amount, remaining_amount, status)
+		VALUES ($1, $2, $3, 'BTC', '0.5000000000', 0, '0.5000000000', 'ACTIVE')
+		ON CONFLICT (order_id) DO UPDATE SET consumed_amount = 0, remaining_amount = '0.5000000000', status = 'ACTIVE'
+	`, sellerResID2, sellerOrderID2, sellerID)
+	if err != nil {
+		t.Fatalf("failed to setup seller reservation 2: %v", err)
+	}
+	buyerResID2, _ := platformuuid.New()
+	_, err = pool.Exec(ctx, `
+		INSERT INTO wallet_reservations (id, order_id, user_id, asset, reserved_amount, consumed_amount, remaining_amount, status)
+		VALUES ($1, $2, $3, 'USDT', '25000.0000000000', 0, '25000.0000000000', 'ACTIVE')
+		ON CONFLICT (order_id) DO UPDATE SET consumed_amount = 0, remaining_amount = '25000.0000000000', status = 'ACTIVE'
+	`, buyerResID2, buyOrderID2, buyerID)
+	if err != nil {
+		t.Fatalf("failed to setup buyer reservation 2: %v", err)
+	}
+
+	// Update wallets to have enough reserved balance for both trades combined
+	_, err = pool.Exec(ctx, `UPDATE wallets SET reserved_balance = '1.0000000000', total_balance = '1.0000000000' WHERE user_id = $1 AND asset = 'BTC'`, sellerID)
+	if err != nil {
+		t.Fatalf("failed to update seller BTC reserved balance: %v", err)
+	}
+	_, err = pool.Exec(ctx, `UPDATE wallets SET reserved_balance = '50000.0000000000', total_balance = '50000.0000000000' WHERE user_id = $1 AND asset = 'USDT'`, buyerID)
+	if err != nil {
+		t.Fatalf("failed to update buyer USDT reserved balance: %v", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	req1 := service.TradeSettlementRequest{
+		TradeID: tradeID1, BuyerUserID: buyerID, SellerUserID: sellerID,
+		BuyOrderID: buyOrderID1, SellerOrderID: sellerOrderID1,
+		MarketID: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+		BaseAmount: "0.5000000000", QuoteAmount: "25000.0000000000",
+		Price: "50000.0000000000", Quantity: "0.5000000000",
+		Sequence: 1, ExecutedAt: now,
+	}
+	req2 := service.TradeSettlementRequest{
+		TradeID: tradeID2, BuyerUserID: buyerID, SellerUserID: sellerID,
+		BuyOrderID: buyOrderID2, SellerOrderID: sellerOrderID2,
+		MarketID: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
+		BaseAmount: "0.5000000000", QuoteAmount: "25000.0000000000",
+		Price: "50000.0000000000", Quantity: "0.5000000000",
+		Sequence: 2, ExecutedAt: now,
+	}
+
+	var wg sync.WaitGroup
+	var err1, err2 error
+	var deadlockCount int64
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		if e := svc.SettleTrade(ctx, req1); e != nil {
+			if strings.Contains(e.Error(), "40P01") {
+				atomic.AddInt64(&deadlockCount, 1)
+			}
+			err1 = e
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		if e := svc.SettleTrade(ctx, req2); e != nil {
+			if strings.Contains(e.Error(), "40P01") {
+				atomic.AddInt64(&deadlockCount, 1)
+			}
+			err2 = e
+		}
+	}()
+	wg.Wait()
+
+	if deadlockCount > 0 {
+		t.Fatalf("🚨 DEADLOCK DETECTED: %d deadlock(s) (40P01) occurred during concurrent settlement. Deterministic wallet locking is not working.", deadlockCount)
+	}
+	if err1 != nil && err2 != nil {
+		t.Fatalf("both concurrent settlements failed (unexpected): err1=%v, err2=%v", err1, err2)
+	}
+
+	t.Logf("Verified: 0 deadlocks across 2 concurrent same-user-pair settlements (err1=%v, err2=%v)", err1, err2)
+}
+
+func TestSettleTrade_RejectsConflictingTradeIDMetadata(t *testing.T) {
+	pool, cleanup := getWalletServiceTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	svc := service.NewService(pool, zap.NewNop())
+
+	buyerID, _ := platformuuid.New()
+	sellerID, _ := platformuuid.New()
+	buyOrderID, _ := platformuuid.New()
+	sellerOrderID, _ := platformuuid.New()
+	tradeID, _ := platformuuid.New()
+
+	setupTestWalletsAndReservation(t, ctx, pool, buyerID, sellerID, buyOrderID, sellerOrderID, "1.0000000000", "50000.0000000000")
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	req := service.TradeSettlementRequest{
+		TradeID:       tradeID,
+		BuyerUserID:   buyerID,
+		SellerUserID:  sellerID,
+		BuyOrderID:    buyOrderID,
+		SellerOrderID: sellerOrderID,
+		MarketID:      "BTC-USDT",
+		BaseAsset:     "BTC",
+		QuoteAsset:    "USDT",
+		BaseAmount:    "0.5000000000",
+		QuoteAmount:   "25000.0000000000",
+		Price:         "50000.0000000000",
+		Quantity:      "0.5000000000",
+		Sequence:      1,
+		ExecutedAt:    now,
+	}
+
+	// First settlement succeeds
+	if err := svc.SettleTrade(ctx, req); err != nil {
+		t.Fatalf("first settlement failed: %v", err)
+	}
+
+	// Exact duplicate replay succeeds idempotently
+	if err := svc.SettleTrade(ctx, req); err != nil {
+		t.Fatalf("exact duplicate settlement should succeed idempotently, got: %v", err)
+	}
+
+	// Replay with different MarketID MUST fail with ErrSettlementConflict
+	conflictingMarketReq := req
+	conflictingMarketReq.MarketID = "ETH-USDT"
+	conflictingMarketReq.BaseAsset = "ETH"
+	err := svc.SettleTrade(ctx, conflictingMarketReq)
+	if err == nil {
+		t.Fatalf("expected ErrSettlementConflict for mismatched MarketID, got nil")
+	}
+	if !errors.Is(err, repository.ErrSettlementConflict) {
+		t.Fatalf("expected errors.Is(err, ErrSettlementConflict), got: %v", err)
+	}
+
+	// Replay with different Sequence MUST also fail with ErrSettlementConflict
+	conflictingSeqReq := req
+	conflictingSeqReq.Sequence = 999
+	err = svc.SettleTrade(ctx, conflictingSeqReq)
+	if err == nil {
+		t.Fatalf("expected ErrSettlementConflict for mismatched Sequence, got nil")
+	}
+	if !errors.Is(err, repository.ErrSettlementConflict) {
+		t.Fatalf("expected errors.Is(err, ErrSettlementConflict), got: %v", err)
+	}
+
+	t.Log("Verified: conflicting duplicate TradeID correctly rejected with ErrSettlementConflict")
+}
+

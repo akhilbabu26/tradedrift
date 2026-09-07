@@ -13,32 +13,43 @@ import (
 )
 
 // ReleaseFunds returns reserved funds to available balance when an order is cancelled.
-// Idempotent: if the reservation is already RELEASED, returns success immediately.
+// Idempotent: if the reservation is already RELEASED or CONSUMED, returns success immediately.
+// All operations are executed inside an atomic PostgreSQL transaction with deterministic locking.
 func (s *Service) ReleaseFunds(ctx context.Context, orderID string) error {
-
-	// Step 1: Fetch the reservation
-	reservation, err := s.reservRepo.GetByOrderID(ctx, orderID)
+	// ── Step 1: Begin atomic PostgreSQL transaction ───────────────────────────────────────────────
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to fetch reservation: %w", err)
+		return fmt.Errorf("failed to begin release transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	walletRepo := s.walletRepo.WithTx(tx)
+	reservRepo := s.reservRepo.WithTx(tx)
+	txnRepo := s.txnRepo.WithTx(tx)
+
+	// ── Step 2: Lock and fetch reservation row (SELECT ... FOR UPDATE) ───────────────────────────
+	reservation, err := reservRepo.GetByOrderIDForUpdate(ctx, orderID)
+	if err != nil {
+		return fmt.Errorf("failed to fetch reservation for order %s: %w", orderID, err)
 	}
 	if reservation == nil {
-		return fmt.Errorf("reservation not found for order %s", orderID)
+		return fmt.Errorf("%w: reservation not found for order %s", repository.ErrReservationNotFound, orderID)
 	}
 
-	// Step 2: Idempotency — already released?
+	// ── Step 3: Idempotency check inside transaction ─────────────────────────────────────────────
 	if reservation.Status == repository.ReservationReleased || reservation.Status == repository.ReservationConsumed {
-		s.log.Debug("reservation already settled, skipping release",
+		s.log.Debug("reservation already settled/released, skipping release",
 			zap.String("orderID", orderID),
 			zap.String("status", reservation.Status),
 		)
 		return nil
 	}
 
-	// Step 3: Only return what's still remaining (partial fills may have consumed some)
+	// ── Step 4: Only return what's still remaining (partial fills may have consumed some) ─────────
 	amountToReturn := reservation.RemainingAmount
 
-	// Step 4: Fetch the wallet to get wallet.ID
-	wallet, err := s.walletRepo.GetByUserAndAsset(ctx, reservation.UserID, reservation.Asset)
+	// ── Step 5: Fetch the wallet to locate wallet.ID ───────────────────────────────────────────────
+	wallet, err := walletRepo.GetByUserAndAsset(ctx, reservation.UserID, reservation.Asset)
 	if err != nil {
 		return fmt.Errorf("failed to fetch wallet: %w", err)
 	}
@@ -46,27 +57,22 @@ func (s *Service) ReleaseFunds(ctx context.Context, orderID string) error {
 		return fmt.Errorf("wallet not found for user %s and asset %s", reservation.UserID, reservation.Asset)
 	}
 
-	// Step 5: Check ledger idempotency — RELEASE already recorded?
-	alreadyReleased, err := s.txnRepo.ExistsByKey(ctx, orderID, "RELEASE", reservation.Asset)
-	if err != nil {
-		return fmt.Errorf("failed to check release transaction: %w", err)
-	}
-	if alreadyReleased {
-		// Ledger has RELEASE but reservation status wasn't updated — fix the status
-		return s.reservRepo.UpdateStatus(ctx, reservation.ID, repository.ReservationReleased)
+	// ── Step 6: Deterministically lock the wallet row (SELECT ... FOR UPDATE) ─────────────────────
+	if _, err := walletRepo.LockByIDs(ctx, []string{wallet.ID}); err != nil {
+		return fmt.Errorf("failed to acquire wallet lock: %w", err)
 	}
 
-	// Step 6: Move remaining funds from reserved → available
-	if err := s.walletRepo.MoveFromReserved(ctx, wallet.ID, amountToReturn); err != nil {
+	// ── Step 7: Move remaining funds from reserved → available ────────────────────────────────────
+	if err := walletRepo.MoveFromReserved(ctx, wallet.ID, amountToReturn); err != nil {
 		return fmt.Errorf("failed to return funds to available: %w", err)
 	}
 
-	// Step 7: Mark reservation as RELEASED
-	if err := s.reservRepo.UpdateStatus(ctx, reservation.ID, repository.ReservationReleased); err != nil {
+	// ── Step 8: Mark reservation as RELEASED ──────────────────────────────────────────────────────
+	if err := reservRepo.UpdateStatus(ctx, reservation.ID, repository.ReservationReleased); err != nil {
 		return fmt.Errorf("failed to update reservation status: %w", err)
 	}
 
-	// Step 8: Write ledger entry (RELEASE, CREDIT)
+	// ── Step 9: Write ledger entry (RELEASE, CREDIT) ──────────────────────────────────────────────
 	txnID, err := platformuuid.New()
 	if err != nil {
 		return fmt.Errorf("failed to generate transaction ID: %w", err)
@@ -81,12 +87,17 @@ func (s *Service) ReleaseFunds(ctx context.Context, orderID string) error {
 		Amount:          amountToReturn,
 		CreatedAt:       time.Now().UTC(),
 	}
-	if err := s.txnRepo.Create(ctx, txn); err != nil {
+	if err := txnRepo.Create(ctx, txn); err != nil {
 		if errors.Is(err, repository.ErrDuplicate) {
 			s.log.Warn("duplicate release transaction ignored", zap.String("orderID", orderID))
 		} else {
 			return fmt.Errorf("failed to write release ledger entry: %w", err)
 		}
+	}
+
+	// ── Step 10: Commit atomic PostgreSQL transaction ─────────────────────────────────────────────
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit release transaction: %w", err)
 	}
 
 	s.log.Info("funds released",

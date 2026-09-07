@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"tradedrift/services/wallet/internal/repository"
 )
@@ -36,6 +37,10 @@ func (r *ReservationRepository) Create(ctx context.Context, res *repository.Rese
 		res.Status, res.CreatedAt,
 	)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return repository.ErrDuplicate
+		}
 		return fmt.Errorf("failed to insert reservation: %w", err)
 	}
 	return nil

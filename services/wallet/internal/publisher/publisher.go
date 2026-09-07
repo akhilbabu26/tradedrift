@@ -15,7 +15,7 @@ const (
 	pollInterval = 500 * time.Millisecond // polling cadence when outbox has events
 	idleInterval = 2 * time.Second        // cadence when outbox is empty
 	batchSize    = 50                     // max events per poll cycle
-	maxRetries   = 3                      // Kafka write retries before MarkFailed
+	maxRetries   = 3                      // Kafka write attempts per event; on exhaustion the claim is released back to PENDING (not marked FAILED)
 )
 
 // OutboxPublisher polls the outbox table and publishes pending events to Kafka.
@@ -23,8 +23,9 @@ const (
 // Design:
 //   - Polls and claims outbox events via atomic CTE transition to 'PROCESSING' with claimed_at = NOW()
 //   - For each event: write to Kafka → MarkPublished (PROCESSED)
-//   - On transient Kafka failure: retry locally up to maxRetries, then leave row in 'PROCESSING'
-//     where the 1-minute lease expiration recovers it on a subsequent poll cycle
+//   - On transient Kafka failure: retry locally up to maxRetries, then release this and all remaining
+//     batch events back to PENDING (claimed_at = NULL). Halts the batch immediately to preserve FIFO ordering:
+//     the failed event is reclaimed first on the next poll (ORDER BY created_at ASC, id ASC).
 //   - Uses FOR UPDATE SKIP LOCKED for atomic row claiming and crash recovery.
 //   - Operational Invariant (V1): Run a single active outbox publisher instance for the Wallet Service.
 //     A single publisher polling chronologically (ORDER BY created_at ASC) and publishing sequentially

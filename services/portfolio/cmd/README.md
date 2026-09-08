@@ -13,7 +13,7 @@ In a distributed cryptocurrency exchange, user portfolios must maintain accurate
 4. Dependency-injected repository, domain valuation service, and gRPC presentation handler.
 5. Synchronous gRPC server (port `:50058`).
 6. HTTP Prometheus metrics and Kubernetes liveness/readiness server (port `:9091`).
-7. Asynchronous Kafka consumer loop (`trades.settled.v1`).
+7. Asynchronous Kafka consumer loop (`portfolio.user.trades.v1`).
 8. Transactional outbox publisher worker (`portfolios.updated.v1`).
 9. Clean 5-phase graceful teardown.
 
@@ -23,7 +23,7 @@ In a distributed cryptocurrency exchange, user portfolios must maintain accurate
 
 | Problem | How `cmd/server/main.go` Solves It |
 |---|---|
-| **Stale Schema & Migration Drift** | Executes Goose migrations before binding any network sockets, ensuring tables (`holdings`, `processed_trades`, `portfolio_outbox`), constraints (`CHECK >= 0`), and partial indexes are in place before traffic arrives. |
+| **Stale Schema & Migration Drift** | Executes Goose migrations before binding any network sockets, ensuring tables (`holdings`, `processed_user_trades`, `processed_market_sequences`, `portfolio_outbox`), constraints (`CHECK >= 0`), and partial indexes are in place before traffic arrives. |
 | **Silent Fail-Late Configuration Crashes** | Calls `portfolioconfig.Load()` on step 0. If required variables (e.g. `PORTFOLIO_POSTGRES_DSN`) are missing, it panics immediately, preventing broken deployments in Kubernetes/Docker. |
 | **Startup Race Conditions** | Strictly constructs components in dependency order: Config $\rightarrow$ Logger $\rightarrow$ Migrations $\rightarrow$ DB Pool $\rightarrow$ Wallet/Market gRPC Clients $\rightarrow$ Repo $\rightarrow$ Service $\rightarrow$ Handler $\rightarrow$ Servers $\rightarrow$ Kafka Workers. |
 | **Dual-Protocol Serving (gRPC + HTTP)** | Concurrently binds and manages both an internal gRPC server (`:50058`) for gateway queries and an HTTP server (`:9091`) for Prometheus `/metrics` and Kubernetes `/healthz` & `/ready` probes. |
@@ -43,7 +43,7 @@ sequenceDiagram
     participant Market as Market Service (:50054)
     participant gRPC as gRPC Server (:50058)
     participant HTTP as HTTP Server (:9091)
-    participant Kafka as Kafka (trades.settled.v1)
+    participant Kafka as Kafka (portfolio.user.trades.v1)
     participant Outbox as Outbox Publisher
 
     Main->>Config: 0. Load & Validate Configuration

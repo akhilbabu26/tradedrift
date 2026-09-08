@@ -171,6 +171,8 @@ message SettleTradeRequest {
     string price         = 8; // Match price (Decimal)
     string quantity      = 9; // Match quantity (Decimal)
     string market_id     = 10; // Market pair ID (e.g. "BTC-USDT")
+    uint64 sequence      = 11; // ME per-market monotonic counter (> 0)
+    string executed_at   = 12; // RFC3339Nano — ME execution timestamp
 }
 
 message SettleTradeResponse {
@@ -271,14 +273,15 @@ If the Order Service crashes during order placement *after* reserving funds but 
 ### 5.4 `SettleTrade` Idempotency (Trade Matching Replays)
 The Settlement Service consumes `TradeExecuted` events from Kafka under at-least-once rules, which can cause duplicate `SettleTrade` gRPC calls to the Wallet Service for the same `trade_id`.
 
-* **Deduplication Check:** The Wallet Service uses the unique transaction ledger constraint to deduplicate settlements. It checks for the existence of a record in `wallet_transactions` matching:
+* **Deduplication Check:** The Wallet Service uses the `settled_trades` table as its primary idempotency barrier, backed up by the unique transaction ledger constraint:
   ```sql
-  SELECT id FROM wallet_transactions 
-  WHERE reference_id = $1 AND reference_type = 'SETTLEMENT';
+  INSERT INTO settled_trades (trade_id, market_id, sequence, settled_at)
+  VALUES ($1, $2, $3, NOW())
+  ON CONFLICT (trade_id) DO NOTHING;
   ```
 * **Behavior:**
-  - If a transaction is found, the trade has already been settled. The Wallet Service short-circuits and returns `success: true` immediately, taking no locks and modifying no balances.
-  - If no transaction is found, the Wallet Service acquires locks on the buyer and seller wallets, completes the transfers, logs the transactions, and commits. If a racing concurrent request commits first, the database throws a key conflict on the `UNIQUE(reference_id, reference_type, asset)` index. The Wallet Service catches this exception, rolls back the local balance mutations, and returns `success: true` to the caller. Replays never cause double-settlement.
+  - If the row already exists (`RowsAffected() == 0`), the trade has already been settled. The Wallet Service short-circuits and returns `success: true` immediately, taking no locks and modifying no balances. (If `trade_id` repeats with mismatched `market_id` or `sequence`, it fails fast with a conflict error).
+  - If the row is fresh, the Wallet Service acquires deterministic locks on reservations and wallet rows, completes the transfers, logs the immutable transactions (`UNIQUE(wallet_id, reference_id, reference_type)`), inserts outbox events, and commits. Replays never cause double-settlement.
 
 ---
 

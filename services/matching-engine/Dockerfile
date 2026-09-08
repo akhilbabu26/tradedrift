@@ -35,4 +35,6 @@ WORKDIR /app
 COPY --from=builder /matching-engine ./matching-engine
 COPY services/matching-engine/migration/ ./services/matching-engine/migration/
 
+EXPOSE 8082
+
 ENTRYPOINT ["./matching-engine"]

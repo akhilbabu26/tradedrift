@@ -131,28 +131,28 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 ### 1-Atomic Transaction Steps:
 1. **Validation:** Rejects self-trades, identical buy/sell order IDs, non-positive amounts, or missing IDs (`ErrInvalidSettlement`).
 2. **Begin Transaction:** `tx, err := s.db.Begin(ctx)` with `defer tx.Rollback(ctx)`. Repositories are transaction-scoped via `WithTx(tx)`.
-3. **Primary Idempotency Registration:** `settledTradeRepo.RegisterSettlement(tradeID, marketID, sequence)`. If row already exists (`!inserted`), logs debug and returns `nil`.
-4. **Deterministic Reservation Locking:** Sorts `BuyOrderID` and `SellerOrderID` alphabetically before fetching via `reservRepo.GetByOrderIDForUpdate()` (`SELECT ... FOR UPDATE`). Completely prevents deadlocks between concurrent crossed trades.
-5. **Domain Validation:** Asserts both reservations exist, are not released, match their corresponding assets (seller=BaseAsset, buyer=QuoteAsset), and belong to their respective users.
-6. **Leg 1 (Base Asset Transfer: Seller → Buyer):**
-   - Debits seller's `reserved_balance` for `BaseAsset`.
-   - `reservRepo.ConsumeRemaining()` atomically decrements seller reservation remaining amount in SQL.
+3. **Primary Idempotency Registration:** `settledTradeRepo.RegisterSettlement(tradeID, marketID, sequence)`. If row already exists (`!inserted`), logs debug and returns `nil`. Detects metadata conflicts (`ErrSettlementConflict`) if trade ID repeats with differing market or sequence.
+4. **Deterministic Reservation Locking:** Sorts `BuyOrderID` and `SellerOrderID` alphabetically before fetching via `reservRepo.GetByOrderIDForUpdate()` (`SELECT ... FOR UPDATE`). Completely prevents deadlocks between concurrent crossed trades. (Market Maker account `00000000-0000-0000-0000-000000000001` bypasses reservations).
+5. **Domain Validation & Slippage Cap (Step 4b):** Asserts both reservations exist, are not released, match their corresponding assets (seller=BaseAsset, buyer=QuoteAsset), and belong to their respective users. For MARKET BUY orders with execution price slippage, if quote amount exceeds reservation remaining within 1%, it is capped to the reservation balance; >1% returns `ErrInsufficientReservation`.
+6. **Precision Floor-Truncation (Step 5b):** Floor-truncates `QuoteAmount` to the quote asset's defined precision (`supported_assets.decimals`) before validation.
+7. **Deterministic Wallet Row Locking (Step 6):** Locks all four affected wallet rows in sorted ID order via a single `walletRepo.LockByIDs()` call (`SELECT ... FOR UPDATE`), preventing crossed-lock deadlocks.
+8. **Leg 1 (Base Asset Transfer: Seller → Buyer):**
+   - Debits seller base balance (from `reserved_balance` and reservation `remaining_amount`, or from `available_balance` for MM).
    - Credits buyer's `available_balance` for `BaseAsset`.
-7. **Leg 2 (Quote Asset Transfer: Buyer → Seller):**
-   - Debits buyer's `reserved_balance` for `QuoteAsset`.
-   - `reservRepo.ConsumeRemaining()` atomically decrements buyer reservation remaining amount in SQL.
+9. **Leg 2 (Quote Asset Transfer: Buyer → Seller):**
+   - Debits buyer quote balance (from `reserved_balance` and reservation `remaining_amount`, or from `available_balance` for MM).
    - Credits seller's `available_balance` for `QuoteAsset`.
-8. **Write Ledger Entries:** `txnRepo.CreateBatch()` writes 4 records:
-   - Seller Base DEBIT
-   - Buyer Base CREDIT
-   - Buyer Quote DEBIT
-   - Seller Quote CREDIT
-   If DB unique constraint violation occurs, it is handled gracefully as idempotent replay.
-9. **Write 3 Outbox Events:**
+10. **Write Ledger Entries:** `txnRepo.CreateBatch()` writes 4 records:
+    - Seller Base DEBIT
+    - Buyer Base CREDIT
+    - Buyer Quote DEBIT
+    - Seller Quote CREDIT
+    If DB unique constraint violation occurs, it is handled gracefully as idempotent replay.
+11. **Write 3 Outbox Events:**
     - `TradeSettled` (partition key: `BuyerUserID`, topic: `trades.settled.v1`) $\rightarrow$ consumed by Trade Service
     - `PortfolioUserTrade` BUY leg (partition key: `BuyerUserID`, role: `BUY`, topic: `portfolio.user.trades.v1`) $\rightarrow$ consumed by Portfolio Service
     - `PortfolioUserTrade` SELL leg (partition key: `SellerUserID`, role: `SELL`, topic: `portfolio.user.trades.v1`) $\rightarrow$ consumed by Portfolio Service
-10. **Commit Transaction:** `tx.Commit(ctx)`. If any step fails, all balance debits/credits, reservation consumptions, ledger records, `settled_trades` row, and outbox events roll back completely.
+12. **Commit Transaction:** `tx.Commit(ctx)`. If any step fails, all balance debits/credits, reservation consumptions, ledger records, `settled_trades` row, and outbox events roll back completely.
 
 
 

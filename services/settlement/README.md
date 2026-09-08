@@ -18,7 +18,7 @@ The **Settlement Service** is the transactional clearinghouse of the TradeDrift 
 3. Calls `WalletService.SettleTrade` over gRPC to atomically shift reserved funds.
 4. Marks the trade as `SETTLED` in the ledger and acknowledges the Kafka offset.
 
-**This service publishes no Kafka events.** All downstream notification (`TradeSettled`) is the exclusive responsibility of the Wallet Service's own outbox, which fires after `SettleTrade` commits.
+**This service publishes no Kafka events.** All downstream notification (`TradeSettled` on `trades.settled.v1` and `PortfolioUserTrade` on `portfolio.user.trades.v1`) is the exclusive responsibility of the Wallet Service's own outbox, which fires after `SettleTrade` commits.
 
 ---
 
@@ -53,8 +53,9 @@ The **Settlement Service** is the transactional clearinghouse of the TradeDrift 
 │                 Wallet Service                        │
 │  Moves: Buyer reserved USDT → Seller available USDT  │
 │  Moves: Seller reserved BTC  → Buyer  available BTC  │
-│  Publishes TradeSettled via its own outbox →         │
-│  → Portfolio, Notification services                  │
+│  Publishes via its own outbox:                       │
+│  → trades.settled.v1 (Trade Service)                 │
+│  → portfolio.user.trades.v1 (Portfolio Service)      │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -140,7 +141,8 @@ services/settlement/
 │       └── main.go                 ← Bootstrap entrypoint
 ├── migration/
 │   ├── README.md
-│   └── 00001_create_settled_trades.sql
+│   ├── 00001_create_settled_trades.sql
+│   └── 00002_add_sequence_to_settled_trades.sql
 └── internal/
     ├── README.md
     ├── client/

@@ -141,7 +141,7 @@ sequenceDiagram
 | `PORTFOLIO_MIGRATIONS_DIR` | No | `services/portfolio/migration` | Filesystem path to Goose SQL migration scripts. |
 | `KAFKA_BROKERS` | No | `localhost:9092` | Comma-separated list of Kafka broker bootstrap addresses. |
 | `KAFKA_GROUP_ID` | No | `portfolio-service-group` | Kafka consumer group identifier for settled trade stream. |
-| `KAFKA_TOPIC_TRADE_SETTLED` | No | `trades.settled.v1` | Inbound Kafka topic for settled trade events. |
+| `KAFKA_TOPIC_PORTFOLIO_USER_TRADES` | No | `portfolio.user.trades.v1` | Inbound Kafka topic for user-scoped trade events. |
 | `KAFKA_TOPIC_PORTFOLIO_UPDATED` | No | `portfolios.updated.v1` | Outbound Kafka topic for position change events emitted from outbox. |
 | `KAFKA_TOPIC_TRADE_DLQ` | No | `trades.settled.dlq` | Dead-letter queue topic for invalid/poisoned trade events. |
 | `WALLET_GRPC_ADDR` | No | `localhost:50052` | Network address of the Wallet Service for querying cash balances. |

@@ -50,7 +50,8 @@ Topics are partitioned based on their structural serialization key to distribute
 | `orders.cancel-requested.v1` | `12` | `market_id` | user cancel queue request | `market_id` |
 | `orders.cancelled.v1` | `12` | `market_id` | engine order cancellation execution | `market_id` |
 | `trades.executed.v1` | `12` | `market_id` | buy/sell order matched in-memory | `market_id` |
-| `user-trades.settled.v1` | `12` | `user_id` | wallet balance settlement complete | `user_id` |
+| `trades.settled.v1` | `12` | `buyer_id` | authoritative trade settlement complete | `buyer_id` |
+| `portfolio.user.trades.v1` | `12` | `user_id` | user trade leg for portfolio accounting | `user_id` |
 | `portfolios.updated.v1` | `12` | `user_id` | holdings and average cost recalculation | `user_id` |
 | `admin.user-suspended.v1` | `12` | `user_id` | user account suspended notification | `user_id` |
 | `admin.market-halted.v1` | `12` | `market_id` | market trading emergency halt status | `market_id` |
@@ -179,21 +180,44 @@ Published when the Matching Engine successfully executes a buy/sell priority mat
 
 ---
 
-### 4.5 `UserTradeSettled` (Wallet Service)
-Published after `SettleTrade` commits. **Note: Because this event partitions by `user_id`, a single executed trade produces two separate `UserTradeSettled` messages — one for the buyer (key: buyer_id) and one for the seller (key: seller_id) — to parallelize portfolio rollup pipelines.**
+### 4.5 `TradeSettled` & `PortfolioUserTrade` (Wallet Service Outbox)
 
+Published after `SettleTrade` commits inside the Wallet Service database. The Wallet Service outbox produces two event streams:
+
+#### A. `TradeSettled` (topic: `trades.settled.v1`, key: `buyer_id`)
+Consumed by Trade Service to project the historical trade records:
 ```json
 {
-  "trade_id": "018f60f3-c540-7798-8422-efa6b29f1234",      // Match Trade ID
-  "user_id": "018f60f3-a120-7798-8422-cfb6a29e11aa",       // Recipient User ID (Partition Key)
-  "side": "BUYER",                                         // "BUYER" | "SELLER"
-  "order_id": "018f60f3-b780-7798-8422-dfa6b29f44ea",      // Recipient Order ID
-  "market_id": "BTC-USDT",                                 // Market pair
+  "trade_id": "018f60f3-c540-7798-8422-efa6b29f1234",
+  "buyer_id": "018f60f3-a120-7798-8422-cfb6a29e11aa",
+  "seller_id": "018f60f3-d980-7798-8422-dfb6b29f22bb",
+  "buy_order_id": "018f60f3-b780-7798-8422-dfa6b29f44ea",
+  "sell_order_id": "018f60f3-e520-7798-8422-ffa6b29f55cc",
+  "market_id": "BTC-USDT",
   "base_asset": "BTC",
   "quote_asset": "USDT",
-  "price": "58200.0000000000",                            // Match execution price (String)
-  "quantity": "0.0400000000",                             // Match execution quantity (String)
-  "settled_at": "2026-07-10T18:07:44Z"                    // Database commit timestamp
+  "price": "58200.0000000000",
+  "quantity": "0.0400000000",
+  "sequence": 42,
+  "executed_at": "2026-07-10T18:07:42Z",
+  "settled_at": "2026-07-10T18:07:44Z"
+}
+```
+
+#### B. `PortfolioUserTrade` (topic: `portfolio.user.trades.v1`, key: `user_id`)
+A single trade produces two separate user-scoped messages (one for buyer with key `buyer_id`, one for seller with key `seller_id`), consumed by Portfolio Service:
+```json
+{
+  "trade_id": "018f60f3-c540-7798-8422-efa6b29f1234",
+  "user_id": "018f60f3-a120-7798-8422-cfb6a29e11aa",
+  "market_id": "BTC-USDT",
+  "sequence": 42,
+  "order_id": "018f60f3-b780-7798-8422-dfa6b29f44ea",
+  "role": "BUY",
+  "price": "58200.0000000000",
+  "quantity": "0.0400000000",
+  "executed_at": "2026-07-10T18:07:42Z",
+  "settled_at": "2026-07-10T18:07:44Z"
 }
 ```
 
@@ -222,7 +246,8 @@ To isolate failed events without blocking partition streams, every primary topic
 * `orders.cancel-requested.v1-dlq`
 * `orders.cancelled.v1-dlq`
 * `trades.executed.v1-dlq`
-* `user-trades.settled.v1-dlq`
+* `trades.settled.v1-dlq`
+* `trades.settled.dlq`
 * `portfolios.updated.v1-dlq`
 * `admin.user-suspended.v1-dlq`
 * `admin.market-halted.v1-dlq`

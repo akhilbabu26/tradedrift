@@ -42,6 +42,9 @@ type WalletSettler interface {
 	SettleTrade(ctx context.Context, req client.SettleRequest) error
 }
 
+// ErrSelfTrade is returned when buyer and seller are the same user.
+var ErrSelfTrade = errors.New("buyer and seller cannot be the same user")
+
 // Service implements the 3-phase settlement pipeline.
 type Service struct {
 	repo        repository.Repository
@@ -102,7 +105,7 @@ func (s *Service) Settle(ctx context.Context, event TradeExecutedEvent) error {
 	// A self-trade (buyer == seller) is a trading rule violation. Reject early
 	// so no funds are moved and the poison event is skipped cleanly.
 	if buyerID == sellerID {
-		return errors.New("buyer and seller cannot be the same user")
+		return ErrSelfTrade
 	}
 
 	// ── VALIDATE PRICE AND QUANTITY ────────────────────────────────────────────
@@ -167,6 +170,7 @@ func (s *Service) Settle(ctx context.Context, event TradeExecutedEvent) error {
 			QuoteAsset:  quote,
 			Price:       event.Price,
 			Quantity:    event.Quantity,
+			Sequence:    event.Sequence, // persist so recovery can forward the correct sequence
 			Status:      repository.StatusPending,
 			ExecutedAt:  executedAt,
 		}
@@ -274,6 +278,7 @@ func (s *Service) RecoverStalePending(ctx context.Context) {
 			Price:       t.Price,
 			Quantity:    t.Quantity,
 			MarketID:    t.MarketID,
+			Sequence:    t.Sequence, // use stored sequence, not hardcoded 1
 			ExecutedAt:  t.ExecutedAt.Format(time.RFC3339Nano),
 		})
 		cancel() // release resources immediately after each RPC, not at function return

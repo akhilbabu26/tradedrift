@@ -151,14 +151,14 @@ This table shows which optional internal folders each service has. It makes cros
 |---|---|---|---|
 | `gateway` | — | — | `auth/`, `wallet/`, `order/`, `market/`, `portfolio/`, `trade/` |
 | `auth` | — | — | `wallet/` |
-| `wallet` | — | ✅ (`user-trades.settled.v1`) | — |
+| `wallet` | — | ✅ (`trades.settled.v1`, `portfolio.user.trades.v1`) | — |
 | `order` | ✅ (`orders.cancel-requested.v1`) | ✅ (`orders.created.v1`) | `wallet/` |
 | `matching` | ✅ (`orders.created.v1`, `admin.market-commands.v1`) | ✅ (`trades.executed.v1`, `orders.cancelled.v1`) | — |
 | `settlement` | ✅ (`trades.executed.v1`) | — | `wallet/` |
 | `market` | ✅ (`trades.executed.v1`) | — | — |
-| `portfolio` | ✅ (`user-trades.settled.v1`) | ✅ (`portfolios.updated.v1`) | `trade/` |
+| `portfolio` | ✅ (`portfolio.user.trades.v1`) | ✅ (`portfolios.updated.v1`) | `market/`, `wallet/` |
 | `notification` | ✅ (multiple topics) | — | — |
-| `trade` | ✅ (`user-trades.settled.v1`) | — | — |
+| `trade` | ✅ (`trades.settled.v1`) | — | — |
 | `admin` | — | ✅ (`admin.user-suspended.v1`, `admin.market-commands.v1`, `admin.market-halted.v1`) | `auth/`, `wallet/` |
 
 > **Reading the table:** `✅` = folder exists. `—` = folder is absent (intentionally). `client/<target>/` lists the downstream gRPC services called.

@@ -83,6 +83,7 @@ Using `string` (e.g. `"10000.0000000000"`) means the service layer passes the ex
 | `MoveToReserved` | `available -= X`, `reserved += X` | Reserve funds atomically — one operation, not two |
 | `MoveFromReserved` | `reserved -= X`, `available += X` | Release funds — return locked money |
 | `DebitReserved` | `reserved -= X` | Settlement — consumed funds leave the account |
+| `LockByIDs` | Acquire row-level locks on wallet IDs (`SELECT ... FOR UPDATE ORDER BY id ASC`) | During `SettleTrade` across all 4 affected wallets |
 | `FreezeWallet` | Sets `is_frozen = true` with reason | Admin/risk system blocks a suspicious wallet |
 | `UnfreezeWallet` | Sets `is_frozen = false`, clears reason | Admin lifts the freeze |
 

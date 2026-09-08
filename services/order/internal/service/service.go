@@ -115,11 +115,11 @@ func (s *orderService) CreateOrder(ctx context.Context, p *CreateOrderParams) (*
 		// BUY Order: reserve quote asset (Price * Quantity)
 		reserveAsset = quoteAsset
 		totalQuote := priceDec.Mul(qty)
-		reserveAmount = totalQuote.StringFixed(10)
+		reserveAmount = totalQuote.String()
 	} else {
 		// SELL Order: reserve base asset (Quantity)
 		reserveAsset = baseAsset
-		reserveAmount = qty.StringFixed(10)
+		reserveAmount = qty.String()
 	}
 
 	// 6. Generate UUIDv7 Order ID

@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	kafkago "github.com/segmentio/kafka-go"
@@ -94,6 +95,17 @@ func (c *Consumer) Start(ctx context.Context) {
 
 		// Run the 3-phase settlement pipeline
 		if err := c.service.Settle(ctx, event); err != nil {
+			if errors.Is(err, service.ErrSelfTrade) {
+				c.logger.Warn("self-trade detected — skipping poison event and committing offset",
+					zap.String("trade_id", event.TradeID),
+					zap.String("market", event.MarketID),
+					zap.Int64("offset", msg.Offset),
+					zap.Error(err),
+				)
+				_ = c.commitMsg(ctx, msg)
+				continue
+			}
+
 			// Settlement failed — do NOT commit offset.
 			// Kafka will redeliver this message. The idempotency check in
 			// service.Settle will determine which phase to resume from.

@@ -118,14 +118,53 @@ func (r *Repository) ProcessUserTrade(ctx context.Context, in repository.UserTra
 
 	// 2. User Leg Idempotency Check & Registration
 	tag, err := tx.Exec(ctx, `
-		INSERT INTO processed_user_trades (trade_id, user_id, market_id, sequence, processed_at)
-		VALUES ($1, $2, $3, $4, NOW())
+		INSERT INTO processed_user_trades (
+			trade_id, user_id, market_id, sequence, order_id, role, price, quantity, processed_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
 		ON CONFLICT (trade_id, user_id) DO NOTHING;
-	`, in.TradeID, in.UserID, in.MarketID, in.Sequence)
+	`, in.TradeID, in.UserID, in.MarketID, in.Sequence, in.OrderID, in.Role, in.Price, in.Quantity)
 	if err != nil {
 		return nil, fmt.Errorf("insert processed_user_trades: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
+		var existingMarket, existingRole string
+		var existingOrderID *string
+		var existingSequence uint64
+		var existingPrice, existingQty *decimal.Decimal
+
+		err = tx.QueryRow(ctx, `
+			SELECT market_id, sequence, order_id::text, role, price, quantity
+			FROM processed_user_trades
+			WHERE trade_id = $1 AND user_id = $2;
+		`, in.TradeID, in.UserID).Scan(&existingMarket, &existingSequence, &existingOrderID, &existingRole, &existingPrice, &existingQty)
+		if err != nil {
+			return nil, fmt.Errorf("fetch existing processed_user_trades: %w", err)
+		}
+
+		isConflict := false
+		if existingMarket != in.MarketID || existingSequence != in.Sequence {
+			isConflict = true
+		}
+		if existingOrderID != nil && *existingOrderID != "" && *existingOrderID != in.OrderID {
+			isConflict = true
+		}
+		if existingRole != "" && existingRole != in.Role {
+			isConflict = true
+		}
+		if existingPrice != nil && !existingPrice.IsZero() && !existingPrice.Equal(in.Price) {
+			isConflict = true
+		}
+		if existingQty != nil && !existingQty.IsZero() && !existingQty.Equal(in.Quantity) {
+			isConflict = true
+		}
+
+		if isConflict {
+			metrics.AccountingViolationsTotal.WithLabelValues("duplicate_metadata_conflict").Inc()
+			return nil, fmt.Errorf("%w for trade %s user %s: conflicting metadata on replayed trade",
+				repository.ErrTradeConflict, in.TradeID, in.UserID)
+		}
+
 		return nil, repository.ErrTradeAlreadyProcessed
 	}
 
@@ -193,7 +232,8 @@ func (r *Repository) ProcessUserTrade(ctx context.Context, in repository.UserTra
 	return &outboxMsg, nil
 }
 
-// ProcessTradeSettled executes the 1-atomic transaction for dual-participant trades (legacy/audit):
+// Deprecated: ProcessTradeSettled executes the 1-atomic transaction for dual-participant trades (legacy/audit compatibility).
+// It is NOT invoked by the active Kafka consumer. Production accounting uses ProcessUserTrade exclusively.
 func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.TradeSettledInput) ([]repository.OutboxMessage, error) {
 	timer := metrics.DBDurationSeconds.WithLabelValues("process_trade_settled")
 	start := time.Now()
@@ -230,10 +270,12 @@ func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.Trad
 
 	// 3. User Leg Idempotency Check (Buyer)
 	tag, err := tx.Exec(ctx, `
-		INSERT INTO processed_user_trades (trade_id, user_id, market_id, sequence, processed_at)
-		VALUES ($1, $2, $3, $4, NOW())
+		INSERT INTO processed_user_trades (
+			trade_id, user_id, market_id, sequence, order_id, role, price, quantity, processed_at
+		)
+		VALUES ($1, $2, $3, $4, $1, 'BUY', $5, $6, NOW())
 		ON CONFLICT (trade_id, user_id) DO NOTHING;
-	`, in.TradeID, in.BuyerID, in.MarketID, in.Sequence)
+	`, in.TradeID, in.BuyerID, in.MarketID, in.Sequence, in.Price, in.Quantity)
 	if err != nil {
 		return nil, fmt.Errorf("insert buyer processed_user_trades: %w", err)
 	}
@@ -243,10 +285,12 @@ func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.Trad
 
 	// Register Seller leg
 	_, err = tx.Exec(ctx, `
-		INSERT INTO processed_user_trades (trade_id, user_id, market_id, sequence, processed_at)
-		VALUES ($1, $2, $3, $4, NOW())
+		INSERT INTO processed_user_trades (
+			trade_id, user_id, market_id, sequence, order_id, role, price, quantity, processed_at
+		)
+		VALUES ($1, $2, $3, $4, $1, 'SELL', $5, $6, NOW())
 		ON CONFLICT (trade_id, user_id) DO NOTHING;
-	`, in.TradeID, in.SellerID, in.MarketID, in.Sequence)
+	`, in.TradeID, in.SellerID, in.MarketID, in.Sequence, in.Price, in.Quantity)
 	if err != nil {
 		return nil, fmt.Errorf("insert seller processed_user_trades: %w", err)
 	}
@@ -439,15 +483,29 @@ func (r *Repository) FetchPendingOutbox(ctx context.Context, limit int) ([]repos
 			SELECT id
 			FROM portfolio_outbox
 			WHERE (status = 'PENDING')
-			   OR (status = 'PROCESSING' AND claimed_at < NOW() - INTERVAL '1 minute')
-			ORDER BY created_at ASC
+			   OR (status = 'PROCESSING' AND (claimed_at IS NULL OR claimed_at < NOW() - INTERVAL '1 minute'))
+			ORDER BY created_at ASC, id ASC
 			LIMIT $1
 			FOR UPDATE SKIP LOCKED
+		),
+		updated AS (
+			UPDATE portfolio_outbox p
+			SET status = 'PROCESSING',
+			    claimed_at = NOW()
+			FROM claimable c
+			WHERE p.id = c.id
+			RETURNING p.id,
+			          p.aggregate_id,
+			          p.event_type,
+			          p.payload,
+			          p.partition_key,
+			          p.status,
+			          p.claimed_at,
+			          p.created_at
 		)
-		UPDATE portfolio_outbox
-		SET status = 'PROCESSING', claimed_at = NOW()
-		WHERE id IN (SELECT id FROM claimable)
-		RETURNING id, aggregate_id, event_type, payload, partition_key, status, claimed_at, created_at;
+		SELECT id, aggregate_id, event_type, payload, partition_key, status, claimed_at, created_at
+		FROM updated
+		ORDER BY created_at ASC, id ASC;
 	`
 
 	rows, err := r.pool.Query(ctx, query, limit)
@@ -478,6 +536,7 @@ func (r *Repository) FetchPendingOutbox(ctx context.Context, limit int) ([]repos
 }
 
 // MarkOutboxPublished updates outbox records to 'PUBLISHED' with published_at = NOW().
+// It verifies that only records currently in 'PROCESSING' state are updated and confirms rows affected.
 func (r *Repository) MarkOutboxPublished(ctx context.Context, ids []string) error {
 	if len(ids) == 0 {
 		return nil
@@ -490,9 +549,19 @@ func (r *Repository) MarkOutboxPublished(ctx context.Context, ids []string) erro
 	query := `
 		UPDATE portfolio_outbox
 		SET status = 'PUBLISHED', published_at = NOW()
-		WHERE id = ANY($1);
+		WHERE id = ANY($1)
+		  AND status = 'PROCESSING';
 	`
 
-	_, err := r.pool.Exec(ctx, query, ids)
-	return err
+	tag, err := r.pool.Exec(ctx, query, ids)
+	if err != nil {
+		return err
+	}
+
+	if tag.RowsAffected() != int64(len(ids)) {
+		return fmt.Errorf("%w: expected %d updated, got %d",
+			repository.ErrOutboxLeaseExpired, len(ids), tag.RowsAffected())
+	}
+
+	return nil
 }

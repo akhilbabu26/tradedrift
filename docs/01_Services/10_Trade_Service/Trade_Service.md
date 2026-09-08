@@ -80,6 +80,7 @@ The current `SettleTrade` gRPC signature (`06_Wallet_Service.md §gRPC APIs`) do
 | `quote_asset` | VARCHAR(16) | from `TradeExecuted` | |
 | `price` | DECIMAL(30,10) | from `TradeExecuted` | |
 | `quantity` | DECIMAL(30,10) | from `TradeExecuted` | |
+| `sequence` | BIGINT | from `TradeExecuted` | Becomes `trades.me_sequence` |
 | `executed_at` | TIMESTAMPTZ | Matching Engine clock | When the match happened |
 | `settled_at` | TIMESTAMPTZ | Wallet Service clock | When `SettleTrade` committed |
 
@@ -101,24 +102,28 @@ CREATE TABLE trades (
     quote_asset   VARCHAR(16) NOT NULL,
     price         DECIMAL(30,10) NOT NULL,     -- MONETARY_PRECISION per Glossary.md
     quantity      DECIMAL(30,10) NOT NULL,     -- MONETARY_PRECISION per Glossary.md
+    me_sequence   BIGINT NOT NULL,             -- ME monotonic sequence per market
     executed_at   TIMESTAMPTZ NOT NULL,        -- ME clock: time of match
     settled_at    TIMESTAMPTZ NOT NULL         -- Wallet clock: time balances moved
 );
 
 -- User trade history (buyer side)
-CREATE INDEX idx_trades_buyer  ON trades(buyer_id,  executed_at DESC);
+CREATE INDEX idx_trades_buyer  ON trades(buyer_id,  executed_at DESC, id DESC);
 
 -- User trade history (seller side)
-CREATE INDEX idx_trades_seller ON trades(seller_id, executed_at DESC);
+CREATE INDEX idx_trades_seller ON trades(seller_id, executed_at DESC, id DESC);
 
 -- User trade history filtered by market (buyer side)
-CREATE INDEX idx_trades_buyer_market  ON trades(buyer_id,  market_id, executed_at DESC);
+CREATE INDEX idx_trades_buyer_market  ON trades(buyer_id,  market_id, executed_at DESC, id DESC);
 
 -- User trade history filtered by market (seller side)
-CREATE INDEX idx_trades_seller_market ON trades(seller_id, market_id, executed_at DESC);
+CREATE INDEX idx_trades_seller_market ON trades(seller_id, market_id, executed_at DESC, id DESC);
 
 -- Public market trade feed
-CREATE INDEX idx_trades_market ON trades(market_id, executed_at DESC);
+CREATE INDEX idx_trades_market ON trades(market_id, executed_at DESC, id DESC);
+
+-- Per-market sequence uniqueness
+CREATE UNIQUE INDEX idx_trades_market_sequence ON trades(market_id, me_sequence);
 ```
 
 **Schema notes:**
@@ -138,8 +143,8 @@ CREATE INDEX idx_trades_market ON trades(market_id, executed_at DESC);
 ```sql
 INSERT INTO trades (id, buyer_id, seller_id, buy_order_id, sell_order_id,
                     market_id, base_asset, quote_asset, price, quantity,
-                    executed_at, settled_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    me_sequence, executed_at, settled_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 ON CONFLICT (id) DO NOTHING;
 ```
 
@@ -151,25 +156,23 @@ This is the same `ON CONFLICT DO NOTHING` pattern established in Settlement Serv
 
 ## 5. Kafka Consumer
 
-> **Naming:** This event is referred to as `TradeSettled` throughout this document — that is its informal conceptual name. The registered Kafka topic name is `user-trades.settled.v1`. The `event_type` field in the message envelope is `UserTradeSettled`. All three refer to the same event. Source of truth: `15_Kafka_Topic_Design.md §4.5`.
+> **Topic & Envelope:** Consumes `TradeSettled` events from the `trades.settled.v1` Kafka topic, emitted by the Wallet Service's transactional outbox.
 
 | Property | Value |
 |---|---|
-| Topic | `user-trades.settled.v1` |
-| Partition key | `user_id` |
-| Consumer group | `trade-service` |
+| Topic | `trades.settled.v1` |
+| Partition key | `buyer_id` |
+| Consumer group | `trade-service-group` |
 | Concurrency | One goroutine per Kafka partition |
 | Write path | Parse → `INSERT ON CONFLICT DO NOTHING` → ACK |
 | Recovery goroutine | Not needed |
-
-**One goroutine per partition** — the same SI-3 ordering invariant used by Settlement Service. Because the topic partitions by `user_id`, all settlement events for a given user land on the same partition in chronological order.
 
 **No recovery goroutine needed.** Unlike Settlement Service, there is no network call between the INSERT and the Kafka ACK. The entire write is a single fast DB INSERT. If it fails, the offset is not committed and Kafka redelivers — which the `ON CONFLICT` handles safely.
 
 ### Consumer Step-by-Step
 
-1. Receive `UserTradeSettled` message from `user-trades.settled.v1` Kafka partition.
-2. Deserialize and validate payload — all required fields present, UUIDs valid, amounts positive.
+1. Receive `TradeSettled` message from `trades.settled.v1` Kafka partition.
+2. Deserialize and validate payload — all required fields present, UUIDs valid, amounts positive, `sequence > 0`.
 3. `INSERT INTO trades (...) ON CONFLICT (id) DO NOTHING`.
 4. ACK Kafka offset.
 

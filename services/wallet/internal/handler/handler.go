@@ -81,6 +81,7 @@ func (h *GRPCHandler) SettleTrade(ctx context.Context, req *walletv1.SettleTrade
 	}
 	quoteAmount := priceDec.Mul(qtyDec).String()
 
+
 	settlReq := service.TradeSettlementRequest{
 		TradeID:       req.TradeId,
 		BuyerUserID:   req.BuyerId,

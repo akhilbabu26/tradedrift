@@ -134,21 +134,20 @@ Every service, API contract, event schema, database model, recovery strategy, an
 * **Event Broker Topology:** Kafka partition key constraints, dead-letter topic structures, and idempotent producer requirements.
 * **In-Memory Memory Layouts:** Matching Engine order book red-black trees and price level structures.
 
-### 3. In Progress — Service Build Order
+### 3. Implemented Services
 
 | # | Service | Status | Notes |
 |---|---|---|---|
 | 1 | `auth` | ✅ Complete | JWT sessions, OTP verification, brute-force protection |
-| 2 | `wallet` | ✅ Complete | Double-entry ledger, reservations, idempotency |
-| 3 | `market` | ⬜ Next | Market pairs, tickers — foundational data for order & matching |
-| 4 | `order` | ⬜ Pending | Order lifecycle, validation, status tracking |
-| 5 | `matching` | ⬜ Pending | In-memory FIFO order book, trade execution |
-| 6 | `settlement` | ⬜ Pending | Trade settlement across buyer/seller wallets via Kafka |
-| 7 | `trade` | ⬜ Pending | Trade history & public feed (read-side projector) |
-| 8 | `portfolio` | ⬜ Pending | Portfolio positions & PnL projector |
-| 9 | `notification` | ⬜ Pending | Real-time WebSocket push for order & trade events |
-| 10 | `admin` | ⬜ Pending | Admin control plane (suspend/freeze/halt) |
-| 11 | `gateway` | ⬜ Last | REST API Gateway — built after all internal services are ready |
+| 2 | `wallet` | ✅ Complete | Double-entry ledger, reservations, idempotency, outbox |
+| 3 | `market` | ✅ Complete | Market pairs, tickers, order book snapshots |
+| 4 | `order` | ✅ Complete | Order lifecycle, validation, status tracking |
+| 5 | `matching-engine` | ✅ Complete | In-memory FIFO order book, trade execution |
+| 6 | `settlement` | ✅ Complete | Trade settlement orchestrator across buyer/seller wallets |
+| 7 | `trade` | ✅ Complete | Trade history & public feed (read-side projector) |
+| 8 | `portfolio` | ✅ Complete | Portfolio positions, weighted-average entry & PnL projector |
+| 9 | `gateway` | ✅ Complete | REST API Gateway — routing, rate limiting, JWT validation |
+| 10 | `liquidity-engine`| ✅ Complete | Automated market making & liquidity simulation |
 
 ---
 
@@ -165,15 +164,14 @@ Every service, API contract, event schema, database model, recovery strategy, an
 ├── services/                  # Microservices Source Code (Go Modules)
 │   ├── auth/                  # [1] ✅ Authentication Service
 │   ├── wallet/                # [2] ✅ Wallet & Ledger Service
-│   ├── market/                # [3] ⬜ Market Metadata & Ticker Service
-│   ├── order/                 # [4] ⬜ Order Lifecycle Service
-│   ├── matching/              # [5] ⬜ In-Memory Matching Engine
-│   ├── settlement/            # [6] ⬜ Trade Settlement Orchestrator
-│   ├── trade/                 # [7] ⬜ Trade History & Public Feed
-│   ├── portfolio/             # [8] ⬜ Portfolio & PnL Projector
-│   ├── notification/          # [9] ⬜ Real-Time Notification (WebSocket)
-│   ├── admin/                 # [10] ⬜ Admin Control Plane (suspend/freeze/halt)
-│   └── gateway/               # [11] ⬜ API Gateway — built last
+│   ├── market/                # [3] ✅ Market Metadata & Ticker Service
+│   ├── order/                 # [4] ✅ Order Lifecycle Service
+│   ├── matching-engine/       # [5] ✅ In-Memory Matching Engine
+│   ├── settlement/            # [6] ✅ Trade Settlement Orchestrator
+│   ├── trade/                 # [7] ✅ Trade History & Public Feed
+│   ├── portfolio/             # [8] ✅ Portfolio & PnL Projector
+│   ├── gateway/               # [9] ✅ API Gateway
+│   └── liquidity-engine/      # [10] ✅ Liquidity Engine & Market Maker
 ├── deployments/               # Infrastructure deployment files (Docker Compose, K8s manifests)
 ├── diagrams/                  # Compiled visual layouts (.svg flowcharts, ER diagrams)
 ├── scripts/                   # DB migrations, seed triggers, and build scripts

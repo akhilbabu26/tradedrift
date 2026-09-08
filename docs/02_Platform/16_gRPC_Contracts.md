@@ -175,6 +175,8 @@ message SettleTradeRequest {
     string price         = 8;  // Match price (String)
     string quantity      = 9;  // Match quantity (String)
     string market_id     = 10; // Market pair ID (e.g. "BTC-USDT")
+    uint64 sequence      = 11; // ME per-market monotonic counter (> 0)
+    string executed_at   = 12; // RFC3339Nano — ME execution timestamp
 }
 
 message SettleTradeResponse {
@@ -637,6 +639,83 @@ message HoldingDetail {
 message PortfolioHoldingsResponse {
     string user_id                  = 1;
     repeated HoldingDetail holdings = 2;
+}
+```
+
+---
+
+### 4.7 `TradeService` (`trade.proto`)
+Serves authenticated user trade fill history and the public anonymous market trade tape.
+
+```protobuf
+syntax = "proto3";
+
+package tradedrift.trade.v1;
+
+option go_package = "tradedrift/platform/api/gen/trade/v1;tradev1";
+
+service TradeService {
+    rpc GetTrade(GetTradeRequest) returns (GetTradeResponse);
+    rpc ListUserTrades(ListUserTradesRequest) returns (ListUserTradesResponse);
+    rpc ListMarketTrades(ListMarketTradesRequest) returns (ListMarketTradesResponse);
+}
+
+message Trade {
+    string trade_id      = 1;
+    string buyer_id      = 2;
+    string seller_id     = 3;
+    string buy_order_id  = 4;
+    string sell_order_id = 5;
+    string market_id     = 6;
+    string base_asset    = 7;
+    string quote_asset   = 8;
+    string price         = 9;
+    string quantity      = 10;
+    string executed_at   = 11;
+    string settled_at    = 12;
+}
+
+message MarketTrade {
+    string trade_id    = 1;
+    string market_id   = 2;
+    string base_asset  = 3;
+    string quote_asset = 4;
+    string price       = 5;
+    string quantity    = 6;
+    string executed_at = 7;
+}
+
+message GetTradeRequest {
+    string trade_id       = 1;
+    string caller_user_id = 2;
+    bool   is_admin       = 3;
+}
+
+message GetTradeResponse {
+    Trade trade = 1;
+}
+
+message ListUserTradesRequest {
+    string user_id   = 1;
+    string cursor    = 2;
+    int32  limit     = 3;
+    string market_id = 4;
+}
+
+message ListUserTradesResponse {
+    repeated Trade trades = 1;
+    string next_cursor    = 2;
+}
+
+message ListMarketTradesRequest {
+    string market_id = 1;
+    string cursor    = 2;
+    int32  limit     = 3;
+}
+
+message ListMarketTradesResponse {
+    repeated MarketTrade trades = 1;
+    string next_cursor          = 2;
 }
 ```
 

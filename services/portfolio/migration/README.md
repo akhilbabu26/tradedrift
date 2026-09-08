@@ -23,7 +23,8 @@ sequenceDiagram
     Goose->>DB: Check goose_db_version table
     alt Migrations Pending
         Goose->>DB: Execute 00001_create_portfolio_tables.sql (Up)
-        DB-->>Goose: Tables & Indexes Created
+        Goose->>DB: Execute 00002_add_metadata_to_processed_user_trades.sql (Up)
+        DB-->>Goose: Tables, Columns & Indexes Created
         Goose->>DB: Update goose_db_version
     end
     Goose-->>App: Migrations Applied Successfully
@@ -113,7 +114,10 @@ CREATE TABLE IF NOT EXISTS processed_user_trades (
     user_id             UUID NOT NULL,
     market_id           VARCHAR(20) NOT NULL DEFAULT '',
     sequence            BIGINT NOT NULL DEFAULT 0,
-    role                VARCHAR(10) NOT NULL DEFAULT '',
+    order_id            UUID,
+    role                VARCHAR(10),
+    price               DECIMAL(30,10),
+    quantity            DECIMAL(30,10),
     processed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (trade_id, user_id)
 );
@@ -125,7 +129,10 @@ CREATE TABLE IF NOT EXISTS processed_user_trades (
 | `user_id` | `UUID` | `NOT NULL` | The trader whose position leg was settled. |
 | `market_id` | `VARCHAR(20)` | `NOT NULL DEFAULT ''` | Market pair (e.g. `BTC-USDT`). |
 | `sequence` | `BIGINT` | `NOT NULL DEFAULT 0` | Matching engine execution sequence number. |
-| `role` | `VARCHAR(10)` | `NOT NULL DEFAULT ''` | Trader's leg role (`BUY` or `SELL`). |
+| `order_id` | `UUID` | `NULL` | Trader's original order ID. |
+| `role` | `VARCHAR(10)` | `NULL` | Trader's leg role (`BUY` or `SELL`). |
+| `price` | `DECIMAL(30,10)` | `NULL` | Trade execution price in USDT. |
+| `quantity` | `DECIMAL(30,10)` | `NULL` | Base asset trade quantity. |
 | `processed_at` | `TIMESTAMPTZ` | `NOT NULL DEFAULT NOW()` | Wall-clock time of ledger commit. |
 
 ---
@@ -203,7 +210,6 @@ DROP TABLE IF EXISTS portfolio_outbox;
 DROP INDEX IF EXISTS idx_processed_market_seq_trade;
 DROP TABLE IF EXISTS processed_market_sequences;
 DROP TABLE IF EXISTS processed_user_trades;
-DROP TABLE IF EXISTS processed_trades;
 DROP INDEX IF EXISTS idx_holdings_user;
 DROP TABLE IF EXISTS holdings;
 ```

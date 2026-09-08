@@ -50,13 +50,13 @@ The Settlement Service acts as a bridge between the asynchronous matching queue 
 ┌─────────────────────────────────────────────────────┐
 │      Wallet Service                                 │
 │  (Locks/unlocks user balances)                      │
-│  Publishes TradeSettled via its own outbox →        │
-│  → Kafka: trade-settled  (consumed by Portfolio,    │
-│    Notification, etc.)                              │
+│  Publishes via its own outbox →                     │
+│  → Kafka: trades.settled.v1 (Trade Service)         │
+│  → Kafka: portfolio.user.trades.v1 (Portfolio)      │
 └─────────────────────────────────────────────────────┘
 ```
 
-> **Downstream notification ownership:** Portfolio Service and Notification Service consume the `TradeSettled` event published by the **Wallet Service's** own outbox-backed Kafka topic — not from Settlement Service. Settlement Service has no outbox table and publishes no Kafka events of its own.
+> **Downstream notification ownership:** Trade Service consumes `trades.settled.v1` and Portfolio Service consumes `portfolio.user.trades.v1`, both published by the **Wallet Service's** own outbox — not from Settlement Service. Settlement Service has no outbox table and publishes no Kafka events of its own.
 
 ---
 
@@ -89,12 +89,15 @@ CREATE TABLE settled_trades (
     seller_id     UUID NOT NULL,
     buy_order_id  UUID NOT NULL,
     sell_order_id UUID NOT NULL,
+    market_id     VARCHAR(32) NOT NULL,
     base_asset    VARCHAR(16) NOT NULL,
     quote_asset   VARCHAR(16) NOT NULL,
     price         DECIMAL(30,10) NOT NULL,
     quantity      DECIMAL(30,10) NOT NULL,
     status        VARCHAR(16) NOT NULL DEFAULT 'PENDING',   -- 'PENDING' | 'SETTLED'
+    sequence      BIGINT NOT NULL DEFAULT 0,                -- ME per-market monotonic sequence
     executed_at   TIMESTAMP WITH TIME ZONE NOT NULL,        -- copied from TradeExecuted.executed_at
+    created_at    TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(), -- used for stale PENDING detection
     settled_at    TIMESTAMP WITH TIME ZONE                  -- populated when status transitions to 'SETTLED'
 );
 
@@ -103,7 +106,7 @@ CREATE INDEX idx_settled_trades_buyer   ON settled_trades(buyer_id);
 CREATE INDEX idx_settled_trades_seller  ON settled_trades(seller_id);
 
 -- Partial index to support the recovery goroutine scanning for stale PENDING rows
-CREATE INDEX idx_settled_trades_pending ON settled_trades(executed_at)
+CREATE INDEX idx_settled_trades_pending ON settled_trades(created_at)
     WHERE status = 'PENDING';
 ```
 
@@ -190,18 +193,18 @@ An independent background goroutine runs on a configurable polling interval and 
 
 ```sql
 SELECT trade_id, buyer_id, seller_id, buy_order_id, sell_order_id,
-       base_asset, quote_asset, price, quantity
+       market_id, base_asset, quote_asset, price, quantity, sequence, executed_at
 FROM settled_trades
 WHERE status = 'PENDING'
-  AND executed_at < NOW() - INTERVAL '60 seconds'
-ORDER BY executed_at ASC
+  AND created_at < NOW() - INTERVAL '60 seconds'
+ORDER BY created_at ASC
 LIMIT 50
 FOR UPDATE SKIP LOCKED;
 ```
 
-For each row returned, the goroutine retries `Wallet.SettleTrade(...)` directly and, on success, performs Phase 3 (UPDATE to `SETTLED`). `FOR UPDATE SKIP LOCKED` is critical here: it means the goroutine only acquires rows that are not already locked by another session. If the main Kafka consumer is concurrently retrying Phase 2 for a `PENDING` row (holding a row-level lock via its own Phase 3 UPDATE), the recovery goroutine skips that row entirely rather than blocking on it — preventing two callers from simultaneously invoking `Wallet.SettleTrade` for the same trade. Wallet-side idempotency via `trade_id` means a concurrent duplicate call is safe, but `SKIP LOCKED` avoids the redundant round-trip entirely.
+For each row returned, the goroutine retries `Wallet.SettleTrade(...)` directly passing the original `sequence` and, on success, performs Phase 3 (UPDATE to `SETTLED`). `FOR UPDATE SKIP LOCKED` is critical here: it means the goroutine only acquires rows that are not already locked by another session. If the main Kafka consumer is concurrently retrying Phase 2 for a `PENDING` row (holding a row-level lock via its own Phase 3 UPDATE), the recovery goroutine skips that row entirely rather than blocking on it — preventing two callers from simultaneously invoking `Wallet.SettleTrade` for the same trade. Wallet-side idempotency via `settled_trades` means a concurrent duplicate call is safe, but `SKIP LOCKED` avoids the redundant round-trip entirely.
 
-> **Wallet-side idempotency**: `Wallet.SettleTrade` uses `trade_id` as its own idempotency key via the `UNIQUE(reference_id, reference_type, asset)` constraint on `wallet_transactions`. Duplicate gRPC calls for the same `trade_id` — from either the main consumer or the recovery goroutine — are silently absorbed by the Wallet Service and return success.
+> **Wallet-side idempotency**: `Wallet.SettleTrade` uses `trade_id` as its primary idempotency key via `settled_trades` (`PRIMARY KEY(trade_id)` and `UNIQUE(market_id, sequence)`), backed up by `UNIQUE(wallet_id, reference_id, reference_type)` on `wallet_transactions`. Duplicate gRPC calls for the same `trade_id` are silently absorbed by the Wallet Service and return success.
 
 ---
 

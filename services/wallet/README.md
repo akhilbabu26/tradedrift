@@ -17,7 +17,7 @@ No other service can directly modify a user's balance. If Order Service wants to
 - Returns locked funds when an order is cancelled (called by Order Service)
 - Settles trades by crediting buyer and debiting seller (called by Settlement Service)
 - Exposes balance views to the API Gateway (for the user dashboard)
-- Publishes `UserTradeSettled` events to Kafka via the Transactional Outbox
+- Publishes `TradeSettled` and `PortfolioUserTrade` events to Kafka via the Transactional Outbox
 
 ---
 
@@ -200,22 +200,19 @@ This prevents double-spending without distributed locks: two concurrent orders b
 ### 4. 1-Atomic Settlement Transaction & Transactional Outbox
 
 `SettleTrade` executes inside a **single atomic PostgreSQL transaction** (`pgx.Tx`):
-1. **Primary Idempotency Registration:** Attempts `INSERT INTO settled_trades (trade_id, market_id, sequence, settled_at) VALUES (...) ON CONFLICT (trade_id) DO NOTHING`. If already present, exits immediately with success.
-2. **Deterministic Reservation Locking:** Locks both the buy reservation (`BuyOrderID`) and the sell reservation (`SellerOrderID`) in deterministic sorted order using `SELECT ... FOR UPDATE` (eliminating deadlock hazards on concurrent crossed trades).
-3. **Leg 1 (Base Asset Transfer):**
-   - Debits seller's `reserved_balance` of `BaseAsset` (e.g. BTC).
-   - Atomically decrements seller reservation's `remaining_amount` in SQL with `RowsAffected() == 1` validation.
-   - Credits buyer's `available_balance` of `BaseAsset`.
-4. **Leg 2 (Quote Asset Transfer):**
-   - Debits buyer's `reserved_balance` of `QuoteAsset` (e.g. USDT).
-   - Atomically decrements buyer reservation's `remaining_amount` in SQL with `RowsAffected() == 1` validation.
-   - Credits seller's `available_balance` of `QuoteAsset`.
-5. **Ledger Entries:** Inserts **4 immutable ledger records** (Seller Base DEBIT, Buyer Base CREDIT, Buyer Quote DEBIT, Seller Quote CREDIT) enforced by DB unique constraint `UNIQUE (wallet_id, reference_id, reference_type)`.
-6. **Writes 3 Outbox Events** atomically into the `outbox` table:
+1. **Primary Idempotency Registration:** Attempts `INSERT INTO settled_trades (trade_id, market_id, sequence, settled_at) VALUES (...) ON CONFLICT (trade_id) DO NOTHING`. If already present, exits immediately with success. (Fails fast with `ErrSettlementConflict` if the same `trade_id` appears with conflicting market/sequence).
+2. **Deterministic Reservation Locking:** Locks buy and sell reservations in deterministic alphabetical order (`min(BuyOrderID, SellerOrderID)`) using `SELECT ... FOR UPDATE` (eliminating deadlock hazards on concurrent crossed trades). Note: Market Maker accounts (`00000000-0000-0000-0000-000000000001`) manage inventory locally without reservation rows and bypass reservation locking.
+3. **Reservation State Validation & Slippage Cap (Step 4b):** Verifies reservations are active and matching assets/users. For MARKET BUY orders where execution price slippage causes `QuoteAmount > reservation.remaining_amount`, if the excess is within a 1% tolerance, `QuoteAmount` is capped to the reservation balance; excess >1% returns an error.
+4. **Precision Truncation (Step 5b):** Floor-truncates `QuoteAmount` to the quote asset's defined precision (`supported_assets.decimals`) before validation, ensuring all balance mutations and ledger rows adhere strictly to asset precision.
+5. **Deterministic Wallet Row Locking (Step 6):** Locks all four affected wallet rows in sorted ID order via a single `walletRepo.LockByIDs()` call (`SELECT ... FOR UPDATE`), preventing crossed-lock deadlocks.
+6. **Leg 1 (Base Asset Transfer):** Debits seller base asset (from `reserved_balance` and reservation `remaining_amount`, or from `available_balance` for MM), credits buyer base asset `available_balance`.
+7. **Leg 2 (Quote Asset Transfer):** Debits buyer quote asset (from `reserved_balance` and reservation `remaining_amount`, or from `available_balance` for MM), credits seller quote asset `available_balance`.
+8. **Ledger Entries:** Inserts **4 immutable ledger records** (Seller Base DEBIT, Buyer Base CREDIT, Buyer Quote DEBIT, Seller Quote CREDIT) enforced by DB unique constraint `UNIQUE (wallet_id, reference_id, reference_type)`.
+9. **Writes 3 Outbox Events** atomically into the `outbox` table:
    - `TradeSettled` (topic: `trades.settled.v1`, partition key: `buyer_id`) $\rightarrow$ consumed by Trade Service
    - `PortfolioUserTrade` BUY (topic: `portfolio.user.trades.v1`, partition key: `buyer_id`) $\rightarrow$ consumed by Portfolio Service
    - `PortfolioUserTrade` SELL (topic: `portfolio.user.trades.v1`, partition key: `seller_id`) $\rightarrow$ consumed by Portfolio Service
-7. **Commits the transaction:** If any step fails, all balance debits/credits, reservation consumptions, ledger rows, `settled_trades` row, and outbox rows roll back completely.
+10. **Commits the transaction:** If any step fails, all balance debits/credits, reservation consumptions, ledger rows, `settled_trades` row, and outbox rows roll back completely.
 
 **Outbox Multi-Worker Safety, Crash Recovery & Ordering Preservation (Migrations 00004 & 00006):**
 - Outbox claiming uses an atomic CTE with `FOR UPDATE SKIP LOCKED` ordered deterministically by `(created_at ASC, id ASC)`. It marks rows `PROCESSING` and sets `claimed_at = NOW()`.

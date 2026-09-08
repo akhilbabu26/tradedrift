@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 
 	platformuuid "tradedrift/platform/uuid"
@@ -102,55 +103,112 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 
 	// ── Step 3: Lock reservations in deterministic sorted order (SELECT ... FOR UPDATE) ──────────
 	// Acquiring in min(buyOrderID, sellOrderID) order prevents crossed-order deadlocks.
+	// MM account (00000000-0000-0000-0000-000000000001) manages inventory locally and has no reservation.
 
-	firstOrderID, secondOrderID := req.BuyOrderID, req.SellerOrderID
-	if firstOrderID > secondOrderID {
-		firstOrderID, secondOrderID = secondOrderID, firstOrderID
-	}
-
-	res1, err := reservRepo.GetByOrderIDForUpdate(ctx, firstOrderID)
-	if err != nil {
-		return fmt.Errorf("failed to fetch reservation for order %s: %w", firstOrderID, err)
-	}
-	if res1 == nil {
-		return fmt.Errorf("%w: reservation not found for order %s", repository.ErrReservationNotFound, firstOrderID)
-	}
-
-	res2, err := reservRepo.GetByOrderIDForUpdate(ctx, secondOrderID)
-	if err != nil {
-		return fmt.Errorf("failed to fetch reservation for order %s: %w", secondOrderID, err)
-	}
-	if res2 == nil {
-		return fmt.Errorf("%w: reservation not found for order %s", repository.ErrReservationNotFound, secondOrderID)
-	}
+	const mmAccountUUID = "00000000-0000-0000-0000-000000000001"
+	isBuyerMM := (req.BuyerUserID == mmAccountUUID)
+	isSellerMM := (req.SellerUserID == mmAccountUUID)
 
 	var buyerRes, sellerRes *repository.Reservation
-	if res1.OrderID == req.BuyOrderID {
-		buyerRes, sellerRes = res1, res2
-	} else {
-		buyerRes, sellerRes = res2, res1
+
+	if !isBuyerMM && !isSellerMM {
+		firstOrderID, secondOrderID := req.BuyOrderID, req.SellerOrderID
+		if firstOrderID > secondOrderID {
+			firstOrderID, secondOrderID = secondOrderID, firstOrderID
+		}
+
+		res1, err := reservRepo.GetByOrderIDForUpdate(ctx, firstOrderID)
+		if err != nil {
+			return fmt.Errorf("failed to fetch reservation for order %s: %w", firstOrderID, err)
+		}
+		if res1 == nil {
+			return fmt.Errorf("%w: reservation not found for order %s", repository.ErrReservationNotFound, firstOrderID)
+		}
+
+		res2, err := reservRepo.GetByOrderIDForUpdate(ctx, secondOrderID)
+		if err != nil {
+			return fmt.Errorf("failed to fetch reservation for order %s: %w", secondOrderID, err)
+		}
+		if res2 == nil {
+			return fmt.Errorf("%w: reservation not found for order %s", repository.ErrReservationNotFound, secondOrderID)
+		}
+
+		if res1.OrderID == req.BuyOrderID {
+			buyerRes, sellerRes = res1, res2
+		} else {
+			buyerRes, sellerRes = res2, res1
+		}
+	} else if !isBuyerMM {
+		res, err := reservRepo.GetByOrderIDForUpdate(ctx, req.BuyOrderID)
+		if err != nil {
+			return fmt.Errorf("failed to fetch reservation for order %s: %w", req.BuyOrderID, err)
+		}
+		if res == nil {
+			return fmt.Errorf("%w: reservation not found for order %s", repository.ErrReservationNotFound, req.BuyOrderID)
+		}
+		buyerRes = res
+	} else if !isSellerMM {
+		res, err := reservRepo.GetByOrderIDForUpdate(ctx, req.SellerOrderID)
+		if err != nil {
+			return fmt.Errorf("failed to fetch reservation for order %s: %w", req.SellerOrderID, err)
+		}
+		if res == nil {
+			return fmt.Errorf("%w: reservation not found for order %s", repository.ErrReservationNotFound, req.SellerOrderID)
+		}
+		sellerRes = res
 	}
 
 	// ── Step 4: Validate reservation state and ownership ─────────────────────────────────────────
 
-	if sellerRes.Status == repository.ReservationReleased {
-		return fmt.Errorf("%w: seller reservation already released for order %s", repository.ErrInsufficientReservation, req.SellerOrderID)
-	}
-	if sellerRes.Asset != req.BaseAsset {
-		return fmt.Errorf("%w: seller reservation asset %s does not match trade base asset %s", repository.ErrInvalidSettlement, sellerRes.Asset, req.BaseAsset)
-	}
-	if sellerRes.UserID != req.SellerUserID {
-		return fmt.Errorf("%w: seller reservation user_id %s does not match seller %s", repository.ErrInvalidSettlement, sellerRes.UserID, req.SellerUserID)
+	if !isSellerMM {
+		if sellerRes.Status == repository.ReservationReleased {
+			return fmt.Errorf("%w: seller reservation already released for order %s", repository.ErrInsufficientReservation, req.SellerOrderID)
+		}
+		if sellerRes.Asset != req.BaseAsset {
+			return fmt.Errorf("%w: seller reservation asset %s does not match trade base asset %s", repository.ErrInvalidSettlement, sellerRes.Asset, req.BaseAsset)
+		}
+		if sellerRes.UserID != req.SellerUserID {
+			return fmt.Errorf("%w: seller reservation user_id %s does not match seller %s", repository.ErrInvalidSettlement, sellerRes.UserID, req.SellerUserID)
+		}
 	}
 
-	if buyerRes.Status == repository.ReservationReleased {
-		return fmt.Errorf("%w: buyer reservation already released for order %s", repository.ErrInsufficientReservation, req.BuyOrderID)
+	if !isBuyerMM {
+		if buyerRes.Status == repository.ReservationReleased {
+			return fmt.Errorf("%w: buyer reservation already released for order %s", repository.ErrInsufficientReservation, req.BuyOrderID)
+		}
+		if buyerRes.Asset != req.QuoteAsset {
+			return fmt.Errorf("%w: buyer reservation asset %s does not match trade quote asset %s", repository.ErrInvalidSettlement, buyerRes.Asset, req.QuoteAsset)
+		}
+		if buyerRes.UserID != req.BuyerUserID {
+			return fmt.Errorf("%w: buyer reservation user_id %s does not match buyer %s", repository.ErrInvalidSettlement, buyerRes.UserID, req.BuyerUserID)
+		}
 	}
-	if buyerRes.Asset != req.QuoteAsset {
-		return fmt.Errorf("%w: buyer reservation asset %s does not match trade quote asset %s", repository.ErrInvalidSettlement, buyerRes.Asset, req.QuoteAsset)
-	}
-	if buyerRes.UserID != req.BuyerUserID {
-		return fmt.Errorf("%w: buyer reservation user_id %s does not match buyer %s", repository.ErrInvalidSettlement, buyerRes.UserID, req.BuyerUserID)
+
+	// ── Step 4b: Slippage cap for buyer quote amount ──────────────────────────────────────────────
+	// For MARKET BUY orders, the fill price may be higher than the price used when the reservation
+	// was created, causing quoteAmount > reservation.remaining_amount. In that case we clamp
+	// quoteAmount to the reservation balance so settlement succeeds. The cap is only applied when
+	// the excess is within a 1% slippage tolerance — larger discrepancies still surface as errors.
+	// The seller (usually MM) absorbs the small deficit.
+	if !isBuyerMM && buyerRes != nil {
+		qAmt, qErr := decimal.NewFromString(req.QuoteAmount)
+		rAmt, rErr := decimal.NewFromString(buyerRes.RemainingAmount)
+		if qErr == nil && rErr == nil && qAmt.GreaterThan(rAmt) && rAmt.IsPositive() {
+			slippage := qAmt.Sub(rAmt).Div(qAmt)
+			maxSlippage := decimal.NewFromFloat(0.01) // 1%
+			if slippage.GreaterThan(maxSlippage) {
+				return fmt.Errorf("%w: buyer reservation remaining %s is too small for quote_amount %s (slippage %.4f%% exceeds 1%% limit)",
+					repository.ErrInsufficientReservation, buyerRes.RemainingAmount, req.QuoteAmount, slippage.Mul(decimal.NewFromInt(100)).InexactFloat64())
+			}
+			// Within slippage tolerance: cap to reservation balance.
+			s.log.Warn("market order slippage: capping quote_amount to reservation balance",
+				zap.String("trade_id", req.TradeID),
+				zap.String("quote_amount", req.QuoteAmount),
+				zap.String("reservation_remaining", buyerRes.RemainingAmount),
+				zap.String("slippage_pct", slippage.Mul(decimal.NewFromInt(100)).String()),
+			)
+			req.QuoteAmount = rAmt.String()
+		}
 	}
 
 	// ── Step 5: Fetch all four affected wallet IDs (read-only, no lock yet) ──────────────────────
@@ -189,8 +247,17 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 
 	// ── Step 5b: Per-asset decimal precision check ─────────────────────────────────────────────
 	// supported_assets.decimals is the authoritative precision for each asset.
-	// The global maxDecimalScale check in validateSettlementAmounts is a hard outer cap;
-	// per-asset decimals adds a tighter domain constraint (e.g. USDT=2, BTC=8, SOL=9).
+	// QuoteAmount is computed as price × quantity at the handler layer. Floating-point
+	// multiplication can produce more decimal places than the quote asset allows
+	// (e.g. 96411.43 × 0.1 = 9641.143 → 3dp, but USDT allows only 2).
+	// Floor-truncate QuoteAmount to the quote asset's precision BEFORE validation so that
+	// all downstream writes (ledger, outbox, wallet balance mutations) use the rounded value.
+	roundedQuoteAmount, err := roundToAssetPrecision(ctx, s.assetRepo, req.QuoteAsset, req.QuoteAmount)
+	if err != nil {
+		return fmt.Errorf("round quote_amount to asset precision: %w", err)
+	}
+	req.QuoteAmount = roundedQuoteAmount
+
 	if err := validateAssetPrecision(ctx, s.assetRepo, req.BaseAsset, "base_amount", req.BaseAmount); err != nil {
 		return err
 	}
@@ -214,11 +281,17 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 
 	// ── Step 7: Leg 1 — Base Asset Transfer (Seller → Buyer) ─────────────────────────────────────
 
-	if err := walletRepo.DebitReserved(ctx, sellerBaseWallet.ID, req.BaseAmount); err != nil {
-		return fmt.Errorf("failed to debit seller reserved base balance: %w", err)
-	}
-	if err := reservRepo.ConsumeRemaining(ctx, sellerRes.ID, req.BaseAmount); err != nil {
-		return fmt.Errorf("failed to consume seller reservation: %w", err)
+	if isSellerMM {
+		if err := walletRepo.DebitAvailable(ctx, sellerBaseWallet.ID, req.BaseAmount); err != nil {
+			return fmt.Errorf("failed to debit MM seller available base balance: %w", err)
+		}
+	} else {
+		if err := walletRepo.DebitReserved(ctx, sellerBaseWallet.ID, req.BaseAmount); err != nil {
+			return fmt.Errorf("failed to debit seller reserved base balance: %w", err)
+		}
+		if err := reservRepo.ConsumeRemaining(ctx, sellerRes.ID, req.BaseAmount); err != nil {
+			return fmt.Errorf("failed to consume seller reservation: %w", err)
+		}
 	}
 	if err := walletRepo.CreditAvailable(ctx, buyerBaseWallet.ID, req.BaseAmount); err != nil {
 		return fmt.Errorf("failed to credit buyer available base balance: %w", err)
@@ -226,11 +299,17 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 
 	// ── Step 8: Leg 2 — Quote Asset Transfer (Buyer → Seller) ────────────────────────────────────
 
-	if err := walletRepo.DebitReserved(ctx, buyerQuoteWallet.ID, req.QuoteAmount); err != nil {
-		return fmt.Errorf("failed to debit buyer reserved quote balance: %w", err)
-	}
-	if err := reservRepo.ConsumeRemaining(ctx, buyerRes.ID, req.QuoteAmount); err != nil {
-		return fmt.Errorf("failed to consume buyer reservation: %w", err)
+	if isBuyerMM {
+		if err := walletRepo.DebitAvailable(ctx, buyerQuoteWallet.ID, req.QuoteAmount); err != nil {
+			return fmt.Errorf("failed to debit MM buyer available quote balance: %w", err)
+		}
+	} else {
+		if err := walletRepo.DebitReserved(ctx, buyerQuoteWallet.ID, req.QuoteAmount); err != nil {
+			return fmt.Errorf("failed to debit buyer reserved quote balance: %w", err)
+		}
+		if err := reservRepo.ConsumeRemaining(ctx, buyerRes.ID, req.QuoteAmount); err != nil {
+			return fmt.Errorf("failed to consume buyer reservation: %w", err)
+		}
 	}
 	if err := walletRepo.CreditAvailable(ctx, sellerQuoteWallet.ID, req.QuoteAmount); err != nil {
 		return fmt.Errorf("failed to credit seller available quote balance: %w", err)

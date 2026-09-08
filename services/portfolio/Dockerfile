@@ -35,4 +35,6 @@ WORKDIR /app
 COPY --from=builder /portfolio ./portfolio
 COPY services/portfolio/migration/ ./services/portfolio/migration/
 
+EXPOSE 50058 9091
+
 ENTRYPOINT ["./portfolio"]

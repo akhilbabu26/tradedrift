@@ -7,7 +7,7 @@ The `services/portfolio/internal/` directory contains the complete domain, persi
 The service follows **Hexagonal / Clean Architecture (Ports and Adapters)**:
 * **Domain Service (`service/`)**: Pure financial accounting and dynamic valuation calculations, isolated from transport protocols and databases.
 * **Storage Port & Adapter (`repository/`)**: Defines the persistence contract in `repository.go` and implements atomic database transactions, deterministic row-locking, and outbox operations in `repository/postgres/`.
-* **Asynchronous Messaging Adapters (`kafka/`)**: Handles event ingestion from `trades.settled.v1` (`consumer.go`) and streaming to `portfolios.updated.v1` (`publisher.go`).
+* **Asynchronous Messaging Adapters (`kafka/`)**: Handles event ingestion from `portfolio.user.trades.v1` (`consumer.go`) and streaming to `portfolios.updated.v1` (`publisher.go`).
 * **Synchronous Transport Adapter (`handler/`)**: Implements the gRPC server protocol for high-throughput queries from the API Gateway.
 * **Operational Telemetry (`metrics/`)**: Prometheus instrumentation tracking throughput, database latencies, outbox backlog, and financial invariant breaches.
 * **Configuration Bootstrapper (`config/`)**: Environment loading with fail-fast validation.
@@ -20,30 +20,31 @@ The service follows **Hexagonal / Clean Architecture (Ports and Adapters)**:
                    └──────────────────────┬───────────────────────┘
                                           │ gRPC (:50058)
                                           ▼
-┌──────────────────┐               ┌───────────┐               ┌────────────┐
-│  Kafka Topic     │  JSON Event   │  handler  │               │   config   │
-│ trades.settled.v1├──────────────►│  (gRPC)   │               │ (Env/Boot) │
-└────────┬─────────┘               └─────┬─────┘               └────────────┘
-         │                               │
-         │ async ingest                  ▼
-         ▼                         ┌───────────┐      gRPC     ┌────────────┐
-   ┌───────────┐                   │  service  ├──────────────►│   Wallet   │ (USDT Cash)
-   │   kafka   │ calls SettleTrade │ (Domain)  │               └────────────┘
-   │(Consumer) ├──────────────────►└─────┬─────┤      gRPC     ┌────────────┐
-   └─────┬─────┘                         │     ├──────────────►│   Market   │ (Current Prices)
-         │                               ▼     │               └────────────┘
-         │ updates holdings &      ┌───────────┴──────────┐
-         │ processed_trades &      │      repository      │
-         │ transactional outbox    │ (holdings, outbox,   │
-         │ in 1 atomic transaction │  processed_trades)   │
-         │                         └──────────┬───────────┘
-         ▼                                    │
-   ┌───────────┐                              ▼
-   │   Kafka   │◄──────────────────┌──────────────────────┐
-   │(DLQ Topic)│  Outbox Publisher │ PostgreSQL           │
-   │trades.    │  (portfolios.     │(tradedrift_portfolio)│
-   │settled.dlq│   updated.v1)     └──────────────────────┘
-   └───────────┘
+┌───────────────────────────┐          ┌───────────┐               ┌────────────┐
+│        Kafka Topic        │JSON Event│  handler  │               │   config   │
+│ portfolio.user.trades.v1  ├─────────►│  (gRPC)   │               │ (Env/Boot) │
+└─────────────┬─────────────┘          └─────┬─────┘               └────────────┘
+              │                              │
+              │ async ingest                 ▼
+              ▼                        ┌───────────┐      gRPC     ┌────────────┐
+        ┌───────────┐                  │  service  ├──────────────►│   Wallet   │ (USDT Cash)
+        │   kafka   │calls ProcessUser-│ (Domain)  │               └────────────┘
+        │(Consumer) │Trade             └─────┬─────┤      gRPC     ┌────────────┐
+        └─────┬─────┴────────────────────────┼─────┼──────────────►│   Market   │ (Current Prices)
+              │                              ▼     │               └────────────┘
+              │ updates holdings &     ┌───────────┴──────────┐
+              │ processed_user_trades  │      repository      │
+              │ & transactional outbox │ (holdings, outbox,   │
+              │ in 1 atomic transaction│  processed_user_     │
+              │                        │   trades)            │
+              │                        └──────────┬───────────┘
+              ▼                                   │
+        ┌───────────┐                             ▼
+        │   Kafka   │◄─────────────────┌──────────────────────┐
+        │(DLQ Topic)│ Outbox Publisher │ PostgreSQL           │
+        │trades.    │ (portfolios.     │(tradedrift_portfolio)│
+        │settled.dlq│  updated.v1)     └──────────────────────┘
+        └───────────┘
 ```
 
 ---
@@ -121,11 +122,12 @@ The service follows **Hexagonal / Clean Architecture (Ports and Adapters)**:
 * **Problems Solved**:
   * **Deadlock Elimination**: Sorts buyer and seller UUIDs lexicographically before acquiring row locks, eliminating PostgreSQL `40P01` deadlock errors during concurrent Alice $\leftrightarrow$ Bob counter-trades.
   * **First-Time Holding Overwrite Bug**: Executes `INSERT ... ON CONFLICT DO NOTHING` before `SELECT ... FOR UPDATE` so first-time buyers acquire real row locks rather than phantom non-locks.
-  * **Check-Then-Act Race Condition**: Replaces `SELECT EXISTS` with atomic `INSERT INTO processed_trades ... ON CONFLICT DO NOTHING` checking `RowsAffected == 0`.
+  * **Check-Then-Act Race Condition**: Replaces `SELECT EXISTS` with atomic `INSERT INTO processed_user_trades ... ON CONFLICT DO NOTHING` checking `RowsAffected == 0`.
   * **Outbox Race Condition**: Uses a CTE with `FOR UPDATE SKIP LOCKED` to transition messages to `PROCESSING` with a 1-minute lease timeout recovery.
   * **Zero-Reset Clamping**: Clamps `quantity = 0` and `total_cost = 0` upon full position liquidations to eliminate floating-point epsilon drift.
 * **Key Functions**:
-  * `ProcessTradeSettled(ctx, input)`: Executes the 1-atomic financial transaction (Buyer leg + Seller leg + ProcessedTrade dedup + Outbox generation).
+  * `ProcessUserTrade(ctx, input)`: Production accounting path executing the 1-atomic financial transaction (User holding adjustment + Monotonic Version + ProcessedUserTrade dedup + Sequence collision check + Outbox generation).
+  * `ProcessTradeSettled(ctx, input)`: Retained for audit/test compatibility.
   * `GetHoldingsByUser(ctx, userID)`: Fast index query fetching active crypto positions (`quantity > 0`).
   * `FetchPendingOutbox(ctx, limit)`: Atomically claims outbox records using `PROCESSING` state transition.
   * `MarkOutboxPublished(ctx, ids)`: Batch acknowledgment setting `status = 'PUBLISHED'`.
@@ -153,33 +155,37 @@ The service follows **Hexagonal / Clean Architecture (Ports and Adapters)**:
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Kafka as Kafka (trades.settled.v1)
+    participant Kafka as Kafka (portfolio.user.trades.v1)
     participant Consumer as kafka.Consumer
     participant Repo as postgres.Repository
     participant PG as PostgreSQL (tradedrift_portfolio)
     participant DLQ as Kafka (trades.settled.dlq)
 
     Kafka->>Consumer: FetchMessage(ctx)
-    Consumer->>Consumer: Validate UUIDs, Sequence > 0, Identifiers, Timestamps
+    Consumer->>Consumer: Validate UUIDs, Role (BUY/SELL), Sequence > 0, Decimals, Timestamps
     
     alt Invariant Failed (Poison Event)
         Consumer->>DLQ: sendToDLQ(headers=[dlq-reason])
         DLQ-->>Consumer: ACK
         Consumer->>Kafka: CommitMessages(offset)
     else Valid Event
-        Consumer->>Repo: ProcessTradeSettled(TradeSettledInput)
+        Consumer->>Repo: ProcessUserTrade(UserTradeInput)
         Repo->>PG: BEGIN Transaction
-        Repo->>PG: INSERT INTO processed_trades ON CONFLICT DO NOTHING
+        Repo->>PG: Assert sequence uniqueness in processed_market_sequences
+        Repo->>PG: INSERT INTO processed_user_trades ON CONFLICT DO NOTHING
         alt Already Processed (RowsAffected == 0)
             Repo->>PG: ROLLBACK
             Repo-->>Consumer: ErrTradeAlreadyProcessed (Safe ACK)
             Consumer->>Kafka: CommitMessages(offset)
-        else Fresh Trade
-            Repo->>PG: Deterministic Row Locks: min(Buyer, Seller) -> max(Buyer, Seller)
-            Repo->>Repo: Buyer Accounting: Weighted-Average Cost
-            Repo->>Repo: Seller Accounting: Verify Balance >= Qty, Deplete Cost, Calculate PnL
-            Repo->>PG: UPDATE holdings (Buyer & Seller)
-            Repo->>PG: INSERT portfolio_outbox (Buyer & Seller, status='PENDING')
+        else Fresh User Trade
+            Repo->>PG: Lock Single Holding: SELECT ... FOR UPDATE WHERE (user_id, asset_code)
+            alt Role == BUY
+                Repo->>Repo: Weighted-Average Cost Basis: total_cost += Q*P, quantity += Q, version++
+            else Role == SELL
+                Repo->>Repo: Verify quantity >= Q, Realized PnL += revenue - COGS, quantity -= Q, version++
+            end
+            Repo->>PG: UPDATE holdings (quantity, total_cost_basis, avg_entry_price, version)
+            Repo->>PG: INSERT portfolio_outbox (status='PENDING', version)
             Repo->>PG: COMMIT Transaction
             Repo-->>Consumer: Success
             Consumer->>Kafka: CommitMessages(offset)

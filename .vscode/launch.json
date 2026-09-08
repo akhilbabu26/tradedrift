@@ -1,0 +1,95 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Backend: Order Service",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/services/order/cmd/server/main.go",
+      "cwd": "${workspaceFolder}/services/order",
+      "envFile": "${workspaceFolder}/services/order/.env"
+    },
+    {
+      "name": "Backend: Gateway",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/services/gateway/cmd/server/main.go",
+      "cwd": "${workspaceFolder}/services/gateway",
+      "envFile": "${workspaceFolder}/services/gateway/.env"
+    },
+    {
+      "name": "Backend: Matching Engine",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/services/matching-engine/cmd/server/main.go",
+      "cwd": "${workspaceFolder}/services/matching-engine",
+      "envFile": "${workspaceFolder}/services/matching-engine/.env"
+    },
+    {
+      "name": "Backend: Liquidity Engine",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/services/liquidity-engine/cmd/server/main.go",
+      "cwd": "${workspaceFolder}/services/liquidity-engine",
+      "envFile": "${workspaceFolder}/services/liquidity-engine/.env"
+    },
+    {
+      "name": "Backend: Wallet Service",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/services/wallet/cmd/server/main.go",
+      "cwd": "${workspaceFolder}/services/wallet",
+      "envFile": "${workspaceFolder}/services/wallet/.env"
+    },
+    {
+      "name": "Backend: Trade Service",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/services/trade/cmd/server/main.go",
+      "cwd": "${workspaceFolder}/services/trade",
+      "envFile": "${workspaceFolder}/services/trade/.env"
+    },
+    {
+      "name": "Backend: Auth Service",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/services/auth/cmd/server/main.go",
+      "cwd": "${workspaceFolder}/services/auth",
+      "envFile": "${workspaceFolder}/services/auth/.env"
+    },
+    {
+      "name": "Backend: Market Service",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/services/market/cmd/server/main.go",
+      "cwd": "${workspaceFolder}/services/market",
+      "envFile": "${workspaceFolder}/services/market/.env"
+    },
+    {
+      "name": "Backend: Portfolio Service",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/services/portfolio/cmd/server/main.go",
+      "cwd": "${workspaceFolder}/services/portfolio",
+      "envFile": "${workspaceFolder}/services/portfolio/.env"
+    },
+    {
+      "name": "Backend: Settlement Service",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/services/settlement/cmd/server/main.go",
+      "cwd": "${workspaceFolder}/services/settlement",
+      "envFile": "${workspaceFolder}/services/settlement/.env"
+    }
+  ]
+}

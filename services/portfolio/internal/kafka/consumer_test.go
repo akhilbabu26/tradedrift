@@ -1,12 +1,16 @@
 package kafka
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	kafkago "github.com/segmentio/kafka-go"
 	"github.com/shopspring/decimal"
+	"go.uber.org/zap"
 )
 
 func TestTradeSettledEventValidation_Valid(t *testing.T) {
@@ -182,3 +186,123 @@ func TestValidation_DecimalScaleExceeded(t *testing.T) {
 		t.Errorf("expected scale %d to be detected as exceeding 10 digits", -d.Exponent())
 	}
 }
+
+func TestValidation_OversizedDecimalMagnitude_Price(t *testing.T) {
+	oversizedPrice := "100000000000000000000.00" // 21 integer digits (> 20)
+	price, err := decimal.NewFromString(oversizedPrice)
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+
+	if !price.GreaterThan(MaxDecimal30_10) {
+		t.Errorf("expected price %s to exceed MaxDecimal30_10", oversizedPrice)
+	}
+}
+
+func TestValidation_OversizedDecimalMagnitude_Quantity(t *testing.T) {
+	oversizedQty := "9999999999999999999999.00" // 22 integer digits (> 20)
+	qty, err := decimal.NewFromString(oversizedQty)
+	if err != nil {
+		t.Fatalf("failed to parse: %v", err)
+	}
+
+	if !qty.GreaterThan(MaxDecimal30_10) {
+		t.Errorf("expected qty %s to exceed MaxDecimal30_10", oversizedQty)
+	}
+}
+
+func TestValidation_OversizedDecimalMagnitude_TradeCost(t *testing.T) {
+	// Each is 12 digits (<= 20 digits individually), but product is 24 digits (> 20 digits)
+	price := decimal.RequireFromString("100000000000.00")
+	qty := decimal.RequireFromString("100000000000.00")
+	cost := price.Mul(qty)
+
+	if !cost.GreaterThan(MaxDecimal30_10) {
+		t.Errorf("expected trade cost %s to exceed MaxDecimal30_10", cost.String())
+	}
+}
+
+func TestConsumer_ProcessMessage_OversizedMagnitudeIsPoison(t *testing.T) {
+	c := &Consumer{
+		logger: zap.NewNop(),
+	}
+	ctx := context.Background()
+
+	// 1. Oversized price (> 20 integer digits)
+	msgPrice := kafkago.Message{
+		Value: []byte(`{
+			"trade_id": "a0000000-0000-0000-0000-000000000001",
+			"user_id": "b0000000-0000-0000-0000-000000000002",
+			"order_id": "c0000000-0000-0000-0000-000000000003",
+			"role": "BUY",
+			"market_id": "BTC-USDT",
+			"base_asset": "BTC",
+			"quote_asset": "USDT",
+			"price": "1000000000000000000000.00",
+			"quantity": "1.00",
+			"sequence": 1,
+			"executed_at": "2026-09-04T10:00:00Z",
+			"settled_at": "2026-09-04T10:00:01Z"
+		}`),
+	}
+	err := c.processMessage(ctx, msgPrice)
+	var poison *PoisonError
+	if !errors.As(err, &poison) {
+		t.Fatalf("expected PoisonError for oversized price, got: %v", err)
+	}
+
+	// 2. Oversized trade cost (price * qty > 10^20)
+	msgCost := kafkago.Message{
+		Value: []byte(`{
+			"trade_id": "a0000000-0000-0000-0000-000000000001",
+			"user_id": "b0000000-0000-0000-0000-000000000002",
+			"order_id": "c0000000-0000-0000-0000-000000000003",
+			"role": "BUY",
+			"market_id": "BTC-USDT",
+			"base_asset": "BTC",
+			"quote_asset": "USDT",
+			"price": "100000000000.00",
+			"quantity": "100000000000.00",
+			"sequence": 1,
+			"executed_at": "2026-09-04T10:00:00Z",
+			"settled_at": "2026-09-04T10:00:01Z"
+		}`),
+	}
+	err = c.processMessage(ctx, msgCost)
+	if !errors.As(err, &poison) {
+		t.Fatalf("expected PoisonError for oversized trade cost, got: %v", err)
+	}
+}
+
+func TestConsumer_ProcessMessage_SequenceExceedsMaxInt64IsPoison(t *testing.T) {
+	c := &Consumer{
+		logger: zap.NewNop(),
+	}
+	ctx := context.Background()
+
+	// Sequence > math.MaxInt64 (e.g. 18000000000000000000)
+	msgSeq := kafkago.Message{
+		Value: []byte(`{
+			"trade_id": "a0000000-0000-0000-0000-000000000001",
+			"user_id": "b0000000-0000-0000-0000-000000000002",
+			"order_id": "c0000000-0000-0000-0000-000000000003",
+			"role": "BUY",
+			"market_id": "BTC-USDT",
+			"base_asset": "BTC",
+			"quote_asset": "USDT",
+			"price": "50000.00",
+			"quantity": "1.00",
+			"sequence": 18000000000000000000,
+			"executed_at": "2026-09-04T10:00:00Z",
+			"settled_at": "2026-09-04T10:00:01Z"
+		}`),
+	}
+	err := c.processMessage(ctx, msgSeq)
+	var poison *PoisonError
+	if !errors.As(err, &poison) {
+		t.Fatalf("expected PoisonError for sequence exceeding math.MaxInt64, got: %v", err)
+	}
+}
+
+
+

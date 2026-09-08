@@ -22,11 +22,17 @@ CREATE TABLE settled_trades (
     buyer_id     UUID NOT NULL,
     seller_id    UUID NOT NULL,
     market_id    VARCHAR(20) NOT NULL,
-    price        DECIMAL(30,10) NOT NULL,
-    quantity     DECIMAL(30,10) NOT NULL,
-    status       VARCHAR(20) NOT NULL DEFAULT 'SETTLED', -- 'SETTLED', 'FAILED'
-    settled_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    price        NUMERIC(18, 8) NOT NULL,
+    quantity     NUMERIC(18, 8) NOT NULL,
+    status       VARCHAR(20) NOT NULL,                  -- 'PENDING', 'SETTLED', 'FAILED'
+    sequence     BIGINT NOT NULL DEFAULT 0,             -- Matching engine execution sequence (migration 00002)
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    settled_at   TIMESTAMPTZ
 );
+
+CREATE INDEX IF NOT EXISTS idx_settled_trades_created_at_pending 
+ON settled_trades(created_at) 
+WHERE status = 'PENDING';
 ```
 
 ---
@@ -34,7 +40,7 @@ CREATE TABLE settled_trades (
 ## 3. Query Design & Expected Patterns
 
 ### 3.1 Idempotency Check & Verification
-When receiving a `TradeExecuted` message, the Settlement Service checks if it has already been processed:
+When receiving a `TradeExecuted` message, the Settlement Service checks if it has already been recorded:
 ```sql
 SELECT status 
 FROM settled_trades 
@@ -42,10 +48,29 @@ WHERE trade_id = $1;
 ```
 *Index support:* Covered by the primary key index on `trade_id`.
 
-### 3.2 Commit Settlement Log
+### 3.2 Two-Phase Settlement Record
+1. **Record Pending Settlement (Pre-RPC):**
+```sql
+INSERT INTO settled_trades (trade_id, buyer_id, seller_id, market_id, price, quantity, status, sequence, created_at)
+VALUES ($1, $2, $3, $4, $5, $6, 'PENDING', $7, $8);
+```
+
+2. **Commit Settlement Log (Post-RPC Success):**
 Once the Wallet Service successfully acknowledges the balance mutations via the `SettleTrade` gRPC, the status is committed:
 ```sql
-INSERT INTO settled_trades (trade_id, buyer_id, seller_id, market_id, price, quantity) 
-VALUES ($1, $2, $3, $4, $5, $6);
+UPDATE settled_trades 
+SET status = 'SETTLED', settled_at = $2 
+WHERE trade_id = $1;
 ```
 *Index support:* Covered by the primary key index on `trade_id`.
+
+### 3.3 Recovery Polling
+A background recovery worker queries unfinalized trades stuck in `PENDING` past the recovery timeout:
+```sql
+SELECT trade_id, buyer_id, seller_id, market_id, price, quantity, status, sequence, created_at, settled_at
+FROM settled_trades
+WHERE status = 'PENDING' AND created_at < $1
+ORDER BY created_at ASC
+LIMIT $2;
+```
+*Index support:* Covered by partial index `idx_settled_trades_created_at_pending`.

@@ -219,11 +219,15 @@ func validateExistingReservation(existing *repository.Reservation, userID, asset
 	return existing, nil
 }
 
-// decimalScale returns the number of decimal places in d.
+// decimalScale returns the number of significant decimal places in d (ignoring trailing zeros).
 func decimalScale(d decimal.Decimal) int {
-	exp := int(d.Exponent())
-	if exp >= 0 {
+	if d.Equal(d.Truncate(0)) {
 		return 0
 	}
-	return -exp
+	for places := int32(1); places <= 10; places++ {
+		if d.Equal(d.Truncate(places)) {
+			return int(places)
+		}
+	}
+	return 11
 }

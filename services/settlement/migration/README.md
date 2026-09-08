@@ -17,8 +17,9 @@ The `migration/` directory contains all SQL schema definitions for the Settlemen
 
 ```
 services/settlement/migration/
-├── 00001_create_settled_trades.sql   ← Core ledger table, constraints, and indexes
-└── README.md                         ← This file
+├── 00001_create_settled_trades.sql          ← Core ledger table, constraints, and indexes
+├── 00002_add_sequence_to_settled_trades.sql ← Adds ME sequence column for crash recovery
+└── README.md                                ← This file
 ```
 
 ---
@@ -57,6 +58,7 @@ The `settled_trades` table is the **settlement ledger** — a durable, append-st
 | `price` | `DECIMAL(30,10)` | NOT NULL, > 0 | Trade execution price (maker's price) |
 | `quantity` | `DECIMAL(30,10)` | NOT NULL, > 0 | Trade quantity in base asset |
 | `status` | `VARCHAR(16)` | NOT NULL, DEFAULT `'PENDING'`, CHECK | Current settlement phase — see status flow below |
+| `sequence` | `BIGINT` | NOT NULL, DEFAULT 0 | Per-market monotonic counter from Matching Engine (Migration 00002) |
 | `executed_at` | `TIMESTAMPTZ` | NOT NULL | Timestamp from the Matching Engine when the trade was matched |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT `NOW()` | When **this service** registered the trade — used for stale PENDING detection |
 | `settled_at` | `TIMESTAMPTZ` | NULL | Set to `NOW()` when `status` transitions to `'SETTLED'` |
@@ -139,7 +141,21 @@ Once a trade is `SETTLED`, the recovery goroutine never needs to see it again. A
 
 ---
 
-## 5. Running Migrations Manually
+## 5. Migration: `00002_add_sequence_to_settled_trades.sql`
+
+```sql
+ALTER TABLE settled_trades ADD COLUMN IF NOT EXISTS sequence BIGINT NOT NULL DEFAULT 0;
+```
+
+### Why persist `sequence`?
+- The Matching Engine produces a per-market monotonic `sequence` for every match.
+- In `00001`, `sequence` was received via Kafka and passed to `Wallet.SettleTrade()`, but was not persisted in `settled_trades`.
+- If a crash occurred between Phase 2 and Phase 3, the background recovery goroutine had to recover the trade from `settled_trades` without knowing its original sequence, previously forcing a fallback to 1 (which caused `uq_settled_trades_market_seq` constraint violations in Wallet).
+- Persisting `sequence` in `settled_trades` allows recovery runs to provide the exact original sequence to `Wallet.SettleTrade()`.
+
+---
+
+## 6. Running Migrations Manually
 
 ```bash
 # Apply all pending migrations
@@ -159,10 +175,10 @@ goose -dir migration postgres \
 
 ---
 
-## 6. Adding a New Migration
+## 7. Adding a New Migration
 
 ```bash
-# Creates services/settlement/migration/00002_<name>.sql
+# Creates services/settlement/migration/00003_<name>.sql
 goose -dir migration create <name> sql
 ```
 

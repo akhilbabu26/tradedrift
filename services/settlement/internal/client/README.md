@@ -42,6 +42,8 @@ type SettleRequest struct {
     Price       string
     Quantity    string
     MarketID    string
+    Sequence    uint64
+    ExecutedAt  string // RFC3339Nano — ME clock
 }
 ```
 
@@ -87,7 +89,7 @@ func (c *WalletClient) SettleTrade(ctx context.Context, req SettleRequest) error
 ```
 
 **Purpose:** Calls `WalletService.SettleTrade` and returns a typed error on failure.  
-**Idempotency contract:** The Wallet Service checks `wallet_transactions` for an existing row with `(reference_id=trade_id, asset=base_asset)` before processing. If found, it returns success immediately without moving any funds. This means:
+**Idempotency contract:** The Wallet Service registers the trade in `settled_trades` via `INSERT INTO settled_trades ... ON CONFLICT (trade_id) DO NOTHING` (backed up by `UNIQUE(wallet_id, reference_id, reference_type)` on `wallet_transactions`). If found, it returns success immediately without moving any funds. This means:
 - Crash after Phase 2 → restart → Phase 2 retried → Wallet absorbs duplicate → no double settlement
 - Recovery goroutine races consumer → both call SettleTrade with same `trade_id` → Wallet absorbs one → no double settlement
 

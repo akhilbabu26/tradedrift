@@ -41,6 +41,7 @@ type TradeExecutedEvent struct {
     SellerUserID string `json:"seller_user_id"`
     Price        string `json:"price"`
     Quantity     string `json:"quantity"`
+    Sequence     uint64 `json:"sequence"`     // ME per-market monotonic counter (> 0)
     ExecutedAt   string `json:"executed_at"` // RFC3339Nano
 }
 ```
@@ -167,7 +168,10 @@ func (s *Service) RecoverStalePending(ctx context.Context)
 ```go
 for _, t := range trades {
     rpcCtx, cancel := context.WithTimeout(ctx, s.grpcTimeout)
-    err := s.wallet.SettleTrade(rpcCtx, ...)
+    err := s.wallet.SettleTrade(rpcCtx, client.SettleRequest{
+        ...,
+        Sequence: t.Sequence, // Original sequence from settled_trades prevents constraint violation
+    })
     cancel() // immediately after RPC — not deferred — prevents 50 contexts accumulating
 ```
 

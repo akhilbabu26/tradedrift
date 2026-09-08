@@ -65,11 +65,13 @@ It is split into two core layers:
 * **The Problem**: Executing `SELECT EXISTS(...)` followed by an insert at the end of the transaction creates a check-then-act gap. Under duplicate Kafka deliveries arriving simultaneously on different worker threads, both could check existence before either inserts.
 * **How It Solves It**: Atomic reservation at transaction start:
   ```sql
-  INSERT INTO processed_trades (trade_id, user_id, market_id, sequence, processed_at)
-  VALUES ($1, $2, $3, $4, NOW())
-  ON CONFLICT (trade_id) DO NOTHING;
+  INSERT INTO processed_user_trades (
+      trade_id, user_id, market_id, sequence, order_id, role, price, quantity, processed_at
+  )
+  VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+  ON CONFLICT (trade_id, user_id) DO NOTHING;
   ```
-  If `tag.RowsAffected() == 0`, the trade was already processed, and the transaction exits immediately with `ErrTradeAlreadyProcessed`.
+  If `tag.RowsAffected() == 0`, the trade leg was already processed, and the transaction safely exits with `ErrTradeAlreadyProcessed` (after verifying metadata consistency).
 
 ### 2.4 Competing Outbox Publishers & Lease Recovery
 * **The Problem**: When executing `SELECT ... FOR UPDATE SKIP LOCKED` outside a database transaction, PostgreSQL releases the lock immediately upon query completion. Multiple outbox publishers running in parallel will read the exact same rows and emit duplicate events. Furthermore, if a publisher crashes after publishing to Kafka, rows could remain stuck in limbo.

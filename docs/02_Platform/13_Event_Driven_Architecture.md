@@ -68,7 +68,8 @@ Topics are configured with distinct partition keys to distribute load while pres
 | `orders.cancel-requested.v1` | User requested order cancellation | `market_id` | Order Service | Matching Engine |
 | `orders.cancelled.v1` | Order was cancelled by matching engine | `market_id` | Matching Engine | Order Service |
 | `trades.executed.v1` | Engine matched buy and sell orders | `market_id` | Matching Engine | Settlement Service, Market Service, Notification Service (Worker) |
-| `user-trades.settled.v1` | Wallet committed balances for trade side | `user_id` | Wallet Service | Trade Service, Portfolio Service, Notification Service (Worker) |
+| `trades.settled.v1` | Authoritative trade settlement event | `buyer_id` | Wallet Service | Trade Service |
+| `portfolio.user.trades.v1` | User trade leg for portfolio accounting | `user_id` | Wallet Service | Portfolio Service |
 | `portfolios.updated.v1` | Calculated user holdings / PnL modified | `user_id` | Portfolio Service | Notification Service (Worker) |
 | `admin.user-suspended.v1` | Administrative user account lock | `user_id` | Admin Service | Order Service, Wallet Service |
 | `admin.market-halted.v1` | Emergency market trading stop | `market_id` | Admin Service | Matching Engine |
@@ -77,11 +78,9 @@ Topics are configured with distinct partition keys to distribute load while pres
 | `wallet.withdrawal-initiated.v1` | Withdrawal request processed | `user_id` | Wallet Service | Trade Service |
 | `wallet.withdrawal-completed.v1` | Withdrawal funds sent to chain | `user_id` | Wallet Service | Notification Service |
 
-> **Event Ownership Decision (`UserTradeSettled`):** The Wallet Service is the single authoritative source of truth for financial ledger modifications and balance updates. The `UserTradeSettled` event is published **exclusively by the Wallet Service** via its PostgreSQL outbox table after the balance settlement transaction commits. For every `TradeExecuted` message, the Wallet Service publishes two `UserTradeSettled` messages—one for the buyer (`partition_key = buyer_id`) and one for the seller (`partition_key = seller_id`).
-
-> [!IMPORTANT]
-> - **Schema Migrations:** The changes here alter DDL statements in the documentation. Since the codebase is not yet implemented, modifying the specifications now guarantees that the first migrations created will be correct and consistent.
-> - **User-Centric Event Naming:** To preserve clear event contracts, the event is renamed from `TradeSettled` to `UserTradeSettled` (and topic to `user-trades.settled.v1`). Each message represents a single user's leg of the settlement, rather than the trade as a whole. This resolves the naming conflict without adding partition rekeying overhead.
+> **Event Ownership Decision (Wallet Outbox):** The Wallet Service is the single authoritative source of truth for financial ledger modifications and balance updates. After `SettleTrade` commits, the Wallet Service publishes two distinct event streams via its PostgreSQL outbox:
+> 1. `trades.settled.v1` (Event: `TradeSettled`, partition key: `buyer_id`) consumed by Trade Service for trade history projection.
+> 2. `portfolio.user.trades.v1` (Event: `PortfolioUserTrade`, 2 messages per trade: buyer leg keyed by `buyer_id`, seller leg keyed by `seller_id`) consumed by Portfolio Service for position accounting and cost basis tracking.
 
 ### Partition Key Design Rationale:
 * **`market_id` Partitioning:** Orders and matches for a specific market (e.g., `BTC-USDT`) must process sequentially. Partitioning by `market_id` ensures a single Matching Engine market goroutine handles all updates sequentially, preventing race conditions.
@@ -128,7 +127,7 @@ sequenceDiagram
     par Settlement Flow
         Kafka->>Settle: Consume "TradeExecuted"
         Settle->>Wallet: gRPC: SettleTrade(trade_id, buyer_id, seller_id, amount, price)
-        Note over Wallet: DB Transaction Begins:<br/>1. Adjust buyer & seller balances<br/>2. Release reservations<br/>3. Write Transaction Logs<br/>4. Write Outbox (event=UserTradeSettled)<br/>DB Transaction Commits.
+        Note over Wallet: DB Transaction Begins:<br/>1. Adjust buyer & seller balances<br/>2. Release reservations<br/>3. Write Transaction Logs<br/>4. Write Outbox (TradeSettled + PortfolioUserTrade)<br/>DB Transaction Commits.
         Wallet-->>Settle: Settlement Acknowledged
     and Market Data Feed
         Kafka->>WSS: Consume "TradeExecuted" (Worker)
@@ -136,20 +135,20 @@ sequenceDiagram
         WSS-->>Client: Push: {"topic": "market:trades:BTC-USDT"}
     end
 
-    Note over Wallet: Outbox Publisher picks up UserTradeSettled.
-    Wallet->>Kafka: Publish "UserTradeSettled" (Key: user_id)
+    Note over Wallet: Outbox Publisher picks up events.
+    Wallet->>Kafka: Publish "TradeSettled" to trades.settled.v1 (Key: buyer_id)
+    Wallet->>Kafka: Publish "PortfolioUserTrade" to portfolio.user.trades.v1 (Key: user_id)
     
     par Portfolio Rollup
-        Kafka->>Portfolio: Consume "UserTradeSettled"
+        Kafka->>Portfolio: Consume "PortfolioUserTrade"
         Note over Portfolio: Calculate new Average Entry Cost & PnL.<br/>Write Outbox (event=PortfolioUpdated).
         Note over Portfolio: Outbox Publisher picks up event.
         Portfolio->>Kafka: Publish "PortfolioUpdated" (Key: user_id)
         Kafka->>WSS: Consume "PortfolioUpdated"
         WSS-->>Client: Push: {"topic": "user:portfolio"}
-    and Notification Alert
-        Kafka->>WSS: Consume "UserTradeSettled" (Worker)
-        Note over WSS: Write notifications to DB.<br/>Publish user notification to Redis backplane.
-        WSS-->>Client: Push: {"topic": "user:notifications"}
+    and Trade History Projection
+        Kafka->>Order: Consume "TradeSettled" (Trade Service)
+        Note over Order: Insert into trades table (read-side ledger).
     end
 ```
 

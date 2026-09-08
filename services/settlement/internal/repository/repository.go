@@ -31,6 +31,7 @@ type SettledTrade struct {
 	QuoteAsset   string
 	Price        string
 	Quantity     string
+	Sequence     uint64     // ME per-market monotonic counter — stored for recovery
 	Status       string
 	ExecutedAt   time.Time
 	SettledAt    *time.Time // nil until status = SETTLED

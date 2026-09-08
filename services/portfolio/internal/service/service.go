@@ -102,6 +102,9 @@ func (s *Service) GetPortfolioSummary(ctx context.Context, userID string) (*Port
 		if err != nil {
 			return nil, fmt.Errorf("parse last price for %s: %w", marketID, err)
 		}
+		if !currentPrice.IsPositive() {
+			return nil, fmt.Errorf("invalid market price %s for %s: must be strictly positive", currentPrice.String(), marketID)
+		}
 
 		marketVal := h.Quantity.Mul(currentPrice)
 		unrealized := marketVal.Sub(h.TotalCost)
@@ -145,6 +148,9 @@ func (s *Service) GetPortfolioHoldings(ctx context.Context, userID string) (*Por
 		currentPrice, err := decimal.NewFromString(tickerRes.GetTicker().GetLastPrice())
 		if err != nil {
 			return nil, fmt.Errorf("parse last price for %s: %w", marketID, err)
+		}
+		if !currentPrice.IsPositive() {
+			return nil, fmt.Errorf("invalid market price %s for %s: must be strictly positive", currentPrice.String(), marketID)
 		}
 
 		avgEntry := h.AverageEntryPrice()

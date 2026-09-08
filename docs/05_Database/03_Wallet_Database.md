@@ -42,7 +42,8 @@ CREATE TABLE wallets (
     initial_balance    DECIMAL(30,10) NOT NULL DEFAULT 0,
     total_balance      DECIMAL(30,10) GENERATED ALWAYS AS (available_balance + reserved_balance) STORED,
     updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_wallets_user_asset UNIQUE (user_id, asset)
+    CONSTRAINT uq_wallets_user_asset UNIQUE (user_id, asset),
+    CONSTRAINT chk_wallet_total_balance CHECK (total_balance = available_balance + reserved_balance)
 );
 ```
 
@@ -72,8 +73,38 @@ CREATE TABLE wallet_transactions (
     asset             VARCHAR(10) NOT NULL,
     amount            DECIMAL(30,10) NOT NULL,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT uq_wallet_txn_ref UNIQUE (reference_id, reference_type, asset)
+    CONSTRAINT uq_wallet_transactions_key UNIQUE (wallet_id, reference_id, reference_type)
 );
+```
+
+### 2.5 Table: `settled_trades` (Migrations 00005 & 00007)
+```sql
+CREATE TABLE settled_trades (
+    trade_id    UUID PRIMARY KEY,
+    market_id   VARCHAR(20) NOT NULL,
+    sequence    BIGINT NOT NULL,
+    settled_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT  uq_settled_trades_market_seq UNIQUE (market_id, sequence)
+);
+```
+
+### 2.6 Table: `outbox` (Migrations 00001, 00004 & 00006)
+```sql
+CREATE TABLE outbox (
+    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    aggregate_id  UUID NOT NULL,
+    event_type    VARCHAR(50) NOT NULL,
+    payload       JSONB NOT NULL,
+    partition_key VARCHAR(50) NOT NULL,
+    status        VARCHAR(20) NOT NULL DEFAULT 'PENDING', -- 'PENDING', 'PROCESSING', 'PUBLISHED', 'FAILED'
+    claimed_at    TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    published_at  TIMESTAMPTZ
+);
+
+CREATE INDEX idx_outbox_claiming
+    ON outbox(created_at ASC, id ASC)
+    WHERE status IN ('PENDING', 'PROCESSING');
 ```
 
 ---
@@ -117,23 +148,29 @@ COMMIT;
 ```
 
 ### 3.3 Settle Trade (Transaction with sorted locks)
-To settle a match between a buyer and seller, we sort `buyReservationID` and `sellReservationID` in memory and lock:
+To settle a match between a buyer and seller, we register idempotency, sort reservations and wallet rows in memory, and lock:
 ```sql
 BEGIN;
 
--- 1. Sort locks lexicographically and locking reservation rows
-SELECT id, status, remaining_amount FROM wallet_reservations WHERE id = $1 FOR UPDATE;
-SELECT id, status, remaining_amount FROM wallet_reservations WHERE id = $2 FOR UPDATE;
+-- 1. Primary Idempotency Registration (Short-circuits if already present)
+INSERT INTO settled_trades (trade_id, market_id, sequence, settled_at)
+VALUES ($1, $2, $3, NOW())
+ON CONFLICT (trade_id) DO NOTHING;
 
--- 2. Lock both user wallet rows in sorted order to prevent deadlocks
-SELECT id, available_balance, reserved_balance FROM wallets WHERE id = $3 FOR UPDATE;
-SELECT id, available_balance, reserved_balance FROM wallets WHERE id = $4 FOR UPDATE;
+-- 2. Sort order IDs alphabetically and lock reservation rows (MM accounts bypass reservations)
+SELECT id, status, remaining_amount FROM wallet_reservations WHERE order_id = $4 FOR UPDATE;
+SELECT id, status, remaining_amount FROM wallet_reservations WHERE order_id = $5 FOR UPDATE;
 
--- 3. Perform adjustments: Deduct reserved from buyer, credit available to seller
--- ... perform balance calculations ...
--- 4. Write two wallet_transactions rows (idempotent reference: trade_id)
--- 5. Write two outbox rows for UserTradeSettled (one buyer, one seller)
+-- 3. Lock all 4 affected wallet rows in sorted ID order (LockByIDs) to prevent cross-lock deadlocks
+SELECT id, available_balance, reserved_balance FROM wallets WHERE id IN ($6, $7, $8, $9) ORDER BY id FOR UPDATE;
+
+-- 4. Perform balance adjustments & slippage capping / precision floor-truncation
+-- 5. Write 4 immutable wallet_transactions rows (Seller Base DEBIT, Buyer Base CREDIT, Buyer Quote DEBIT, Seller Quote CREDIT)
+-- 6. Write 3 outbox rows:
+--    - TradeSettled (topic: trades.settled.v1, key: buyer_id)
+--    - PortfolioUserTrade BUY (topic: portfolio.user.trades.v1, key: buyer_id)
+--    - PortfolioUserTrade SELL (topic: portfolio.user.trades.v1, key: seller_id)
 
 COMMIT;
 ```
-*Index support:* Lexicographical sorting on UUID strings handles deadlock prevention natively in Go application memory.
+*Index support:* Deterministic sorting on UUID strings handles deadlock prevention natively before acquiring row locks.

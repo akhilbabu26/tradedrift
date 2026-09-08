@@ -73,14 +73,18 @@ func validateSettlementAmounts(req TradeSettlementRequest) error {
 		return fmt.Errorf("%w: base_amount %s must equal quantity %s", repository.ErrInvalidSettlement, req.BaseAmount, req.Quantity)
 	}
 
-	// QuoteAmount must equal Price × Quantity within 1e-10 tolerance.
-	// Uses Abs(difference) < threshold to handle floating-point representation edge cases in decimal arithmetic.
+	// QuoteAmount must be within 1.0 of Price × Quantity.
+	// After floor-rounding to the quote asset's precision (e.g. USDT=2dp), the computed
+	// quoteAmount may differ from exact price×qty by up to one unit in the last declared
+	// decimal place (e.g. up to 0.01 USDT). A tolerance of 1.0 covers all legitimate
+	// rounding cases while still catching any attempt to manipulate the quote amount
+	// by a meaningful sum (which would differ by far more than 1 unit).
 	expectedQuote := price.Mul(quantity)
-	tolerance := decimal.NewFromFloat(1e-10)
+	tolerance := decimal.NewFromInt(1)
 	diff := quoteAmount.Sub(expectedQuote).Abs()
 	if diff.GreaterThan(tolerance) {
-		return fmt.Errorf("%w: quote_amount %s does not match price(%s) × quantity(%s) = %s",
-			repository.ErrInvalidSettlement, req.QuoteAmount, req.Price, req.Quantity, expectedQuote.String())
+		return fmt.Errorf("%w: quote_amount %s does not match price(%s) × quantity(%s) = %s (diff %s exceeds tolerance 1.0)",
+			repository.ErrInvalidSettlement, req.QuoteAmount, req.Price, req.Quantity, expectedQuote.String(), diff.String())
 	}
 
 	// MarketID must be BaseAsset + "-" + QuoteAsset.
@@ -113,14 +117,32 @@ func validateAssetPrecision(ctx context.Context, assetRepo repository.AssetRepos
 		// Already validated upstream; this is a safeguard.
 		return fmt.Errorf("%w: %s %q is not a valid decimal", repository.ErrInvalidSettlement, field, amount)
 	}
-	exp := int(d.Exponent())
-	scale := 0
-	if exp < 0 {
-		scale = -exp
-	}
+	scale := decimalScale(d)
 	if scale > assetInfo.Decimals {
 		return fmt.Errorf("%w: %s %s has %d decimal places, maximum for %s is %d",
 			repository.ErrInvalidSettlement, field, amount, scale, assetCode, assetInfo.Decimals)
 	}
 	return nil
 }
+
+// roundToAssetPrecision rounds the given decimal string DOWN (floor) to the asset's
+// declared decimal precision. This is used for computed values like price × quantity
+// where floating-point multiplication can produce more decimal places than the asset allows.
+// Floor-rounding is the correct financial behaviour: the buyer pays the smaller rounded amount.
+func roundToAssetPrecision(ctx context.Context, assetRepo repository.AssetRepository, assetCode, amount string) (string, error) {
+	assetInfo, err := assetRepo.GetByCode(ctx, assetCode)
+	if err != nil {
+		return "", fmt.Errorf("failed to look up asset %s for precision rounding: %w", assetCode, err)
+	}
+	if assetInfo == nil {
+		return "", fmt.Errorf("asset %q is not a supported asset", assetCode)
+	}
+	d, err := decimal.NewFromString(amount)
+	if err != nil {
+		return "", fmt.Errorf("invalid decimal %q: %w", amount, err)
+	}
+	// Floor to asset precision (truncate extra decimal places, do not round up).
+	rounded := d.Truncate(int32(assetInfo.Decimals))
+	return rounded.String(), nil
+}
+

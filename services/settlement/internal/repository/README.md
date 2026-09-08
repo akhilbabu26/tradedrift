@@ -47,6 +47,7 @@ type SettledTrade struct {
     QuoteAsset   string     // e.g. "USDT" — parsed from MarketID by service layer
     Price        string     // decimal as string — exact representation, no IEEE 754 rounding
     Quantity     string     // decimal as string
+    Sequence     uint64     // ME per-market monotonic counter — stored for crash recovery
     Status       string     // StatusPending | StatusSettled
     ExecutedAt   time.Time  // copied verbatim from TradeExecuted Kafka event
     SettledAt    *time.Time // nil until Phase 3 completes

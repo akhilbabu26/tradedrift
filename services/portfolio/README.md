@@ -95,12 +95,16 @@ services/portfolio/
 | **PI-5** | **Poison Error Quarantining (DLQ)** | Invariant violations (insufficient balance, malformed UUIDs, decimal precision overflow > 10 places, timestamp inversion, sequence collisions) route to `trades.settled.dlq`. The Kafka offset is committed only after DLQ write succeeds. |
 | **PI-6** | **Monotonic Portfolio Versioning** | Every holding modification increments `version = version + 1`. This monotonic version is included in outbound `portfolios.updated.v1` events, allowing downstream WebSocket and UI clients to discard stale or out-of-order snapshots. |
 | **PI-7** | **Zero Silent Clamping & Full Liquidation Reset** | Negative balance conditions are treated as fatal errors (`ErrInsufficientHoldings`) and never silently clamped to zero. When a position is legitimately fully liquidated ($\text{quantity} = 0$), quantity and total cost are reset to exactly 0 to eliminate floating-point epsilon drift. |
+| **PI-8** | **Single Active Outbox Publisher (V1)** | Exactly **one active Outbox Publisher instance** runs in production for V1. While `FOR UPDATE SKIP LOCKED` prevents concurrent workers from claiming the same row, concurrent workers claiming adjacent events for the same `user_id` could race on Kafka dispatch. A single active publisher guarantees strict per-user FIFO ordering to `portfolios.updated.v1`. Horizontal scaling in V2 will shard publisher leases by `user_id` hash partition. |
 
 ---
 
 ## 4. End-to-End System Flows
 
 ### 4.1 Write Path: User Trade Ingestion & Accounting
+> [!IMPORTANT]
+> **Production Accounting Path:** `ProcessUserTrade` is the only production accounting path. `ProcessTradeSettled` is retained only for legacy/audit compatibility and is not invoked by the active consumer.
+
 1. Kafka message arrives on `portfolio.user.trades.v1` (partition key: `user_id`).
 2. `kafka.Consumer` verifies UUIDs, role (`BUY` or `SELL`), market ID consistency (`market_id == BaseAsset + "-" + QuoteAsset`), strict USDT quote asset, scale limits ($\le 10$ decimal digits), positive prices/quantities, sequence $> 0$, and chronological sanity (`SettledAt >= ExecutedAt`).
 3. `postgres.Repository.ProcessUserTrade` begins a database transaction:
@@ -114,6 +118,9 @@ services/portfolio/
 4. Consumer commits Kafka offset.
 
 ### 4.2 Read Path: Synchronous Portfolio Valuation
+> [!NOTE]
+> **Cash Balance Semantics:** `CashBalance` returns `available + reserved` USDT from the Wallet Service, representing **total user-owned USDT** (net equity). For open-order purchasing power, the UI/client refers to the Wallet Service's `available` balance directly.
+
 1. API Gateway validates user JWT and forwards `GetPortfolioSummary(user_id)` over gRPC (`:50058`).
 2. `handler.Handler` validates UUID format and calls `service.Service`.
 3. `service.Service` fetches active crypto holdings ($\text{quantity} > 0$) from PostgreSQL.
@@ -142,7 +149,7 @@ services/portfolio/
 | `PORTFOLIO_MIGRATIONS_DIR` | `services/portfolio/migration` | Goose SQL migrations path |
 | `KAFKA_BROKERS` | `localhost:9092` | Kafka bootstrap brokers |
 | `KAFKA_GROUP_ID` | `portfolio-service-group` | Consumer group ID |
-| `KAFKA_TOPIC_TRADE_SETTLED` | `trades.settled.v1` | Settled trades topic |
+| `KAFKA_TOPIC_PORTFOLIO_USER_TRADES` | `portfolio.user.trades.v1` | User-scoped settled trades topic |
 | `KAFKA_TOPIC_PORTFOLIO_UPDATED` | `portfolios.updated.v1` | Position updates topic |
 | `KAFKA_TOPIC_TRADE_DLQ` | `trades.settled.dlq` | Dead-letter queue topic |
 | `WALLET_GRPC_ADDR` | `localhost:50052` | Wallet gRPC endpoint |

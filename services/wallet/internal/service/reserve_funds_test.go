@@ -394,3 +394,37 @@ func TestReserveFunds_RejectsExcessAssetPrecision(t *testing.T) {
 	}
 	t.Log("Verified: amount with excess decimal places for USDT (decimals=2) rejected with ErrInvalidReservation")
 }
+
+func TestReserveFunds_AcceptsTrailingZerosWithinAssetPrecision(t *testing.T) {
+	pool, cleanup := getWalletServiceTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	svc := service.NewService(pool, zap.NewNop())
+
+	userID, _ := platformuuid.New()
+	orderID, _ := platformuuid.New()
+	walletID, _ := platformuuid.New()
+
+	// USDT wallet with enough balance
+	_, err := pool.Exec(ctx, `
+		INSERT INTO wallets (id, user_id, asset, available_balance, reserved_balance, total_balance)
+		VALUES ($1, $2, 'USDT', 2000, 0, 2000)
+	`, walletID, userID)
+	if err != nil {
+		t.Fatalf("failed to insert wallet: %v", err)
+	}
+
+	// "964.5000000000" mathematically has 1 decimal place (<= 2 for USDT) despite trailing zeros
+	res, err := svc.ReserveFunds(ctx, userID, orderID, "USDT", "964.5000000000")
+	if err != nil {
+		t.Fatalf("expected success for 964.5000000000, got: %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected non-nil reservation")
+	}
+	t.Log("Verified: amount with trailing zeroes within asset precision accepted successfully")
+}

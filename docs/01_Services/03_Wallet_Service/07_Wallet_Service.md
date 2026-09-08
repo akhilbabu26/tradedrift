@@ -183,38 +183,45 @@ All four state-changing methods above are idempotent on their natural key. See �
 
 ## 7. Settlement Flow
 
-- Settlement Service calls `SettleTrade(...)` with the full signature above.
-- **Idempotency check (new in V7 — see §8.1):** before doing anything else, check whether a `wallet_transactions` row already exists for `(trade_id, 'SETTLEMENT', <either asset>)`. If so, this is a redelivery of an already-settled trade — return `SettleTradeResponse{success: true}` immediately, no locks taken, no balances touched.
-- Otherwise, lock buyer's and seller's relevant reservation rows (`FOR UPDATE`), using `buy_order_id` / `sell_order_id`.
-- **Buyer leg:** `consumed_amount += price × quantity` (quote reservation); credit `quantity` of `base_asset` to buyer's `available_balance`.
-- **Seller leg:** `consumed_amount += quantity` (base reservation); credit `price × quantity` of `quote_asset` to seller's `available_balance`.
-- Insert `wallet_transactions` rows for both legs (`transaction_type CREDIT`, `reference_type SETTLEMENT`, `reference_id = trade_id`), insert Outbox event (`TradeSettled`), commit atomically.
-- If the insert of either leg's `wallet_transactions` row hits the `UNIQUE(reference_id, reference_type, asset)` constraint (a concurrent duplicate call that raced past the upfront check), catch the unique-violation, roll back the balance mutation for that call, and return `SettleTradeResponse{success: true}` — same as the upfront-check path. **A unique-violation on this constraint is a success signal, not an error, for this endpoint.**
+- Settlement Service calls `SettleTrade(...)` with the full signature (`trade_id`, `buyer_user_id`, `seller_user_id`, `buy_order_id`, `seller_order_id`, `base_asset`, `quote_asset`, `price`, `quantity`, `quote_amount`, `market_id`, `sequence`, `executed_at`).
+- **Primary Idempotency Registration (Step 2):** attempts `INSERT INTO settled_trades (trade_id, market_id, sequence, settled_at) VALUES (...) ON CONFLICT (trade_id) DO NOTHING`. If already present, exits immediately with success (`nil`), taking no locks and touching no balances. Detects metadata conflicts (`ErrSettlementConflict`) if the same `trade_id` appears with conflicting market or sequence.
+- **Deterministic Reservation Locking (Step 3):** locks buyer's and seller's reservation rows in deterministic alphabetical order (`min(BuyOrderID, SellerOrderID)`) using `SELECT ... FOR UPDATE`. Market Maker accounts (`00000000-0000-0000-0000-000000000001`) bypass reservations.
+- **Slippage Cap (Step 4b):** for MARKET BUY orders, if `QuoteAmount` exceeds reservation `remaining_amount` within 1%, it is capped to the reservation balance; >1% returns an error.
+- **Precision Truncation (Step 5b):** floor-truncates `QuoteAmount` to the quote asset's defined precision (`supported_assets.decimals`) before ledger and balance mutations.
+- **Deterministic Wallet Row Locking (Step 6):** acquires row locks on all four affected wallet rows in sorted ID order via a single `walletRepo.LockByIDs()` call (`SELECT ... FOR UPDATE`).
+- **Leg 1 (Base Asset Transfer):** debits seller's base asset (from reserved balance + reservation consumption, or from available balance for MM); credits buyer's `available_balance`.
+- **Leg 2 (Quote Asset Transfer):** debits buyer's quote asset (from reserved balance + reservation consumption, or from available balance for MM); credits seller's `available_balance`.
+- **Ledger Entries (Step 10):** inserts 4 immutable ledger records (Seller Base DEBIT, Buyer Base CREDIT, Buyer Quote DEBIT, Seller Quote CREDIT), protected by DB unique constraint `UNIQUE (wallet_id, reference_id, reference_type)`.
+- **Transactional Outbox (Step 11):** inserts 3 outbox records atomically within the same PostgreSQL transaction:
+  1. `TradeSettled` (topic: `trades.settled.v1`, partition key: `buyer_id`) $\rightarrow$ consumed by Trade Service.
+  2. `PortfolioUserTrade` BUY (topic: `portfolio.user.trades.v1`, partition key: `buyer_id`, role: `BUY`) $\rightarrow$ consumed by Portfolio Service.
+  3. `PortfolioUserTrade` SELL (topic: `portfolio.user.trades.v1`, partition key: `seller_id`, role: `SELL`) $\rightarrow$ consumed by Portfolio Service.
+- Commits the transaction atomically.
 
-## Event Ownership: UserTradeSettled
+## Event Ownership: Outbox Topics
 
-Wallet Service publishes two separate `UserTradeSettled` events via its own Outbox immediately after `SettleTrade` commits (one for the buyer, one for the seller), keeping the write-then-publish guarantee inside the same transactional boundary as the balance change. The outbox entries are written with `partition_key = user_id` (so buyer's event is partitioned by `buyer_id` and seller's event is partitioned by `seller_id`). Portfolio Service, Notification Service, and Trade Service consume them from Wallet Service's outbox-backed topic `user-trades.settled.v1`, **not from Settlement Service**.
+Wallet Service publishes two separate event types via its own Outbox immediately after `SettleTrade` commits:
+1. `TradeSettled` on topic `trades.settled.v1` (partitioned by `buyer_id`) consumed by Trade Service for historical/read-side projection.
+2. `PortfolioUserTrade` on topic `portfolio.user.trades.v1` (2 events per trade, partitioned by `user_id`: buyer leg and seller leg) consumed by Portfolio Service for position accounting.
 
-**`UserTradeSettled` payload fields:**
+**`PortfolioUserTrade` payload fields:**
 
 | Field | Type | Source |
 |---|---|---|
-| `trade_id` | UUID | Matching Engine (UUIDv7) |
+| `trade_id` | UUID | Matching Engine |
 | `user_id` | UUID | Recipient User ID (buyer_id or seller_id) |
-| `side` | VARCHAR(10) | "BUYER" | "SELLER" |
 | `order_id` | UUID | Recipient Order ID (buy_order_id or sell_order_id) |
 | `market_id` | VARCHAR(20) | from `TradeExecuted` via Settlement Service |
-| `base_asset` | VARCHAR(16) | from `TradeExecuted` |
-| `quote_asset` | VARCHAR(16) | from `TradeExecuted` |
-| `price` | DECIMAL(30,10) | from `TradeExecuted` |
-| `quantity` | DECIMAL(30,10) | from `TradeExecuted` |
-| `settled_at` | TIMESTAMPTZ | Wallet Service clock — time `SettleTrade` committed |
+| `sequence` | BIGINT | Monotonic ME sequence counter |
+| `role` | VARCHAR(10) | "BUY" or "SELL" |
+| `price` | DECIMAL(30,10) | Execution price |
+| `quantity` | DECIMAL(30,10) | Executed quantity |
+| `executed_at` | TIMESTAMPTZ | Matching Engine execution timestamp |
+| `settled_at` | TIMESTAMPTZ | Wallet Service settlement timestamp |
 
-> **`market_id` added in V8:** Required by Trade Service ([Trade_Service.md](../10_Trade_Service/Trade_Service.md)) for its `(market_id, executed_at DESC)` index, which powers `GET /markets/{id}/trades`. Settlement Service passes `market_id` from the `TradeExecuted` event payload into the `SettleTrade` gRPC call.
+> **Settlement Service publishes no Kafka events.** After `SettleTrade` returns successfully, Settlement Service only updates its local `settled_trades.status` to `SETTLED` and acknowledges the Kafka consumer offset. It has no outbox table and writes to no Kafka topics. Wallet Service's outbox is the single authoritative source for all downstream consumers. See [Settlement_Service.md § SI-4](../09_Settlement_Service/Settlement_Service.md).
 
-> **Settlement Service publishes no Kafka events.** After `SettleTrade` returns successfully, Settlement Service only updates its local `settled_trades.status` to `SETTLED` and acknowledges the Kafka consumer offset. It has no outbox table and writes to no Kafka topics. `UserTradeSettled` (from this service) is the single authoritative source for all downstream consumers. See [Settlement_Service.md § SI-4](../09_Settlement_Service/Settlement_Service.md).
-
-> **Note on idempotent replays and `UserTradeSettled`:** when `SettleTrade` short-circuits on an already-settled `trade_id` (either check in §7), it does **not** re-publish `UserTradeSettled` or insert a second Outbox row — the event was already published the one time this trade actually settled. Idempotent-success means "no new effects," not "replay the effects."
+> **Note on idempotent replays:** when `SettleTrade` short-circuits on an already-settled `trade_id` (Step 2), it does **not** re-publish outbox events or insert duplicate rows — the event was already published when this trade originally settled. Idempotent-success means "no new effects."
 
 ## 8. Idempotency & Consistency
 
@@ -222,8 +229,8 @@ Every state-changing gRPC method is idempotent on its natural key. The database 
 
 ### 8.1 `SettleTrade` — idempotent on `trade_id`
 
-Detection: `UNIQUE(reference_id, reference_type, asset)` on `wallet_transactions`, keyed on `(trade_id, 'SETTLEMENT', asset)`.
-Behavior: **return `success: true`**, not an error — whether detected via the upfront check or via a caught unique-violation during insert (§7). This is the fix this revision makes explicit: Settlement Service's own retry/backoff/dead-letter logic depends on genuinely-idempotent calls returning success, not a generic failure that would cause a correctly-settled trade to be needlessly retried and eventually dead-lettered.
+Detection: Primary idempotency barrier is `INSERT INTO settled_trades ... ON CONFLICT (trade_id) DO NOTHING` (backed up by `UNIQUE(wallet_id, reference_id, reference_type)` on `wallet_transactions` and `UNIQUE(market_id, sequence)` on `settled_trades`).
+Behavior: **return `success: true`**, not an error — whether detected via the upfront `settled_trades` check or via a caught unique-violation during insert (§7). Settlement Service's retry logic safely receives success, preventing false failures or duplicate settlements.
 
 ### 8.2 `ReserveFunds` — idempotent on `order_id`
 

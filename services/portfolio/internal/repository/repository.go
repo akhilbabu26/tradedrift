@@ -13,6 +13,8 @@ var (
 	ErrSelfTrade             = errors.New("self-trade detected: buyer_id equals seller_id")
 	ErrTradeAlreadyProcessed = errors.New("trade has already been processed")
 	ErrSequenceCollision     = errors.New("sequence collision detected: sequence already claimed by another trade")
+	ErrTradeConflict         = errors.New("trade metadata conflict: duplicate trade with differing metadata")
+	ErrOutboxLeaseExpired    = errors.New("outbox lease expired or row is no longer in PROCESSING state")
 )
 
 // Holding represents a user's cumulative position in a crypto asset.
@@ -98,9 +100,8 @@ type Repository interface {
 	// Buy/Sell accounting -> Invariant assertions -> Version increment -> Outbox event.
 	ProcessUserTrade(ctx context.Context, input UserTradeInput) (*OutboxMessage, error)
 
-	// ProcessTradeSettled executes the 1-atomic transaction for dual-participant events:
-	// Deduplication check -> Deterministic row locks -> Buyer calculation ->
-	// Seller calculation -> Outbox insertion -> ProcessedTrade record.
+	// Deprecated: ProcessTradeSettled is retained exclusively for legacy/audit compatibility
+	// and is NOT invoked by the active consumer. Production accounting uses ProcessUserTrade.
 	ProcessTradeSettled(ctx context.Context, input TradeSettledInput) ([]OutboxMessage, error)
 
 	// FetchPendingOutbox returns up to limit unhandled outbox events using FOR UPDATE SKIP LOCKED.

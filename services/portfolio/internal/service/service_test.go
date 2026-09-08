@@ -184,3 +184,60 @@ func TestPortfolioHoldings_Details(t *testing.T) {
 		t.Errorf("UnrealizedPnL = %s; want 40.0000000000", h.UnrealizedPnL)
 	}
 }
+
+func TestPortfolioSummary_RejectsNonPositiveMarketPrice(t *testing.T) {
+	repo := &mockRepo{
+		holdings: []repository.Holding{
+			{
+				UserID:    "018f673a-4e2b-7f11-80a2-c3bfde34aa5a",
+				AssetCode: "BTC",
+				Quantity:  decimal.RequireFromString("1.0"),
+				TotalCost: decimal.RequireFromString("50000.00"),
+			},
+		},
+	}
+	walletMock := &mockWalletClient{usdtAvailable: "1000", usdtReserved: "0"}
+
+	// Test case 1: zero price
+	marketMockZero := &mockMarketClient{
+		prices: map[string]string{"BTC-USDT": "0"},
+	}
+	svcZero := service.New(repo, walletMock, marketMockZero)
+	_, err := svcZero.GetPortfolioSummary(context.Background(), "018f673a-4e2b-7f11-80a2-c3bfde34aa5a")
+	if err == nil {
+		t.Fatal("expected error for zero market price, got nil")
+	}
+
+	// Test case 2: negative price
+	marketMockNegative := &mockMarketClient{
+		prices: map[string]string{"BTC-USDT": "-100.50"},
+	}
+	svcNegative := service.New(repo, walletMock, marketMockNegative)
+	_, err = svcNegative.GetPortfolioSummary(context.Background(), "018f673a-4e2b-7f11-80a2-c3bfde34aa5a")
+	if err == nil {
+		t.Fatal("expected error for negative market price, got nil")
+	}
+}
+
+func TestPortfolioHoldings_RejectsNonPositiveMarketPrice(t *testing.T) {
+	repo := &mockRepo{
+		holdings: []repository.Holding{
+			{
+				UserID:    "018f673a-4e2b-7f11-80a2-c3bfde34aa5a",
+				AssetCode: "BTC",
+				Quantity:  decimal.RequireFromString("1.0"),
+				TotalCost: decimal.RequireFromString("50000.00"),
+			},
+		},
+	}
+	walletMock := &mockWalletClient{}
+	marketMock := &mockMarketClient{
+		prices: map[string]string{"BTC-USDT": "-50.00"},
+	}
+	svc := service.New(repo, walletMock, marketMock)
+	_, err := svc.GetPortfolioHoldings(context.Background(), "018f673a-4e2b-7f11-80a2-c3bfde34aa5a")
+	if err == nil {
+		t.Fatal("expected error for negative market price in holdings, got nil")
+	}
+}
+

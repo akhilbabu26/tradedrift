@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	kafkago "github.com/segmentio/kafka-go"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
@@ -17,6 +19,9 @@ import (
 	"tradedrift/services/portfolio/internal/metrics"
 	"tradedrift/services/portfolio/internal/repository"
 )
+
+// MaxDecimal30_10 is the maximum magnitude supported by PostgreSQL DECIMAL(30,10): 20 integer digits, 10 fraction digits.
+var MaxDecimal30_10 = decimal.RequireFromString("99999999999999999999.9999999999")
 
 type PoisonError struct {
 	Err error
@@ -198,8 +203,12 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafkago.Message) erro
 		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
 		return poisonf("invalid sequence for trade %s: must be > 0", event.TradeID)
 	}
+	if event.Sequence > math.MaxInt64 {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
+		return poisonf("sequence %d exceeds PostgreSQL BIGINT maximum (%d)", event.Sequence, int64(math.MaxInt64))
+	}
 
-	// 4. Positive Decimal & Scale Validation (PostgreSQL DECIMAL(30,10))
+	// 4. Positive Decimal, Scale & Magnitude Validation (PostgreSQL DECIMAL(30,10))
 	price, err := decimal.NewFromString(event.Price)
 	if err != nil || price.IsZero() || price.IsNegative() {
 		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
@@ -208,6 +217,10 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafkago.Message) erro
 	if price.Exponent() < -10 {
 		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
 		return poisonf("price %s exceeds maximum supported scale of 10 decimal digits", event.Price)
+	}
+	if price.GreaterThan(MaxDecimal30_10) {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
+		return poisonf("price %s exceeds maximum DECIMAL(30,10) magnitude (20 integer digits)", event.Price)
 	}
 
 	qty, err := decimal.NewFromString(event.Quantity)
@@ -218,6 +231,16 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafkago.Message) erro
 	if qty.Exponent() < -10 {
 		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
 		return poisonf("quantity %s exceeds maximum supported scale of 10 decimal digits", event.Quantity)
+	}
+	if qty.GreaterThan(MaxDecimal30_10) {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
+		return poisonf("quantity %s exceeds maximum DECIMAL(30,10) magnitude (20 integer digits)", event.Quantity)
+	}
+
+	tradeCost := price.Mul(qty)
+	if tradeCost.GreaterThan(MaxDecimal30_10) {
+		metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
+		return poisonf("trade execution cost (price*qty=%s) exceeds maximum DECIMAL(30,10) magnitude", tradeCost.String())
 	}
 
 	// 5. Strict Chronological Timestamp Validation
@@ -263,10 +286,22 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafkago.Message) erro
 			)
 			return nil
 		}
-		if errors.Is(err, repository.ErrInsufficientHoldings) || errors.Is(err, repository.ErrSequenceCollision) {
+		if errors.Is(err, repository.ErrInsufficientHoldings) ||
+			errors.Is(err, repository.ErrSequenceCollision) ||
+			errors.Is(err, repository.ErrTradeConflict) {
 			metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
 			return poisonf("accounting violation: %v", err)
 		}
+
+		// Prevent PostgreSQL numeric field overflow (SQLSTATE 22003) from becoming an infinite retry loop
+		var pgErr *pgconn.PgError
+		if (errors.As(err, &pgErr) && pgErr.Code == "22003") ||
+			strings.Contains(err.Error(), "numeric field overflow") ||
+			strings.Contains(err.Error(), "22003") {
+			metrics.EventsConsumedTotal.WithLabelValues("poison", market).Inc()
+			return poisonf("numeric field overflow: %w", err)
+		}
+
 		metrics.EventsConsumedTotal.WithLabelValues("error", market).Inc()
 		return err
 	}

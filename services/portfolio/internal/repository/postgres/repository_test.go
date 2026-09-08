@@ -3,6 +3,7 @@ package postgres_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
@@ -55,9 +56,17 @@ func getTestPool(t *testing.T) (*pgxpool.Pool, func()) {
 			user_id             UUID NOT NULL,
 			market_id           VARCHAR(20) NOT NULL DEFAULT '',
 			sequence            BIGINT NOT NULL DEFAULT 0,
+			order_id            UUID NOT NULL,
+			role                VARCHAR(10) NOT NULL,
+			price               DECIMAL(30,10) NOT NULL,
+			quantity            DECIMAL(30,10) NOT NULL,
 			processed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			PRIMARY KEY (trade_id, user_id)
 		);
+		ALTER TABLE processed_user_trades ADD COLUMN IF NOT EXISTS order_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000';
+		ALTER TABLE processed_user_trades ADD COLUMN IF NOT EXISTS role VARCHAR(10) NOT NULL DEFAULT 'BUY';
+		ALTER TABLE processed_user_trades ADD COLUMN IF NOT EXISTS price DECIMAL(30,10) NOT NULL DEFAULT 0;
+		ALTER TABLE processed_user_trades ADD COLUMN IF NOT EXISTS quantity DECIMAL(30,10) NOT NULL DEFAULT 0;
 
 		CREATE TABLE IF NOT EXISTS processed_market_sequences (
 			market_id           VARCHAR(20) NOT NULL,
@@ -556,6 +565,11 @@ func TestOutbox_ClaimAndLeaseExpiryRecovery(t *testing.T) {
 	repo := postgres.New(pool)
 	ctx := context.Background()
 
+	// Clean outbox table for clean isolation
+	if _, err := pool.Exec(ctx, "DELETE FROM portfolio_outbox;"); err != nil {
+		t.Fatalf("clean outbox: %v", err)
+	}
+
 	eventID := uuid.New().String()
 	userID := uuid.New().String()
 
@@ -623,3 +637,487 @@ func TestOutbox_ClaimAndLeaseExpiryRecovery(t *testing.T) {
 
 	t.Logf("Verified outbox lease expiration and reclamation lifecycle for event %s", eventID)
 }
+
+func TestProcessUserTrade_WeightedAverageMultipleBuys(t *testing.T) {
+	pool, cleanup := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	repo := postgres.New(pool)
+	ctx := context.Background()
+	userID := uuid.New().String()
+	baseSeq := uint64(time.Now().UnixNano())
+
+	// Buy 1: 1.0 BTC @ 50,000 USDT -> cost 50,000
+	buy1 := repository.UserTradeInput{
+		TradeID:    uuid.New().String(),
+		UserID:     userID,
+		OrderID:    uuid.New().String(),
+		Role:       "BUY",
+		MarketID:   "BTC-USDT",
+		BaseAsset:  "BTC",
+		QuoteAsset: "USDT",
+		Price:      decimal.RequireFromString("50000.00"),
+		Quantity:   decimal.RequireFromString("1.00"),
+		Sequence:   baseSeq + 1,
+		ExecutedAt: time.Now().UTC(),
+		SettledAt:  time.Now().UTC(),
+	}
+	out1, err := repo.ProcessUserTrade(ctx, buy1)
+	if err != nil {
+		t.Fatalf("buy1 failed: %v", err)
+	}
+	if out1 == nil {
+		t.Fatal("expected outbox message for buy1")
+	}
+
+	// Buy 2: 2.0 BTC @ 80,000 USDT -> cost 160,000. Total cost = 210,000. Total qty = 3.0. Avg entry = 70,000
+	buy2 := repository.UserTradeInput{
+		TradeID:    uuid.New().String(),
+		UserID:     userID,
+		OrderID:    uuid.New().String(),
+		Role:       "BUY",
+		MarketID:   "BTC-USDT",
+		BaseAsset:  "BTC",
+		QuoteAsset: "USDT",
+		Price:      decimal.RequireFromString("80000.00"),
+		Quantity:   decimal.RequireFromString("2.00"),
+		Sequence:   baseSeq + 2,
+		ExecutedAt: time.Now().UTC(),
+		SettledAt:  time.Now().UTC(),
+	}
+	out2, err := repo.ProcessUserTrade(ctx, buy2)
+	if err != nil {
+		t.Fatalf("buy2 failed: %v", err)
+	}
+	if out2 == nil {
+		t.Fatal("expected outbox message for buy2")
+	}
+
+	holdings, err := repo.GetHoldingsByUser(ctx, userID)
+	if err != nil {
+		t.Fatalf("get holdings failed: %v", err)
+	}
+	if len(holdings) != 1 {
+		t.Fatalf("expected 1 holding, got %d", len(holdings))
+	}
+
+	h := holdings[0]
+	if !h.Quantity.Equal(decimal.RequireFromString("3.00")) {
+		t.Errorf("Quantity = %s, want 3.00", h.Quantity)
+	}
+	if !h.TotalCost.Equal(decimal.RequireFromString("210000.00")) {
+		t.Errorf("TotalCost = %s, want 210000.00", h.TotalCost)
+	}
+	expectedAvg := decimal.RequireFromString("70000.00")
+	if !h.AverageEntryPrice().Equal(expectedAvg) {
+		t.Errorf("AverageEntryPrice = %s, want %s", h.AverageEntryPrice(), expectedAvg)
+	}
+	if h.Version != 2 {
+		t.Errorf("Version = %d, want 2", h.Version)
+	}
+}
+
+func TestProcessUserTrade_FullLiquidationZeroReset(t *testing.T) {
+	pool, cleanup := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	repo := postgres.New(pool)
+	ctx := context.Background()
+	userID := uuid.New().String()
+	baseSeq := uint64(time.Now().UnixNano())
+
+	// Buy 2.0 BTC @ 60,000
+	buy := repository.UserTradeInput{
+		TradeID:    uuid.New().String(),
+		UserID:     userID,
+		OrderID:    uuid.New().String(),
+		Role:       "BUY",
+		MarketID:   "BTC-USDT",
+		BaseAsset:  "BTC",
+		QuoteAsset: "USDT",
+		Price:      decimal.RequireFromString("60000.00"),
+		Quantity:   decimal.RequireFromString("2.00"),
+		Sequence:   baseSeq + 1,
+		ExecutedAt: time.Now().UTC(),
+		SettledAt:  time.Now().UTC(),
+	}
+	if _, err := repo.ProcessUserTrade(ctx, buy); err != nil {
+		t.Fatalf("buy failed: %v", err)
+	}
+
+	// Full liquidation: Sell 2.0 BTC @ 70,000 -> PnL = (70000 - 60000) * 2 = 20,000
+	sell := repository.UserTradeInput{
+		TradeID:    uuid.New().String(),
+		UserID:     userID,
+		OrderID:    uuid.New().String(),
+		Role:       "SELL",
+		MarketID:   "BTC-USDT",
+		BaseAsset:  "BTC",
+		QuoteAsset: "USDT",
+		Price:      decimal.RequireFromString("70000.00"),
+		Quantity:   decimal.RequireFromString("2.00"),
+		Sequence:   baseSeq + 2,
+		ExecutedAt: time.Now().UTC(),
+		SettledAt:  time.Now().UTC(),
+	}
+	if _, err := repo.ProcessUserTrade(ctx, sell); err != nil {
+		t.Fatalf("sell failed: %v", err)
+	}
+
+	// Verify directly from DB table (GetHoldingsByUser filters quantity > 0)
+	var qty, totalCost, realizedPnL decimal.Decimal
+	var version int64
+	err := pool.QueryRow(ctx, `
+		SELECT quantity, total_cost, realized_pnl, version
+		FROM holdings
+		WHERE user_id = $1 AND asset_code = 'BTC';
+	`, userID).Scan(&qty, &totalCost, &realizedPnL, &version)
+	if err != nil {
+		t.Fatalf("scan holding failed: %v", err)
+	}
+
+	if !qty.IsZero() {
+		t.Errorf("expected quantity to be 0, got %s", qty)
+	}
+	if !totalCost.IsZero() {
+		t.Errorf("expected totalCost to be 0 on full liquidation, got %s", totalCost)
+	}
+	if !realizedPnL.Equal(decimal.RequireFromString("20000.00")) {
+		t.Errorf("realizedPnL = %s, want 20000.00", realizedPnL)
+	}
+	if version != 2 {
+		t.Errorf("version = %d, want 2", version)
+	}
+}
+
+func TestProcessUserTrade_DualLegIndependentAccounting(t *testing.T) {
+	pool, cleanup := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	repo := postgres.New(pool)
+	ctx := context.Background()
+	buyerID := uuid.New().String()
+	sellerID := uuid.New().String()
+	baseSeq := uint64(time.Now().UnixNano())
+
+	// Pre-seed seller holding: 5 BTC
+	seedSell := repository.UserTradeInput{
+		TradeID:    uuid.New().String(),
+		UserID:     sellerID,
+		OrderID:    uuid.New().String(),
+		Role:       "BUY",
+		MarketID:   "BTC-USDT",
+		BaseAsset:  "BTC",
+		QuoteAsset: "USDT",
+		Price:      decimal.RequireFromString("40000.00"),
+		Quantity:   decimal.RequireFromString("5.00"),
+		Sequence:   baseSeq + 1,
+		ExecutedAt: time.Now().UTC(),
+		SettledAt:  time.Now().UTC(),
+	}
+	if _, err := repo.ProcessUserTrade(ctx, seedSell); err != nil {
+		t.Fatalf("seed seller failed: %v", err)
+	}
+
+	// Matched trade T1 between buyer and seller:
+	tradeID := uuid.New().String()
+	tradeSeq := baseSeq + 2
+
+	// Buyer leg
+	buyerLeg := repository.UserTradeInput{
+		TradeID:    tradeID,
+		UserID:     buyerID,
+		OrderID:    uuid.New().String(),
+		Role:       "BUY",
+		MarketID:   "BTC-USDT",
+		BaseAsset:  "BTC",
+		QuoteAsset: "USDT",
+		Price:      decimal.RequireFromString("50000.00"),
+		Quantity:   decimal.RequireFromString("1.50"),
+		Sequence:   tradeSeq,
+		ExecutedAt: time.Now().UTC(),
+		SettledAt:  time.Now().UTC(),
+	}
+	outBuyer, err := repo.ProcessUserTrade(ctx, buyerLeg)
+	if err != nil {
+		t.Fatalf("buyer leg failed: %v", err)
+	}
+	if outBuyer == nil || outBuyer.AggregateID != buyerID {
+		t.Fatalf("expected buyer outbox event for %s", buyerID)
+	}
+
+	// Seller leg for same trade_id
+	sellerLeg := repository.UserTradeInput{
+		TradeID:    tradeID,
+		UserID:     sellerID,
+		OrderID:    uuid.New().String(),
+		Role:       "SELL",
+		MarketID:   "BTC-USDT",
+		BaseAsset:  "BTC",
+		QuoteAsset: "USDT",
+		Price:      decimal.RequireFromString("50000.00"),
+		Quantity:   decimal.RequireFromString("1.50"),
+		Sequence:   tradeSeq,
+		ExecutedAt: time.Now().UTC(),
+		SettledAt:  time.Now().UTC(),
+	}
+	outSeller, err := repo.ProcessUserTrade(ctx, sellerLeg)
+	if err != nil {
+		t.Fatalf("seller leg failed: %v", err)
+	}
+	if outSeller == nil || outSeller.AggregateID != sellerID {
+		t.Fatalf("expected seller outbox event for %s", sellerID)
+	}
+
+	// Verify buyer holdings
+	buyerHoldings, err := repo.GetHoldingsByUser(ctx, buyerID)
+	if err != nil || len(buyerHoldings) != 1 || !buyerHoldings[0].Quantity.Equal(decimal.RequireFromString("1.50")) {
+		t.Fatalf("buyer holdings verification failed: %+v", buyerHoldings)
+	}
+
+	// Verify seller holdings (5 - 1.5 = 3.5)
+	sellerHoldings, err := repo.GetHoldingsByUser(ctx, sellerID)
+	if err != nil || len(sellerHoldings) != 1 || !sellerHoldings[0].Quantity.Equal(decimal.RequireFromString("3.50")) {
+		t.Fatalf("seller holdings verification failed: %+v", sellerHoldings)
+	}
+}
+
+func TestOutbox_ProcessingNullClaimedAtRecovery(t *testing.T) {
+	pool, cleanup := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	repo := postgres.New(pool)
+	ctx := context.Background()
+
+	// Clean outbox table for test isolation
+	if _, err := pool.Exec(ctx, "DELETE FROM portfolio_outbox;"); err != nil {
+		t.Fatalf("clean outbox: %v", err)
+	}
+
+	eventID := uuid.New().String()
+	userID := uuid.New().String()
+
+	// Insert an outbox event in PROCESSING state with claimed_at = NULL (edge case)
+	_, err := pool.Exec(ctx, `
+		INSERT INTO portfolio_outbox (id, aggregate_id, event_type, payload, partition_key, status, claimed_at, created_at)
+		VALUES ($1::uuid, $2::uuid, 'PortfolioUpdated', '{"test": true}', $3, 'PROCESSING', NULL, NOW() - INTERVAL '10 minutes');
+	`, eventID, userID, userID)
+	if err != nil {
+		t.Fatalf("insert outbox: %v", err)
+	}
+
+	// FetchPendingOutbox must reclaim this row despite claimed_at being NULL
+	msgs, err := repo.FetchPendingOutbox(ctx, 10)
+	if err != nil {
+		t.Fatalf("fetch pending: %v", err)
+	}
+	found := false
+	for _, m := range msgs {
+		if m.ID == eventID {
+			found = true
+			if m.Status != "PROCESSING" {
+				t.Errorf("expected status PROCESSING, got %s", m.Status)
+			}
+			if m.ClaimedAt == nil {
+				t.Errorf("expected claimed_at to be populated upon claim")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected FetchPendingOutbox to recover PROCESSING row with NULL claimed_at: %s", eventID)
+	}
+}
+
+func TestOutbox_MarkPublishedGuard(t *testing.T) {
+	pool, cleanup := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	repo := postgres.New(pool)
+	ctx := context.Background()
+
+	// Clean outbox table for test isolation
+	if _, err := pool.Exec(ctx, "DELETE FROM portfolio_outbox;"); err != nil {
+		t.Fatalf("clean outbox: %v", err)
+	}
+
+	eventID := uuid.New().String()
+	userID := uuid.New().String()
+
+	// Insert event in PENDING state
+	_, err := pool.Exec(ctx, `
+		INSERT INTO portfolio_outbox (id, aggregate_id, event_type, payload, partition_key, status, created_at)
+		VALUES ($1::uuid, $2::uuid, 'PortfolioUpdated', '{"test": true}', $3, 'PENDING', NOW());
+	`, eventID, userID, userID)
+	if err != nil {
+		t.Fatalf("insert outbox: %v", err)
+	}
+
+	// Attempting to MarkOutboxPublished directly while in PENDING must fail (lease guard)
+	err = repo.MarkOutboxPublished(ctx, []string{eventID})
+	if err == nil {
+		t.Fatal("expected MarkOutboxPublished to fail for PENDING row, got nil")
+	}
+	if !errors.Is(err, repository.ErrOutboxLeaseExpired) {
+		t.Errorf("expected ErrOutboxLeaseExpired, got: %v", err)
+	}
+
+	// Claim row so status -> PROCESSING
+	msgs, err := repo.FetchPendingOutbox(ctx, 10)
+	if err != nil {
+		t.Fatalf("fetch pending: %v", err)
+	}
+	claimed := false
+	for _, m := range msgs {
+		if m.ID == eventID {
+			claimed = true
+		}
+	}
+	if !claimed {
+		t.Fatalf("failed to claim event %s", eventID)
+	}
+
+	// Now MarkOutboxPublished must succeed
+	if err := repo.MarkOutboxPublished(ctx, []string{eventID}); err != nil {
+		t.Fatalf("expected MarkOutboxPublished to succeed for PROCESSING row, got: %v", err)
+	}
+
+	// Calling MarkOutboxPublished a second time must fail because status is now PUBLISHED
+	err = repo.MarkOutboxPublished(ctx, []string{eventID})
+	if err == nil {
+		t.Fatal("expected second MarkOutboxPublished to fail, got nil")
+	}
+	if !errors.Is(err, repository.ErrOutboxLeaseExpired) {
+		t.Errorf("expected ErrOutboxLeaseExpired on republish, got: %v", err)
+	}
+}
+
+func TestProcessUserTrade_ConflictingMetadataRejection(t *testing.T) {
+	pool, cleanup := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	repo := postgres.New(pool)
+	ctx := context.Background()
+
+	tradeID := uuid.New().String()
+	userID := uuid.New().String()
+	orderID := uuid.New().String()
+	baseSeq := uint64(time.Now().UnixNano())
+
+	// 1. Initial valid trade
+	trade := repository.UserTradeInput{
+		TradeID:    tradeID,
+		UserID:     userID,
+		OrderID:    orderID,
+		Role:       "BUY",
+		MarketID:   "BTC-USDT",
+		BaseAsset:  "BTC",
+		QuoteAsset: "USDT",
+		Price:      decimal.RequireFromString("50000.00"),
+		Quantity:   decimal.RequireFromString("1.00"),
+		Sequence:   baseSeq + 1,
+		ExecutedAt: time.Now().UTC(),
+		SettledAt:  time.Now().UTC(),
+	}
+
+	out, err := repo.ProcessUserTrade(ctx, trade)
+	if err != nil || out == nil {
+		t.Fatalf("first trade processing failed: %v", err)
+	}
+
+	// 2. Exact duplicate -> harmless ErrTradeAlreadyProcessed
+	_, err = repo.ProcessUserTrade(ctx, trade)
+	if !errors.Is(err, repository.ErrTradeAlreadyProcessed) {
+		t.Fatalf("expected ErrTradeAlreadyProcessed for exact replay, got: %v", err)
+	}
+
+	// 3. Conflicting price -> ErrTradeConflict
+	conflictingPriceTrade := trade
+	conflictingPriceTrade.Price = decimal.RequireFromString("99000.00")
+	_, err = repo.ProcessUserTrade(ctx, conflictingPriceTrade)
+	if !errors.Is(err, repository.ErrTradeConflict) {
+		t.Fatalf("expected ErrTradeConflict for differing price, got: %v", err)
+	}
+
+	// 4. Conflicting quantity -> ErrTradeConflict
+	conflictingQtyTrade := trade
+	conflictingQtyTrade.Quantity = decimal.RequireFromString("5.00")
+	_, err = repo.ProcessUserTrade(ctx, conflictingQtyTrade)
+	if !errors.Is(err, repository.ErrTradeConflict) {
+		t.Fatalf("expected ErrTradeConflict for differing quantity, got: %v", err)
+	}
+
+	// 5. Conflicting role -> ErrTradeConflict
+	conflictingRoleTrade := trade
+	conflictingRoleTrade.Role = "SELL"
+	_, err = repo.ProcessUserTrade(ctx, conflictingRoleTrade)
+	if !errors.Is(err, repository.ErrTradeConflict) {
+		t.Fatalf("expected ErrTradeConflict for differing role, got: %v", err)
+	}
+}
+
+func TestOutbox_FetchPendingOutboxDeterministicOrder(t *testing.T) {
+	pool, cleanup := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	repo := postgres.New(pool)
+	ctx := context.Background()
+
+	// Clean outbox table for clean isolation
+	if _, err := pool.Exec(ctx, "DELETE FROM portfolio_outbox;"); err != nil {
+		t.Fatalf("clean outbox: %v", err)
+	}
+
+	userID := uuid.New().String()
+	eventIDs := make([]string, 5)
+	for i := 0; i < 5; i++ {
+		eventIDs[i] = uuid.New().String()
+		// Insert with staggered created_at: i=0 is oldest (50 mins ago), i=4 is newest (10 mins ago)
+		interval := fmt.Sprintf("%d minutes", (5-i)*10)
+		_, err := pool.Exec(ctx, fmt.Sprintf(`
+			INSERT INTO portfolio_outbox (id, aggregate_id, event_type, payload, partition_key, status, created_at)
+			VALUES ($1::uuid, $2::uuid, 'PortfolioUpdated', '{"test": true}', $3, 'PENDING', NOW() - INTERVAL '%s');
+		`, interval), eventIDs[i], userID, userID)
+		if err != nil {
+			t.Fatalf("insert outbox %d: %v", i, err)
+		}
+	}
+
+	// Claim all 5 events
+	claimed, err := repo.FetchPendingOutbox(ctx, 10)
+	if err != nil {
+		t.Fatalf("fetch pending outbox failed: %v", err)
+	}
+	if len(claimed) != 5 {
+		t.Fatalf("expected 5 claimed events, got %d", len(claimed))
+	}
+
+	// Verify strict ascending order of returned messages
+	for i := 0; i < 5; i++ {
+		if claimed[i].ID != eventIDs[i] {
+			t.Errorf("claimed[%d] ID = %s, want %s (out of order)", i, claimed[i].ID, eventIDs[i])
+		}
+	}
+}
+
+

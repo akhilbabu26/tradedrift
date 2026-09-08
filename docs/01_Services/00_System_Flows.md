@@ -636,7 +636,10 @@ gRPC: SettleTrade(trade_id, buyer_id, seller_id,
   |       asset = USDT, amount = 30,000
   |     )
   |
-  +-- INSERT outbox(event = TradeSettled, payload includes trade_id, order_ids)
+  +-- INSERT outbox:
+  |       - TradeSettled (topic: trades.settled.v1, key: buyer_id)
+  |       - PortfolioUserTrade BUY (topic: portfolio.user.trades.v1, key: buyer_id)
+  |       - PortfolioUserTrade SELL (topic: portfolio.user.trades.v1, key: seller_id)
   |
   +-- COMMIT  (all-or-nothing -- if any step fails, full rollback)
   |
@@ -646,9 +649,9 @@ gRPC: SettleTrade(trade_id, buyer_id, seller_id,
   |   Kafka offset committed ONLY after success (at-least-once, idempotent)
   |
   +-- [Background: Outbox Publisher]
-        Kafka: TradeSettled
-          +-- Portfolio Service  --> update holdings, avg entry, PnL
-          +-- Notification Service --> push via WebSocket --> Client
+        Kafka: trades.settled.v1 --> Trade Service (persists trade history)
+        Kafka: portfolio.user.trades.v1 --> Portfolio Service (updates holdings, avg entry, PnL)
+        Portfolio Service Outbox: portfolios.updated.v1 --> Notification Service --> WebSocket --> Client
 ```
 
 ---
@@ -730,14 +733,20 @@ SETTLEMENT SERVICE  (consumes TradeExecuted)
   |                     BUYER:  consumed += 30000 USDT, credit 0.5 BTC
   |                     SELLER: consumed += 0.5 BTC,   credit 30000 USDT
   |                     INSERT wallet_transactions(ref=trade_id[*])
-  |                     INSERT outbox(TradeSettled)
+  |                     INSERT outbox: TradeSettled (trades.settled.v1)
+  |                                    PortfolioUserTrade (portfolio.user.trades.v1)
   |                     COMMIT
   |
   |  [Background: Outbox Publisher]
   v
-KAFKA: TradeSettled
-  +-- PORTFOLIO SERVICE  --> update holdings, avg entry, PnL
-  +-- NOTIFICATION SERVICE --> WebSocket --> CLIENT
+KAFKA:
+  +-- trades.settled.v1 --> TRADE SERVICE (read-side trade history)
+  +-- portfolio.user.trades.v1 --> PORTFOLIO SERVICE (holdings, cost basis, PnL)
+        |
+        +-- Outbox Publisher: portfolios.updated.v1
+              |
+              v
+        NOTIFICATION SERVICE --> WebSocket --> CLIENT
 ```
 
 ---
@@ -893,8 +902,8 @@ ReleaseFunds returns exactly remaining_amount to available_balance
   Order Service         OrderCancelRequested    Matching Engine
   Matching Engine       TradeExecuted           Settlement Service
   Matching Engine       OrderCancelled          Order Service
-  Wallet Service        TradeSettled            Portfolio Service
-                                                Notification Service
+  Wallet Service        TradeSettled            Trade Service
+  Wallet Service        PortfolioUserTrade      Portfolio Service
   Portfolio Service     PortfolioUpdated        Notification Service
   Notification Service  push via WebSocket      Client
 
@@ -905,7 +914,9 @@ ReleaseFunds returns exactly remaining_amount to available_balance
   OrderCreated           market_id         Per-market ordering in ME
   OrderCancelRequested   market_id         Same partition as OrderCreated
                                            guarantees cancel processed after create
-  TradeExecuted          trade_id
-  TradeSettled           trade_id
+  TradeExecuted          market_id         Per-market ordering
+  TradeSettled           buyer_id          Trade Service ingestion
+  PortfolioUserTrade     user_id           Causal ordering per user
+  PortfolioUpdated       user_id           User portfolio stream
   OrderCancelled         order_id
 ```

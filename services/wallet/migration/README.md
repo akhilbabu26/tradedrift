@@ -286,6 +286,43 @@ WHERE status IN ('PENDING', 'PROCESSING');
 
 ---
 
+## Migration 00007 — Settled Trades Unique Sequence Constraint
+
+This migration enforces sequence integrity for settled trades.
+
+### Unique Constraint: `uq_settled_trades_market_seq`
+
+```sql
+ALTER TABLE settled_trades
+    ADD CONSTRAINT uq_settled_trades_market_seq UNIQUE (market_id, sequence);
+```
+
+### Why enforce unique `(market_id, sequence)`?
+- Combined with `PRIMARY KEY (trade_id)`, the table guarantees:
+  - 1 `trade_id` $\rightarrow$ exactly 1 row
+  - 1 `(market_id, sequence)` $\rightarrow$ exactly 1 row
+- Rejects any replay or upstream bug where two different trade IDs claim the same sequence number within a market.
+
+---
+
+## Migration 00008 — Wallet Total Balance CHECK Invariant
+
+This migration promotes the core financial invariant into a database-enforced constraint.
+
+### Constraint: `chk_wallet_total_balance`
+
+```sql
+ALTER TABLE wallets
+    ADD CONSTRAINT chk_wallet_total_balance
+    CHECK (total_balance = available_balance + reserved_balance);
+```
+
+### Why enforce at the DB level?
+- Makes `total_balance = available_balance + reserved_balance` a database-level invariant rather than an application convention.
+- Completely prevents any future code path or raw update from producing a diverged total balance silently.
+
+---
+
 ## Migration Summary
 
 | File | What it contains | Purpose |
@@ -296,6 +333,8 @@ WHERE status IN ('PENDING', 'PROCESSING');
 | `00004` | Outbox lease claiming & ledger uniqueness fix | Multi-instance outbox safety, crash recovery, and settlement idempotency |
 | `00005` | Settled trades table (`settled_trades`) | Explicit primary settlement identity and deduplication |
 | `00006` | Outbox deterministic ordering index | Guarantees deterministic FIFO claiming order `(created_at ASC, id ASC)` |
+| `00007` | Settled trades unique sequence constraint | Enforces `UNIQUE (market_id, sequence)` on `settled_trades` |
+| `00008` | Wallet total balance CHECK constraint | Enforces `total_balance = available_balance + reserved_balance` |
 
 ---
 

@@ -3,22 +3,22 @@
 > **Status:** ✅ Designed (V1)
 > **Document:** 11_Portfolio_Service.md
 > **Service:** Portfolio Service
-> **Version:** V1.1
-> **Last Updated:** July 2026
-> Revision notes: V1.1 fixes two design gaps: (1) clarifies that cross-market trades for a single user run on separate Kafka partition goroutines concurrently, making DB row-locking the sole protection against lost updates; (2) adds a dedicated self-trade accounting handler to prevent deadlocks and cost-basis corruption. Source of truth for trades: `TradeSettled` (Wallet Service outbox). Source of truth for cash balance: Wallet Service gRPC. Source of truth for market prices: Redis.
+> **Version:** V1.2  
+> **Last Updated:** September 2026  
+> Revision notes: V1.2 synchronizes with current implementation: (1) Inbound trade ingestion consumes `portfolio.user.trades.v1` (Wallet Service outbox, partitioned by `user_id`); (2) Market prices queried dynamically via Market Service gRPC (`MarketService.GetTicker`); (3) Sequence collision protection via `processed_market_sequences` and user trade leg deduplication via `processed_user_trades`; (4) Monotonic position versioning stamped into `holdings` and `portfolio_outbox`.
 
 ---
 
 ## Purpose
 
-The Portfolio Service tracks **holdings, average entry prices, and realized profit and loss (PnL)** for all users. It is a state-tracking microservice: it consumes `TradeSettled` events from Kafka, updates internal holdings state inside a Postgres database, writes event notifications to a transactional outbox table, and publishes `PortfolioUpdated` events to Kafka.
+The Portfolio Service tracks **holdings, average entry prices, and realized profit and loss (PnL)** for all users. It is a state-tracking microservice: it consumes user-scoped trade events (`portfolio.user.trades.v1`) from Kafka, updates internal holdings state inside a Postgres database, asserts market sequence integrity, increments monotonic version counters, writes event notifications to a transactional outbox table, and publishes `PortfolioUpdated` events to Kafka.
 
 Its responsibilities are:
 
-1. **Maintain user crypto holdings records** (current net balance, total cost basis, and cumulative realized PnL per asset).
-2. **Expose read-only APIs** for user portfolio summaries and detailed holdings lists.
-3. **Calculate total portfolio valuation** dynamically by combining database holdings records with cash balances queried from Wallet Service (gRPC) and latest market prices read from Redis.
-4. **Publish `PortfolioUpdated` events** via the transactional outbox pattern to trigger WebSocket client notifications.
+1. **Maintain user crypto holdings records** (current net balance, total cost basis, average entry price, and cumulative realized PnL per asset).
+2. **Expose read-only gRPC APIs** for user portfolio summaries and detailed holdings lists (called by API Gateway).
+3. **Calculate total portfolio valuation** dynamically by combining database holdings records with cash balances queried from Wallet Service (gRPC) and latest mark prices queried from Market Service (gRPC).
+4. **Publish `PortfolioUpdated` events** via the transactional outbox pattern to `portfolios.updated.v1` to trigger WebSocket client notifications.
 5. **Support self-healing/bootstrap** by rebuilding a user's holdings state from Trade Service's indexed gRPC trade records on startup or on-demand.
 
 ---
@@ -39,7 +39,7 @@ Its responsibilities are:
 ## 1. System Context & Event Flow
 
 ```
-                  Kafka: TradeSettled
+             Kafka: portfolio.user.trades.v1 (keyed by user_id)
                            │
                            ▼
                Portfolio Service Consumer
@@ -53,14 +53,14 @@ Its responsibilities are:
           Commit DB transaction atomically
                                          │
                                          ▼
-                               Outbox Goroutine
+                               Outbox Publisher (V1 single active)
                                          │
                                          ▼
-                            Kafka: PortfolioUpdated
+                            Kafka: portfolios.updated.v1
                                          │
                                          ▼
-                               Notification Service
-                               (WebSocket Push)
+                               Notification & WS Service
+                               (Real-Time Push)
 ```
 
 ---
@@ -71,116 +71,126 @@ Persisting "unrealized PnL" or "total portfolio valuation" in a database is a ma
 
 ### 1. Cash Balance (gRPC read on demand)
 Portfolio Service does not track cash balance (`USDT`) locally. Doing so introduces high risk of data drift under complex wallet operations (deposits, withdrawals, fees, or initial allocation). 
-When a portfolio summary is requested, the Portfolio Service queries Wallet Service synchronously via the `Wallet.GetBalances(user_id)` gRPC interface to retrieve the current available cash balance.
+When a portfolio summary is requested, the Portfolio Service queries Wallet Service synchronously via the `Wallet.GetBalances(user_id)` gRPC interface to retrieve the current available and reserved cash balances.
 
-### 2. Market Prices (Redis read on demand)
-Market Service writes the rolling 24h ticker statistics to Redis under the hash key `ticker:{market_id}` (e.g. `ticker:BTC_USDT`). Portfolio Service queries the `last_price` field from this hash on demand to get the latest asset valuation price.
+### 2. Market Prices (Market Service gRPC read on demand)
+Portfolio Service queries current mark prices directly from `MarketService.GetTicker(market_id)` (e.g. `BTC-USDT`) over gRPC on demand to compute live asset valuation.
 
 ### 3. Cost Basis & Realized PnL (Postgres local)
-Holdings (quantity, cost basis, average price, realized PnL) are computed from the historical flow of trades and stored locally in Postgres.
+Holdings (quantity, cost basis, average entry price, realized PnL, monotonic version) are computed from the historical flow of trades and stored locally in Postgres.
 
 ```
-                  Client GET /portfolio/summary
+                  Client GET /api/v1/portfolio/summary
                                 │
                                 ▼
                        Portfolio Service
                         ├── Query local DB holdings (BTC qty, cost basis)
-                        ├── Query Redis for market last_price (from ticker:BTC_USDT)
+                        ├── Query Market Service gRPC for mark price (BTC-USDT ticker)
                         └── Query Wallet Service gRPC for USDT cash balance
                                 │
                                 ▼
                      Calculate on-the-fly:
-                     - market_value = qty * market_price
+                     - market_value = qty * last_price
                      - unrealized_pnl = market_value - total_cost
-                     - total_value = cash + market_value
+                     - total_equity = cash + sum(market_values)
 ```
 
 ---
 
 ## 3. Trade Processing Logic (Accounting Rules)
 
-When a `TradeSettled` message is consumed, the service updates the holdings row for the **base asset** of the trade (e.g. `BTC` for a `BTC_USDT` trade) for both the buyer and the seller. The quote asset (`USDT`) balance change is ignored by Portfolio Service since USDT balance is fetched dynamically from Wallet Service.
+When a message is consumed from `portfolio.user.trades.v1`, the service executes `ProcessUserTrade(UserTradeInput)` inside a single atomic PostgreSQL transaction. Each message represents one user's trade leg (`role == "BUY"` or `role == "SELL"`).
 
-The calculations are performed inside a Postgres transaction using row-level locking (`SELECT ... FOR UPDATE` on user holding rows).
+The calculations are performed using row-level locking on the user's holding row (`SELECT ... FROM holdings WHERE user_id = $1 AND asset_code = $2 FOR UPDATE`). Because events are partitioned by `user_id`, only a single user holding row is locked per transaction, eliminating cross-user deadlocks entirely.
 
-### 3.1 Buyer Leg (Asset Addition)
-For the buyer, the quantity of the base asset increases, and the cost basis increases by the trade value (`quantity × price`).
-- **Existing state:** `qty_prev`, `cost_prev`, `realized_pnl_prev`
-- **Updated state:**
-  ```sql
-  qty_new = qty_prev + trade.quantity
-  cost_new = cost_prev + (trade.quantity * trade.price)
-  realized_pnl_new = realized_pnl_prev -- unchanged
+### 3.1 BUY Accounting (Asset Addition)
+For a BUY leg, the quantity of the base asset increases, and the cost basis increases by the trade value (`quantity × price`).
+- **Formulas:**
+  ```text
+  quantity += Q
+  cost += Q × P
+  average_entry = cost / quantity
+  version += 1
   ```
-- **Derived values:** `average_entry_price = cost_new / qty_new`
+- **Realized PnL:** Unchanged during BUY operations.
 
-### 3.2 Seller Leg (Asset Reduction)
-For the seller, the quantity of the base asset decreases. The cost basis is reduced proportionally based on the current `average_entry_price`. The difference between the sale price and the cost basis of the sold quantity is realized as profit or loss.
-- **Existing state:** `qty_prev`, `cost_prev`, `realized_pnl_prev`
-- **Derivation:** `avg_entry_price = cost_prev / qty_prev`
-- **Updated state:**
-  ```sql
-  qty_new = qty_prev - trade.quantity
-  cost_of_sold_qty = trade.quantity * avg_entry_price
-  
-  qty_new = MAX(0, qty_new) -- safety clamp
-  cost_new = cost_prev - cost_of_sold_qty
-  
-  -- realize profit or loss
-  trade_revenue = trade.quantity * trade.price
-  realized_pnl_new = realized_pnl_prev + (trade_revenue - cost_of_sold_qty)
+### 3.2 SELL Accounting (Asset Reduction)
+For a SELL leg, the quantity of the base asset decreases. The cost basis is reduced proportionally based on the previous `average_entry_price`. Realized profit or loss is recorded.
+- **Invariant Check:** Verifies `holding.quantity >= Q`. If insufficient, returns `ErrInsufficientHoldings` and routes the event to `trades.settled.dlq` (zero silent clamping).
+- **Formulas:**
+  ```text
+  COGS = Q × previous_average_entry
+  revenue = Q × P
+  realized_PnL += revenue - COGS
+
+  quantity -= Q
+  cost -= COGS
+  version += 1
   ```
-- **Clamping:** If `qty_new == 0`, then `cost_new` is set to exactly `0` to prevent fractional floating-point remainder drift or division-by-zero errors on subsequent trades.
+- **Zero-Reset Clamping:** If `quantity == 0` (full position liquidation), `cost` is set to exactly `0` to eliminate floating-point epsilon drift.
 
-### 3.3 Self-Trades (Wash Trades)
-
-A self-trade is a trade where `buyer_id == seller_id`. In a self-trade, the user is buying from and selling to themselves.
-- The user's net holding quantity does not change.
-- The net cost basis does not change.
-- No realized PnL is generated (self-sales cannot realize profits or losses).
-
-**Handler Rule:**
-If the consumer receives a `TradeSettled` event where `buyer_id == seller_id`:
-1. The consumer skips mutating the `holdings` table entirely.
-2. The consumer inserts the `trade_id` into the `processed_trades` table (to prevent double-processing on replay).
-3. The consumer inserts a `PortfolioUpdated` event into `portfolio_outbox` carrying the current holdings unchanged (triggering UI refresh).
-4. Commits the transaction.
-
-This bypass prevents database deadlocks (trying to acquire two row-locks on the same `(user_id, asset_code)` row in the same transaction) and avoids cost-basis corruption.
+### 3.3 Sequence Integrity & Idempotency
+1. **Market Sequence Integrity:** Checked against `processed_market_sequences(market_id, sequence)`. If the `(market_id, sequence)` pair was already recorded for a different `trade_id`, transaction aborts with `ErrSequenceCollision`.
+2. **User Leg Idempotency:** Checked against `processed_user_trades(trade_id, user_id)`. If the row already exists:
+   - If metadata (price, quantity, role, market) matches: safely skipped (`ErrTradeAlreadyProcessed`).
+   - If metadata conflicts: transaction aborts with `ErrTradeConflict`.
 
 ---
 
-## 4. Database Schema
+## 4. Database Schema (Goose Migrations 00001 & 00002)
 
 ```sql
-CREATE TABLE holdings (
+CREATE TABLE IF NOT EXISTS holdings (
     user_id             UUID NOT NULL,
     asset_code          VARCHAR(10) NOT NULL,
-    quantity            DECIMAL(30,10) NOT NULL DEFAULT 0,  -- current asset count
-    total_cost          DECIMAL(30,10) NOT NULL DEFAULT 0,  -- net cost basis in quote currency
-    realized_pnl        DECIMAL(30,10) NOT NULL DEFAULT 0,  -- cumulative realized PnL
+    quantity            DECIMAL(30,10) NOT NULL DEFAULT 0 CHECK (quantity >= 0),
+    total_cost          DECIMAL(30,10) NOT NULL DEFAULT 0 CHECK (total_cost >= 0),
+    realized_pnl        DECIMAL(30,10) NOT NULL DEFAULT 0,
+    version             BIGINT NOT NULL DEFAULT 0,
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (user_id, asset_code)
 );
 
--- Fast user lookup index
-CREATE INDEX idx_holdings_user ON holdings(user_id);
+CREATE INDEX IF NOT EXISTS idx_holdings_user ON holdings(user_id);
 
--- Outbox table for atomic event publishing
-CREATE TABLE portfolio_outbox (
-    id            UUID PRIMARY KEY,
-    aggregate_id  UUID NOT NULL,                             -- user_id
-    event_type    VARCHAR(50) NOT NULL,                      -- 'PortfolioUpdated'
-    payload       JSONB NOT NULL,
-    partition_key VARCHAR(50) NOT NULL,                      -- user_id (keeps user events ordered)
-    status        VARCHAR(20) NOT NULL DEFAULT 'PENDING',    -- 'PENDING' | 'PUBLISHED'
-    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    published_at  TIMESTAMPTZ
+CREATE TABLE IF NOT EXISTS processed_user_trades (
+    trade_id            UUID NOT NULL,
+    user_id             UUID NOT NULL,
+    market_id           VARCHAR(20) NOT NULL DEFAULT '',
+    sequence            BIGINT NOT NULL DEFAULT 0,
+    order_id            UUID NOT NULL,
+    role                VARCHAR(10) NOT NULL,
+    price               DECIMAL(30,10) NOT NULL,
+    quantity            DECIMAL(30,10) NOT NULL,
+    processed_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (trade_id, user_id)
 );
 
--- Index to support the background publisher scanning for unpublished rows
-CREATE INDEX idx_portfolio_outbox_pending ON portfolio_outbox(created_at) 
+CREATE TABLE IF NOT EXISTS processed_market_sequences (
+    market_id           VARCHAR(20) NOT NULL,
+    sequence            BIGINT NOT NULL,
+    trade_id            UUID NOT NULL,
+    recorded_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (market_id, sequence)
+);
+
+CREATE TABLE IF NOT EXISTS portfolio_outbox (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    aggregate_id        UUID NOT NULL,                             -- user_id
+    event_type          VARCHAR(50) NOT NULL,                      -- 'PortfolioUpdated'
+    payload             JSONB NOT NULL,
+    partition_key       VARCHAR(50) NOT NULL,                      -- user_id
+    status              VARCHAR(20) NOT NULL DEFAULT 'PENDING',    -- 'PENDING' | 'PROCESSING' | 'PUBLISHED'
+    claimed_at          TIMESTAMPTZ,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    published_at        TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_portfolio_outbox_pending ON portfolio_outbox(created_at)
     WHERE status = 'PENDING';
+
+CREATE INDEX IF NOT EXISTS idx_portfolio_outbox_processing ON portfolio_outbox(claimed_at)
+    WHERE status = 'PROCESSING';
 ```
 
 ---
@@ -189,51 +199,64 @@ CREATE INDEX idx_portfolio_outbox_pending ON portfolio_outbox(created_at)
 
 To ensure the holding updates and the event publishing are atomically consistent (preventing double-publishing or failing to publish after a DB commit), the Portfolio Service implements a **Transactional Outbox** pattern:
 
-1. **Atomic Write:** The `TradeSettled` Kafka consumer opens a Postgres transaction, mutates the `holdings` row, inserts a `PortfolioUpdated` record into the `portfolio_outbox` table, and commits the transaction.
-2. **Background Publisher:** A dedicated background goroutine polls the `portfolio_outbox` table using:
+1. **Atomic Write:** The `ProcessUserTrade` transaction mutates the `holdings` row, increments `version = version + 1`, inserts a `PortfolioUpdated` record into the `portfolio_outbox` table (with `portfolio_version`), and commits the transaction.
+2. **Background Publisher (Single Active Instance V1):** A background goroutine polls the `portfolio_outbox` table every 100ms using an atomic CTE with `FOR UPDATE SKIP LOCKED`:
    ```sql
-   SELECT id, aggregate_id, event_type, payload, partition_key
-   FROM portfolio_outbox
-   WHERE status = 'PENDING'
-   ORDER BY created_at ASC
-   LIMIT 100
-   FOR UPDATE SKIP LOCKED;
+   WITH claim AS (
+       SELECT id
+       FROM portfolio_outbox
+       WHERE status = 'PENDING'
+          OR (status = 'PROCESSING' AND claimed_at < NOW() - INTERVAL '1 minute')
+       ORDER BY created_at ASC
+       LIMIT $1
+       FOR UPDATE SKIP LOCKED
+   )
+   UPDATE portfolio_outbox
+   SET status = 'PROCESSING', claimed_at = NOW()
+   WHERE id IN (SELECT id FROM claim)
+   RETURNING id, aggregate_id, event_type, payload, partition_key;
    ```
-3. **Kafka Publish:** For each row, the publisher writes the event to Kafka, then marks the row status as `PUBLISHED` and sets `published_at = NOW()` inside a short database transaction.
+3. **Kafka Publish:** For each row, the publisher writes the event to Kafka topic `portfolios.updated.v1` (partition key: `user_id`), then marks the row status as `PUBLISHED` (`WHERE id = $1 AND status = 'PROCESSING'`) and sets `published_at = NOW()`.
 
 ---
 
 ## 6. Kafka Consumer Group Design
 
-- **Consumer Topic:** `TradeSettled`
-- **Partition Key:** `market_id`
-- **Consumer Group:** `portfolio-service`
-- **Concurrency:** One goroutine per Kafka partition.
-- **Race Condition Warning (Critical):** Partitioning by `market_id` ensures that events for a single market are sequential. However, a single user can trade on multiple markets concurrently (e.g. BTC-USDT and BTC-EUR). Because these events have different `market_id` partition keys, they are processed by **different consumer goroutines concurrently**, and will attempt to write to the same `(user_id, 'BTC')` holding row at the same time.
-- **Sole Concurrency Protection:** Therefore, the row-level lock (`SELECT ... FOR UPDATE` in §3) is the **sole safety mechanism** that prevents concurrent updates from overriding each other (lost updates). Do not remove these row locks under the false assumption that Kafka partition ordering protects against multi-market user updates.
-- **Deadlock Avoidance:** To prevent deadlocks when locking both the buyer and seller holding rows in a single transaction, rows must always be locked in a consistent deterministic order (e.g., always lock the lower `user_id` first: `IF buyer_id < seller_id`).
-- **Idempotency Guard:** `TradeSettled` is at-least-once. However, since the database schema uses a `PRIMARY KEY (user_id, asset_code)` constraint and updates rows cumulatively, processing a duplicate event would cause double-counting.
-- **Deduplication Check:** To guarantee idempotency, Portfolio Service maintains a small duplicate checking table or checks trade records:
-  ```sql
-  CREATE TABLE processed_trades (
-      trade_id    UUID PRIMARY KEY,
-      processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-  );
-  ```
-  Before processing a `TradeSettled` event, the consumer checks if `trade_id` exists in `processed_trades`. If it exists, the event is immediately ignored and the Kafka offset is acknowledged as a safe no-op. If `buyer_id == seller_id`, the self-trade bypass logic (§3.3) is applied.
+- **Consumer Topic:** `portfolio.user.trades.v1`
+- **Partition Key:** `user_id`
+- **Consumer Group:** `portfolio-service-group`
+- **Concurrency & Partition Ordering:** Partitioning by `user_id` ensures that all trade events for any single user arrive at the consumer sequentially in causal log order, eliminating cross-market race conditions for the same user.
+- **Physical Row Lock:** `lockHoldingRow` executes `INSERT INTO holdings ... ON CONFLICT (user_id, asset_code) DO NOTHING` followed by `SELECT ... FOR UPDATE`, ensuring physical row existence and mutual exclusion.
+- **Deduplication & Conflict Detection:** Idempotency is enforced by `processed_user_trades` (`PRIMARY KEY (trade_id, user_id)`) and `processed_market_sequences` (`PRIMARY KEY (market_id, sequence)`). Redeliveries with identical metadata safely ACK as no-op; metadata discrepancies surface as errors.
 
 ---
 
 ## 7. Integration Events
 
-### 7.1 Consumed Event: `TradeSettled`
-Consumes from Wallet Service. See [07_Wallet_Service.md](../03_Wallet_Service/07_Wallet_Service.md) for the exact payload definition.
+### 7.1 Consumed Event: `portfolio.user.trades.v1`
+Emitted by Wallet Service outbox (2 events per trade: BUY with `buyer_id`, SELL with `seller_id`).
+- **Topic:** `portfolio.user.trades.v1`
+- **Partition Key:** `user_id`
+- **Payload:**
+  ```json
+  {
+    "trade_id": "uuid",
+    "user_id": "uuid",
+    "market_id": "BTC-USDT",
+    "sequence": 42,
+    "order_id": "uuid",
+    "role": "BUY",
+    "price": "96450.00",
+    "quantity": "0.01",
+    "executed_at": "2026-09-08T10:00:00Z",
+    "settled_at": "2026-09-08T10:00:01Z"
+  }
+  ```
 
 ### 7.2 Published Event: `PortfolioUpdated`
 Published by Portfolio Service outbox.
-
-- **Topic:** `portfolio-updates`
-- **Partition Key:** `user_id` (so all portfolio updates for a single user are processed sequentially by the Notification Service)
+- **Topic:** `portfolios.updated.v1`
+- **Partition Key:** `user_id`
 - **Payload:**
   ```json
   {
@@ -242,7 +265,8 @@ Published by Portfolio Service outbox.
     "quantity": "0.15",
     "average_entry_price": "55000.00",
     "realized_pnl": "300.00",
-    "timestamp": "executed_at"
+    "portfolio_version": 4,
+    "timestamp": "2026-09-08T10:00:01Z"
   }
   ```
 
@@ -306,28 +330,31 @@ If the Portfolio Service's Postgres database is lost or corrupted, or when a use
 
 | ID | Invariant |
 |---|---|
-| **PI-1** | **No USDT holdings row:** Local database never stores or updates the cash balance. USDT cash balance must be queried dynamically via gRPC to ensure consistency. |
-| **PI-2** | **No Unrealized PnL storage:** Unrealized PnL is computed dynamically on the fly using market prices fetched from Redis. |
-| **PI-3** | **At-least-once Deduplication:** Every processed `trade_id` is registered in `processed_trades` within the same transaction to prevent duplicate processing. |
-| **PI-4** | **Row Locking Order:** Transactions mutate `holdings` and `processed_trades` under row locks, preventing concurrent update races for the same user. |
-| **PI-5** | **Strict Decimal Precision:** All quantities, prices, costs, and PnL values use `DECIMAL(30,10)` columns per the glossary standards. |
+| **PI-1** | **No Cash Persistence:** Local database never stores or updates the cash balance. USDT cash balance must be queried dynamically via gRPC from Wallet Service. |
+| **PI-2** | **No Unrealized PnL Storage:** Unrealized PnL and total portfolio equity are computed dynamically on read using mark prices fetched from Market Service. |
+| **PI-3** | **Per-User Kafka Partition Affinity:** Accounting events are emitted to `portfolio.user.trades.v1` partitioned by `user_id`, preserving log order per user. |
+| **PI-4** | **1-Atomic Transaction:** Trade leg deduplication (`processed_user_trades`), sequence collision protection (`processed_market_sequences`), holding adjustments (`holdings`), and outbox records (`portfolio_outbox`) are committed inside 1 single atomic database transaction. |
+| **PI-5** | **Poison Error Quarantining (DLQ):** Invariant violations (insufficient balance, malformed UUIDs, decimal precision overflow) route to `trades.settled.dlq`. |
+| **PI-6** | **Monotonic Portfolio Versioning:** Every holding modification increments `version = version + 1`, stamped into `holdings` and `portfolio_outbox`. |
+| **PI-7** | **Zero Silent Clamping & Full Liquidation Reset:** Negative balance conditions are fatal (`ErrInsufficientHoldings` $\rightarrow$ DLQ). When $\text{quantity} = 0$, quantity and total cost are reset to exactly 0. |
+| **PI-8** | **Single Active Outbox Publisher (V1):** Exactly one active Outbox Publisher instance runs in production for V1 to ensure strict per-user FIFO ordering to `portfolios.updated.v1`. |
 
 ---
 
 ## 11. Internal Package Structure
 
 ```
-portfolio-service/
-  api/
-    grpc/           -- gRPC server (bootstrap endpoint if needed)
-    rest/           -- grpc-gateway REST handlers
-  service/          -- valuation calculator, trade processor, bootstrapping logic
-  repository/       -- DB transactions (holdings, processed_trades, outbox)
-  kafka/
-    consumer/       -- TradeSettled consumer (group portfolio-service)
-    publisher/      -- Outbox polling publisher (portfolio-updates topic)
-  client/
-    wallet/         -- Wallet Service gRPC client (GetBalances wrapper)
-    trade/          -- Trade Service gRPC client (ListUserTrades wrapper)
-  db/               -- connection pool, migrations
+services/portfolio/
+├── cmd/
+│   └── server/
+│       └── main.go       # 13-stage lifecycle orchestrator & dependency wiring
+├── internal/
+│   ├── config/           # Environment parsing & fail-fast validation
+│   ├── handler/          # gRPC transport adapter (portfoliov1.PortfolioServiceServer)
+│   ├── kafka/            # Inbound consumer, DLQ & Outbox publisher
+│   ├── metrics/          # Prometheus instrumentation & collectors
+│   ├── repository/       # Domain entity, interface & PostgreSQL implementation
+│   │   └── postgres/     # Single-row locking, CTE outbox claiming, version tracking
+│   └── service/          # Domain valuation math (Wallet cash + Market tickers)
+└── migration/            # Goose SQL migrations (00001, 00002)
 ```

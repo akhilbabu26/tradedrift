@@ -35,4 +35,6 @@ WORKDIR /app
 COPY --from=builder /trade ./trade
 COPY services/trade/migration/ ./services/trade/migration/
 
+EXPOSE 50057 9090
+
 ENTRYPOINT ["./trade"]

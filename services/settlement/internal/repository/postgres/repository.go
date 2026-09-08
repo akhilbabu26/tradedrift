@@ -30,18 +30,18 @@ func (r *Repository) Insert(ctx context.Context, t *repository.SettledTrade) err
 		INSERT INTO settled_trades (
 			trade_id, buyer_id, seller_id, buy_order_id, sell_order_id,
 			market_id, base_asset, quote_asset, price, quantity,
-			status, executed_at
+			sequence, status, executed_at
 		) VALUES (
 			$1, $2, $3, $4, $5,
 			$6, $7, $8, $9, $10,
-			$11, $12
+			$11, $12, $13
 		)
 		ON CONFLICT (trade_id) DO NOTHING`
 
 	_, err := r.db.Exec(ctx, q,
 		t.TradeID, t.BuyerID, t.SellerID, t.BuyOrderID, t.SellOrderID,
 		t.MarketID, t.BaseAsset, t.QuoteAsset, t.Price, t.Quantity,
-		repository.StatusPending, t.ExecutedAt,
+		t.Sequence, repository.StatusPending, t.ExecutedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert settled_trade: %w", err)
@@ -55,7 +55,7 @@ func (r *Repository) FindByTradeID(ctx context.Context, id uuid.UUID) (*reposito
 	const q = `
 		SELECT trade_id, buyer_id, seller_id, buy_order_id, sell_order_id,
 		       market_id, base_asset, quote_asset, price, quantity,
-		       status, executed_at, settled_at
+		       sequence, status, executed_at, settled_at
 		FROM settled_trades
 		WHERE trade_id = $1`
 
@@ -64,7 +64,7 @@ func (r *Repository) FindByTradeID(ctx context.Context, id uuid.UUID) (*reposito
 	err := row.Scan(
 		&t.TradeID, &t.BuyerID, &t.SellerID, &t.BuyOrderID, &t.SellOrderID,
 		&t.MarketID, &t.BaseAsset, &t.QuoteAsset, &t.Price, &t.Quantity,
-		&t.Status, &t.ExecutedAt, &t.SettledAt,
+		&t.Sequence, &t.Status, &t.ExecutedAt, &t.SettledAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -130,7 +130,7 @@ func (r *Repository) FindStalePending(ctx context.Context, olderThan time.Durati
 	const q = `
 		SELECT trade_id, buyer_id, seller_id, buy_order_id, sell_order_id,
 		       market_id, base_asset, quote_asset, price, quantity,
-		       status, executed_at, settled_at
+		       sequence, status, executed_at, settled_at
 		FROM settled_trades
 		WHERE status = $1
 		  AND created_at < $2
@@ -154,7 +154,7 @@ func (r *Repository) FindStalePending(ctx context.Context, olderThan time.Durati
 		if err := rows.Scan(
 			&t.TradeID, &t.BuyerID, &t.SellerID, &t.BuyOrderID, &t.SellOrderID,
 			&t.MarketID, &t.BaseAsset, &t.QuoteAsset, &t.Price, &t.Quantity,
-			&t.Status, &t.ExecutedAt, &t.SettledAt,
+			&t.Sequence, &t.Status, &t.ExecutedAt, &t.SettledAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan stale pending row: %w", err)
 		}

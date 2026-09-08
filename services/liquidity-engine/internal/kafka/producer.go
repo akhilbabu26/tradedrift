@@ -78,7 +78,9 @@ func NewProducer(brokers []string, markets []MarketPartition, logger *zap.Logger
 		writers[m.MarketID] = &kafkago.Writer{
 			Addr:                   kafkago.TCP(brokers...),
 			Topic:                  TopicOrderCommands,
-			Balancer:               &kafkago.LeastBytes{},
+			Balancer: kafkago.BalancerFunc(func(msg kafkago.Message, partitions ...int) int {
+				return msg.Partition
+			}),
 			WriteTimeout:           10 * time.Second,
 			RequiredAcks:           kafkago.RequireAll, // wait for all in-sync replicas
 			AllowAutoTopicCreation: false,

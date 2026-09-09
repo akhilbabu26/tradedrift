@@ -137,6 +137,11 @@ func (c *Consumer) consumeLoop(ctx context.Context, reader MessageReader, topic 
 	c.log.Info("Consumer loop started", zap.String("topic", topic))
 
 	for {
+		// --- Fetch phase ---
+		// FetchMessage advances the reader's local cursor. We must fully process
+		// (or DLQ) this message before calling FetchMessage again. An inner retry
+		// loop below guarantees that: the outer loop only iterates after a
+		// successful commit or a fatal context cancellation.
 		msg, err := reader.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -152,25 +157,45 @@ func (c *Consumer) consumeLoop(ctx context.Context, reader MessageReader, topic 
 			}
 		}
 
-		// Process message
-		if err := handler(ctx, msg); err != nil {
-			// Transient ingestion failure: DB connection drop, transaction conflict, etc.
-			// Do NOT commit Kafka offset. Back off and retry fetching the same message.
-			c.log.Error("Transient error processing Kafka event; offset will not be committed and will retry",
+		// --- Process phase (inner retry loop) ---
+		// Retry the handler on the SAME fetched message until it succeeds or the
+		// context is cancelled. Transient failures (DB down, network blip) must
+		// not advance past this message — that would risk losing it on restart.
+		backoff := 1 * time.Second
+		for {
+			if ctx.Err() != nil {
+				c.log.Info("Consumer loop stopping during retry (context cancelled)", zap.String("topic", topic))
+				return
+			}
+
+			processErr := handler(ctx, msg)
+			if processErr == nil {
+				// Handler succeeded (or poisoned to DLQ successfully): break inner loop.
+				break
+			}
+
+			// Transient failure — do NOT advance to the next message.
+			c.log.Error("Transient error processing Kafka event; will retry same message",
 				zap.String("topic", topic),
 				zap.Int("partition", msg.Partition),
 				zap.Int64("offset", msg.Offset),
-				zap.Error(err),
+				zap.Duration("backoff", backoff),
+				zap.Error(processErr),
 			)
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(1 * time.Second):
-				continue
+			case <-time.After(backoff):
+				// Exponential backoff capped at 30 s.
+				if backoff < 30*time.Second {
+					backoff *= 2
+				}
 			}
 		}
 
-		// At-least-once guarantee: commit Kafka offset strictly after PostgreSQL transaction success
+		// --- Commit phase ---
+		// At-least-once guarantee: commit Kafka offset strictly after the handler
+		// has successfully persisted to PostgreSQL (and DLQ-routed poison messages).
 		if err := reader.CommitMessages(ctx, msg); err != nil {
 			c.log.Error("Failed to commit Kafka offset",
 				zap.String("topic", topic),
@@ -178,6 +203,9 @@ func (c *Consumer) consumeLoop(ctx context.Context, reader MessageReader, topic 
 				zap.Int64("offset", msg.Offset),
 				zap.Error(err),
 			)
+			// A commit failure is non-fatal: the message will be redelivered
+			// after group rebalance and the DB deduplication check will
+			// handle the duplicate safely.
 		}
 	}
 }
@@ -185,13 +213,11 @@ func (c *Consumer) consumeLoop(ctx context.Context, reader MessageReader, topic 
 func (c *Consumer) processTradeSettled(ctx context.Context, msg kafka.Message) error {
 	var ev service.TradeSettledEvent
 	if err := json.Unmarshal(msg.Value, &ev); err != nil {
-		c.handlePoison(ctx, msg, TopicTradesSettled, fmt.Sprintf("unmarshal error: %v", err))
-		return nil
+		return c.handlePoison(ctx, msg, TopicTradesSettled, fmt.Sprintf("unmarshal error: %v", err))
 	}
 
 	if ev.TradeID == "" || ev.BuyerUserID == "" || ev.SellerUserID == "" {
-		c.handlePoison(ctx, msg, TopicTradesSettled, "missing required fields (trade_id, buyer_user_id, seller_user_id)")
-		return nil
+		return c.handlePoison(ctx, msg, TopicTradesSettled, "missing required fields (trade_id, buyer_user_id, seller_user_id)")
 	}
 
 	return c.svc.HandleTradeSettled(ctx, &ev)
@@ -200,13 +226,11 @@ func (c *Consumer) processTradeSettled(ctx context.Context, msg kafka.Message) e
 func (c *Consumer) processOrderCancelled(ctx context.Context, msg kafka.Message) error {
 	var ev service.OrderCancelledEvent
 	if err := json.Unmarshal(msg.Value, &ev); err != nil {
-		c.handlePoison(ctx, msg, TopicOrdersCancelled, fmt.Sprintf("unmarshal error: %v", err))
-		return nil
+		return c.handlePoison(ctx, msg, TopicOrdersCancelled, fmt.Sprintf("unmarshal error: %v", err))
 	}
 
 	if ev.OrderID == "" || ev.UserID == "" {
-		c.handlePoison(ctx, msg, TopicOrdersCancelled, "missing required fields (order_id, user_id)")
-		return nil
+		return c.handlePoison(ctx, msg, TopicOrdersCancelled, "missing required fields (order_id, user_id)")
 	}
 
 	return c.svc.HandleOrderCancelled(ctx, &ev)
@@ -215,20 +239,23 @@ func (c *Consumer) processOrderCancelled(ctx context.Context, msg kafka.Message)
 func (c *Consumer) processPortfolioUpdated(ctx context.Context, msg kafka.Message) error {
 	var ev service.PortfolioUpdatedEvent
 	if err := json.Unmarshal(msg.Value, &ev); err != nil {
-		c.handlePoison(ctx, msg, TopicPortfoliosUpdated, fmt.Sprintf("unmarshal error: %v", err))
-		return nil
+		return c.handlePoison(ctx, msg, TopicPortfoliosUpdated, fmt.Sprintf("unmarshal error: %v", err))
 	}
 
 	if ev.UserID == "" {
-		c.handlePoison(ctx, msg, TopicPortfoliosUpdated, "missing required fields (user_id)")
-		return nil
+		return c.handlePoison(ctx, msg, TopicPortfoliosUpdated, "missing required fields (user_id)")
 	}
 
 	return c.svc.HandlePortfolioUpdated(ctx, &ev)
 }
 
-// handlePoison routes corrupted or unparseable messages to DLQ and commits their offset to avoid blockage.
-func (c *Consumer) handlePoison(ctx context.Context, msg kafka.Message, topic, reason string) {
+// handlePoison routes a permanently-invalid message to the DLQ.
+//
+// Return value semantics:
+//   - nil  → DLQ write succeeded; caller should commit the Kafka offset and move on.
+//   - err  → DLQ write failed; caller must NOT commit the offset so the message is
+//     retried by the inner retry loop (and the DLQ write is attempted again).
+func (c *Consumer) handlePoison(ctx context.Context, msg kafka.Message, topic, reason string) error {
 	c.log.Error("Routing poison message to DLQ",
 		zap.String("topic", topic),
 		zap.Int("partition", msg.Partition),
@@ -237,20 +264,31 @@ func (c *Consumer) handlePoison(ctx context.Context, msg kafka.Message, topic, r
 		zap.ByteString("payload", msg.Value),
 	)
 
-	if c.dlqWriter != nil {
-		dlqMsg := kafka.Message{
-			Key:   msg.Key,
-			Value: msg.Value,
-			Headers: []kafka.Header{
-				{Key: "original-topic", Value: []byte(topic)},
-				{Key: "error-reason", Value: []byte(reason)},
-				{Key: "dlq-time", Value: []byte(time.Now().UTC().Format(time.RFC3339))},
-			},
-		}
-		if err := c.dlqWriter.WriteMessages(ctx, dlqMsg); err != nil {
-			c.log.Error("Failed writing poison message to DLQ", zap.Error(err))
-		}
+	if c.dlqWriter == nil {
+		// No DLQ configured: treat as successfully discarded so the offset
+		// is committed and the consumer can advance.
+		c.log.Warn("DLQ writer not configured; discarding poison message",
+			zap.String("topic", topic),
+			zap.Int64("offset", msg.Offset),
+		)
+		return nil
 	}
+
+	dlqMsg := kafka.Message{
+		Key:   msg.Key,
+		Value: msg.Value,
+		Headers: []kafka.Header{
+			{Key: "original-topic", Value: []byte(topic)},
+			{Key: "error-reason", Value: []byte(reason)},
+			{Key: "dlq-time", Value: []byte(time.Now().UTC().Format(time.RFC3339))},
+		},
+	}
+	if err := c.dlqWriter.WriteMessages(ctx, dlqMsg); err != nil {
+		// Propagate the error: the inner retry loop will back off and retry
+		// this message (including the DLQ write) without committing the offset.
+		return fmt.Errorf("write poison message to DLQ (topic=%s offset=%d): %w", topic, msg.Offset, err)
+	}
+	return nil
 }
 
 // Close gracefully closes all Kafka readers and writers.

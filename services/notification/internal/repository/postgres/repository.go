@@ -356,19 +356,26 @@ func (r *Repository) RecoverStaleOutboxClaims(ctx context.Context, timeout time.
 	return cmdTag.RowsAffected(), nil
 }
 
-// MarkOutboxPublished transitions an outbox record to PROCESSED.
+// MarkOutboxPublished transitions an outbox record from PROCESSING → PROCESSED.
+//
+// The WHERE clause requires status = 'PROCESSING' so that a worker whose 60-second
+// lease has expired cannot mark PROCESSED a row that the recovery path has already
+// re-claimed and handed to a second worker. If RowsAffected == 0 the row was either
+// not found or had already been re-claimed; the caller logs this but it is safe
+// because the new owner will publish and mark it PROCESSED on its own schedule.
 func (r *Repository) MarkOutboxPublished(ctx context.Context, id string) error {
 	query := `
 		UPDATE notification_outbox
 		SET status = 'PROCESSED', published_at = NOW(), claimed_at = NULL
-		WHERE id = $1
+		WHERE id = $1 AND status = 'PROCESSING'
 	`
 	cmdTag, err := r.db.Exec(ctx, query, id)
 	if err != nil {
 		return fmt.Errorf("mark outbox published: %w", err)
 	}
 	if cmdTag.RowsAffected() == 0 {
-		return fmt.Errorf("outbox record %s not found", id)
+		// Row not found or lease already expired and re-claimed — safe to ignore.
+		return fmt.Errorf("outbox record %s not found or lease expired (status was not PROCESSING)", id)
 	}
 	return nil
 }

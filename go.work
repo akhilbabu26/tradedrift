@@ -15,4 +15,5 @@ use (
 	./services/settlement
 	./services/trade
 	./services/wallet
+	./services/notification
 )

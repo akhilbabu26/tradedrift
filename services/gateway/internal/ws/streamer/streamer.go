@@ -97,6 +97,7 @@ func (s *Streamer) Start(ctx context.Context) {
 	go s.runDepthPoller(ctx)
 	go s.runTickerPoller(ctx)
 	go s.runKafkaTradeStreamer(ctx)
+	go s.runUserStreamRelay(ctx)
 }
 
 // ─── SnapshotProvider Implementation ─────────────────────────────────────────

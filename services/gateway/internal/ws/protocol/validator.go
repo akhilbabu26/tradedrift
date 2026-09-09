@@ -48,6 +48,9 @@ func parseStreamStrict(stream string) (streamType, target string, ok bool) {
 		if sub == "notifications" {
 			return StreamTypeNotification, id, true
 		}
+		if sub == "portfolio" {
+			return StreamTypePortfolio, id, true
+		}
 	}
 
 	return StreamTypeControl, "", false

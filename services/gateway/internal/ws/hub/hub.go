@@ -157,16 +157,17 @@ func (h *Hub) handleSubscribe(c *Client, stream string) {
 	}
 
 	// Authorization Guard for Private Streams
-	if streamType == protocol.StreamTypeNotification {
+	if streamType == protocol.StreamTypeNotification || streamType == protocol.StreamTypePortfolio {
 		if c.UserID() == "" {
-			c.SendControlError("UNAUTHORIZED", "authentication required for private notifications")
+			c.SendControlError("UNAUTHORIZED", "authentication required for private stream")
 			return
 		}
 		if c.UserID() != target {
-			c.SendControlError("FORBIDDEN", "cannot subscribe to other user's notification stream")
+			c.SendControlError("FORBIDDEN", "cannot subscribe to other user's private stream")
 			h.logger.Warn("Unauthorized private subscription attempt rejected",
 				zap.String("client_user_id", c.UserID()),
 				zap.String("target_user_id", target),
+				zap.String("stream_type", streamType),
 			)
 			return
 		}

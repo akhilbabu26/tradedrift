@@ -86,5 +86,6 @@ const (
 	StreamTypeTicker       = "ticker"
 	StreamTypeTrades       = "trades"
 	StreamTypeNotification = "notification"
+	StreamTypePortfolio    = "portfolio"
 	StreamTypeControl      = "control"
 )

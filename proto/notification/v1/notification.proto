@@ -1,0 +1,92 @@
+syntax = "proto3";
+
+package tradedrift.notification.v1;
+
+option go_package = "tradedrift/platform/api/gen/notification/v1;notificationv1";
+
+service NotificationService {
+    // CreateNotification allows internal microservices (Auth, Admin, Wallet) to dispatch user alerts
+    rpc CreateNotification(CreateNotificationRequest) returns (CreateNotificationResponse);
+
+    // GetNotifications retrieves a keyset-paginated list of notifications for the authenticated user
+    rpc GetNotifications(GetNotificationsRequest) returns (GetNotificationsResponse);
+
+    // MarkAsRead marks a single notification as read for the authenticated user
+    rpc MarkAsRead(MarkAsReadRequest) returns (MarkAsReadResponse);
+
+    // MarkAllAsRead marks all unread notifications as read for the authenticated user
+    rpc MarkAllAsRead(MarkAllAsReadRequest) returns (MarkAllAsReadResponse);
+
+    // GetUnreadCount returns the current count of unread notifications for badge rendering
+    rpc GetUnreadCount(GetUnreadCountRequest) returns (GetUnreadCountResponse);
+}
+
+message CreateNotificationRequest {
+    string user_id        = 1;
+    string title          = 2;
+    string message        = 3;
+    string type           = 4; // "INFO", "TRADE_FILL", "SYSTEM", "ACCOUNT"
+    string reference_id   = 5; // Associated order_id or trade_id
+    string reference_type = 6; // "TRADE", "ORDER", "DEPOSIT"
+}
+
+message CreateNotificationResponse {
+    string notification_id = 1;
+    bool   success         = 2;
+}
+
+message GetNotificationsRequest {
+    string user_id     = 1;
+    string cursor_time = 2; // RFC3339 created_at cursor
+    string cursor_id   = 3; // UUIDv7 tiebreaker cursor
+    int32  limit       = 4; // Default 20, max 100
+    string type_filter = 5; // Optional filter by type
+}
+
+message NotificationItem {
+    string id             = 1;
+    string user_id        = 2;
+    string title          = 3;
+    string message        = 4;
+    string type           = 5;
+    string reference_id   = 6;
+    string reference_type = 7;
+    bool   is_read        = 8;
+    string read_at        = 9;  // RFC3339 or empty
+    string created_at     = 10; // RFC3339
+}
+
+message GetNotificationsResponse {
+    repeated NotificationItem notifications = 1;
+    string next_cursor_time                 = 2;
+    string next_cursor_id                   = 3;
+    bool   has_more                         = 4;
+    int32  unread_count                     = 5;
+}
+
+message MarkAsReadRequest {
+    string user_id         = 1;
+    string notification_id = 2;
+}
+
+message MarkAsReadResponse {
+    string notification_id = 1;
+    bool   is_read         = 2;
+    string read_at         = 3;
+}
+
+message MarkAllAsReadRequest {
+    string user_id = 1;
+}
+
+message MarkAllAsReadResponse {
+    int32 marked_count = 1;
+}
+
+message GetUnreadCountRequest {
+    string user_id = 1;
+}
+
+message GetUnreadCountResponse {
+    int32 unread_count = 1;
+}

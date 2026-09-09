@@ -225,6 +225,30 @@ services:
       market:
         condition: service_started
 
+  notification:
+    build:
+      context: .
+      dockerfile: services/notification/Dockerfile
+    container_name: tradedrift-notification
+    restart: unless-stopped
+    environment:
+      NOTIFICATION_POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_notification?sslmode=disable
+      NOTIFICATION_MIGRATIONS_DIR: services/notification/migration
+      REDIS_ADDR: redis:6379
+      KAFKA_BROKERS: kafka:29092
+      NOTIFICATION_KAFKA_GROUP_ID: notification-service-group
+      NOTIFICATION_DLQ_TOPIC: notifications.dlq
+      NOTIFICATION_GRPC_PORT: ":50059"
+      NOTIFICATION_METRICS_PORT: ":9092"
+      LOG_LEVEL: info
+    ports:
+      - "50059:50059"
+      - "9095:9092"
+    depends_on:
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_started
 
   gateway:
     build:
@@ -240,6 +264,7 @@ services:
       MARKET_ADDR:  "market:50054"
       TRADE_ADDR:   "trade:50057"
       PORTFOLIO_ADDR: "portfolio:50058"
+      NOTIFICATION_ADDR: "notification:50059"
       REDIS_ADDR:   "redis:6379"
       KAFKA_BROKERS: "kafka:29092"
       JWT_SECRET:   "super-secret-jwt-key-tradedrift-dev-32bytes"
@@ -265,6 +290,8 @@ services:
       matching-engine:
         condition: service_started
       portfolio:
+        condition: service_started
+      notification:
         condition: service_started
 
   liquidity-engine:

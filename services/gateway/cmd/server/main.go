@@ -18,6 +18,7 @@ import (
 	marketv1 "tradedrift/platform/api/gen/market/v1"
 	orderv1  "tradedrift/platform/api/gen/order/v1"
 	portfoliov1 "tradedrift/platform/api/gen/portfolio/v1"
+	notificationv1 "tradedrift/platform/api/gen/notification/v1"
 	tradev1  "tradedrift/platform/api/gen/trade/v1"
 	walletv1 "tradedrift/platform/api/gen/wallet/v1"
 	"tradedrift/platform/config"
@@ -26,6 +27,7 @@ import (
 
 	authhandler   "tradedrift/services/gateway/internal/handler/auth"
 	markethandler "tradedrift/services/gateway/internal/handler/market"
+	notificationhandler "tradedrift/services/gateway/internal/handler/notification"
 	orderhandler  "tradedrift/services/gateway/internal/handler/order"
 	tradehandler  "tradedrift/services/gateway/internal/handler/trade"
 	portfoliohandler "tradedrift/services/gateway/internal/handler/portfolio"
@@ -63,6 +65,7 @@ func main() {
 	marketAddr := formatTarget(config.GetEnv("MARKET_ADDR", "127.0.0.1:50054"))
 	tradeAddr  := formatTarget(config.GetEnv("TRADE_ADDR",  "127.0.0.1:50057"))
 	portfolioAddr := formatTarget(config.GetEnv("PORTFOLIO_ADDR", "127.0.0.1:50058"))
+	notificationAddr := formatTarget(config.GetEnv("NOTIFICATION_ADDR", "127.0.0.1:50059"))
 	allowedOrigins := []string{
 		config.GetEnv("CORS_ORIGIN", "http://localhost:5173"),
 	}
@@ -101,6 +104,7 @@ func main() {
 	if err != nil {
 		appLogger.Fatal("Failed to connect to Trade service", zap.String("addr", tradeAddr), zap.Error(err))
 	}
+	defer tradeConn.Close()
 
 	portfolioConn, err := grpc.NewClient(portfolioAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -108,7 +112,11 @@ func main() {
 	}
 	defer portfolioConn.Close()
 
-	defer tradeConn.Close()
+	notificationConn, err := grpc.NewClient(notificationAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		appLogger.Fatal("Failed to connect to Notification service", zap.String("addr", notificationAddr), zap.Error(err))
+	}
+	defer notificationConn.Close()
 
 	// 4. Instantiate Handlers
 	authH   := authhandler.NewHandler(authv1.NewAuthServiceClient(authConn))
@@ -117,6 +125,7 @@ func main() {
 	marketH := markethandler.NewHandler(marketv1.NewMarketServiceClient(marketConn))
 	tradeH  := tradehandler.NewHandler(tradev1.NewTradeServiceClient(tradeConn))
 	portfolioH := portfoliohandler.NewHandler(portfoliov1.NewPortfolioServiceClient(portfolioConn))
+	notificationH := notificationhandler.NewHandler(notificationv1.NewNotificationServiceClient(notificationConn))
 
 	// 5. Redis and WebSocket Subsystem Setup
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -215,6 +224,12 @@ func main() {
 	// Portfolio — protected
 	mux.Handle("GET /api/v1/portfolio/summary",  protected(http.HandlerFunc(portfolioH.GetPortfolioSummary)))
 	mux.Handle("GET /api/v1/portfolio/holdings", protected(http.HandlerFunc(portfolioH.GetPortfolioHoldings)))
+
+	// Notifications — protected
+	mux.Handle("GET /api/v1/notifications",              protected(http.HandlerFunc(notificationH.ListNotifications)))
+	mux.Handle("POST /api/v1/notifications/{id}/read",   protected(http.HandlerFunc(notificationH.MarkAsRead)))
+	mux.Handle("POST /api/v1/notifications/read-all",    protected(http.HandlerFunc(notificationH.MarkAllAsRead)))
+	mux.Handle("GET /api/v1/notifications/unread-count", protected(http.HandlerFunc(notificationH.GetUnreadCount)))
 
 	// 7. HTTP Server
 	srv := &http.Server{

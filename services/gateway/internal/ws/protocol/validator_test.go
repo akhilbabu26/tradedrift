@@ -19,6 +19,7 @@ func TestValidateStream(t *testing.T) {
 		{"market:ticker:ETH-USDT", protocol.StreamTypeTicker, "ETH-USDT", true},
 		{"market:trades:SOL-USDT", protocol.StreamTypeTrades, "SOL-USDT", true},
 		{"user:notifications:user-123", protocol.StreamTypeNotification, "user-123", true},
+		{"user:portfolio:user-456", protocol.StreamTypePortfolio, "user-456", true},
 		{"market:orderbook:", protocol.StreamTypeControl, "", false},
 		{"user:notifications:", protocol.StreamTypeControl, "", false},
 		{"market:unknown:BTC-USDT", protocol.StreamTypeControl, "", false},

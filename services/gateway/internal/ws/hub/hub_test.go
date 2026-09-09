@@ -97,40 +97,172 @@ func TestHub_PrivateChannelAuthorization(t *testing.T) {
 	logger := zap.NewNop()
 	h := NewHub(logger, &mockSnapshotProvider{})
 
+	user1ID := "11111111-1111-1111-1111-111111111111"
+	user2ID := "22222222-2222-2222-2222-222222222222"
+	streamUser1 := "user:notifications:" + user1ID
+
 	anonClient := NewTestClient(h, "", logger)
 	h.Register(anonClient)
 
 	h.HandleClientFrame(anonClient, protocol.InboundFrame{
 		Event:   "subscribe",
-		Streams: []string{"user:notifications:user-123"},
+		Streams: []string{streamUser1},
 	})
 
-	if anonClient.HasSubscription("user:notifications:user-123") {
+	if anonClient.HasSubscription(streamUser1) {
 		t.Fatal("anonymous client should NOT be allowed to subscribe to private notifications")
 	}
 
-	authUserClient := NewTestClient(h, "user-456", logger)
+	authUserClient := NewTestClient(h, user2ID, logger)
 	h.Register(authUserClient)
 
 	h.HandleClientFrame(authUserClient, protocol.InboundFrame{
 		Event:   "subscribe",
-		Streams: []string{"user:notifications:user-123"},
+		Streams: []string{streamUser1},
 	})
 
-	if authUserClient.HasSubscription("user:notifications:user-123") {
-		t.Fatal("user-456 should NOT be allowed to subscribe to user-123 notifications")
+	if authUserClient.HasSubscription(streamUser1) {
+		t.Fatal("user2 should NOT be allowed to subscribe to user1 notifications")
 	}
 
-	ownClient := NewTestClient(h, "user-123", logger)
+	ownClient := NewTestClient(h, user1ID, logger)
 	h.Register(ownClient)
 
 	h.HandleClientFrame(ownClient, protocol.InboundFrame{
 		Event:   "subscribe",
-		Streams: []string{"user:notifications:user-123"},
+		Streams: []string{streamUser1},
 	})
 
-	if !ownClient.HasSubscription("user:notifications:user-123") {
-		t.Fatal("user-123 should be allowed to subscribe to own notifications")
+	if !ownClient.HasSubscription(streamUser1) {
+		t.Fatal("user1 should be allowed to subscribe to own notifications")
+	}
+}
+
+func TestHub_CrossTenantPrivateNotificationIsolation(t *testing.T) {
+	logger := zap.NewNop()
+	h := NewHub(logger, &mockSnapshotProvider{})
+
+	userA_ID := "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	userB_ID := "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+	streamA := "user:notifications:" + userA_ID
+	streamB := "user:notifications:" + userB_ID
+
+	clientA := NewTestClient(h, userA_ID, logger)
+	clientB := NewTestClient(h, userB_ID, logger)
+	h.Register(clientA)
+	h.Register(clientB)
+
+	// Subscribe User A to Stream A
+	h.HandleClientFrame(clientA, protocol.InboundFrame{
+		Event:   "subscribe",
+		Streams: []string{streamA},
+	})
+	if !clientA.HasSubscription(streamA) {
+		t.Fatalf("client A must be subscribed to %s", streamA)
+	}
+
+	// Subscribe User B to Stream B
+	h.HandleClientFrame(clientB, protocol.InboundFrame{
+		Event:   "subscribe",
+		Streams: []string{streamB},
+	})
+	if !clientB.HasSubscription(streamB) {
+		t.Fatalf("client B must be subscribed to %s", streamB)
+	}
+
+	// Drain any subscribe confirmations or error frames
+	drainChan := func(c *Client) {
+		for {
+			select {
+			case <-c.send:
+			default:
+				return
+			}
+		}
+	}
+	drainChan(clientA)
+	drainChan(clientB)
+
+	// Tenant A receives message broadcast to Stream A
+	msgA := []byte(`{"stream":"` + streamA + `","data":{"title":"Alert A"}}`)
+	h.Broadcast(streamA, msgA, protocol.StreamTypeNotification)
+
+	select {
+	case received := <-clientA.send:
+		if string(received) != string(msgA) {
+			t.Fatalf("client A received wrong message: %s", string(received))
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("client A did not receive broadcast for stream A")
+	}
+
+	// Invariant: Client B must NOT receive any message from Stream A broadcast
+	select {
+	case leak := <-clientB.send:
+		t.Fatalf("Cross-tenant leakage detected! Client B received Client A's notification: %s", string(leak))
+	default:
+		// Success: no leakage
+	}
+
+	// Tenant B receives message broadcast to Stream B
+	msgB := []byte(`{"stream":"` + streamB + `","data":{"title":"Alert B"}}`)
+	h.Broadcast(streamB, msgB, protocol.StreamTypeNotification)
+
+	select {
+	case received := <-clientB.send:
+		if string(received) != string(msgB) {
+			t.Fatalf("client B received wrong message: %s", string(received))
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("client B did not receive broadcast for stream B")
+	}
+
+	// Invariant: Client A must NOT receive any message from Stream B broadcast
+	select {
+	case leak := <-clientA.send:
+		t.Fatalf("Cross-tenant leakage detected! Client A received Client B's notification: %s", string(leak))
+	default:
+		// Success: no leakage
+	}
+
+	// Cross-tenant subscription attempt: Client A attempts to subscribe to Stream B
+	h.HandleClientFrame(clientA, protocol.InboundFrame{
+		Event:   "subscribe",
+		Streams: []string{streamB},
+	})
+	if clientA.HasSubscription(streamB) {
+		t.Fatal("Client A must NOT be able to subscribe to Client B's private stream")
+	}
+
+	select {
+	case errFrame := <-clientA.send:
+		var evt protocol.OutboundEvent
+		if err := json.Unmarshal(errFrame, &evt); err != nil {
+			t.Fatalf("failed to unmarshal error frame: %v", err)
+		}
+		if evt.Code != "FORBIDDEN" {
+			t.Fatalf("expected FORBIDDEN error code, got %s", evt.Code)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Client A did not receive expected FORBIDDEN control error")
+	}
+
+	// Invalid stream target attempt (non-UUID path traversal)
+	h.HandleClientFrame(clientA, protocol.InboundFrame{
+		Event:   "subscribe",
+		Streams: []string{"user:notifications:../../admin"},
+	})
+	select {
+	case errFrame := <-clientA.send:
+		var evt protocol.OutboundEvent
+		if err := json.Unmarshal(errFrame, &evt); err != nil {
+			t.Fatalf("failed to unmarshal error frame: %v", err)
+		}
+		if evt.Code != "INVALID_STREAM" {
+			t.Fatalf("expected INVALID_STREAM error code for traversal path, got %s", evt.Code)
+		}
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Client A did not receive expected INVALID_STREAM control error")
 	}
 }
 

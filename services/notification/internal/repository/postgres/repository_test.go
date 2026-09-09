@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	platformuuid "tradedrift/platform/uuid"
 	"tradedrift/services/notification/internal/model"
@@ -72,6 +74,9 @@ func getTestPool(t *testing.T) (*pgxpool.Pool, func()) {
 			created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			published_at   TIMESTAMPTZ
 		);
+
+		ALTER TABLE notifications DROP CONSTRAINT IF EXISTS chk_notification_type;
+		ALTER TABLE notifications ADD CONSTRAINT chk_notification_type CHECK (type IN ('INFO', 'TRADE_FILL', 'SYSTEM', 'ACCOUNT'));
 	`
 	if _, err := pool.Exec(ctx, setupDDL); err != nil {
 		t.Fatalf("failed to setup test tables: %v", err)
@@ -94,10 +99,14 @@ func TestRepository_CreateWithDedupTx(t *testing.T) {
 	ctx := context.Background()
 	repo := postgres.NewRepository(pool)
 
-	sourceEventID, _ := platformuuid.New()
-	userID, _ := platformuuid.New()
-	notifID, _ := platformuuid.New()
-	outboxID, _ := platformuuid.New()
+	sourceEventID, err := platformuuid.New()
+	require.NoError(t, err)
+	userID, err := platformuuid.New()
+	require.NoError(t, err)
+	notifID, err := platformuuid.New()
+	require.NoError(t, err)
+	outboxID, err := platformuuid.New()
+	require.NoError(t, err)
 
 	notif := &model.Notification{
 		ID:        notifID,
@@ -117,13 +126,12 @@ func TestRepository_CreateWithDedupTx(t *testing.T) {
 	}
 
 	// 1. Initial insert succeeds
-	err := repo.CreateWithDedupTx(ctx, notif, sourceEventID, outbox)
-	if err != nil {
-		t.Fatalf("first CreateWithDedupTx failed: %v", err)
-	}
+	err = repo.CreateWithDedupTx(ctx, notif, sourceEventID, outbox)
+	require.NoError(t, err, "first CreateWithDedupTx failed")
 
 	// 2. Duplicate with same sourceEventID must fail with ErrAlreadyProcessed
-	notif2ID, _ := platformuuid.New()
+	notif2ID, err := platformuuid.New()
+	require.NoError(t, err)
 	notif2 := &model.Notification{
 		ID:        notif2ID,
 		UserID:    userID,
@@ -132,10 +140,17 @@ func TestRepository_CreateWithDedupTx(t *testing.T) {
 		Type:      model.TypeSystem,
 		CreatedAt: time.Now().UTC(),
 	}
-	err = repo.CreateWithDedupTx(ctx, notif2, sourceEventID, outbox)
-	if !errors.Is(err, repository.ErrAlreadyProcessed) {
-		t.Fatalf("expected ErrAlreadyProcessed on duplicate event_id, got: %v", err)
+	outbox2ID, err := platformuuid.New()
+	require.NoError(t, err)
+	outbox2 := &model.OutboxEvent{
+		ID:            outbox2ID,
+		EventType:     "NotificationCreated",
+		Payload:       []byte(`{"test":true}`),
+		TargetChannel: "user:notifications:" + userID,
+		CreatedAt:     time.Now().UTC(),
 	}
+	err = repo.CreateWithDedupTx(ctx, notif2, sourceEventID, outbox2)
+	require.ErrorIs(t, err, repository.ErrAlreadyProcessed, "expected ErrAlreadyProcessed on duplicate sourceEventID")
 }
 
 func TestRepository_CreateTradeSettledTx(t *testing.T) {
@@ -526,4 +541,173 @@ func TestRepository_OutboxLeaseExpiryAndStolenClaimConcurrency(t *testing.T) {
 		t.Fatalf("expected final status 'PROCESSED', got %s", finalStatus)
 	}
 }
+
+func TestRepository_PurgeProcessedOutbox(t *testing.T) {
+	pool, cleanup := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := postgres.NewRepository(pool)
+
+	now := time.Now().UTC()
+	cutoffPortfolio := now.Add(-24 * time.Hour)
+	cutoffNotif := now.Add(-7 * 24 * time.Hour)
+
+	oldPortfolioID, _ := platformuuid.New()
+	recentPortfolioID, _ := platformuuid.New()
+	oldNotifID, _ := platformuuid.New()
+	veryOldNotifID, _ := platformuuid.New()
+	oldPendingID, _ := platformuuid.New()
+	oldProcessingID, _ := platformuuid.New()
+
+	insertQuery := `
+		INSERT INTO notification_outbox (id, event_type, payload, target_channel, status, created_at, published_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+	`
+
+	// 1. PROCESSED + old + portfolio (published 48h ago -> older than 24h cutoff)
+	_, err := pool.Exec(ctx, insertQuery, oldPortfolioID, "PortfolioUpdated", []byte(`{}`), "user:portfolio:u1", "PROCESSED", now.Add(-48*time.Hour), now.Add(-48*time.Hour))
+	require.NoError(t, err)
+
+	// 2. PROCESSED + recent + portfolio (published 2h ago -> newer than 24h cutoff)
+	_, err = pool.Exec(ctx, insertQuery, recentPortfolioID, "PortfolioUpdated", []byte(`{}`), "user:portfolio:u1", "PROCESSED", now.Add(-2*time.Hour), now.Add(-2*time.Hour))
+	require.NoError(t, err)
+
+	// 3. PROCESSED + 48h old + notification (older than 24h, but NEWER than 7d notification cutoff)
+	_, err = pool.Exec(ctx, insertQuery, oldNotifID, "NotificationCreated", []byte(`{}`), "user:notifications:u1", "PROCESSED", now.Add(-48*time.Hour), now.Add(-48*time.Hour))
+	require.NoError(t, err)
+
+	// 4. PROCESSED + 10d old + notification (published 10d ago -> older than 7d cutoff)
+	_, err = pool.Exec(ctx, insertQuery, veryOldNotifID, "NotificationCreated", []byte(`{}`), "user:notifications:u1", "PROCESSED", now.Add(-10*24*time.Hour), now.Add(-10*24*time.Hour))
+	require.NoError(t, err)
+
+	// 5. PENDING + old (created 10d ago, published_at is NULL -> MUST NEVER BE PURGED)
+	_, err = pool.Exec(ctx, insertQuery, oldPendingID, "NotificationCreated", []byte(`{}`), "user:portfolio:u1", "PENDING", now.Add(-10*24*time.Hour), nil)
+	require.NoError(t, err)
+
+	// 6. PROCESSING + old (created 10d ago, published_at is NULL -> MUST NEVER BE PURGED)
+	_, err = pool.Exec(ctx, insertQuery, oldProcessingID, "NotificationCreated", []byte(`{}`), "user:portfolio:u1", "PROCESSING", now.Add(-10*24*time.Hour), nil)
+	require.NoError(t, err)
+
+	// --- Execution 1: Purge portfolio updates with 24h cutoff ---
+	purgedPortfolio, err := repo.PurgeProcessedOutbox(ctx, "user:portfolio:", cutoffPortfolio, 1000)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), purgedPortfolio, "should have purged exactly 1 expired portfolio outbox record")
+
+	// Verify old portfolio record is deleted
+	var count int
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM notification_outbox WHERE id = $1`, oldPortfolioID).Scan(&count)
+	assert.Equal(t, 0, count, "old portfolio outbox must be deleted")
+
+	// Verify recent portfolio record is still intact
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM notification_outbox WHERE id = $1`, recentPortfolioID).Scan(&count)
+	assert.Equal(t, 1, count, "recent portfolio outbox must be preserved")
+
+	// Verify old notification (48h old) is still intact (different channel prefix)
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM notification_outbox WHERE id = $1`, oldNotifID).Scan(&count)
+	assert.Equal(t, 1, count, "old notification outbox must NOT be touched by portfolio purge")
+
+	// Verify active PENDING and PROCESSING rows are still intact
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM notification_outbox WHERE id = $1`, oldPendingID).Scan(&count)
+	assert.Equal(t, 1, count, "PENDING outbox must NEVER be deleted by purge")
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM notification_outbox WHERE id = $1`, oldProcessingID).Scan(&count)
+	assert.Equal(t, 1, count, "PROCESSING outbox must NEVER be deleted by purge")
+
+	// --- Execution 2: Purge notifications with 7-day cutoff ---
+	purgedNotif, err := repo.PurgeProcessedOutbox(ctx, "user:notifications:", cutoffNotif, 1000)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), purgedNotif, "should have purged exactly 1 expired (10d old) notification outbox record")
+
+	// Verify 10d old notification is deleted
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM notification_outbox WHERE id = $1`, veryOldNotifID).Scan(&count)
+	assert.Equal(t, 0, count, "10d old notification outbox must be deleted")
+
+	// Verify 48h old notification is still intact (younger than 7d cutoff)
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM notification_outbox WHERE id = $1`, oldNotifID).Scan(&count)
+	assert.Equal(t, 1, count, "48h old notification outbox must be preserved under 7d retention")
+}
+
+func TestRepository_CreateTradeSettledTx_MidTransactionRollback(t *testing.T) {
+	pool, cleanup := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := postgres.NewRepository(pool)
+
+	sourceEventID, _ := platformuuid.New()
+	buyerUserID, _ := platformuuid.New()
+	sellerUserID, _ := platformuuid.New()
+	buyerNotifID, _ := platformuuid.New()
+	sellerNotifID, _ := platformuuid.New()
+	buyerOutboxID, _ := platformuuid.New()
+	sellerOutboxID, _ := platformuuid.New()
+
+	buyerNotif := &model.Notification{
+		ID:        buyerNotifID,
+		UserID:    buyerUserID,
+		Title:     "Buy Filled",
+		Message:   "Your buy order filled",
+		Type:      model.TypeTradeFill,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	buyerOutbox := &model.OutboxEvent{
+		ID:            buyerOutboxID,
+		EventType:     "NotificationCreated",
+		Payload:       []byte(`{"side":"BUY"}`),
+		TargetChannel: "user:notifications:" + buyerUserID,
+		CreatedAt:     time.Now().UTC(),
+	}
+
+	sellerOutbox := &model.OutboxEvent{
+		ID:            sellerOutboxID,
+		EventType:     "NotificationCreated",
+		Payload:       []byte(`{"side":"SELL"}`),
+		TargetChannel: "user:notifications:" + sellerUserID,
+		CreatedAt:     time.Now().UTC(),
+	}
+
+	// Deliberately construct an INVALID seller notification type
+	// This violates the database CHECK constraint: chk_notification_type
+	// Order of execution in CreateTradeSettledTx:
+	// 1. processed_events INSERT succeeds
+	// 2. buyerNotif INSERT succeeds
+	// 3. buyerOutbox INSERT succeeds
+	// 4. sellerNotif INSERT FAILS due to CHECK constraint!
+	// 5. Transaction must roll back ALL prior writes.
+	invalidSellerNotif := &model.Notification{
+		ID:        sellerNotifID,
+		UserID:    sellerUserID,
+		Title:     "Sell Filled",
+		Message:   "Your sell order filled",
+		Type:      "ILLEGAL_UNCONSTRAINED_TYPE",
+		CreatedAt: time.Now().UTC(),
+	}
+
+	err := repo.CreateTradeSettledTx(ctx, buyerNotif, invalidSellerNotif, sourceEventID, buyerOutbox, sellerOutbox)
+	require.Error(t, err, "expected error due to check constraint violation on seller notification type")
+
+	// Verify atomicity: ZERO rows remain in processed_events, notifications, or notification_outbox
+	var dedupCount int
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM processed_events WHERE event_id = $1`, sourceEventID).Scan(&dedupCount)
+	require.NoError(t, err)
+	assert.Equal(t, 0, dedupCount, "processed_events must have rolled back")
+
+	var notifCount int
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM notifications WHERE id IN ($1, $2)`, buyerNotifID, sellerNotifID).Scan(&notifCount)
+	require.NoError(t, err)
+	assert.Equal(t, 0, notifCount, "notifications must have rolled back completely (0 rows)")
+
+	var outboxCount int
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM notification_outbox WHERE id IN ($1, $2)`, buyerOutboxID, sellerOutboxID).Scan(&outboxCount)
+	require.NoError(t, err)
+	assert.Equal(t, 0, outboxCount, "notification_outbox must have rolled back completely (0 rows)")
+}
+
 

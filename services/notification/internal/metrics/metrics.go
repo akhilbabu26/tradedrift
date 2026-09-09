@@ -45,4 +45,14 @@ var (
 		},
 		[]string{"topic", "status"},
 	)
+
+	OutboxPurgedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "tradedrift",
+			Subsystem: "notification",
+			Name:      "outbox_purged_total",
+			Help:      "Total number of processed outbox records purged by channel tier",
+		},
+		[]string{"tier"}, // "portfolio", "notification"
+	)
 )

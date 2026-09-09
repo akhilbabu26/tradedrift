@@ -713,8 +713,25 @@ Commit Kafka Offset of Poison Message (Allows partition to resume processing)
 
 ---
 
-### Flow 7: Real-Time WebSocket Delivery Flow (Gateway Hub)
+### Flow 7: Real-Time WebSocket Delivery & Dual-Path Recovery Flow (Gateway Hub)
 
+```
+                       Client State Machine
+                                │
+                        [App Launch / Reconnect]
+                                │
+               ┌────────────────┴────────────────┐
+               ▼                                 ▼
+   1. Durable Catch-Up (Recovery)       2. Live Push Stream (Real-Time)
+      REST API:                             WebSocket:
+      GET /api/v1/notifications?limit=20    SUBSCRIBE user:notifications:{uid}
+               │                                 │
+               ▼                                 ▼
+   Fetches durable inbox from            Receives real-time toasts
+   PostgreSQL storage (zero drops)       while actively connected
+```
+
+#### Real-Time Relay Pipeline:
 ```
 Outbox Worker
       │
@@ -724,6 +741,7 @@ Payload:
 {
   "event_id": "018f-event-uuid",
   "notification_id": "018f-notif-uuid",
+  "channel": "user:notifications:018f-user-uuid",
   "data": {
     "id": "018f-notif-uuid",
     "user_id": "018f-user-uuid",
@@ -736,9 +754,10 @@ Payload:
       │
       ▼
 Gateway Microservice (Redis Subscriber)
-      │
-      ├─ Dispatches message to user's active WebSocket connection in Hub
-      │
+      │  ├─ Validates event_id, notification_id, and non-empty data
+      │  ├─ Verifies channel metadata matches Redis topic
+      │  ├─ Deduplicates on event_id:notification_id (60s window)
+      │  └─ Dispatches message to user's active WebSocket connection in Hub
       ▼
 User Client (Web Browser / Mobile App)
       │
@@ -746,6 +765,11 @@ User Client (Web Browser / Mobile App)
       ├─ 2. Increments unread counter badge (+1)
       └─ 3. Prepends new notification item to in-memory notification list
 ```
+
+* **Durable Recovery Semantics**:
+  - Redis Pub/Sub and WebSockets are ephemeral, best-effort live delivery channels for actively connected clients.
+  - PostgreSQL is the durable, immutable source of truth. When a client reconnects after being offline, it issues `GET /api/v1/notifications?limit=20` to recover any missed alerts.
+
 
 ---
 

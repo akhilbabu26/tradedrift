@@ -3,6 +3,8 @@ package protocol
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/google/uuid"
 )
 
 // ParseStreamType extracts the stream type and target from a stream path.
@@ -16,7 +18,8 @@ func ParseStreamType(stream string) (streamType, target string) {
 // - "market:orderbook:{id}"
 // - "market:ticker:{id}"
 // - "market:trades:{id}"
-// - "user:notifications:{user_id}"
+// - "user:notifications:{UUID}"
+// - "user:portfolio:{UUID}"
 func ValidateStream(stream string) (streamType, target string, ok bool) {
 	return parseStreamStrict(stream)
 }
@@ -45,6 +48,10 @@ func parseStreamStrict(stream string) (streamType, target string, ok bool) {
 			return StreamTypeTrades, id, true
 		}
 	case "user":
+		// Private streams require valid UUID targets to prevent stream spoofing and path traversal
+		if _, err := uuid.Parse(id); err != nil {
+			return StreamTypeControl, "", false
+		}
 		if sub == "notifications" {
 			return StreamTypeNotification, id, true
 		}

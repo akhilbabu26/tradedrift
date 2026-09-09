@@ -130,6 +130,10 @@ func (m *mockRepo) ReleaseOutboxClaims(ctx context.Context, eventIDs []string, c
 	return nil
 }
 
+func (m *mockRepo) PurgeProcessedOutbox(ctx context.Context, targetChannelPrefix string, cutoff time.Time, limit int) (int64, error) {
+	return 0, nil
+}
+
 func (m *mockRepo) IncrementOutboxRetry(_ context.Context, _, _, _ string) error {
 	return nil
 }
@@ -231,6 +235,8 @@ func TestService_HandleTradeSettled_IdempotentSkip(t *testing.T) {
 		EventID:      "018f6749-aaaa-7000-8000-000000000000",
 		TradeID:      "018f6749-bbbb-7000-8000-000000000000",
 		MarketID:     "BTC-USDT",
+		Price:        "64000.00",
+		Quantity:     "1.0",
 		BuyerUserID:  "018f6749-0001-7000-8000-000000000001",
 		SellerUserID: "018f6749-0002-7000-8000-000000000002",
 	}
@@ -238,6 +244,66 @@ func TestService_HandleTradeSettled_IdempotentSkip(t *testing.T) {
 	// Should not return an error when repo returns ErrAlreadyProcessed
 	err := svc.HandleTradeSettled(context.Background(), ev)
 	assert.NoError(t, err)
+}
+
+func TestService_EventPayloadValidation(t *testing.T) {
+	baseEvent := func() service.TradeSettledEvent {
+		return service.TradeSettledEvent{
+			EventID:      "018f6749-aaaa-7000-8000-000000000000",
+			TradeID:      "018f6749-bbbb-7000-8000-000000000000",
+			MarketID:     "BTC-USDT",
+			Price:        "64000.00",
+			Quantity:     "1.50",
+			BuyerUserID:  "018f6749-0001-7000-8000-000000000001",
+			SellerUserID: "018f6749-0002-7000-8000-000000000002",
+		}
+	}
+
+	t.Run("valid event passes", func(t *testing.T) {
+		ev := baseEvent()
+		assert.NoError(t, ev.Validate())
+	})
+
+	t.Run("market_id structural validation", func(t *testing.T) {
+		invalidMarkets := []string{"BTC", "-BTC", "BTC-", "BTC-USDT-PERP", "btc-usdt", ""}
+		for _, m := range invalidMarkets {
+			ev := baseEvent()
+			ev.MarketID = m
+			assert.Error(t, ev.Validate(), "expected error for invalid market_id %q", m)
+		}
+	})
+
+	t.Run("price validation preserves decimal string and rejects non-positive", func(t *testing.T) {
+		validPrices := []string{"100", "0.00001", "96500.50"}
+		for _, p := range validPrices {
+			ev := baseEvent()
+			ev.Price = p
+			assert.NoError(t, ev.Validate(), "expected valid price for %q", p)
+		}
+
+		invalidPrices := []string{"0", "0.0", "0.0000", "-100", "-0.01", "abc", "1e5", ""}
+		for _, p := range invalidPrices {
+			ev := baseEvent()
+			ev.Price = p
+			assert.Error(t, ev.Validate(), "expected error for invalid price %q", p)
+		}
+	})
+
+	t.Run("quantity validation preserves decimal string and rejects non-positive", func(t *testing.T) {
+		validQuantities := []string{"1", "0.001", "100.5"}
+		for _, q := range validQuantities {
+			ev := baseEvent()
+			ev.Quantity = q
+			assert.NoError(t, ev.Validate(), "expected valid quantity for %q", q)
+		}
+
+		invalidQuantities := []string{"0", "0.00", "-1", "xyz", ""}
+		for _, q := range invalidQuantities {
+			ev := baseEvent()
+			ev.Quantity = q
+			assert.Error(t, ev.Validate(), "expected error for invalid quantity %q", q)
+		}
+	})
 }
 
 func TestService_HandleOrderCancelled(t *testing.T) {

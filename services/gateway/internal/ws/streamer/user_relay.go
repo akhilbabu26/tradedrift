@@ -3,8 +3,10 @@ package streamer
 import (
 	"context"
 	"encoding/json"
-	"strings"
+	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -12,8 +14,23 @@ import (
 	"tradedrift/services/gateway/internal/ws/protocol"
 )
 
-// redisNotificationEnvelope models the standard notification envelope emitted by Notification Service.
-type redisNotificationEnvelope struct {
+var (
+	// ErrMalformedJSON is returned when a Redis user stream payload cannot be unmarshaled.
+	ErrMalformedJSON = errors.New("malformed user stream json")
+	// ErrChannelMismatch is returned when the payload envelope's channel disagrees with the subscribed topic.
+	ErrChannelMismatch = errors.New("channel mismatch between envelope and topic")
+	// ErrInvalidStreamChannel is returned when the channel does not conform to a valid private user stream.
+	ErrInvalidStreamChannel = errors.New("invalid or malformed user stream channel")
+	// ErrInvalidNotification is returned when a notification envelope lacks required fields.
+	ErrInvalidNotification = errors.New("invalid notification envelope: event_id, notification_id, and non-empty data required")
+	// ErrInvalidPortfolio is returned when a portfolio envelope lacks a data payload.
+	ErrInvalidPortfolio = errors.New("invalid portfolio envelope: non-empty data required")
+	// ErrDuplicateNotification is returned when an identical notification was recently processed.
+	ErrDuplicateNotification = errors.New("duplicate notification suppressed")
+)
+
+// RedisNotificationEnvelope models the standard notification envelope emitted by Notification Service.
+type RedisNotificationEnvelope struct {
 	EventID        string          `json:"event_id"`
 	NotificationID string          `json:"notification_id"`
 	Type           string          `json:"type"`
@@ -22,19 +39,21 @@ type redisNotificationEnvelope struct {
 	Data           json.RawMessage `json:"data"`
 }
 
-// dedupCache tracks recently seen (event_id, notification_id) pairs to drop duplicate transmissions.
-type dedupCache struct {
+// DedupCache tracks recently seen (event_id, notification_id) pairs to drop duplicate transmissions.
+type DedupCache struct {
 	mu      sync.Mutex
 	entries map[string]time.Time // composite key -> expiration
 }
 
-func newDedupCache() *dedupCache {
-	return &dedupCache{
+// NewDedupCache constructs a thread-safe DedupCache.
+func NewDedupCache() *DedupCache {
+	return &DedupCache{
 		entries: make(map[string]time.Time),
 	}
 }
 
-func (c *dedupCache) isDuplicate(key string, ttl time.Duration) bool {
+// IsDuplicate checks if key is already cached within its TTL, or stores it until now + ttl.
+func (c *DedupCache) IsDuplicate(key string, ttl time.Duration) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -56,12 +75,71 @@ func (c *dedupCache) isDuplicate(key string, ttl time.Duration) bool {
 	return false
 }
 
+// ProcessUserStreamPayload unmarshals, validates, and deduplicates user stream payloads.
+// Returns the outbound payload bytes, stream type, and an error if the message is invalid or duplicate.
+func ProcessUserStreamPayload(
+	raw []byte,
+	channel string,
+	dedup *DedupCache,
+) ([]byte, string, error) {
+	var env RedisNotificationEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, "", fmt.Errorf("%w: %v", ErrMalformedJSON, err)
+	}
+
+	// Invariant: Channel must conform to a strictly valid user private stream
+	streamType, _, ok := protocol.ValidateStream(channel)
+	if !ok || (streamType != protocol.StreamTypeNotification && streamType != protocol.StreamTypePortfolio) {
+		return nil, "", fmt.Errorf("%w: %q", ErrInvalidStreamChannel, channel)
+	}
+
+	// Invariant: If envelope specifies an internal channel, it must match the subscribed Redis topic
+	if env.Channel != "" && env.Channel != channel {
+		return nil, "", fmt.Errorf("%w: topic=%q payload=%q", ErrChannelMismatch, channel, env.Channel)
+	}
+
+	// Type-specific validation and deduplication rules
+	switch streamType {
+	case protocol.StreamTypeNotification:
+		// Notifications must contain valid event_id, notification_id, and non-empty data payload
+		if env.EventID == "" || env.NotificationID == "" || len(env.Data) == 0 || string(env.Data) == "null" {
+			return nil, "", ErrInvalidNotification
+		}
+
+		// Deduplicate persistent notifications on composite key (event_id:notification_id) with 60s TTL
+		if dedup != nil {
+			dedupKey := env.EventID + ":" + env.NotificationID
+			if dedup.IsDuplicate(dedupKey, 60*time.Second) {
+				return nil, "", ErrDuplicateNotification
+			}
+		}
+
+	case protocol.StreamTypePortfolio:
+		// Portfolio snapshots require data, but are intentionally duplicate-tolerant state updates (no dedup suppression)
+		if len(env.Data) == 0 || string(env.Data) == "null" {
+			return nil, "", ErrInvalidPortfolio
+		}
+	}
+
+	// Construct outbound frame
+	outbound := protocol.OutboundEnvelope{
+		Stream: channel,
+		Data:   env.Data,
+	}
+	payload, err := json.Marshal(outbound)
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal outbound envelope: %w", err)
+	}
+
+	return payload, streamType, nil
+}
+
 // runUserStreamRelay subscribes to user private channels on Redis Pub/Sub,
 // deduplicates messages by (event_id, notification_id), and broadcasts to active subscribers.
 func (s *Streamer) runUserStreamRelay(ctx context.Context) {
 	s.logger.Info("Starting WebSocket user private stream relay")
 
-	dedup := newDedupCache()
+	dedup := NewDedupCache()
 
 	for {
 		if ctx.Err() != nil {
@@ -97,42 +175,19 @@ func (s *Streamer) runUserStreamRelay(ctx context.Context) {
 					continue
 				}
 
-				var env redisNotificationEnvelope
-				if err := json.Unmarshal([]byte(msg.Payload), &env); err != nil {
-					s.logger.Warn("Failed to unmarshal Redis user stream envelope",
-						zap.String("channel", channel),
-						zap.Error(err),
-					)
-					continue
-				}
-
-				// Deduplication check: composite key = (event_id + ":" + notification_id)
-				if env.EventID != "" {
-					dedupKey := env.EventID + ":" + env.NotificationID
-					if dedup.isDuplicate(dedupKey, 60*time.Second) {
-						s.logger.Debug("Dropped duplicate user stream message in Gateway",
-							zap.String("channel", channel),
-							zap.String("event_id", env.EventID),
-							zap.String("notification_id", env.NotificationID),
-						)
-						continue
-					}
-				}
-
-				// Determine stream type
-				streamType := protocol.StreamTypeNotification
-				if strings.HasPrefix(channel, "user:portfolio:") {
-					streamType = protocol.StreamTypePortfolio
-				}
-
-				// Construct outbound frame
-				outbound := protocol.OutboundEnvelope{
-					Stream: channel,
-					Data:   env.Data,
-				}
-				payload, err := json.Marshal(outbound)
+				payload, streamType, err := ProcessUserStreamPayload([]byte(msg.Payload), channel, dedup)
 				if err != nil {
-					s.logger.Error("Failed to marshal outbound user stream envelope", zap.Error(err))
+					atomic.AddInt64(&s.redisUserDropsTotal, 1)
+					if errors.Is(err, ErrDuplicateNotification) {
+						s.logger.Debug("Dropped duplicate notification in Gateway",
+							zap.String("channel", channel),
+						)
+					} else {
+						s.logger.Warn("Dropped invalid Redis user stream message in Gateway",
+							zap.String("channel", channel),
+							zap.Error(err),
+						)
+					}
 					continue
 				}
 
@@ -146,7 +201,10 @@ func (s *Streamer) runUserStreamRelay(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-time.After(1 * time.Second):
-			s.logger.Warn("Redis Pub/Sub disconnected; reconnecting user stream relay...")
+			atomic.AddInt64(&s.redisUserReconnectsTotal, 1)
+			s.logger.Warn("Redis Pub/Sub disconnected; reconnecting user stream relay...",
+				zap.Int64("reconnects_total", atomic.LoadInt64(&s.redisUserReconnectsTotal)),
+			)
 		}
 	}
 }

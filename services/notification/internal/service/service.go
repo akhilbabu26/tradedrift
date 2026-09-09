@@ -25,6 +25,13 @@ var (
 // It does NOT enforce a specific UUID version or variant.
 var uuidRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
+// marketRE matches BASE-QUOTE where each side consists of 1 to 20 uppercase alphanumeric chars.
+var marketRE = regexp.MustCompile(`^[A-Z0-9]{1,20}-[A-Z0-9]{1,20}$`)
+
+// decimalRE matches a positive decimal number with optional fraction (e.g. "100", "0.05", "1234.5678").
+// Strictly rejects negatives, scientific notation, letters, and empty strings.
+var decimalRE = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
+
 // validateUUID returns a descriptive error when value is not a canonical UUID.
 // Both lower-case and upper-case hex digits are accepted.
 func validateUUID(field, value string) error {
@@ -34,6 +41,32 @@ func validateUUID(field, value string) error {
 	return nil
 }
 
+// validateMarketID checks that marketID conforms to structural BASE-QUOTE format.
+func validateMarketID(marketID string) error {
+	if !marketRE.MatchString(marketID) {
+		return fmt.Errorf("invalid market_id %q: must be in BASE-QUOTE format", marketID)
+	}
+	return nil
+}
+
+// validatePositiveDecimal verifies that val represents a valid positive decimal quantity or price
+// without converting to float64, preserving exact decimal precision and representations.
+func validatePositiveDecimal(field, val string) error {
+	if !decimalRE.MatchString(val) {
+		return fmt.Errorf("invalid %s %q: must be a positive decimal string", field, val)
+	}
+	hasNonZero := false
+	for _, r := range val {
+		if r >= '1' && r <= '9' {
+			hasNonZero = true
+			break
+		}
+	}
+	if !hasNonZero {
+		return fmt.Errorf("invalid %s %q: value must be greater than zero", field, val)
+	}
+	return nil
+}
 
 // ---------------------------------------------------------------------------
 // Inbound domain event payloads consumed from Kafka
@@ -70,10 +103,9 @@ type TradeSettledEvent struct {
 	ExecutedAt   string `json:"executed_at"`
 }
 
-// Validate checks that all required fields are present and are canonical UUIDs.
+// Validate checks that all required fields are present, IDs are canonical UUIDs,
+// market conforms to BASE-QUOTE, and price/quantity are strictly positive decimals.
 // Returns a descriptive error suitable for DLQ routing at the consumer layer.
-// The service layer calls this same method before executing business logic,
-// so the two validation boundaries stay in sync automatically.
 func (ev *TradeSettledEvent) Validate() error {
 	if ev.EventID == "" || ev.TradeID == "" || ev.BuyerUserID == "" || ev.SellerUserID == "" {
 		return fmt.Errorf("missing required fields (event_id, trade_id, buyer_user_id, seller_user_id)")
@@ -99,6 +131,17 @@ func (ev *TradeSettledEvent) Validate() error {
 			}
 		}
 	}
+
+	if err := validateMarketID(ev.MarketID); err != nil {
+		return err
+	}
+	if err := validatePositiveDecimal("price", ev.Price); err != nil {
+		return err
+	}
+	if err := validatePositiveDecimal("quantity", ev.Quantity); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -123,6 +166,11 @@ func (ev *OrderCancelledEvent) Validate() error {
 		{"user_id", ev.UserID},
 	} {
 		if err := validateUUID(f.name, f.val); err != nil {
+			return err
+		}
+	}
+	if ev.MarketID != "" {
+		if err := validateMarketID(ev.MarketID); err != nil {
 			return err
 		}
 	}

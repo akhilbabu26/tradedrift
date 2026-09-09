@@ -21,23 +21,31 @@ type RedisClient interface {
 
 // Config defines the tuning parameters for the Transactional Outbox publisher.
 type Config struct {
-	BatchSize         int
-	PollInterval      time.Duration
-	IdleInterval      time.Duration
-	LeaseTimeout      time.Duration
-	RecoveryInterval  time.Duration
-	MaxPublishRetries int
+	BatchSize          int
+	PollInterval       time.Duration
+	IdleInterval       time.Duration
+	LeaseTimeout       time.Duration
+	RecoveryInterval   time.Duration
+	CleanupInterval    time.Duration
+	PortfolioRetention time.Duration
+	NotifRetention     time.Duration
+	CleanupBatchSize   int
+	MaxPublishRetries  int
 }
 
 // DefaultConfig returns safe, production-grade defaults.
 func DefaultConfig() Config {
 	return Config{
-		BatchSize:         50,
-		PollInterval:      500 * time.Millisecond,
-		IdleInterval:      2 * time.Second,
-		LeaseTimeout:      60 * time.Second,
-		RecoveryInterval:  15 * time.Second,
-		MaxPublishRetries: 3,
+		BatchSize:          50,
+		PollInterval:       500 * time.Millisecond,
+		IdleInterval:       2 * time.Second,
+		LeaseTimeout:       60 * time.Second,
+		RecoveryInterval:   15 * time.Second,
+		CleanupInterval:    1 * time.Hour,
+		PortfolioRetention: 24 * time.Hour,
+		NotifRetention:     7 * 24 * time.Hour,
+		CleanupBatchSize:   1000,
+		MaxPublishRetries:  3,
 	}
 }
 
@@ -65,6 +73,18 @@ func NewPublisher(repo repository.NotificationRepository, redis RedisClient, log
 	if cfg.RecoveryInterval <= 0 {
 		cfg.RecoveryInterval = 15 * time.Second
 	}
+	if cfg.CleanupInterval <= 0 {
+		cfg.CleanupInterval = 1 * time.Hour
+	}
+	if cfg.PortfolioRetention <= 0 {
+		cfg.PortfolioRetention = 24 * time.Hour
+	}
+	if cfg.NotifRetention <= 0 {
+		cfg.NotifRetention = 7 * 24 * time.Hour
+	}
+	if cfg.CleanupBatchSize <= 0 {
+		cfg.CleanupBatchSize = 1000
+	}
 	if cfg.MaxPublishRetries <= 0 {
 		cfg.MaxPublishRetries = 3
 	}
@@ -77,7 +97,7 @@ func NewPublisher(repo repository.NotificationRepository, redis RedisClient, log
 	}
 }
 
-// Start runs the background publisher loop and periodic stale claim recovery until ctx is cancelled.
+// Start runs the background publisher loop, periodic stale claim recovery, and retention cleanup until ctx is cancelled.
 func (p *Publisher) Start(ctx context.Context) error {
 	p.log.Info("Starting Transactional Outbox Publisher",
 		zap.Int("batch_size", p.cfg.BatchSize),
@@ -85,11 +105,18 @@ func (p *Publisher) Start(ctx context.Context) error {
 		zap.Duration("idle_interval", p.cfg.IdleInterval),
 		zap.Duration("lease_timeout", p.cfg.LeaseTimeout),
 		zap.Duration("recovery_interval", p.cfg.RecoveryInterval),
+		zap.Duration("cleanup_interval", p.cfg.CleanupInterval),
+		zap.Duration("portfolio_retention", p.cfg.PortfolioRetention),
+		zap.Duration("notif_retention", p.cfg.NotifRetention),
 	)
 
 	// Ticker for periodic recovery of abandoned claims (e.g. from crashed instances)
 	recoveryTicker := time.NewTicker(p.cfg.RecoveryInterval)
 	defer recoveryTicker.Stop()
+
+	// Ticker for periodic retention cleanup of PROCESSED outbox records
+	cleanupTicker := time.NewTicker(p.cfg.CleanupInterval)
+	defer cleanupTicker.Stop()
 
 	// Initial stale claim recovery on startup
 	if recovered, err := p.repo.RecoverStaleOutboxClaims(ctx, p.cfg.LeaseTimeout); err != nil {
@@ -97,6 +124,9 @@ func (p *Publisher) Start(ctx context.Context) error {
 	} else if recovered > 0 {
 		p.log.Info("Recovered abandoned outbox claims on startup", zap.Int64("count", recovered))
 	}
+
+	// Initial retention cleanup on startup
+	p.runRetentionCleanup(ctx)
 
 	for {
 		select {
@@ -110,6 +140,9 @@ func (p *Publisher) Start(ctx context.Context) error {
 			} else if recovered > 0 {
 				p.log.Info("Recovered abandoned outbox claims", zap.Int64("count", recovered))
 			}
+
+		case <-cleanupTicker.C:
+			p.runRetentionCleanup(ctx)
 
 		default:
 			count, err := p.ProcessBatch(ctx)
@@ -259,4 +292,52 @@ func (p *Publisher) publishWithRetry(ctx context.Context, ev *model.OutboxEvent)
 
 	return fmt.Errorf("exhausted %d retries: %w", p.cfg.MaxPublishRetries, lastErr)
 }
+
+// runRetentionCleanup explicitly sweeps user:portfolio: (ephemeral snapshots) and
+// user:notifications: (durable user notifications) using their configured retention windows.
+// Runs in chunks of CleanupBatchSize until all qualifying rows are drained.
+func (p *Publisher) runRetentionCleanup(ctx context.Context) {
+	now := time.Now()
+
+	// 1. Explicit purge for ephemeral portfolio updates
+	portfolioCutoff := now.Add(-p.cfg.PortfolioRetention)
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		purged, err := p.repo.PurgeProcessedOutbox(ctx, "user:portfolio:", portfolioCutoff, p.cfg.CleanupBatchSize)
+		if err != nil {
+			p.log.Warn("Failed to purge processed portfolio outbox records", zap.Error(err))
+			break
+		}
+		if purged > 0 {
+			metrics.OutboxPurgedTotal.WithLabelValues("portfolio").Add(float64(purged))
+			p.log.Info("Purged expired portfolio outbox records", zap.Int64("purged", purged))
+		}
+		if int(purged) < p.cfg.CleanupBatchSize {
+			break
+		}
+	}
+
+	// 2. Explicit purge for user notifications
+	notifCutoff := now.Add(-p.cfg.NotifRetention)
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		purged, err := p.repo.PurgeProcessedOutbox(ctx, "user:notifications:", notifCutoff, p.cfg.CleanupBatchSize)
+		if err != nil {
+			p.log.Warn("Failed to purge processed notification outbox records", zap.Error(err))
+			break
+		}
+		if purged > 0 {
+			metrics.OutboxPurgedTotal.WithLabelValues("notification").Add(float64(purged))
+			p.log.Info("Purged expired notification outbox records", zap.Int64("purged", purged))
+		}
+		if int(purged) < p.cfg.CleanupBatchSize {
+			break
+		}
+	}
+}
+
 

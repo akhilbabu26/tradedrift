@@ -24,6 +24,8 @@ type mockPublisherRepo struct {
 	publishedIDs    []string
 	releasedIDs     []string
 	recoveredClaims int64
+	purgeCalls      []purgeCall
+	purgeReturns    []int64
 }
 
 func (m *mockPublisherRepo) CreateWithDedupTx(ctx context.Context, notif *model.Notification, sourceEventID string, outbox *model.OutboxEvent) error {
@@ -99,6 +101,30 @@ func (m *mockPublisherRepo) GetNotificationByID(_ context.Context, _, _ string) 
 
 func (m *mockPublisherRepo) GetNotificationIDByEventID(_ context.Context, _ string) (string, error) {
 	return "", nil
+}
+
+type purgeCall struct {
+	targetChannelPrefix string
+	cutoff              time.Time
+	limit               int
+}
+
+func (m *mockPublisherRepo) PurgeProcessedOutbox(ctx context.Context, targetChannelPrefix string, cutoff time.Time, limit int) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.purgeCalls = append(m.purgeCalls, purgeCall{
+		targetChannelPrefix: targetChannelPrefix,
+		cutoff:              cutoff,
+		limit:               limit,
+	})
+	if m.purgeReturns != nil {
+		if len(m.purgeReturns) > 0 {
+			ret := m.purgeReturns[0]
+			m.purgeReturns = m.purgeReturns[1:]
+			return ret, nil
+		}
+	}
+	return 0, nil
 }
 
 // mockRedisClient records published messages and simulates successes/failures.
@@ -305,3 +331,91 @@ func TestPublisher_DuplicatePublicationHandling(t *testing.T) {
 	assert.Equal(t, payload, publishes[1])
 	rdb.mu.Unlock()
 }
+
+func TestPublisher_RetentionCleanupExecution(t *testing.T) {
+	repo := &mockPublisherRepo{
+		// Simulate first portfolio batch returning 1000 (batchSize -> triggers loop), second returning 150 (done)
+		// Then notification batch returning 50 (done)
+		purgeReturns: []int64{1000, 150, 50},
+	}
+	rdb := newMockRedis()
+
+	pub := publisher.NewPublisher(repo, rdb, zap.NewNop(), publisher.Config{
+		CleanupInterval:    50 * time.Millisecond,
+		PortfolioRetention: 24 * time.Hour,
+		NotifRetention:     7 * 24 * time.Hour,
+		CleanupBatchSize:   1000,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Run publisher in background
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- pub.Start(ctx)
+	}()
+
+	// Wait briefly for initial startup retention cleanup to run
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	err := <-errCh
+	require.ErrorIs(t, err, context.Canceled)
+
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	// Should have executed at least:
+	// 1. portfolio chunk 1
+	// 2. portfolio chunk 2
+	// 3. notification chunk 1
+	require.GreaterOrEqual(t, len(repo.purgeCalls), 3)
+
+	// First call was portfolio prefix with 24h cutoff
+	assert.Equal(t, "user:portfolio:", repo.purgeCalls[0].targetChannelPrefix)
+	assert.Equal(t, 1000, repo.purgeCalls[0].limit)
+	assert.WithinDuration(t, time.Now().Add(-24*time.Hour), repo.purgeCalls[0].cutoff, 5*time.Second)
+
+	// Second call was portfolio prefix continuing drain
+	assert.Equal(t, "user:portfolio:", repo.purgeCalls[1].targetChannelPrefix)
+
+	// Third call was notification prefix with 7-day cutoff
+	assert.Equal(t, "user:notifications:", repo.purgeCalls[2].targetChannelPrefix)
+	assert.WithinDuration(t, time.Now().Add(-7*24*time.Hour), repo.purgeCalls[2].cutoff, 5*time.Second)
+}
+
+func TestPublisher_StartAndCancelCleanShutdown(t *testing.T) {
+	repo := &mockPublisherRepo{}
+	rdb := newMockRedis()
+
+	pub := publisher.NewPublisher(repo, rdb, zap.NewNop(), publisher.Config{
+		PollInterval:     10 * time.Millisecond,
+		IdleInterval:     10 * time.Millisecond,
+		RecoveryInterval: 20 * time.Millisecond,
+		CleanupInterval:  20 * time.Millisecond,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- pub.Start(ctx)
+	}()
+
+	// Let tickers fire
+	time.Sleep(30 * time.Millisecond)
+
+	// Cancel and measure prompt exit
+	start := time.Now()
+	cancel()
+
+	select {
+	case err := <-errCh:
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.Less(t, time.Since(start), 200*time.Millisecond, "Start must return promptly on cancellation")
+	case <-time.After(1 * time.Second):
+		t.Fatal("Publisher did not stop within 1 second after context cancellation")
+	}
+}
+

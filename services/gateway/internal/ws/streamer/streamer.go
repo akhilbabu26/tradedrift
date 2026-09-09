@@ -45,6 +45,10 @@ type Streamer struct {
 	// Kafka resilience metrics.
 	kafkaErrorsTotal     int64
 	kafkaReconnectsTotal int64
+
+	// Redis user private stream resilience metrics.
+	redisUserReconnectsTotal int64
+	redisUserDropsTotal      int64
 }
 
 // NewStreamer creates a new Streamer instance.
@@ -165,6 +169,16 @@ func (s *Streamer) KafkaErrorsTotal() int64 {
 // KafkaReconnectsTotal returns the total number of Kafka reconnect attempts since startup.
 func (s *Streamer) KafkaReconnectsTotal() int64 {
 	return atomic.LoadInt64(&s.kafkaReconnectsTotal)
+}
+
+// RedisUserReconnectsTotal returns the total number of Redis user relay reconnect attempts since startup.
+func (s *Streamer) RedisUserReconnectsTotal() int64 {
+	return atomic.LoadInt64(&s.redisUserReconnectsTotal)
+}
+
+// RedisUserDropsTotal returns the total number of dropped user relay messages (duplicates or invalid) since startup.
+func (s *Streamer) RedisUserDropsTotal() int64 {
+	return atomic.LoadInt64(&s.redisUserDropsTotal)
 }
 
 // marshalUnavailable produces a MARKET_DATA_UNAVAILABLE control frame for broadcast.

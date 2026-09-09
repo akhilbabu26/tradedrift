@@ -185,3 +185,33 @@ func (r *Repository) ReleaseOutboxClaims(ctx context.Context, ids []string, clai
 	}
 	return nil
 }
+
+// PurgeProcessedOutbox deletes up to limit PROCESSED outbox records published before cutoff
+// matching targetChannelPrefix (e.g. "user:portfolio:", "user:notifications:").
+// Uses FOR UPDATE SKIP LOCKED in a CTE to avoid lock contention with active workers.
+// Returns the number of rows deleted.
+func (r *Repository) PurgeProcessedOutbox(ctx context.Context, targetChannelPrefix string, cutoff time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	query := `
+		WITH target_rows AS (
+			SELECT id
+			FROM notification_outbox
+			WHERE status = 'PROCESSED'
+			  AND published_at < $1
+			  AND target_channel LIKE $2 || '%'
+			ORDER BY published_at ASC
+			LIMIT $3
+			FOR UPDATE SKIP LOCKED
+		)
+		DELETE FROM notification_outbox
+		WHERE id IN (SELECT id FROM target_rows);
+	`
+	cmdTag, err := r.db.Exec(ctx, query, cutoff, targetChannelPrefix, limit)
+	if err != nil {
+		return 0, fmt.Errorf("purge processed outbox: %w", err)
+	}
+	return cmdTag.RowsAffected(), nil
+}
+

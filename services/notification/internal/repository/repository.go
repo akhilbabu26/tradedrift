@@ -80,4 +80,9 @@ type NotificationRepository interface {
 	// claimToken must match the token stored when rows were claimed — prevents a
 	// slow worker from releasing rows that another worker has already re-claimed.
 	ReleaseOutboxClaims(ctx context.Context, ids []string, claimToken string) error
+
+	// PurgeProcessedOutbox deletes up to limit PROCESSED outbox records published before cutoff
+	// matching targetChannelPrefix (e.g. "user:portfolio:", "user:notifications:").
+	// Returns the number of deleted records.
+	PurgeProcessedOutbox(ctx context.Context, targetChannelPrefix string, cutoff time.Time, limit int) (int64, error)
 }

@@ -174,7 +174,9 @@ func TestConsumer_TradeSettled_NoCommitOnServiceError(t *testing.T) {
 			"trade_id":      "018f6749-1113-7000-8000-000000000000",
 			"market_id":     "BTC-USDT",
 			"buyer_user_id":  "018f6749-1111-7000-8000-000000000001",
-			"seller_user_id": "018f6749-1111-7000-8000-000000000002"
+			"seller_user_id": "018f6749-1111-7000-8000-000000000002",
+			"price":          "64000.00",
+			"quantity":       "1.0"
 		}`),
 	}
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -12,6 +13,7 @@ import (
 
 	"tradedrift/services/notification/internal/service"
 )
+
 
 const (
 	TopicTradesSettled    = "trades.settled.v1"
@@ -124,6 +126,8 @@ func NewConsumerWithMocks(
 }
 
 // Start spawns background consumption goroutines for each topic.
+// The goroutines run until ctx is cancelled. Use StartWithWaitGroup when you
+// need the caller to wait for all goroutines to exit (e.g. in main).
 func (c *Consumer) Start(ctx context.Context) {
 	c.log.Info("Starting Kafka Consumer routines for notification topics")
 
@@ -131,6 +135,33 @@ func (c *Consumer) Start(ctx context.Context) {
 	go c.consumeLoop(ctx, c.cancelReader, TopicOrdersCancelled, c.processOrderCancelled)
 	go c.consumeLoop(ctx, c.portfolioReader, TopicPortfoliosUpdated, c.processPortfolioUpdated)
 }
+
+// StartWithWaitGroup is like Start but registers each goroutine with wg so the
+// caller can call wg.Wait() to block until all consumer loops have exited after
+// ctx cancellation. This makes graceful shutdown deterministic.
+func (c *Consumer) StartWithWaitGroup(ctx context.Context, wg *sync.WaitGroup) {
+	c.log.Info("Starting Kafka Consumer routines for notification topics (with WaitGroup)")
+
+	topics := []struct {
+		reader  MessageReader
+		topic   string
+		handler messageHandler
+	}{
+		{c.tradeReader, TopicTradesSettled, c.processTradeSettled},
+		{c.cancelReader, TopicOrdersCancelled, c.processOrderCancelled},
+		{c.portfolioReader, TopicPortfoliosUpdated, c.processPortfolioUpdated},
+	}
+
+	for _, t := range topics {
+		wg.Add(1)
+		t := t // capture loop variable
+		go func() {
+			defer wg.Done()
+			c.consumeLoop(ctx, t.reader, t.topic, t.handler)
+		}()
+	}
+}
+
 
 type messageHandler func(ctx context.Context, msg kafka.Message) error
 
@@ -217,8 +248,9 @@ func (c *Consumer) processTradeSettled(ctx context.Context, msg kafka.Message) e
 		return c.handlePoison(ctx, msg, TopicTradesSettled, fmt.Sprintf("unmarshal error: %v", err))
 	}
 
-	if ev.TradeID == "" || ev.BuyerUserID == "" || ev.SellerUserID == "" {
-		return c.handlePoison(ctx, msg, TopicTradesSettled, "missing required fields (trade_id, buyer_user_id, seller_user_id)")
+	if ev.EventID == "" || ev.TradeID == "" || ev.BuyerUserID == "" || ev.SellerUserID == "" {
+		return c.handlePoison(ctx, msg, TopicTradesSettled,
+			"missing required fields (event_id, trade_id, buyer_user_id, seller_user_id)")
 	}
 
 	return c.svc.HandleTradeSettled(ctx, &ev)
@@ -230,8 +262,9 @@ func (c *Consumer) processOrderCancelled(ctx context.Context, msg kafka.Message)
 		return c.handlePoison(ctx, msg, TopicOrdersCancelled, fmt.Sprintf("unmarshal error: %v", err))
 	}
 
-	if ev.OrderID == "" || ev.UserID == "" {
-		return c.handlePoison(ctx, msg, TopicOrdersCancelled, "missing required fields (order_id, user_id)")
+	if ev.EventID == "" || ev.OrderID == "" || ev.UserID == "" {
+		return c.handlePoison(ctx, msg, TopicOrdersCancelled,
+			"missing required fields (event_id, order_id, user_id)")
 	}
 
 	return c.svc.HandleOrderCancelled(ctx, &ev)
@@ -243,8 +276,9 @@ func (c *Consumer) processPortfolioUpdated(ctx context.Context, msg kafka.Messag
 		return c.handlePoison(ctx, msg, TopicPortfoliosUpdated, fmt.Sprintf("unmarshal error: %v", err))
 	}
 
-	if ev.UserID == "" {
-		return c.handlePoison(ctx, msg, TopicPortfoliosUpdated, "missing required fields (user_id)")
+	if ev.EventID == "" || ev.UserID == "" {
+		return c.handlePoison(ctx, msg, TopicPortfoliosUpdated,
+			"missing required fields (event_id, user_id)")
 	}
 
 	return c.svc.HandlePortfolioUpdated(ctx, &ev)
@@ -266,13 +300,12 @@ func (c *Consumer) handlePoison(ctx context.Context, msg kafka.Message, topic, r
 	)
 
 	if c.dlqWriter == nil {
-		// No DLQ configured: treat as successfully discarded so the offset
-		// is committed and the consumer can advance.
-		c.log.Warn("DLQ writer not configured; discarding poison message",
-			zap.String("topic", topic),
-			zap.Int64("offset", msg.Offset),
-		)
-		return nil
+		// DLQ writer is mandatory. Returning an error here keeps the Kafka offset
+		// uncommitted so the message is retried indefinitely. This forces the
+		// operator to either configure a DLQ topic or restart with DLQ disabled
+		// intentionally — there is no silent data loss path.
+		return fmt.Errorf("DLQ writer is not configured: cannot route poison message (topic=%s offset=%d reason=%s)",
+			topic, msg.Offset, reason)
 	}
 
 	dlqMsg := kafka.Message{

@@ -158,6 +158,15 @@ func (p *Publisher) ProcessBatch(ctx context.Context) (int, error) {
 
 	for i, ev := range events {
 		if err := p.publishWithRetry(ctx, ev); err != nil {
+			// Persist failure metadata before releasing — gives operators visibility
+			// into retry_count and the last Redis error in the outbox table.
+			if retryErr := p.repo.IncrementOutboxRetry(ctx, ev.ID, err.Error()); retryErr != nil {
+				p.log.Warn("Failed to increment outbox retry counter",
+					zap.String("outbox_id", ev.ID),
+					zap.Error(retryErr),
+				)
+			}
+
 			p.log.Error("Failed to publish outbox event to Redis; aborting batch and releasing remaining claims",
 				zap.String("outbox_id", ev.ID),
 				zap.String("target_channel", ev.TargetChannel),

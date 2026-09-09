@@ -52,6 +52,10 @@ type NotificationRepository interface {
 	// MarkOutboxPublished transitions an outbox record to PROCESSED.
 	MarkOutboxPublished(ctx context.Context, id string) error
 
+	// IncrementOutboxRetry increments retry_count and records last_error for a failed outbox event.
+	// Called when a Redis PUBLISH fails after all retries so the failure is visible in the DB.
+	IncrementOutboxRetry(ctx context.Context, id, lastError string) error
+
 	// ReleaseOutboxClaims unclaims in-flight outbox records back to PENDING.
 	ReleaseOutboxClaims(ctx context.Context, ids []string) error
 }

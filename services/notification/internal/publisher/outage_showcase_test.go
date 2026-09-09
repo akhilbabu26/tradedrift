@@ -66,17 +66,21 @@ func TestShowcase_RedisOutageAndRecoveryPipeline(t *testing.T) {
 	buyerID, _ := platformuuid.New()
 	sellerID, _ := platformuuid.New()
 	tradeID, _ := platformuuid.New()
+	eventID, _ := platformuuid.New()  // domain event ID — distinct from tradeID
+	buyOrderID, _ := platformuuid.New()
+	sellOrderID, _ := platformuuid.New()
 
 	// ─── Step 1: Simulate Ingestion of a Domain Event (TradeSettled) ───────────
 	ev := &service.TradeSettledEvent{
+		EventID:      eventID,
 		TradeID:      tradeID,
 		MarketID:     "BTC-USDT",
 		BaseAsset:    "BTC",
 		QuoteAsset:   "USDT",
 		BuyerUserID:  buyerID,
 		SellerUserID: sellerID,
-		BuyOrderID:   "buy-ord-777",
-		SellOrderID:  "sell-ord-888",
+		BuyOrderID:   buyOrderID,
+		SellOrderID:  sellOrderID,
 		Price:        "96450.00",
 		Quantity:     "0.1500",
 		ExecutedAt:   time.Now().UTC().Format(time.RFC3339),
@@ -140,13 +144,14 @@ func TestShowcase_RedisOutageAndRecoveryPipeline(t *testing.T) {
 
 	var buyerEnv model.RedisEnvelope
 	require.NoError(t, json.Unmarshal([]byte(buyerMessages[0]), &buyerEnv))
-	assert.Equal(t, tradeID, buyerEnv.EventID)
+	assert.Equal(t, eventID, buyerEnv.EventID) // source domain event ID, not trade ID
 	assert.NotEmpty(t, buyerEnv.NotificationID)
 	assert.Equal(t, "notification.created", buyerEnv.Type)
 
 	var sellerEnv model.RedisEnvelope
 	require.NoError(t, json.Unmarshal([]byte(sellerMessages[0]), &sellerEnv))
-	assert.Equal(t, tradeID, sellerEnv.EventID)
+	assert.Equal(t, eventID, sellerEnv.EventID) // same source event ID, different notification_id
 	assert.NotEmpty(t, sellerEnv.NotificationID)
 	assert.Equal(t, "notification.created", sellerEnv.Type)
+
 }

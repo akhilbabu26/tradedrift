@@ -116,6 +116,24 @@ func (r *Repository) MarkOutboxPublished(ctx context.Context, id string) error {
 	return nil
 }
 
+// IncrementOutboxRetry bumps retry_count and records last_error for an outbox event
+// that failed to publish to Redis. The row remains PROCESSING so it will be retried
+// on the next publisher poll (or after lease recovery). This is purely observational —
+// the retry logic itself is driven by the lease timeout, not this counter.
+func (r *Repository) IncrementOutboxRetry(ctx context.Context, id, lastError string) error {
+	query := `
+		UPDATE notification_outbox
+		SET retry_count = retry_count + 1,
+		    last_error  = $2
+		WHERE id = $1 AND status = 'PROCESSING'
+	`
+	_, err := r.db.Exec(ctx, query, id, lastError)
+	if err != nil {
+		return fmt.Errorf("increment outbox retry: %w", err)
+	}
+	return nil
+}
+
 // ReleaseOutboxClaims resets in-flight PROCESSING records back to PENDING.
 // Called when a batch fails mid-way so remaining events are retried by the next poll.
 func (r *Repository) ReleaseOutboxClaims(ctx context.Context, ids []string) error {

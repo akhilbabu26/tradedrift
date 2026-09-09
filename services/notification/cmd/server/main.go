@@ -146,6 +146,13 @@ func main() {
 	}()
 
 	// ── 10. Start Kafka Domain Consumers ─────────────────────────────────────
+	// Validate DLQ configuration at startup — a missing DLQ topic means poison
+	// messages cannot be routed and the consumer will block indefinitely on the
+	// first malformed event. Fail fast here rather than silently at runtime.
+	if cfg.KafkaDLQTopic == "" {
+		appLogger.Fatal("KafkaDLQTopic is not configured; refusing to start Kafka consumers")
+	}
+
 	kafkaConsumer := notificationkafka.NewConsumer(
 		notificationkafka.ConsumerConfig{
 			Brokers:  cfg.KafkaBrokers,
@@ -155,7 +162,10 @@ func main() {
 		svc,
 		appLogger,
 	)
-	kafkaConsumer.Start(ctx)
+	// kafkaConsumer.Start spawns one goroutine per topic. We wrap them in the
+	// shared WaitGroup so wg.Wait() below explicitly drains them after ctx
+	// cancellation, giving all in-flight messages a chance to be committed.
+	kafkaConsumer.StartWithWaitGroup(ctx, &wg)
 
 	// ── 11. Graceful Teardown ────────────────────────────────────────────────
 	<-ctx.Done()
@@ -176,3 +186,4 @@ func main() {
 	wg.Wait()
 	appLogger.Info("Notification service shutdown complete")
 }
+

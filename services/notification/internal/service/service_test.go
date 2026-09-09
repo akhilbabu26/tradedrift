@@ -125,23 +125,32 @@ func (m *mockRepo) ReleaseOutboxClaims(ctx context.Context, eventIDs []string) e
 	return nil
 }
 
+func (m *mockRepo) IncrementOutboxRetry(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func TestService_HandleTradeSettled_CounterpartyPrivacyIsolation(t *testing.T) {
 	repo := &mockRepo{}
 	svc := service.NewService(repo, zap.NewNop())
 
+	eventID := "018f6749-0000-7000-8000-000000000000"
 	buyerID := "018f6749-0001-7000-8000-000000000001"
 	sellerID := "018f6749-0002-7000-8000-000000000002"
 	tradeID := "018f6749-0003-7000-8000-000000000003"
 
+	buyOrderID  := "018f6749-0004-7000-8000-000000000004"
+	sellOrderID := "018f6749-0005-7000-8000-000000000005"
+
 	ev := &service.TradeSettledEvent{
+		EventID:      eventID,
 		TradeID:      tradeID,
 		MarketID:     "BTC-USDT",
 		BaseAsset:    "BTC",
 		QuoteAsset:   "USDT",
 		BuyerUserID:  buyerID,
 		SellerUserID: sellerID,
-		BuyOrderID:   "buy-order-123",
-		SellOrderID:  "sell-order-456",
+		BuyOrderID:   buyOrderID,
+		SellOrderID:  sellOrderID,
 		Price:        "96500.00",
 		Quantity:     "0.0500",
 		ExecutedAt:   "2026-09-08T14:30:00Z",
@@ -163,7 +172,7 @@ func TestService_HandleTradeSettled_CounterpartyPrivacyIsolation(t *testing.T) {
 	assert.Contains(t, buyerNotif.Message, "BUY order of 0.0500 BTC on BTC-USDT filled at 96500.00 USDT")
 	// Must NOT leak Seller's ID or Sell Order ID
 	assert.False(t, strings.Contains(buyerNotif.Message, sellerID), "buyer message leaked seller user ID")
-	assert.False(t, strings.Contains(buyerNotif.Message, "sell-order-456"), "buyer message leaked sell order ID")
+	assert.False(t, strings.Contains(buyerNotif.Message, sellOrderID), "buyer message leaked sell order ID")
 
 	// Check Seller Notification Invariants
 	assert.Equal(t, sellerID, sellerNotif.UserID)
@@ -171,21 +180,23 @@ func TestService_HandleTradeSettled_CounterpartyPrivacyIsolation(t *testing.T) {
 	assert.Contains(t, sellerNotif.Message, "SELL order of 0.0500 BTC on BTC-USDT filled at 96500.00 USDT")
 	// Must NOT leak Buyer's ID or Buy Order ID
 	assert.False(t, strings.Contains(sellerNotif.Message, buyerID), "seller message leaked buyer user ID")
-	assert.False(t, strings.Contains(sellerNotif.Message, "buy-order-123"), "seller message leaked buy order ID")
+	assert.False(t, strings.Contains(sellerNotif.Message, buyOrderID), "seller message leaked buy order ID")
 
 	// Check Outbox Events and Target Channels
+	// EventID in the Redis envelope must be ev.EventID (the source domain event ID),
+	// not tradeID — one source event creates two notifications with different notification_ids.
 	buyerOutbox := repo.savedOutbox[0]
 	assert.Equal(t, "user:notifications:"+buyerID, buyerOutbox.TargetChannel)
 	var buyerEnv model.RedisEnvelope
 	require.NoError(t, json.Unmarshal(buyerOutbox.Payload, &buyerEnv))
-	assert.Equal(t, tradeID, buyerEnv.EventID)
+	assert.Equal(t, eventID, buyerEnv.EventID) // source event ID
 	assert.Equal(t, buyerNotif.ID, buyerEnv.NotificationID)
 
 	sellerOutbox := repo.savedOutbox[1]
 	assert.Equal(t, "user:notifications:"+sellerID, sellerOutbox.TargetChannel)
 	var sellerEnv model.RedisEnvelope
 	require.NoError(t, json.Unmarshal(sellerOutbox.Payload, &sellerEnv))
-	assert.Equal(t, tradeID, sellerEnv.EventID)
+	assert.Equal(t, eventID, sellerEnv.EventID) // same source event ID
 	assert.Equal(t, sellerNotif.ID, sellerEnv.NotificationID)
 }
 
@@ -194,10 +205,11 @@ func TestService_HandleTradeSettled_IdempotentSkip(t *testing.T) {
 	svc := service.NewService(repo, zap.NewNop())
 
 	ev := &service.TradeSettledEvent{
-		TradeID:      "trade-dup-123",
+		EventID:      "018f6749-aaaa-7000-8000-000000000000",
+		TradeID:      "018f6749-bbbb-7000-8000-000000000000",
 		MarketID:     "BTC-USDT",
-		BuyerUserID:  "buyer-1",
-		SellerUserID: "seller-1",
+		BuyerUserID:  "018f6749-0001-7000-8000-000000000001",
+		SellerUserID: "018f6749-0002-7000-8000-000000000002",
 	}
 
 	// Should not return an error when repo returns ErrAlreadyProcessed
@@ -209,10 +221,14 @@ func TestService_HandleOrderCancelled(t *testing.T) {
 	repo := &mockRepo{}
 	svc := service.NewService(repo, zap.NewNop())
 
+	cancelEventID := "018f6749-cccc-7000-8000-000000000001"
+	cancelOrderID := "018f6749-cccc-7000-8000-000000000002"
+	cancelUserID  := "018f6749-0010-7000-8000-000000000010"
+
 	ev := &service.OrderCancelledEvent{
-		EventID:  "cancel-event-1",
-		OrderID:  "order-999",
-		UserID:   "user-cancelled-1",
+		EventID:  cancelEventID,
+		OrderID:  cancelOrderID,
+		UserID:   cancelUserID,
 		MarketID: "ETH-USDT",
 		Reason:   "insufficient balance for fee",
 	}
@@ -223,17 +239,17 @@ func TestService_HandleOrderCancelled(t *testing.T) {
 	assert.True(t, repo.createWithDedupTxCalled)
 	require.Len(t, repo.savedNotifications, 1)
 	notif := repo.savedNotifications[0]
-	assert.Equal(t, "user-cancelled-1", notif.UserID)
+	assert.Equal(t, cancelUserID, notif.UserID)
 	assert.Equal(t, model.TypeSystem, notif.Type)
 	assert.Contains(t, notif.Message, "insufficient balance for fee")
 
 	require.Len(t, repo.savedOutbox, 1)
 	outbox := repo.savedOutbox[0]
-	assert.Equal(t, "user:notifications:user-cancelled-1", outbox.TargetChannel)
+	assert.Equal(t, "user:notifications:"+cancelUserID, outbox.TargetChannel)
 
 	var env model.RedisEnvelope
 	require.NoError(t, json.Unmarshal(outbox.Payload, &env))
-	assert.Equal(t, "cancel-event-1", env.EventID)
+	assert.Equal(t, cancelEventID, env.EventID) // source event ID, not order ID
 	assert.Equal(t, notif.ID, env.NotificationID)
 }
 
@@ -241,9 +257,11 @@ func TestService_HandlePortfolioUpdated_EphemeralNoInbox(t *testing.T) {
 	repo := &mockRepo{}
 	svc := service.NewService(repo, zap.NewNop())
 
+	pfEventID := "018f6749-eeee-7000-8000-000000000100"
+	pfUserID  := "018f6749-0020-7000-8000-000000000020"
 	ev := &service.PortfolioUpdatedEvent{
-		EventID:     "pf-event-100",
-		UserID:      "user-pf-1",
+		EventID:     pfEventID,
+		UserID:      pfUserID,
 		TotalValue:  "50000.00",
 		CashBalance: "12000.00",
 	}
@@ -257,11 +275,11 @@ func TestService_HandlePortfolioUpdated_EphemeralNoInbox(t *testing.T) {
 	require.Len(t, repo.savedOutbox, 1)
 
 	outbox := repo.savedOutbox[0]
-	assert.Equal(t, "user:portfolio:user-pf-1", outbox.TargetChannel)
+	assert.Equal(t, "user:portfolio:"+pfUserID, outbox.TargetChannel)
 
 	var env model.RedisEnvelope
 	require.NoError(t, json.Unmarshal(outbox.Payload, &env))
-	assert.Equal(t, "pf-event-100", env.EventID)
+	assert.Equal(t, pfEventID, env.EventID)
 	assert.Empty(t, env.NotificationID) // Empty because there is no persistent notification row
 	assert.Equal(t, "portfolio.updated", env.Type)
 }
@@ -271,23 +289,30 @@ func TestService_CreateNotification_Validation(t *testing.T) {
 	svc := service.NewService(repo, zap.NewNop())
 	ctx := context.Background()
 
+	// Empty user ID
 	_, err := svc.CreateNotification(ctx, model.CreateNotificationInput{})
 	assert.ErrorIs(t, err, service.ErrInvalidUserID)
 
-	_, err = svc.CreateNotification(ctx, model.CreateNotificationInput{UserID: "u1"})
+	// Non-UUID user ID is also rejected (validateUUID)
+	_, err = svc.CreateNotification(ctx, model.CreateNotificationInput{UserID: "not-a-uuid"})
+	assert.Error(t, err)
+
+	// Valid UUID but missing title
+	validUID := "018f6749-0030-7000-8000-000000000030"
+	_, err = svc.CreateNotification(ctx, model.CreateNotificationInput{UserID: validUID})
 	assert.ErrorIs(t, err, service.ErrEmptyTitle)
 
-	_, err = svc.CreateNotification(ctx, model.CreateNotificationInput{UserID: "u1", Title: "Notice"})
+	_, err = svc.CreateNotification(ctx, model.CreateNotificationInput{UserID: validUID, Title: "Notice"})
 	assert.ErrorIs(t, err, service.ErrEmptyMessage)
 
 	notif, err := svc.CreateNotification(ctx, model.CreateNotificationInput{
-		UserID:  "u1",
+		UserID:  validUID,
 		Title:   "Notice",
 		Message: "Account verified",
 		Type:    model.TypeAccount,
 	})
 	require.NoError(t, err)
-	assert.Equal(t, "u1", notif.UserID)
+	assert.Equal(t, validUID, notif.UserID)
 	assert.Equal(t, model.TypeAccount, notif.Type)
 	assert.Equal(t, "Notice", notif.Title)
 }

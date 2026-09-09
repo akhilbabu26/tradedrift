@@ -20,12 +20,18 @@ const (
 )
 
 // Outbox lifecycle states
+//
+// The publisher uses PENDING → PROCESSING → PROCESSED for the happy path.
+// FAILED is reserved for future manual or terminal intervention (e.g. an operator
+// marking an event as permanently undeliverable after investigation). The publisher
+// itself never sets FAILED; it keeps retrying via lease recovery until PROCESSED.
 const (
 	OutboxStatusPending    = "PENDING"
 	OutboxStatusProcessing = "PROCESSING"
 	OutboxStatusProcessed  = "PROCESSED"
-	OutboxStatusFailed      = "FAILED"
+	OutboxStatusFailed     = "FAILED" // reserved: set manually for terminal/unrecoverable events
 )
+
 
 // Notification represents a durable user inbox record in PostgreSQL.
 type Notification struct {

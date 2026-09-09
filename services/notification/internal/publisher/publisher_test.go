@@ -89,6 +89,10 @@ func (m *mockPublisherRepo) ReleaseOutboxClaims(ctx context.Context, ids []strin
 	return nil
 }
 
+func (m *mockPublisherRepo) IncrementOutboxRetry(_ context.Context, _, _ string) error {
+	return nil
+}
+
 // mockRedisClient records published messages and simulates successes/failures.
 type mockRedisClient struct {
 	mu           sync.Mutex

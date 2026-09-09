@@ -18,12 +18,16 @@ func (s *Service) CreateNotification(ctx context.Context, input model.CreateNoti
 	if input.UserID == "" {
 		return nil, ErrInvalidUserID
 	}
+	if err := validateUUID("user_id", input.UserID); err != nil {
+		return nil, err
+	}
 	if input.Title == "" {
 		return nil, ErrEmptyTitle
 	}
 	if input.Message == "" {
 		return nil, ErrEmptyMessage
 	}
+
 
 	now := time.Now().UTC()
 	notifID, _ := platformuuid.New()

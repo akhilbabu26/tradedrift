@@ -70,6 +70,38 @@ type TradeSettledEvent struct {
 	ExecutedAt   string `json:"executed_at"`
 }
 
+// Validate checks that all required fields are present and are canonical UUIDs.
+// Returns a descriptive error suitable for DLQ routing at the consumer layer.
+// The service layer calls this same method before executing business logic,
+// so the two validation boundaries stay in sync automatically.
+func (ev *TradeSettledEvent) Validate() error {
+	if ev.EventID == "" || ev.TradeID == "" || ev.BuyerUserID == "" || ev.SellerUserID == "" {
+		return fmt.Errorf("missing required fields (event_id, trade_id, buyer_user_id, seller_user_id)")
+	}
+	for _, f := range []struct{ name, val string }{
+		{"event_id", ev.EventID},
+		{"trade_id", ev.TradeID},
+		{"buyer_user_id", ev.BuyerUserID},
+		{"seller_user_id", ev.SellerUserID},
+	} {
+		if err := validateUUID(f.name, f.val); err != nil {
+			return err
+		}
+	}
+	// Optional UUID fields — only validate when present.
+	for _, f := range []struct{ name, val string }{
+		{"buy_order_id", ev.BuyOrderID},
+		{"sell_order_id", ev.SellOrderID},
+	} {
+		if f.val != "" {
+			if err := validateUUID(f.name, f.val); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // OrderCancelledEvent is the payload produced on orders.cancelled.v1.
 type OrderCancelledEvent struct {
 	EventID   string `json:"event_id"`
@@ -78,6 +110,23 @@ type OrderCancelledEvent struct {
 	MarketID  string `json:"market_id"`
 	Reason    string `json:"reason"`
 	Timestamp string `json:"timestamp"`
+}
+
+// Validate checks that all required UUID fields are present and well-formed.
+func (ev *OrderCancelledEvent) Validate() error {
+	if ev.EventID == "" || ev.OrderID == "" || ev.UserID == "" {
+		return fmt.Errorf("missing required fields (event_id, order_id, user_id)")
+	}
+	for _, f := range []struct{ name, val string }{
+		{"event_id", ev.EventID},
+		{"order_id", ev.OrderID},
+		{"user_id", ev.UserID},
+	} {
+		if err := validateUUID(f.name, f.val); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // PortfolioUpdatedEvent is the payload produced on portfolios.updated.v1.
@@ -92,6 +141,23 @@ type PortfolioUpdatedEvent struct {
 	CashBalance   string `json:"cash_balance"`
 	UpdatedAt     string `json:"updated_at"`
 }
+
+// Validate checks that all required UUID fields are present and well-formed.
+func (ev *PortfolioUpdatedEvent) Validate() error {
+	if ev.EventID == "" || ev.UserID == "" {
+		return fmt.Errorf("missing required fields (event_id, user_id)")
+	}
+	for _, f := range []struct{ name, val string }{
+		{"event_id", ev.EventID},
+		{"user_id", ev.UserID},
+	} {
+		if err := validateUUID(f.name, f.val); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 
 // ---------------------------------------------------------------------------
 // Service — shared struct used by events.go and inbox.go

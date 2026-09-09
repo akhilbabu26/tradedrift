@@ -171,8 +171,20 @@ func main() {
 	<-ctx.Done()
 	appLogger.Info("Shutdown signal received; draining notification service resources...")
 
-	grpcServer.GracefulStop()
-	appLogger.Info("Notification gRPC server stopped")
+	// GracefulStop allows in-flight RPCs to complete before shutting down.
+	// A 10-second deadline prevents a stuck or slow RPC from blocking shutdown indefinitely.
+	grpcStopped := make(chan struct{})
+	go func() {
+		grpcServer.GracefulStop()
+		close(grpcStopped)
+	}()
+	select {
+	case <-grpcStopped:
+		appLogger.Info("Notification gRPC server stopped gracefully")
+	case <-time.After(10 * time.Second):
+		appLogger.Warn("gRPC graceful stop timed out after 10s; forcing stop")
+		grpcServer.Stop()
+	}
 
 	metricsCtx, cancelMetrics := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancelMetrics()

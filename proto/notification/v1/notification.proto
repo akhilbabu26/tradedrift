@@ -22,12 +22,13 @@ service NotificationService {
 }
 
 message CreateNotificationRequest {
-    string user_id        = 1;
-    string title          = 2;
-    string message        = 3;
-    string type           = 4; // "INFO", "TRADE_FILL", "SYSTEM", "ACCOUNT"
-    string reference_id   = 5; // Associated order_id or trade_id
-    string reference_type = 6; // "TRADE", "ORDER", "DEPOSIT"
+    string user_id         = 1;
+    string title           = 2;
+    string message         = 3;
+    string type            = 4; // "INFO", "TRADE_FILL", "SYSTEM", "ACCOUNT"
+    string reference_id    = 5; // Associated order_id or trade_id
+    string reference_type  = 6; // "TRADE", "ORDER", "DEPOSIT"
+    string idempotency_key = 7; // Optional caller-generated UUID; enables idempotent retries
 }
 
 message CreateNotificationResponse {

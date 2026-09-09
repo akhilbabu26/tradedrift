@@ -41,12 +41,13 @@ func (h *NotificationHandler) CreateNotification(ctx context.Context, req *notif
 	}
 
 	notif, err := h.svc.CreateNotification(ctx, model.CreateNotificationInput{
-		UserID:        req.UserId,
-		Title:         req.Title,
-		Message:       req.Message,
-		Type:          req.Type,
-		ReferenceID:   req.ReferenceId,
-		ReferenceType: req.ReferenceType,
+		UserID:         req.UserId,
+		Title:          req.Title,
+		Message:        req.Message,
+		Type:           req.Type,
+		ReferenceID:    req.ReferenceId,
+		ReferenceType:  req.ReferenceType,
+		IdempotencyKey: req.IdempotencyKey,
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidUserID) || errors.Is(err, service.ErrEmptyTitle) || errors.Is(err, service.ErrEmptyMessage) {
@@ -75,15 +76,23 @@ func (h *NotificationHandler) GetNotifications(ctx context.Context, req *notific
 		limit = 100
 	}
 
+	// Cursor validation: both fields are required together; providing only one is an error.
+	// Providing neither means first page.
 	var cursorTime *time.Time
-	if req.CursorTime != "" {
-		if t, err := time.Parse(time.RFC3339Nano, req.CursorTime); err == nil {
-			cursorTime = &t
-		} else if t, err := time.Parse(time.RFC3339, req.CursorTime); err == nil {
-			cursorTime = &t
-		} else {
+	hasCursorTime := req.CursorTime != ""
+	hasCursorID := req.CursorId != ""
+	if hasCursorTime != hasCursorID {
+		return nil, status.Error(codes.InvalidArgument, "cursor_time and cursor_id must both be provided or both omitted")
+	}
+	if hasCursorTime {
+		t, err := time.Parse(time.RFC3339Nano, req.CursorTime)
+		if err != nil {
+			t, err = time.Parse(time.RFC3339, req.CursorTime)
+		}
+		if err != nil {
 			return nil, status.Error(codes.InvalidArgument, "invalid cursor_time format; expected RFC3339")
 		}
+		cursorTime = &t
 	}
 
 	filter := model.PaginationFilter{
@@ -94,6 +103,7 @@ func (h *NotificationHandler) GetNotifications(ctx context.Context, req *notific
 		TypeFilter: req.TypeFilter,
 	}
 
+	// The repository queries limit+1 rows so we can determine has_more exactly.
 	notifs, err := h.svc.GetNotifications(ctx, filter)
 	if err != nil {
 		if errors.Is(err, service.ErrInvalidUserID) {
@@ -101,6 +111,12 @@ func (h *NotificationHandler) GetNotifications(ctx context.Context, req *notific
 		}
 		h.log.Error("Failed to fetch notifications", zap.Error(err))
 		return nil, status.Error(codes.Internal, "internal error fetching notifications")
+	}
+
+	// Determine exact has_more from the extra row returned by the repo.
+	hasMore := len(notifs) > limit
+	if hasMore {
+		notifs = notifs[:limit] // trim the sentinel row before building the response
 	}
 
 	unreadCount, err := h.svc.GetUnreadCount(ctx, req.UserId)
@@ -129,7 +145,7 @@ func (h *NotificationHandler) GetNotifications(ctx context.Context, req *notific
 		})
 	}
 
-	hasMore := len(notifs) == limit
+	// Next cursor points at the last RETURNED item, not the sentinel row.
 	var nextCursorTime, nextCursorID string
 	if len(notifs) > 0 {
 		last := notifs[len(notifs)-1]
@@ -145,6 +161,7 @@ func (h *NotificationHandler) GetNotifications(ctx context.Context, req *notific
 		UnreadCount:    unreadCount,
 	}, nil
 }
+
 
 // MarkAsRead marks a single notification as read for the authenticated user.
 func (h *NotificationHandler) MarkAsRead(ctx context.Context, req *notificationv1.MarkAsReadRequest) (*notificationv1.MarkAsReadResponse, error) {

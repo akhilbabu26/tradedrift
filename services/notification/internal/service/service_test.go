@@ -33,6 +33,11 @@ type mockRepo struct {
 }
 
 func (m *mockRepo) CreateWithDedupTx(ctx context.Context, notif *model.Notification, sourceEventID string, outbox *model.OutboxEvent) error {
+	for _, id := range m.savedDedupEvents {
+		if id == sourceEventID {
+			return repository.ErrAlreadyProcessed
+		}
+	}
 	if m.returnAlreadyProcessed {
 		return repository.ErrAlreadyProcessed
 	}
@@ -117,16 +122,34 @@ func (m *mockRepo) RecoverStaleOutboxClaims(ctx context.Context, leaseTimeout ti
 	return 0, nil
 }
 
-func (m *mockRepo) MarkOutboxPublished(ctx context.Context, id string) error {
+func (m *mockRepo) MarkOutboxPublished(ctx context.Context, id, claimToken string) error {
 	return nil
 }
 
-func (m *mockRepo) ReleaseOutboxClaims(ctx context.Context, eventIDs []string) error {
+func (m *mockRepo) ReleaseOutboxClaims(ctx context.Context, eventIDs []string, claimToken string) error {
 	return nil
 }
 
-func (m *mockRepo) IncrementOutboxRetry(_ context.Context, _, _ string) error {
+func (m *mockRepo) IncrementOutboxRetry(_ context.Context, _, _, _ string) error {
 	return nil
+}
+
+func (m *mockRepo) GetNotificationByID(ctx context.Context, userID, notificationID string) (*model.Notification, error) {
+	for _, n := range m.savedNotifications {
+		if n.ID == notificationID && n.UserID == userID {
+			return n, nil
+		}
+	}
+	return nil, repository.ErrNotificationNotFound
+}
+
+func (m *mockRepo) GetNotificationIDByEventID(ctx context.Context, eventID string) (string, error) {
+	for i, key := range m.savedDedupEvents {
+		if key == eventID && i < len(m.savedNotifications) {
+			return m.savedNotifications[i].ID, nil
+		}
+	}
+	return "", repository.ErrNotificationNotFound
 }
 
 func TestService_HandleTradeSettled_CounterpartyPrivacyIsolation(t *testing.T) {
@@ -305,6 +328,36 @@ func TestService_CreateNotification_Validation(t *testing.T) {
 	_, err = svc.CreateNotification(ctx, model.CreateNotificationInput{UserID: validUID, Title: "Notice"})
 	assert.ErrorIs(t, err, service.ErrEmptyMessage)
 
+	// Invalid notification type
+	_, err = svc.CreateNotification(ctx, model.CreateNotificationInput{
+		UserID:  validUID,
+		Title:   "Notice",
+		Message: "Account verified",
+		Type:    "UNKNOWN_TYPE",
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid notification type")
+
+	// Invalid reference_id (non-UUID)
+	_, err = svc.CreateNotification(ctx, model.CreateNotificationInput{
+		UserID:      validUID,
+		Title:       "Notice",
+		Message:     "Account verified",
+		ReferenceID: "not-a-uuid",
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "reference_id")
+
+	// Invalid reference_type
+	_, err = svc.CreateNotification(ctx, model.CreateNotificationInput{
+		UserID:        validUID,
+		Title:         "Notice",
+		Message:       "Account verified",
+		ReferenceType: "INVALID_REF_TYPE",
+	})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid reference_type")
+
 	notif, err := svc.CreateNotification(ctx, model.CreateNotificationInput{
 		UserID:  validUID,
 		Title:   "Notice",
@@ -315,4 +368,47 @@ func TestService_CreateNotification_Validation(t *testing.T) {
 	assert.Equal(t, validUID, notif.UserID)
 	assert.Equal(t, model.TypeAccount, notif.Type)
 	assert.Equal(t, "Notice", notif.Title)
+}
+
+func TestService_CreateNotification_IdempotencyRetry(t *testing.T) {
+	repo := &mockRepo{}
+	svc := service.NewService(repo, zap.NewNop())
+	ctx := context.Background()
+
+	validUID := "018f6749-0030-7000-8000-000000000030"
+	idempotencyKey := "018f6749-aaaa-7000-8000-000000000099"
+
+	input := model.CreateNotificationInput{
+		UserID:         validUID,
+		Title:          "Deposit Confirmed",
+		Message:        "Your 500 USDT deposit was successful.",
+		Type:           model.TypeAccount,
+		IdempotencyKey: idempotencyKey,
+	}
+
+	// 1. First call: creates the notification
+	notif1, err := svc.CreateNotification(ctx, input)
+	require.NoError(t, err)
+	require.NotNil(t, notif1)
+	assert.Equal(t, validUID, notif1.UserID)
+	assert.Equal(t, "Deposit Confirmed", notif1.Title)
+	assert.NotEmpty(t, notif1.ID)
+
+	// 2. Second call with exact same idempotency_key: returns the existing notification
+	notif2, err := svc.CreateNotification(ctx, input)
+	require.NoError(t, err)
+	require.NotNil(t, notif2)
+	assert.Equal(t, notif1.ID, notif2.ID, "idempotent retry must return identical notification ID")
+	assert.Equal(t, notif1.Title, notif2.Title)
+	assert.Equal(t, notif1.Message, notif2.Message)
+
+	// In-memory repo must still only have 1 notification saved
+	assert.Len(t, repo.savedNotifications, 1)
+
+	// 3. Invalid idempotency key (non-UUID) should fail validation immediately
+	invalidInput := input
+	invalidInput.IdempotencyKey = "invalid-uuid-format"
+	_, err = svc.CreateNotification(ctx, invalidInput)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "idempotency_key")
 }

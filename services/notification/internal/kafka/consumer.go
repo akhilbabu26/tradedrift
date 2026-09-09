@@ -11,6 +11,7 @@ import (
 	"github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 
+	"tradedrift/services/notification/internal/metrics"
 	"tradedrift/services/notification/internal/service"
 )
 
@@ -225,20 +226,33 @@ func (c *Consumer) consumeLoop(ctx context.Context, reader MessageReader, topic 
 			}
 		}
 
-		// --- Commit phase ---
-		// At-least-once guarantee: commit Kafka offset strictly after the handler
-		// has successfully persisted to PostgreSQL (and DLQ-routed poison messages).
-		if err := reader.CommitMessages(ctx, msg); err != nil {
-			c.log.Error("Failed to commit Kafka offset",
-				zap.String("topic", topic),
-				zap.Int("partition", msg.Partition),
-				zap.Int64("offset", msg.Offset),
-				zap.Error(err),
-			)
-			// A commit failure is non-fatal: the message will be redelivered
-			// after group rebalance and the DB deduplication check will
-			// handle the duplicate safely.
+		// --- Commit phase (retry loop) ---
+		// At-least-once guarantee: commit the Kafka offset strictly AFTER the
+		// handler has written to PostgreSQL. We do NOT fetch the next message
+		// until the commit succeeds — a failed commit followed by a successful
+		// commit of a later message can advance the group offset past an
+		// uncommitted message, causing silent message loss on restart.
+		for {
+			if err := reader.CommitMessages(ctx, msg); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				c.log.Error("Failed to commit Kafka offset; retrying commit",
+					zap.String("topic", topic),
+					zap.Int("partition", msg.Partition),
+					zap.Int64("offset", msg.Offset),
+					zap.Error(err),
+				)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Second):
+				}
+				continue
+			}
+			break
 		}
+		metrics.KafkaEventsConsumedTotal.WithLabelValues(topic, "success").Inc()
 	}
 }
 
@@ -247,12 +261,9 @@ func (c *Consumer) processTradeSettled(ctx context.Context, msg kafka.Message) e
 	if err := json.Unmarshal(msg.Value, &ev); err != nil {
 		return c.handlePoison(ctx, msg, TopicTradesSettled, fmt.Sprintf("unmarshal error: %v", err))
 	}
-
-	if ev.EventID == "" || ev.TradeID == "" || ev.BuyerUserID == "" || ev.SellerUserID == "" {
-		return c.handlePoison(ctx, msg, TopicTradesSettled,
-			"missing required fields (event_id, trade_id, buyer_user_id, seller_user_id)")
+	if err := ev.Validate(); err != nil {
+		return c.handlePoison(ctx, msg, TopicTradesSettled, err.Error())
 	}
-
 	return c.svc.HandleTradeSettled(ctx, &ev)
 }
 
@@ -261,12 +272,9 @@ func (c *Consumer) processOrderCancelled(ctx context.Context, msg kafka.Message)
 	if err := json.Unmarshal(msg.Value, &ev); err != nil {
 		return c.handlePoison(ctx, msg, TopicOrdersCancelled, fmt.Sprintf("unmarshal error: %v", err))
 	}
-
-	if ev.EventID == "" || ev.OrderID == "" || ev.UserID == "" {
-		return c.handlePoison(ctx, msg, TopicOrdersCancelled,
-			"missing required fields (event_id, order_id, user_id)")
+	if err := ev.Validate(); err != nil {
+		return c.handlePoison(ctx, msg, TopicOrdersCancelled, err.Error())
 	}
-
 	return c.svc.HandleOrderCancelled(ctx, &ev)
 }
 
@@ -275,12 +283,9 @@ func (c *Consumer) processPortfolioUpdated(ctx context.Context, msg kafka.Messag
 	if err := json.Unmarshal(msg.Value, &ev); err != nil {
 		return c.handlePoison(ctx, msg, TopicPortfoliosUpdated, fmt.Sprintf("unmarshal error: %v", err))
 	}
-
-	if ev.EventID == "" || ev.UserID == "" {
-		return c.handlePoison(ctx, msg, TopicPortfoliosUpdated,
-			"missing required fields (event_id, user_id)")
+	if err := ev.Validate(); err != nil {
+		return c.handlePoison(ctx, msg, TopicPortfoliosUpdated, err.Error())
 	}
-
 	return c.svc.HandlePortfolioUpdated(ctx, &ev)
 }
 
@@ -296,8 +301,9 @@ func (c *Consumer) handlePoison(ctx context.Context, msg kafka.Message, topic, r
 		zap.Int("partition", msg.Partition),
 		zap.Int64("offset", msg.Offset),
 		zap.String("reason", reason),
-		zap.ByteString("payload", msg.Value),
+		zap.Int("payload_bytes", len(msg.Value)), // size only — raw payload omitted to avoid leaking user data
 	)
+	metrics.KafkaEventsConsumedTotal.WithLabelValues(topic, "poison").Inc()
 
 	if c.dlqWriter == nil {
 		// DLQ writer is mandatory. Returning an error here keeps the Kafka offset

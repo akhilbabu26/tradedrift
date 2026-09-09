@@ -9,6 +9,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
+	"tradedrift/services/notification/internal/metrics"
 	"tradedrift/services/notification/internal/model"
 	"tradedrift/services/notification/internal/repository"
 )
@@ -158,13 +159,21 @@ func (p *Publisher) ProcessBatch(ctx context.Context) (int, error) {
 
 	for i, ev := range events {
 		if err := p.publishWithRetry(ctx, ev); err != nil {
-			// Persist failure metadata before releasing — gives operators visibility
-			// into retry_count and the last Redis error in the outbox table.
-			if retryErr := p.repo.IncrementOutboxRetry(ctx, ev.ID, err.Error()); retryErr != nil {
-				p.log.Warn("Failed to increment outbox retry counter",
-					zap.String("outbox_id", ev.ID),
-					zap.Error(retryErr),
-				)
+			metrics.OutboxPublishErrorsTotal.WithLabelValues(ev.TargetChannel).Inc()
+
+			// Persist failure metadata before releasing.
+			// Pass ev.ClaimToken — only this worker can update the retry counter.
+			if retryErr := p.repo.IncrementOutboxRetry(ctx, ev.ID, err.Error(), ev.ClaimToken); retryErr != nil {
+				if errors.Is(retryErr, repository.ErrOutboxClaimLost) {
+					p.log.Warn("Outbox claim lost while incrementing retry counter; another worker owns the row",
+						zap.String("outbox_id", ev.ID),
+					)
+				} else {
+					p.log.Warn("Failed to increment outbox retry counter",
+						zap.String("outbox_id", ev.ID),
+						zap.Error(retryErr),
+					)
+				}
 			}
 
 			p.log.Error("Failed to publish outbox event to Redis; aborting batch and releasing remaining claims",
@@ -173,24 +182,44 @@ func (p *Publisher) ProcessBatch(ctx context.Context) (int, error) {
 				zap.Error(err),
 			)
 
-			// Collect remaining unhandled event IDs (including the failing one) to immediately release back to PENDING
+			// Collect remaining unhandled event IDs (including the failing one) to immediately release back to PENDING.
+			// Pass ev.ClaimToken — only the worker holding the token can release these rows.
+			// If the lease has expired and another worker re-claimed them, the token won't match and they are left alone.
 			var remainingIDs []string
 			for j := i; j < len(events); j++ {
 				remainingIDs = append(remainingIDs, events[j].ID)
 			}
-			if releaseErr := p.repo.ReleaseOutboxClaims(ctx, remainingIDs); releaseErr != nil {
+			if releaseErr := p.repo.ReleaseOutboxClaims(ctx, remainingIDs, ev.ClaimToken); releaseErr != nil {
 				p.log.Error("Failed to release outbox claims", zap.Error(releaseErr))
 			}
 
 			return i, fmt.Errorf("publish event %s failed: %w", ev.ID, err)
 		}
 
-		// Mark successfully published in PostgreSQL
-		if err := p.repo.MarkOutboxPublished(ctx, ev.ID); err != nil {
-			p.log.Error("Failed to mark outbox event published", zap.String("outbox_id", ev.ID), zap.Error(err))
-			// Even if mark fails (e.g. transient DB issue), continue so next loop or lease recovery handles it safely
-			return i + 1, fmt.Errorf("mark published %s: %w", ev.ID, err)
+		// Mark successfully published in PostgreSQL.
+		// Pass ev.ClaimToken so only this worker can transition the row to PROCESSED.
+		if err := p.repo.MarkOutboxPublished(ctx, ev.ID, ev.ClaimToken); err != nil {
+			if errors.Is(err, repository.ErrOutboxClaimLost) {
+				// Normal concurrency condition: our lease expired and another worker re-claimed
+				// the row. The new owner will mark it PROCESSED. Log at Warn and continue.
+				p.log.Warn("Outbox claim lost after Redis publish; another worker owns the row",
+					zap.String("outbox_id", ev.ID),
+				)
+			} else {
+				// Real DB failure — release current and remaining events that this worker owns
+				// so they return to PENDING immediately rather than stalling for the 60s lease timeout.
+				p.log.Error("Failed to mark outbox event published; releasing remaining batch claims", zap.String("outbox_id", ev.ID), zap.Error(err))
+				var remainingIDs []string
+				for j := i; j < len(events); j++ {
+					remainingIDs = append(remainingIDs, events[j].ID)
+				}
+				if releaseErr := p.repo.ReleaseOutboxClaims(ctx, remainingIDs, ev.ClaimToken); releaseErr != nil {
+					p.log.Error("Failed to release outbox claims after mark published failure", zap.Error(releaseErr))
+				}
+				return i + 1, fmt.Errorf("mark published %s: %w", ev.ID, err)
+			}
 		}
+		metrics.OutboxEventsPublishedTotal.WithLabelValues(ev.TargetChannel).Inc()
 	}
 
 	return len(events), nil
@@ -230,3 +259,4 @@ func (p *Publisher) publishWithRetry(ctx context.Context, ev *model.OutboxEvent)
 
 	return fmt.Errorf("exhausted %d retries: %w", p.cfg.MaxPublishRetries, lastErr)
 }
+

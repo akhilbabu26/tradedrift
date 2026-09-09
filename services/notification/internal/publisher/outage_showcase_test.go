@@ -55,6 +55,10 @@ func TestShowcase_RedisOutageAndRecoveryPipeline(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
+	// Ensure the schema matches the current migration state.
+	// These are idempotent and safe to run on any existing DB.
+	_, _ = pool.Exec(ctx, `ALTER TABLE notification_outbox ADD COLUMN IF NOT EXISTS claim_token UUID`)
+	_, _ = pool.Exec(ctx, `ALTER TABLE processed_events ADD COLUMN IF NOT EXISTS notification_id UUID`)
 	_, _ = pool.Exec(ctx, "DELETE FROM notification_outbox")
 	_, _ = pool.Exec(ctx, "DELETE FROM notifications")
 	_, _ = pool.Exec(ctx, "DELETE FROM processed_events")

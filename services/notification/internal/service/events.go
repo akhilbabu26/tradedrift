@@ -29,34 +29,27 @@ import (
 // Field contract: event_id, trade_id, buyer_user_id, seller_user_id,
 // buy_order_id, and sell_order_id must all be canonical UUIDs.
 func (s *Service) HandleTradeSettled(ctx context.Context, ev *TradeSettledEvent) error {
-	if ev.EventID == "" || ev.TradeID == "" || ev.BuyerUserID == "" || ev.SellerUserID == "" {
-		return errors.New("invalid trade settled event: missing required fields (event_id, trade_id, buyer_user_id, seller_user_id)")
-	}
-	// Validate all fields that map to PostgreSQL UUID columns.
-	for _, f := range []struct{ name, val string }{
-		{"event_id", ev.EventID},
-		{"trade_id", ev.TradeID},
-		{"buyer_user_id", ev.BuyerUserID},
-		{"seller_user_id", ev.SellerUserID},
-		{"buy_order_id", ev.BuyOrderID},
-		{"sell_order_id", ev.SellOrderID},
-	} {
-		// BuyOrderID / SellOrderID may be empty for non-standard trade types; only validate when present.
-		if f.name == "buy_order_id" || f.name == "sell_order_id" {
-			if f.val == "" {
-				continue
-			}
-		}
-		if err := validateUUID(f.name, f.val); err != nil {
-			return err
-		}
+	if err := ev.Validate(); err != nil {
+		return fmt.Errorf("invalid trade settled event: %w", err)
 	}
 
 	now := time.Now().UTC()
-	buyerNotifID, _ := platformuuid.New()
-	sellerNotifID, _ := platformuuid.New()
-	buyerOutboxID, _ := platformuuid.New()
-	sellerOutboxID, _ := platformuuid.New()
+	buyerNotifID, err := platformuuid.New()
+	if err != nil {
+		return fmt.Errorf("generate buyer notification ID: %w", err)
+	}
+	sellerNotifID, err := platformuuid.New()
+	if err != nil {
+		return fmt.Errorf("generate seller notification ID: %w", err)
+	}
+	buyerOutboxID, err := platformuuid.New()
+	if err != nil {
+		return fmt.Errorf("generate buyer outbox ID: %w", err)
+	}
+	sellerOutboxID, err := platformuuid.New()
+	if err != nil {
+		return fmt.Errorf("generate seller outbox ID: %w", err)
+	}
 
 	// 1. Buyer notification — sanitized to hide Seller ID
 	buyerNotif := &model.Notification{
@@ -78,7 +71,10 @@ func (s *Service) HandleTradeSettled(ctx context.Context, ev *TradeSettledEvent)
 		Timestamp:      now,
 		Data:           buyerNotif,
 	}
-	buyerPayload, _ := json.Marshal(buyerEnv)
+	buyerPayload, err := json.Marshal(buyerEnv)
+	if err != nil {
+		return fmt.Errorf("marshal buyer notification envelope: %w", err)
+	}
 	buyerOutbox := &model.OutboxEvent{
 		ID:            buyerOutboxID,
 		EventType:     "NotificationCreated",
@@ -107,7 +103,10 @@ func (s *Service) HandleTradeSettled(ctx context.Context, ev *TradeSettledEvent)
 		Timestamp:      now,
 		Data:           sellerNotif,
 	}
-	sellerPayload, _ := json.Marshal(sellerEnv)
+	sellerPayload, err := json.Marshal(sellerEnv)
+	if err != nil {
+		return fmt.Errorf("marshal seller notification envelope: %w", err)
+	}
 	sellerOutbox := &model.OutboxEvent{
 		ID:            sellerOutboxID,
 		EventType:     "NotificationCreated",
@@ -118,7 +117,7 @@ func (s *Service) HandleTradeSettled(ctx context.Context, ev *TradeSettledEvent)
 
 	// 3. Atomically persist both notifications and outbox records,
 	//    deduplicated by ev.EventID (not ev.TradeID) via processed_events.
-	err := s.repo.CreateTradeSettledTx(ctx, buyerNotif, sellerNotif, ev.EventID, buyerOutbox, sellerOutbox)
+	err = s.repo.CreateTradeSettledTx(ctx, buyerNotif, sellerNotif, ev.EventID, buyerOutbox, sellerOutbox)
 	if err != nil {
 		if errors.Is(err, repository.ErrAlreadyProcessed) {
 			s.log.Debug("TradeSettled event already processed; skipping duplicate",
@@ -145,22 +144,19 @@ func (s *Service) HandleTradeSettled(ctx context.Context, ev *TradeSettledEvent)
 // Field contract: event_id, order_id, and user_id must be canonical UUIDs.
 // event_id is mandatory — it is the deduplication identity, not a fallback.
 func (s *Service) HandleOrderCancelled(ctx context.Context, ev *OrderCancelledEvent) error {
-	if ev.EventID == "" || ev.OrderID == "" || ev.UserID == "" {
-		return errors.New("invalid order cancelled event: missing required fields (event_id, order_id, user_id)")
-	}
-	for _, f := range []struct{ name, val string }{
-		{"event_id", ev.EventID},
-		{"order_id", ev.OrderID},
-		{"user_id", ev.UserID},
-	} {
-		if err := validateUUID(f.name, f.val); err != nil {
-			return err
-		}
+	if err := ev.Validate(); err != nil {
+		return fmt.Errorf("invalid order cancelled event: %w", err)
 	}
 
 	now := time.Now().UTC()
-	notifID, _ := platformuuid.New()
-	outboxID, _ := platformuuid.New()
+	notifID, err := platformuuid.New()
+	if err != nil {
+		return fmt.Errorf("generate notification ID: %w", err)
+	}
+	outboxID, err := platformuuid.New()
+	if err != nil {
+		return fmt.Errorf("generate outbox ID: %w", err)
+	}
 
 	reason := ev.Reason
 	if reason == "" {
@@ -187,7 +183,10 @@ func (s *Service) HandleOrderCancelled(ctx context.Context, ev *OrderCancelledEv
 		Timestamp:      now,
 		Data:           notif,
 	}
-	payload, _ := json.Marshal(env)
+	payload, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal order cancelled envelope: %w", err)
+	}
 	outbox := &model.OutboxEvent{
 		ID:            outboxID,
 		EventType:     "NotificationCreated",
@@ -196,7 +195,7 @@ func (s *Service) HandleOrderCancelled(ctx context.Context, ev *OrderCancelledEv
 		CreatedAt:     now,
 	}
 
-	err := s.repo.CreateWithDedupTx(ctx, notif, ev.EventID, outbox)
+	err = s.repo.CreateWithDedupTx(ctx, notif, ev.EventID, outbox)
 	if err != nil {
 		if errors.Is(err, repository.ErrAlreadyProcessed) {
 			s.log.Debug("OrderCancelled event already processed; skipping duplicate",
@@ -220,37 +219,34 @@ func (s *Service) HandleOrderCancelled(ctx context.Context, ev *OrderCancelledEv
 //
 // Delivery semantics — at-least-once, duplicate-tolerant:
 //
-//	Portfolio updates represent the current state of a user's portfolio at a point in
-//	time. Unlike trade notifications they do NOT create persistent rows in the
-//	notifications table; only an outbox row is written. If Kafka redelivers the same
-//	event (ev.EventID), the Gateway receives a duplicate Redis publish and deduplicates
-//	it using the (event_id, notification_id) pair already in the WebSocket stream.
-//	Two publishes of the same portfolio snapshot are harmless — the client simply
-//	renders the same state twice.
+//	Portfolio updates represent current state, not a side-effecting action. Unlike
+//	trade notifications, they do NOT create persistent rows in the notifications
+//	table; only an outbox row is written. If Kafka redelivers the same event
+//	(ev.EventID), the Gateway receives a duplicate Redis publish. Because the
+//	payload is a state snapshot (not an append), duplicate delivery is harmless —
+//	the client renders the same portfolio state twice.
 //
 //	Deduplication via processed_events is intentionally omitted here because:
 //	  1. The state is idempotent — duplicate snapshots carry the same data.
 //	  2. Portfolio events are high-frequency; writing to processed_events for each
 //	     would significantly increase DB write amplification with no correctness benefit.
 //
+//	Note: this service does NOT perform Gateway-level deduplication. Gateway and
+//	WebSocket consumers must tolerate duplicate portfolio snapshots.
+//
 // Field contract: event_id and user_id are mandatory and must be canonical UUIDs.
 // There is no synthesised fallback for a missing event_id — a message without one
 // must be routed to the DLQ at the consumer layer.
 func (s *Service) HandlePortfolioUpdated(ctx context.Context, ev *PortfolioUpdatedEvent) error {
-	if ev.EventID == "" || ev.UserID == "" {
-		return errors.New("invalid portfolio updated event: missing required fields (event_id, user_id)")
-	}
-	for _, f := range []struct{ name, val string }{
-		{"event_id", ev.EventID},
-		{"user_id", ev.UserID},
-	} {
-		if err := validateUUID(f.name, f.val); err != nil {
-			return err
-		}
+	if err := ev.Validate(); err != nil {
+		return fmt.Errorf("invalid portfolio updated event: %w", err)
 	}
 
 	now := time.Now().UTC()
-	outboxID, _ := platformuuid.New()
+	outboxID, err := platformuuid.New()
+	if err != nil {
+		return fmt.Errorf("generate outbox ID: %w", err)
+	}
 
 	env := model.RedisEnvelope{
 		EventID:        ev.EventID,
@@ -260,7 +256,10 @@ func (s *Service) HandlePortfolioUpdated(ctx context.Context, ev *PortfolioUpdat
 		Timestamp:      now,
 		Data:           ev,
 	}
-	payload, _ := json.Marshal(env)
+	payload, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal portfolio updated envelope: %w", err)
+	}
 
 	outbox := &model.OutboxEvent{
 		ID:            outboxID,

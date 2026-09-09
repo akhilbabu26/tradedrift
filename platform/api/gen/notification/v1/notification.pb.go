@@ -22,15 +22,16 @@ const (
 )
 
 type CreateNotificationRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
-	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
-	Type          string                 `protobuf:"bytes,4,opt,name=type,proto3" json:"type,omitempty"`                                        // "INFO", "TRADE_FILL", "SYSTEM", "ACCOUNT"
-	ReferenceId   string                 `protobuf:"bytes,5,opt,name=reference_id,json=referenceId,proto3" json:"reference_id,omitempty"`       // Associated order_id or trade_id
-	ReferenceType string                 `protobuf:"bytes,6,opt,name=reference_type,json=referenceType,proto3" json:"reference_type,omitempty"` // "TRADE", "ORDER", "DEPOSIT"
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	UserId         string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Title          string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	Message        string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	Type           string                 `protobuf:"bytes,4,opt,name=type,proto3" json:"type,omitempty"`                                           // "INFO", "TRADE_FILL", "SYSTEM", "ACCOUNT"
+	ReferenceId    string                 `protobuf:"bytes,5,opt,name=reference_id,json=referenceId,proto3" json:"reference_id,omitempty"`          // Associated order_id or trade_id
+	ReferenceType  string                 `protobuf:"bytes,6,opt,name=reference_type,json=referenceType,proto3" json:"reference_type,omitempty"`    // "TRADE", "ORDER", "DEPOSIT"
+	IdempotencyKey string                 `protobuf:"bytes,7,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"` // Optional caller-generated UUID; enables idempotent retries
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *CreateNotificationRequest) Reset() {
@@ -101,6 +102,13 @@ func (x *CreateNotificationRequest) GetReferenceId() string {
 func (x *CreateNotificationRequest) GetReferenceType() string {
 	if x != nil {
 		return x.ReferenceType
+	}
+	return ""
+}
+
+func (x *CreateNotificationRequest) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
 	}
 	return ""
 }
@@ -717,14 +725,15 @@ var File_notification_v1_notification_proto protoreflect.FileDescriptor
 
 const file_notification_v1_notification_proto_rawDesc = "" +
 	"\n" +
-	"\"notification/v1/notification.proto\x12\x1atradedrift.notification.v1\"\xc2\x01\n" +
+	"\"notification/v1/notification.proto\x12\x1atradedrift.notification.v1\"\xeb\x01\n" +
 	"\x19CreateNotificationRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\x12\x12\n" +
 	"\x04type\x18\x04 \x01(\tR\x04type\x12!\n" +
 	"\freference_id\x18\x05 \x01(\tR\vreferenceId\x12%\n" +
-	"\x0ereference_type\x18\x06 \x01(\tR\rreferenceType\"_\n" +
+	"\x0ereference_type\x18\x06 \x01(\tR\rreferenceType\x12'\n" +
+	"\x0fidempotency_key\x18\a \x01(\tR\x0eidempotencyKey\"_\n" +
 	"\x1aCreateNotificationResponse\x12'\n" +
 	"\x0fnotification_id\x18\x01 \x01(\tR\x0enotificationId\x12\x18\n" +
 	"\asuccess\x18\x02 \x01(\bR\asuccess\"\xa7\x01\n" +

@@ -31,14 +31,20 @@ func (r *Repository) CreateWithDedupTx(
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Deduplication check on source event ID
+	// 1. Deduplication check on source event ID.
+	// We also store the notification_id so that idempotent callers can recover
+	// the original notification on a retry without creating a duplicate.
 	if sourceEventID != "" {
-		dedupQuery := `INSERT INTO processed_events (event_id, user_id) VALUES ($1, $2)`
+		dedupQuery := `INSERT INTO processed_events (event_id, user_id, notification_id) VALUES ($1, $2, $3)`
 		var uid *string
 		if notif.UserID != "" {
 			uid = &notif.UserID
 		}
-		if _, err := tx.Exec(ctx, dedupQuery, sourceEventID, uid); err != nil {
+		var nid *string
+		if notif.ID != "" {
+			nid = &notif.ID
+		}
+		if _, err := tx.Exec(ctx, dedupQuery, sourceEventID, uid, nid); err != nil {
 			var pgErr *pgconn.PgError
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" { // unique_violation
 				return repository.ErrAlreadyProcessed
@@ -167,12 +173,16 @@ func (r *Repository) CreateTradeSettledTx(
 }
 
 // GetByUserID retrieves notifications using deterministic keyset pagination (created_at DESC, id DESC).
+// It queries LIMIT+1 rows so the caller can determine has_more exactly without a separate COUNT query.
+// The returned slice is always at most limit items; the caller must pass the slice length and the
+// extra-row presence back to the client.
 func (r *Repository) GetByUserID(ctx context.Context, filter model.PaginationFilter) ([]*model.Notification, error) {
 	limit := filter.Limit
 	if limit <= 0 || limit > 100 {
 		limit = 20
 	}
 
+	// Fetch one extra row to determine whether a next page exists without a COUNT(*) query.
 	query := `
 		SELECT id, user_id, title, message, type, COALESCE(reference_id::text, ''), COALESCE(reference_type, ''), is_read, read_at, created_at
 		FROM notifications
@@ -190,7 +200,8 @@ func (r *Repository) GetByUserID(ctx context.Context, filter model.PaginationFil
 		cursorID = &filter.CursorID
 	}
 
-	rows, err := r.db.Query(ctx, query, filter.UserID, cursorTime, cursorID, filter.TypeFilter, limit)
+	// Pass limit+1 so the service layer can detect has_more without a separate COUNT.
+	rows, err := r.db.Query(ctx, query, filter.UserID, cursorTime, cursorID, filter.TypeFilter, limit+1)
 	if err != nil {
 		return nil, fmt.Errorf("query notifications: %w", err)
 	}
@@ -215,15 +226,19 @@ func (r *Repository) GetByUserID(ctx context.Context, filter model.PaginationFil
 		}
 		results = append(results, n)
 	}
-
-	return results, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return results, nil
 }
 
 // MarkAsRead marks a specific notification as read, enforcing user ownership.
+// COALESCE preserves the original read_at timestamp on repeated calls — the first
+// read wins and subsequent calls are idempotent with respect to the timestamp.
 func (r *Repository) MarkAsRead(ctx context.Context, userID, notificationID string) (*model.Notification, error) {
 	query := `
 		UPDATE notifications
-		SET is_read = TRUE, read_at = NOW()
+		SET is_read = TRUE, read_at = COALESCE(read_at, NOW())
 		WHERE id = $1 AND user_id = $2
 		RETURNING id, user_id, title, message, type, COALESCE(reference_id::text, ''), COALESCE(reference_type, ''), is_read, read_at, created_at
 	`
@@ -271,4 +286,52 @@ func (r *Repository) GetUnreadCount(ctx context.Context, userID string) (int32, 
 		return 0, fmt.Errorf("get unread count: %w", err)
 	}
 	return int32(count), nil
+}
+
+// GetNotificationByID fetches a single notification by its primary key, enforcing user ownership.
+// Used by CreateNotification to return the original notification when an idempotency key is reused.
+func (r *Repository) GetNotificationByID(ctx context.Context, userID, notificationID string) (*model.Notification, error) {
+	query := `
+		SELECT id, user_id, title, message, type, COALESCE(reference_id::text, ''), COALESCE(reference_type, ''), is_read, read_at, created_at
+		FROM notifications
+		WHERE id = $1 AND user_id = $2
+	`
+	n := &model.Notification{}
+	err := r.db.QueryRow(ctx, query, notificationID, userID).Scan(
+		&n.ID,
+		&n.UserID,
+		&n.Title,
+		&n.Message,
+		&n.Type,
+		&n.ReferenceID,
+		&n.ReferenceType,
+		&n.IsRead,
+		&n.ReadAt,
+		&n.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, repository.ErrNotificationNotFound
+		}
+		return nil, fmt.Errorf("get notification by id: %w", err)
+	}
+	return n, nil
+}
+
+// GetNotificationIDByEventID looks up the notification_id stored alongside an event in
+// processed_events. Used by the idempotency path in CreateNotification to find the
+// original notification when a caller retries with the same idempotency_key.
+func (r *Repository) GetNotificationIDByEventID(ctx context.Context, eventID string) (string, error) {
+	query := `SELECT COALESCE(notification_id::text, '') FROM processed_events WHERE event_id = $1`
+	var notifID string
+	if err := r.db.QueryRow(ctx, query, eventID).Scan(&notifID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", repository.ErrNotificationNotFound
+		}
+		return "", fmt.Errorf("lookup notification id by event: %w", err)
+	}
+	if notifID == "" {
+		return "", fmt.Errorf("processed_events row for event %s has no notification_id", eventID)
+	}
+	return notifID, nil
 }

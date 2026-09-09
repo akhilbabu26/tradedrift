@@ -75,22 +75,30 @@ func (m *mockPublisherRepo) RecoverStaleOutboxClaims(ctx context.Context, timeou
 	return m.recoveredClaims, nil
 }
 
-func (m *mockPublisherRepo) MarkOutboxPublished(ctx context.Context, id string) error {
+func (m *mockPublisherRepo) MarkOutboxPublished(ctx context.Context, id, claimToken string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.publishedIDs = append(m.publishedIDs, id)
 	return nil
 }
 
-func (m *mockPublisherRepo) ReleaseOutboxClaims(ctx context.Context, ids []string) error {
+func (m *mockPublisherRepo) ReleaseOutboxClaims(ctx context.Context, ids []string, claimToken string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.releasedIDs = append(m.releasedIDs, ids...)
 	return nil
 }
 
-func (m *mockPublisherRepo) IncrementOutboxRetry(_ context.Context, _, _ string) error {
+func (m *mockPublisherRepo) IncrementOutboxRetry(_ context.Context, _, _, _ string) error {
 	return nil
+}
+
+func (m *mockPublisherRepo) GetNotificationByID(_ context.Context, _, _ string) (*model.Notification, error) {
+	return nil, nil
+}
+
+func (m *mockPublisherRepo) GetNotificationIDByEventID(_ context.Context, _ string) (string, error) {
+	return "", nil
 }
 
 // mockRedisClient records published messages and simulates successes/failures.

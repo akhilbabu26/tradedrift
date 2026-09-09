@@ -54,6 +54,7 @@ func getTestPool(t *testing.T) (*pgxpool.Pool, func()) {
 		CREATE TABLE IF NOT EXISTS processed_events (
 			event_id      UUID PRIMARY KEY,
 			user_id       UUID,
+			notification_id UUID,
 			processed_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		);
 
@@ -62,7 +63,9 @@ func getTestPool(t *testing.T) (*pgxpool.Pool, func()) {
 			event_type     VARCHAR(50) NOT NULL,
 			payload        JSONB NOT NULL,
 			target_channel VARCHAR(100) NOT NULL,
-			status         VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+			status         VARCHAR(20) NOT NULL DEFAULT 'PENDING'
+			               CHECK (status IN ('PENDING', 'PROCESSING', 'PROCESSED', 'FAILED')),
+			claim_token    UUID,
 			retry_count    INT NOT NULL DEFAULT 0,
 			last_error     TEXT,
 			claimed_at     TIMESTAMPTZ,
@@ -284,7 +287,31 @@ func TestRepository_OutboxClaimAndLeaseRecovery(t *testing.T) {
 		t.Fatalf("expected at least 1 claimed outbox event")
 	}
 
-	// Recover stale claims with 0 duration (treats all PROCESSING as stale)
+	targetEv := claimed[0]
+	if targetEv.ClaimToken == "" {
+		t.Fatalf("expected non-empty ClaimToken on claimed event")
+	}
+
+	// 1. IncrementOutboxRetry with wrong claim token must fail with ErrOutboxClaimLost
+	wrongToken, _ := platformuuid.New()
+	err = repo.IncrementOutboxRetry(ctx, targetEv.ID, "transient error", wrongToken)
+	if !errors.Is(err, repository.ErrOutboxClaimLost) {
+		t.Fatalf("expected ErrOutboxClaimLost with wrong claim token, got: %v", err)
+	}
+
+	// 2. IncrementOutboxRetry with correct claim token succeeds
+	err = repo.IncrementOutboxRetry(ctx, targetEv.ID, "transient error", targetEv.ClaimToken)
+	if err != nil {
+		t.Fatalf("expected IncrementOutboxRetry with valid token to succeed, got: %v", err)
+	}
+
+	// 3. MarkOutboxPublished with wrong claim token must fail with ErrOutboxClaimLost
+	err = repo.MarkOutboxPublished(ctx, targetEv.ID, wrongToken)
+	if !errors.Is(err, repository.ErrOutboxClaimLost) {
+		t.Fatalf("expected ErrOutboxClaimLost with wrong claim token, got: %v", err)
+	}
+
+	// 4. Recover stale claims with 0 duration (treats all PROCESSING as stale)
 	recovered, err := repo.RecoverStaleOutboxClaims(ctx, 0)
 	if err != nil {
 		t.Fatalf("RecoverStaleOutboxClaims failed: %v", err)
@@ -326,21 +353,31 @@ func TestRepository_KeysetPagination(t *testing.T) {
 		}
 	}
 
-	// Fetch first page of 3 items
-	page1, err := repo.GetByUserID(ctx, model.PaginationFilter{
+	// Fetch first page of 3 items.
+	// The repo returns limit+1 (4 rows) so the handler can detect has_more exactly.
+	page1Raw, err := repo.GetByUserID(ctx, model.PaginationFilter{
 		UserID: userID,
 		Limit:  3,
 	})
 	if err != nil {
 		t.Fatalf("page 1 fetch failed: %v", err)
 	}
-	if len(page1) != 3 {
-		t.Fatalf("expected 3 items on page 1, got %d", len(page1))
+	// We have 5 notifications and limit=3, so 4 rows returned and has_more=true.
+	if len(page1Raw) != 4 {
+		t.Fatalf("expected 4 raw rows on page 1 (limit+1), got %d", len(page1Raw))
+	}
+	// Simulate handler slicing: trim to limit when len > limit.
+	hasMore1 := len(page1Raw) > 3
+	page1 := page1Raw[:3]
+	if !hasMore1 {
+		t.Fatal("expected has_more=true for page 1")
 	}
 
-	// Fetch second page of remaining 2 items using page1's last item as cursor
+	// Fetch second page of remaining 2 items using page1's last item as cursor.
+	// We have 2 items left and limit=3, so repo returns 2+1=3 if sentinel exists, else 2.
+	// In this case only 2 remain → len = 2 → has_more=false.
 	lastItem := page1[len(page1)-1]
-	page2, err := repo.GetByUserID(ctx, model.PaginationFilter{
+	page2Raw, err := repo.GetByUserID(ctx, model.PaginationFilter{
 		UserID:     userID,
 		CursorTime: &lastItem.CreatedAt,
 		CursorID:   lastItem.ID,
@@ -349,8 +386,16 @@ func TestRepository_KeysetPagination(t *testing.T) {
 	if err != nil {
 		t.Fatalf("page 2 fetch failed: %v", err)
 	}
+	hasMore2 := len(page2Raw) > 3
+	page2 := page2Raw
+	if hasMore2 {
+		page2 = page2Raw[:3]
+	}
 	if len(page2) != 2 {
 		t.Fatalf("expected 2 items on page 2, got %d", len(page2))
+	}
+	if hasMore2 {
+		t.Fatal("expected has_more=false for page 2")
 	}
 
 	// Verify zero overlap between page 1 and page 2
@@ -364,3 +409,121 @@ func TestRepository_KeysetPagination(t *testing.T) {
 		}
 	}
 }
+
+// TestRepository_OutboxLeaseExpiryAndStolenClaimConcurrency verifies the core distributed systems
+// invariant of the claim-token design:
+// Worker A claims event
+//        ↓
+// Worker A's lease expires (recovered to PENDING)
+//        ↓
+// Worker B claims same event (receives fresh claim_token)
+//        ↓
+// Worker A tries:
+//     MarkOutboxPublished with Token A  → must return ErrOutboxClaimLost
+//     IncrementOutboxRetry with Token A → must return ErrOutboxClaimLost
+//     ReleaseOutboxClaims with Token A  → must NOT modify Worker B's claim
+// Worker B publishes and marks PROCESSED → succeeds
+func TestRepository_OutboxLeaseExpiryAndStolenClaimConcurrency(t *testing.T) {
+	pool, cleanup := getTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := postgres.NewRepository(pool)
+
+	// Clean outbox to ensure deterministic isolation
+	_, _ = pool.Exec(ctx, "DELETE FROM notification_outbox")
+
+	// Stage an outbox event
+	outboxID, _ := platformuuid.New()
+	ev := &model.OutboxEvent{
+		ID:            outboxID,
+		EventType:     "ConcurrencyTest",
+		Payload:       []byte(`{"test":"lease"}`),
+		TargetChannel: "user:concurrency:" + outboxID,
+		CreatedAt:     time.Now().UTC(),
+	}
+	if err := repo.StageOutboxEvent(ctx, ev); err != nil {
+		t.Fatalf("StageOutboxEvent failed: %v", err)
+	}
+
+	// 1. Worker A claims the event
+	claimedA, err := repo.FetchPendingOutbox(ctx, 1)
+	if err != nil || len(claimedA) == 0 {
+		t.Fatalf("Worker A failed to claim event: %v", err)
+	}
+	workerAEvent := claimedA[0]
+	tokenA := workerAEvent.ClaimToken
+	if tokenA == "" {
+		t.Fatalf("expected Worker A to have a non-empty ClaimToken")
+	}
+
+	// 2. Simulate Worker A's lease expiring and recovery resetting it to PENDING
+	recovered, err := repo.RecoverStaleOutboxClaims(ctx, 0)
+	if err != nil || recovered == 0 {
+		t.Fatalf("failed to simulate lease expiry recovery: %v", err)
+	}
+
+	// 3. Worker B claims the same event and receives a fresh claim_token
+	claimedB, err := repo.FetchPendingOutbox(ctx, 1)
+	if err != nil || len(claimedB) == 0 {
+		t.Fatalf("Worker B failed to claim event: %v", err)
+	}
+	workerBEvent := claimedB[0]
+	tokenB := workerBEvent.ClaimToken
+	if tokenB == "" {
+		t.Fatalf("expected Worker B to have a non-empty ClaimToken")
+	}
+	if tokenA == tokenB {
+		t.Fatalf("Worker B must receive a distinct ClaimToken from Worker A (got identical %s)", tokenA)
+	}
+
+	// 4. Worker A wakes up late and tries MarkOutboxPublished using Token A
+	err = repo.MarkOutboxPublished(ctx, outboxID, tokenA)
+	if !errors.Is(err, repository.ErrOutboxClaimLost) {
+		t.Fatalf("Worker A MarkOutboxPublished: expected ErrOutboxClaimLost, got %v", err)
+	}
+
+	// 5. Worker A tries IncrementOutboxRetry using Token A
+	err = repo.IncrementOutboxRetry(ctx, outboxID, "transient error from late worker A", tokenA)
+	if !errors.Is(err, repository.ErrOutboxClaimLost) {
+		t.Fatalf("Worker A IncrementOutboxRetry: expected ErrOutboxClaimLost, got %v", err)
+	}
+
+	// 6. Worker A tries ReleaseOutboxClaims using Token A
+	// Must execute without error, but MUST NOT modify Worker B's active claim in PostgreSQL!
+	err = repo.ReleaseOutboxClaims(ctx, []string{outboxID}, tokenA)
+	if err != nil {
+		t.Fatalf("Worker A ReleaseOutboxClaims returned error: %v", err)
+	}
+
+	// Verify Worker B's claim is completely intact in the database
+	var currentStatus, currentClaimToken string
+	query := `SELECT status, claim_token::text FROM notification_outbox WHERE id = $1`
+	if err := pool.QueryRow(ctx, query, outboxID).Scan(&currentStatus, &currentClaimToken); err != nil {
+		t.Fatalf("failed to query outbox state: %v", err)
+	}
+	if currentStatus != "PROCESSING" {
+		t.Fatalf("Worker B's claim was improperly modified by Worker A! expected status 'PROCESSING', got %s", currentStatus)
+	}
+	if currentClaimToken != tokenB {
+		t.Fatalf("Worker B's claim token was corrupted by Worker A! expected %s, got %s", tokenB, currentClaimToken)
+	}
+
+	// 7. Worker B completes publishing and marks the row PROCESSED using Token B
+	if err := repo.MarkOutboxPublished(ctx, outboxID, tokenB); err != nil {
+		t.Fatalf("Worker B MarkOutboxPublished with valid tokenB failed: %v", err)
+	}
+
+	// Final verification: status is PROCESSED, claim cleared
+	var finalStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM notification_outbox WHERE id = $1`, outboxID).Scan(&finalStatus); err != nil {
+		t.Fatalf("failed to query final outbox status: %v", err)
+	}
+	if finalStatus != "PROCESSED" {
+		t.Fatalf("expected final status 'PROCESSED', got %s", finalStatus)
+	}
+}
+

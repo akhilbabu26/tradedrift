@@ -49,12 +49,16 @@ type Notification struct {
 
 // CreateNotificationInput contains the fields needed to persist a notification.
 type CreateNotificationInput struct {
-	UserID        string
-	Title         string
-	Message       string
-	Type          string
-	ReferenceID   string
-	ReferenceType string
+	UserID         string
+	Title          string
+	Message        string
+	Type           string
+	ReferenceID    string
+	ReferenceType  string
+	// IdempotencyKey is an opaque key supplied by the caller. When set, CreateNotification
+	// will return the existing notification if the same key is used on retry rather than
+	// creating a duplicate. Must be a canonical UUID if provided.
+	IdempotencyKey string
 }
 
 // OutboxEvent represents a staged message awaiting publication to Redis Pub/Sub.
@@ -64,6 +68,7 @@ type OutboxEvent struct {
 	Payload       []byte
 	TargetChannel string // e.g. "user:notifications:{user_id}" or "user:portfolio:{user_id}"
 	Status        string
+	ClaimToken    string     // set by FetchPendingOutbox; must be passed back to MarkOutboxPublished / ReleaseOutboxClaims
 	RetryCount    int
 	LastError     string
 	ClaimedAt     *time.Time

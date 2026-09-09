@@ -3,6 +3,7 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -292,27 +293,31 @@ func (c *Consumer) handlePoison(ctx context.Context, msg kafka.Message, topic, r
 }
 
 // Close gracefully closes all Kafka readers and writers.
+// All resources are closed regardless of individual errors; all errors are returned joined.
 func (c *Consumer) Close() error {
-	var firstErr error
+	var errs []error
+
 	if c.tradeReader != nil {
-		if err := c.tradeReader.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if err := c.tradeReader.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close trade reader: %w", err))
 		}
 	}
 	if c.cancelReader != nil {
-		if err := c.cancelReader.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if err := c.cancelReader.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close cancel reader: %w", err))
 		}
 	}
 	if c.portfolioReader != nil {
-		if err := c.portfolioReader.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if err := c.portfolioReader.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close portfolio reader: %w", err))
 		}
 	}
 	if c.dlqWriter != nil {
-		if err := c.dlqWriter.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if err := c.dlqWriter.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("close dlq writer: %w", err))
 		}
 	}
-	return firstErr
+
+	return errors.Join(errs...)
 }
+

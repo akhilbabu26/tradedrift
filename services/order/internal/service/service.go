@@ -35,16 +35,18 @@ type CreateOrderParams struct {
 }
 
 type orderService struct {
-	repo   repository.OrderRepository
-	wallet *wallet.Client
-	logger *zap.Logger
+	repo        repository.OrderRepository
+	wallet      *wallet.Client
+	priceFilter PriceFilter
+	logger      *zap.Logger
 }
 
-func NewService(repo repository.OrderRepository, walletClient *wallet.Client, logger *zap.Logger) Service {
+func NewService(repo repository.OrderRepository, walletClient *wallet.Client, priceFilter PriceFilter, logger *zap.Logger) Service {
 	return &orderService{
-		repo:   repo,
-		wallet: walletClient,
-		logger: logger,
+		repo:        repo,
+		wallet:      walletClient,
+		priceFilter: priceFilter,
+		logger:      logger,
 	}
 }
 
@@ -106,6 +108,13 @@ func (s *orderService) CreateOrder(ctx context.Context, p *CreateOrderParams) (*
 			if err != nil || !priceDec.GreaterThan(decimal.Zero) {
 				return nil, ErrInvalidPrice
 			}
+		}
+	}
+
+	// 4.5. Pre-Trade Price Band & Slippage Protection
+	if s.priceFilter != nil && priceDec.GreaterThan(decimal.Zero) {
+		if err := s.priceFilter.ValidatePriceBand(ctx, p.MarketID, p.Side, p.OrderType, priceDec); err != nil {
+			return nil, err
 		}
 	}
 

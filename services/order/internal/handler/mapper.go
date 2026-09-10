@@ -19,6 +19,12 @@ func mapServiceError(err error) error {
 	if err == nil {
 		return nil
 	}
+
+	var priceViolation *service.PriceFilterViolation
+	if errors.As(err, &priceViolation) {
+		return status.Error(codes.FailedPrecondition, priceViolation.Error())
+	}
+
 	switch {
 	case errors.Is(err, service.ErrInvalidSide),
 		errors.Is(err, service.ErrInvalidType),

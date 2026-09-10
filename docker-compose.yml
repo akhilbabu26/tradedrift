@@ -92,6 +92,8 @@ services:
       ORDER_MIGRATIONS_DIR: services/order/migration
       WALLET_GRPC_ADDR: wallet:50052
       KAFKA_BROKERS: kafka:29092
+      REDIS_ADDR: redis:6379
+      MAX_PRICE_DEVIATION_PERCENT: "0.05"
       LOG_LEVEL: info
     ports:
       - "50053:50053"
@@ -100,6 +102,8 @@ services:
         condition: service_started
       kafka:
         condition: service_started
+      redis:
+        condition: service_healthy
 
   market:
     build:

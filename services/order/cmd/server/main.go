@@ -13,6 +13,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
+	"github.com/redis/go-redis/v9"
 	orderv1 "tradedrift/platform/api/gen/order/v1"
 	platformconfig "tradedrift/platform/config"
 	"tradedrift/platform/logger"
@@ -69,7 +70,13 @@ func main() {
 	defer walletClient.Close()
 	appLogger.Info("Wallet Service gRPC client initialized", zap.String("addr", cfg.WalletGRPCAddr))
 
-	orderSvc := service.NewService(orderRepo, walletClient, appLogger)
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: cfg.RedisAddr,
+	})
+	defer redisClient.Close()
+	priceFilter := service.NewPriceFilter(redisClient, cfg.MaxPriceDeviation, appLogger)
+
+	orderSvc := service.NewService(orderRepo, walletClient, priceFilter, appLogger)
 	grpcHandler := handler.NewGRPCHandler(orderSvc, appLogger)
 	kafkaProducer, err := publisher.NewKafkaProducer(cfg.KafkaBrokers, appLogger)
 	if err != nil {

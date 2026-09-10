@@ -253,7 +253,7 @@ The `internal/kafka/` directory manages asynchronous message consumption from Ap
    * **Purpose**: Main event loop processing Kafka messages sequentially per partition.
    * **Logic**:
      1. Fetches raw message via `c.reader.FetchMessage(ctx)`. Exits cleanly if `ctx.Err() != nil`.
-     2. Deserializes JSON payload into `TradeSettledEvent`. If unmarshal fails:
+     2. Deserializes JSON payload into `TradeSettledEvent` (via custom `UnmarshalJSON` accepting both `buyer_user_id`/`seller_user_id` and legacy `buyer_id`/`seller_id`, plus `event_id`). If unmarshal fails:
         - Logs error without logging raw payload bytes (PII protection).
         - Publishes to DLQ via `sendToDLQ`.
         - Commits Kafka offset only after successful DLQ publish.

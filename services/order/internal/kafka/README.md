@@ -1,23 +1,16 @@
-# Order Service — Kafka Publisher Package (`internal/kafka`)
+# Order Service — Kafka Integration Package (`internal/kafka`)
 
-> **Package:** `tradedrift/services/order/internal/kafka/publisher`  
+> **Package:** `tradedrift/services/order/internal/kafka`  
 > **Directory:** `services/order/internal/kafka/`  
-> **Role:** Outbox-backed Kafka Event Publisher & Event Broker Adapter
+> **Role:** Outbox-backed Kafka Event Publisher & Asynchronous Trade Fill Consumer
 
 ---
 
 ## 1. Purpose & Architectural Role
 
-The `kafka` package contains the **Transactional Outbox Publisher worker** for the Order Service. It is responsible for polling pending outbox events committed to the `tradedrift_order` PostgreSQL database, routing them to target Kafka topics, and guaranteeing **at-least-once delivery** to downstream consumers (such as the Matching Engine).
-
-Key responsibilities:
-1. **Producer Abstraction**: Defines a clean `Producer` interface (`Publish`, `Close`). Two implementations exist:
-   - `LogProducer` — dev-only stub, prints to stdout, no Kafka needed.
-   - `KafkaProducer` — real production implementation using `github.com/segmentio/kafka-go`. Wired in `main.go` via `KAFKA_BROKERS` env var.
-2. **Topic Routing**: Resolves domain event types (`OrderCreated`, `OrderCancelRequested`) to target Kafka topics (`orders.submitted`, `orders.cancel-requested`). Rejects unknown event types to prevent misdirected events.
-3. **Delivery ACK Verification**: Marks an outbox event as `PUBLISHED` **only after** receiving successful delivery confirmation from the Kafka broker.
-4. **Linear Retry Backoff**: If publishing fails, calls `RecordOutboxPublishError` to store the error message and apply progressive linear backoff (`1s, 2s, 3s... capped at 60s max`) to prevent retry spam.
-5. **Clean Goroutine Exit**: Responds to `ctx.Done()` signals during graceful shutdown.
+The `kafka` package contains both the **Transactional Outbox Publisher worker** and the **Trade Fill Consumer worker** for the Order Service:
+1. **Outbox Publisher (`publisher/`)**: Polls pending outbox events committed to the `tradedrift_order` database, routes them to target Kafka topics (`orders.submitted`, `orders.cancel-requested`), and guarantees **at-least-once delivery** to downstream components.
+2. **Trade Fill Consumer (`consumer/`)**: Subscribes to execution settlement events (`trades.settled`) from Kafka, records execution progress, and updates order states (`OPEN` $\to$ `PARTIALLY_FILLED` $\to$ `FILLED`) idempotently using the `processed_trades` table.
 
 ---
 
@@ -26,10 +19,13 @@ Key responsibilities:
 ```
 services/order/internal/kafka/
 ├── README.md                            <-- This documentation file
+├── consumer/
+│   └── consumer.go                      <-- Consumes trades.settled, invokes ApplyTradeFill
 └── publisher/
     ├── outbox_publisher.go             <-- Background polling loop & topic routing logic
     ├── producer.go                     <-- Producer interface & LogProducer (dev stub only)
-    └── kafka_producer.go               <-- Real KafkaProducer (segmentio/kafka-go) — used in production & Docker
+    ├── kafka_producer.go               <-- Real KafkaProducer (segmentio/kafka-go) — Option B Explicit Partitioning
+    └── kafka_producer_test.go          <-- Unit tests for explicit partition mapping
 ```
 
 ---
@@ -140,3 +136,32 @@ topicMap = map[string]string{
 ### 4.6 Method `resolveTopic(eventType)`
 * **Signature:** `func (p *OutboxPublisher) resolveTopic(eventType string) (string, error)`
 * **Error Prevention**: Explicitly checks `p.topicMap[eventType]`. Returns error `unknown outbox event type: <type>` if an event is unmapped, preventing silent publish failures.
+
+---
+
+### 4.7 Struct `Consumer` (`consumer/consumer.go`)
+
+```go
+type Consumer struct {
+    reader *kafkago.Reader
+    repo   repository.OrderRepository
+    logger *zap.Logger
+}
+```
+
+* **Purpose**: Subscribes to the Kafka topic configured by `TOPIC_TRADES_SETTLED` (`trades.settled`) with consumer group `order-service-settlement-group`.
+* **Wire Event Model (`TradeSettledEvent`)**:
+  ```go
+  type TradeSettledEvent struct {
+      TradeID     string `json:"trade_id"`
+      BuyOrderID  string `json:"buy_order_id"`
+      SellOrderID string `json:"sell_order_id"`
+      Quantity    string `json:"quantity"`
+  }
+  ```
+* **Execution Loop (`Start(ctx)`)**:
+  1. Fetches message from Kafka using `c.reader.FetchMessage(ctx)`.
+  2. Deserializes `TradeSettledEvent` JSON payload. Malformed payloads are committed to prevent infinite poison loops.
+  3. Invokes `c.repo.ApplyTradeFill(ctx, ev.TradeID, ev.BuyOrderID, ev.SellOrderID, ev.Quantity)` inside PostgreSQL to update order filled/remaining quantities and transition status (`PARTIALLY_FILLED` or `FILLED`).
+  4. Manually commits Kafka message offset via `c.reader.CommitMessages(ctx, msg)` only after successful database transaction commit.
+

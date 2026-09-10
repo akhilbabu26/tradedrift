@@ -77,16 +77,16 @@ func validateUUID(field, value string) error
 - **Privacy Enforcement**:
   - **Buyer Notification**:
     ```go
-    Message: fmt.Sprintf("Your BUY order of %s %s on %s filled at %s %s", 
-        ev.Quantity, ev.BaseAsset, ev.MarketID, ev.Price, ev.QuoteAsset)
+    Message: fmt.Sprintf("Your BUY order of %s %s on %s filled at %s %s (Order: %s)", 
+        ev.Quantity, ev.BaseAsset, ev.MarketID, ev.Price, ev.QuoteAsset, ev.BuyOrderID)
     ```
-    *(Strictly suppresses `SellerUserID` and `SellOrderID`)*.
+    *(Includes user's own `BuyOrderID`; strictly suppresses `SellerUserID` and `SellOrderID`)*.
   - **Seller Notification**:
     ```go
-    Message: fmt.Sprintf("Your SELL order of %s %s on %s filled at %s %s", 
-        ev.Quantity, ev.BaseAsset, ev.MarketID, ev.Price, ev.QuoteAsset)
+    Message: fmt.Sprintf("Your SELL order of %s %s on %s filled at %s %s (Order: %s)", 
+        ev.Quantity, ev.BaseAsset, ev.MarketID, ev.Price, ev.QuoteAsset, ev.SellOrderID)
     ```
-    *(Strictly suppresses `BuyerUserID` and `BuyOrderID`)*.
+    *(Includes user's own `SellOrderID`; strictly suppresses `BuyerUserID` and `BuyOrderID`)*.
 - **Envelope Identity**: Sets `EventID = ev.EventID` on both Redis envelopes while assigning separate `NotificationID`s.
 - **Atomic Persistence**: Calls `repo.CreateTradeSettledTx`.
 - **Duplicate Skip**: If `ErrAlreadyProcessed` is returned, logs debug and returns `nil`.

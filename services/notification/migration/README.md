@@ -14,7 +14,8 @@ The Notification Service uses [Goose](https://github.com/pressly/goose) for sche
 services/notification/migration/
 ├── 00001_create_notifications.sql                  # Persistent user inboxes & deduplication log
 ├── 00002_create_notification_outbox.sql              # Transactional outbox table & partial polling index
-└── 00003_add_notification_id_and_claim_token.sql     # Lease ownership, idempotency recovery & check constraints
+├── 00003_add_notification_id_and_claim_token.sql     # Lease ownership, idempotency recovery & check constraints
+└── 00004_create_outbox_retention_index.sql           # Partial index for rapid outbox retention purging
 ```
 
 ### Lifecycle & Execution Order
@@ -230,6 +231,28 @@ ALTER TABLE notifications
     CHECK (reference_type IS NULL OR reference_type IN ('TRADE', 'ORDER', 'DEPOSIT'));
 ```
 - Enforces data integrity at the database layer. Any SQL insert or update containing an unsupported status, notification type, or reference type is immediately rejected by PostgreSQL with a constraint violation.
+
+---
+
+## 4. `00004_create_outbox_retention_index.sql` — Outbox Retention Index
+
+### Purpose
+Accelerates background pruning and automated retention purging of historical `PROCESSED` outbox rows without causing lock contention or table bloat.
+
+### Problems It Solves
+1. **Outbox Table Bloat**: As thousands of trade execution notifications stream through the system, the `notification_outbox` table accumulates millions of old `PROCESSED` rows.
+2. **Purge Query Lock Contention**: Running periodic `DELETE FROM notification_outbox WHERE status = 'PROCESSED' AND published_at < $1` without an index causes sequential scans and row lock escalation against active `PENDING` polling workers.
+
+### Schema Addition
+```sql
+CREATE INDEX IF NOT EXISTS idx_notification_outbox_processed 
+    ON notification_outbox(published_at, target_channel) 
+    WHERE status = 'PROCESSED';
+```
+
+### Why a Partial Index?
+* **Zero Overhead on Ingestion**: The index only indexes rows where `status = 'PROCESSED'`, completely ignoring new `PENDING` rows during insertion.
+* **Instant Purge Scans**: Enables index range scans on `published_at` during the periodic retention purge worker cycle (`PurgePublished`).
 
 ---
 

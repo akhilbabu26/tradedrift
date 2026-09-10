@@ -15,10 +15,14 @@ The **Order Service** is the central entrypoint for trading operations on the Tr
 ### Core Invariants:
 1. **Quantity Standard**: `Order.Quantity` **ALWAYS** represents base asset quantity across all 4 order types (`BUY LIMIT`, `BUY MARKET`, `SELL LIMIT`, `SELL MARKET`).
 2. **Arbitrary Financial Precision**: Uses `shopspring/decimal` for all calculations — **zero binary floating-point representation bugs**.
-3. **Idempotency Guarantee**: Client-supplied `idempotency_key` guarantees that retried requests with identical parameters return the existing order, while altered parameters return `ErrDuplicateIdempotencyKey`.
-4. **Saga Compensation**: If database insertion fails post-wallet reservation, an immediate compensating call to `Wallet.ReleaseFunds` releases locked funds, preventing orphaned reservations.
-5. **Transactional Outbox Pattern**: Orders and outbox events (`OrderCreated`, `OrderCancelRequested`) are written inside a single PostgreSQL transaction (`BEGIN ... COMMIT`).
-6. **Multi-Instance Safe Outbox Worker**: Background worker uses atomic claim leases (`UPDATE outbox SET processing_at = NOW(), attempts = attempts + 1 ... RETURNING ...`) with linear retry backoff and delivery ACK verification.
+3. **Precision Rounding for Reservations**: BUY orders round UP quote reservations (`RoundCeil(decimals)`) to quote asset precision to ensure reserved funds strictly cover execution. SELL orders truncate base asset reservations to base precision.
+4. **Idempotency Guarantee**: Client-supplied `idempotency_key` guarantees that retried requests with identical parameters return the existing order, while altered parameters return `ErrDuplicateIdempotencyKey`.
+5. **Pre-Trade Price Band & Slippage Protection**: Evaluates limit order prices and market buy prices against live Market Maker quotes/mid prices stored in Redis (`ValidatePriceBand`). Orders violating configured deviation thresholds are rejected with `FILTER_FAILURE_PERCENT_PRICE` (HTTP 422).
+6. **Saga Compensation**: If database insertion fails post-wallet reservation (e.g. concurrent idempotency race), an immediate compensating call to `Wallet.ReleaseFunds` releases locked funds, preventing orphaned reservations.
+7. **Transactional Outbox Pattern**: Orders and outbox events (`OrderCreated`, `OrderCancelRequested`) are written inside a single PostgreSQL transaction (`BEGIN ... COMMIT`).
+8. **Market Maker Account Special Routing**: The system MM account (`00000000-0000-0000-0000-000000000001`) manages inventory locally in the Liquidity Engine. The Order Service acts solely as an authoritative recovery ledger: skipping wallet `ReserveFunds` and skipping outbox Kafka emission (since LE publishes MM orders).
+9. **Multi-Instance Safe Outbox Worker**: Background worker uses atomic claim leases (`UPDATE outbox SET processing_at = NOW(), attempts = attempts + 1 ... RETURNING ...`) with linear retry backoff and delivery ACK verification.
+10. **Asynchronous Trade Fill Ingestion**: Background Kafka consumer reads `trades.settled` events and atomically updates order fill progress (`filled_quantity`, `remaining_quantity`, and status `PARTIALLY_FILLED` / `FILLED`) deduplicated by the `processed_trades` table.
 
 ---
 
@@ -60,7 +64,45 @@ When the Order Service processes `CreateOrder`:
      - **If parameters differ** (e.g. key reused but quantity changed from 1 BTC to 5 BTC): Returns `ErrDuplicateIdempotencyKey` (`codes.AlreadyExists`) to reject key tampering.
 
 3. **Database Race Guard (`orders_idempotency_key_key`)**:
-   - PostgreSQL enforces `idempotency_key UUID UNIQUE`. Even if two parallel retries hit two different Order Service microservice instances at the exact same microsecond, PostgreSQL rejects the second INSERT with error code `23505`, guaranteeing **atomic duplicate prevention**.
+   - PostgreSQL enforces `idempotency_key VARCHAR(64) UNIQUE`. Even if two parallel retries hit two different Order Service microservice instances at the exact same microsecond, PostgreSQL rejects the second INSERT with error code `23505`, guaranteeing **atomic duplicate prevention**.
+
+---
+
+### 2.3 Pre-Trade Price Band Validation & Slippage Guard
+To protect users and maintain market integrity, the Order Service enforces pre-trade price checks against real-time Market Maker quotes in Redis (`price_filter.go`):
+- **Limit Orders & Market Buy Orders**: Evaluates the incoming order's price against the current market reference price fetched from Redis (`orderbook:ticker:{market}` or MM quote stream).
+- **Deviation Guard**: If the order price deviates by more than the configured percentage (e.g., `MAX_PRICE_DEVIATION=0.05` for 5%) above the MM ask (for buys) or below the MM bid (for sells), the order is rejected immediately *before* reserving funds.
+- **Client Error Format**: Mapped to gRPC `codes.FailedPrecondition` with structured JSON (`FILTER_FAILURE_PERCENT_PRICE`), allowing the API Gateway to return a detailed HTTP `422 Unprocessable Entity` response with `errorCode`, `reason`, `details`, and `timestamp`.
+
+---
+
+### 2.4 Asynchronous Trade Execution Fill Ingestion
+The Order Service continuously monitors execution settlements via a background Kafka consumer (`internal/kafka/consumer/consumer.go`):
+- **Topic**: Subscribes to `trades.settled` (or `wallet.events`).
+- **Idempotency Barrier (`processed_trades`)**: Uses Migration `003_create_processed_trades.sql` with `PRIMARY KEY (trade_id)`. Before updating an order, the consumer executes:
+  ```sql
+  INSERT INTO processed_trades (trade_id) VALUES ($1) ON CONFLICT (trade_id) DO NOTHING RETURNING trade_id;
+  ```
+  If no row was inserted, the event has already been applied and is skipped safely (idempotent no-op).
+- **Atomic Order Fill Progress**: Updates both the buy order and sell order atomically:
+  ```sql
+  UPDATE orders
+  SET filled_quantity = LEAST(quantity, filled_quantity + $1::numeric),
+      remaining_quantity = GREATEST(0, remaining_quantity - $1::numeric),
+      status = CASE 
+          WHEN remaining_quantity - $1::numeric <= 0 THEN 'FILLED' 
+          ELSE 'PARTIALLY_FILLED' 
+      END,
+      updated_at = NOW()
+  WHERE id = $2 AND status IN ('OPEN', 'PARTIALLY_FILLED');
+  ```
+
+---
+
+### 2.5 Market Maker Account Execution Routing
+- **Account Identity**: `00000000-0000-0000-0000-000000000001` represents the internal Automated Liquidity Engine (LE) bot.
+- **Inventory Autonomy**: The Liquidity Engine tracks its inventory locally in memory and in Redis. Thus, MM orders created in the Order Service skip synchronous wallet `ReserveFunds` calls.
+- **Publisher Invariant**: The Liquidity Engine is the sole authority publishing MM `OrderCreated` commands directly to Kafka. The Order Service skips enqueuing outbox events for MM orders to prevent duplicate Kafka emissions.
 
 ---
 
@@ -75,7 +117,7 @@ services/order/
 ├── cmd/
 │   ├── README.md                        <-- Executable package documentation
 │   └── server/
-│       └── main.go                      <-- Server entrypoint, gRPC listener & worker wiring
+│       └── main.go                      <-- Server entrypoint, gRPC listener, workers & consumer wiring
 ├── internal/
 │   ├── config/                          <-- Env loader & defaults
 │   │   ├── README.md
@@ -85,19 +127,23 @@ services/order/
 │   │   ├── order.go                     <-- Order domain structs, enums, errors, interface
 │   │   ├── outbox.go                    <-- Outbox event model & interface
 │   │   └── postgres/
-│   │       ├── order_repository.go      <-- Postgres order CRUD queries & keyset pagination
+│   │       ├── order_repository.go      <-- Postgres order CRUD, fills & keyset pagination
 │   │       └── outbox_repository.go     <-- Postgres outbox worker atomic claims & backoff retries
 │   ├── service/                         <-- Core business logic, decimal math, Saga
 │   │   ├── README.md
 │   │   ├── errors.go                    <-- Service-level sentinel errors
+│   │   ├── price_filter.go              <-- Pre-trade price band & slippage guard (Redis MM quotes)
+│   │   ├── price_filter_test.go         <-- Unit tests for price band calculations
 │   │   ├── service.go                   <-- Order creation & cancellation orchestration logic
 │   │   └── validation.go                <-- Decimal math comparison & market format helpers
 │   ├── handler/                         <-- gRPC API handler & error mapping
 │   │   ├── README.md
 │   │   ├── grpc.go                      <-- gRPC RPC Endpoint methods
 │   │   └── mapper.go                    <-- Error status mapping & Protobuf converters
-│   ├── kafka/                           <-- Outbox-backed event publisher
+│   ├── kafka/                           <-- Outbox publisher and event consumer
 │   │   ├── README.md
+│   │   ├── consumer/
+│   │   │   └── consumer.go              <-- Consumes trades.settled, calls ApplyTradeFill
 │   │   └── publisher/
 │   │       ├── outbox_publisher.go      <-- Polling loop, topic router, linear backoff
 │   │       ├── producer.go              <-- Producer interface & LogProducer stub
@@ -108,7 +154,9 @@ services/order/
 │       └── client.go                    <-- Wallet Service gRPC client wrapper
 └── migration/
     ├── README.md                        <-- Database DDL documentation
-    └── 001_create_orders.sql            <-- DDL migration script for orders & outbox tables
+    ├── 001_create_orders.sql            <-- DDL migration script for orders & outbox tables
+    ├── 002_alter_idempotency_key.sql    <-- Widens idempotency_key to VARCHAR(64)
+    └── 003_create_processed_trades.sql  <-- Dedicated idempotency table for trade executions
 ```
 
 ---
@@ -118,16 +166,18 @@ services/order/
 | Package / Tool | Purpose & Architectural Rationale |
 | :--- | :--- |
 | **Go 1.26+** | Service programming language offering low-latency, high-concurrency goroutine scheduling. |
-| **PostgreSQL** | Primary persistent store for orders and outbox queues (`tradedrift_order` DB). |
+| **PostgreSQL** | Primary persistent store for orders, processed trades, and outbox queues (`tradedrift_order` DB). |
+| **Redis** (`github.com/redis/go-redis/v9`) | Caches real-time Market Maker quotes and ticker prices for instant sub-millisecond price band validation. |
 | **`github.com/jackc/pgx/v5`** | High-performance PostgreSQL driver and pool manager (`pgxpool`). Provides protocol-level error code checking (`pgconn.PgError`). |
 | **`github.com/shopspring/decimal`** | Arbitrary-precision decimal arithmetic. Prevents floating-point representation loss during price $\times$ quantity calculations. |
 | **`github.com/google/uuid`** | Generates timestamp-ordered **UUIDv7** primary keys in the application layer. |
+| **`github.com/segmentio/kafka-go`** | Fast Kafka reader & writer for outbox event delivery and execution stream ingestion. |
 | **`go.uber.org/zap`** | Zero-allocation structured logger. |
 | **`google.golang.org/grpc`** | gRPC protocol transport for inter-service communication (Wallet Service) and external API serving. |
 
 ---
 
-## 5. Money Flow & Transactional Outbox Lifecycle
+## 5. End-to-End Money Flow & Execution Lifecycle
 
 ```
     Client gRPC Request
@@ -140,13 +190,13 @@ services/order/
              │
              ▼
  ┌──────────────────────┐  3. Check idempotency key & parameter equality
- │    Order Service     │  4. Parse canonical pair "BTC-USDT"
- │  (internal/service)  │  5. Validate positive decimal quantity & price
- └───────┬───────┬──────┘  6. Calculate quote reservation: (Price × Quantity)
-         │       │         7. Generate UUIDv7 order ID & serialize Outbox payload
+ │    Order Service     │  4. Parse canonical pair "BTC-USDT" & decimal precision
+ │  (internal/service)  │  4.5. Validate Pre-Trade Price Band via Redis MM quotes
+ └───────┬───────┬──────┘  5. Calculate exact quote reservation (RoundCeil to decimals)
+         │       │         6. Generate UUIDv7 order ID & serialize Outbox payload
          │       │
          │       └─────────────────────────────┐
-         │ (gRPC Call)                         │ (PostgreSQL Tx)
+         │ (gRPC Call: ReserveFunds)           │ (PostgreSQL Tx)
          ▼                                     ▼
 ┌───────────────────┐               ┌───────────────────────┐
 │  Wallet Service   │               │   PostgreSQL DB       │
@@ -165,8 +215,20 @@ services/order/
 ┌─────────────────────┐             ┌────────────────────────┐
 │   Outbox Worker     │ ──────────> │ Kafka Event Broker     │
 │ (internal/kafka)    │             │ Topic: orders.submitted│
-└─────────────────────┘   Deliver   └────────────────────────┘
-                            ACK
+└─────────────────────┘   Deliver   └───────────┬────────────┘
+                            ACK                 │
+                                                ▼
+                                    ┌────────────────────────┐
+                                    │ Matching Engine &      │
+                                    │ Settlement Execution   │
+                                    └───────────┬────────────┘
+                                                │
+                                                ▼ Topic: trades.settled
+┌─────────────────────┐             ┌────────────────────────┐
+│ Order Ingestion DB  │ <────────── │  Trade Fill Consumer   │
+│ - processed_trades  │  Update     │ (kafka/consumer)       │
+│ - status: FILLED    │  Fills      └────────────────────────┘
+└─────────────────────┘
 ```
 
 ---

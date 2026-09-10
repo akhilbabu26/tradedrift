@@ -202,16 +202,16 @@ This prevents double-spending without distributed locks: two concurrent orders b
 `SettleTrade` executes inside a **single atomic PostgreSQL transaction** (`pgx.Tx`):
 1. **Primary Idempotency Registration:** Attempts `INSERT INTO settled_trades (trade_id, market_id, sequence, settled_at) VALUES (...) ON CONFLICT (trade_id) DO NOTHING`. If already present, exits immediately with success. (Fails fast with `ErrSettlementConflict` if the same `trade_id` appears with conflicting market/sequence).
 2. **Deterministic Reservation Locking:** Locks buy and sell reservations in deterministic alphabetical order (`min(BuyOrderID, SellerOrderID)`) using `SELECT ... FOR UPDATE` (eliminating deadlock hazards on concurrent crossed trades). Note: Market Maker accounts (`00000000-0000-0000-0000-000000000001`) manage inventory locally without reservation rows and bypass reservation locking.
-3. **Reservation State Validation & Slippage Cap (Step 4b):** Verifies reservations are active and matching assets/users. For MARKET BUY orders where execution price slippage causes `QuoteAmount > reservation.remaining_amount`, if the excess is within a 1% tolerance, `QuoteAmount` is capped to the reservation balance; excess >1% returns an error.
+3. **Reservation State Validation & Slippage Cap (Step 4b):** Verifies reservations are active and matching assets/users. If executed price is higher than the buyer reserved price (e.g. LIMIT order filled outside limit or a MARKET order with price impact), `quoteAmount` may exceed `reservation.remaining_amount`. The system always caps `quoteAmount` to the reservation remaining balance — protecting the buyer while the seller (typically MM) absorbs the small deficit, ensuring settlements never stall or fail due to buyer quote shortage.
 4. **Precision Truncation (Step 5b):** Floor-truncates `QuoteAmount` to the quote asset's defined precision (`supported_assets.decimals`) before validation, ensuring all balance mutations and ledger rows adhere strictly to asset precision.
 5. **Deterministic Wallet Row Locking (Step 6):** Locks all four affected wallet rows in sorted ID order via a single `walletRepo.LockByIDs()` call (`SELECT ... FOR UPDATE`), preventing crossed-lock deadlocks.
 6. **Leg 1 (Base Asset Transfer):** Debits seller base asset (from `reserved_balance` and reservation `remaining_amount`, or from `available_balance` for MM), credits buyer base asset `available_balance`.
 7. **Leg 2 (Quote Asset Transfer):** Debits buyer quote asset (from `reserved_balance` and reservation `remaining_amount`, or from `available_balance` for MM), credits seller quote asset `available_balance`.
 8. **Ledger Entries:** Inserts **4 immutable ledger records** (Seller Base DEBIT, Buyer Base CREDIT, Buyer Quote DEBIT, Seller Quote CREDIT) enforced by DB unique constraint `UNIQUE (wallet_id, reference_id, reference_type)`.
 9. **Writes 3 Outbox Events** atomically into the `outbox` table:
-   - `TradeSettled` (topic: `trades.settled.v1`, partition key: `buyer_id`) $\rightarrow$ consumed by Trade Service
-   - `PortfolioUserTrade` BUY (topic: `portfolio.user.trades.v1`, partition key: `buyer_id`) $\rightarrow$ consumed by Portfolio Service
-   - `PortfolioUserTrade` SELL (topic: `portfolio.user.trades.v1`, partition key: `seller_id`) $\rightarrow$ consumed by Portfolio Service
+   - `TradeSettled` (topic: `trades.settled.v1`, partition key: `buyer_user_id`): Emits `event_id` (UUID deduplication key), canonical `buyer_user_id`/`seller_user_id`, and legacy fallback `buyer_id`/`seller_id` $\rightarrow$ consumed by Notification Service and Trade Service.
+   - `PortfolioUserTrade` BUY (topic: `portfolio.user.trades.v1`, partition key: `buyer_id`) $\rightarrow$ consumed by Portfolio Service.
+   - `PortfolioUserTrade` SELL (topic: `portfolio.user.trades.v1`, partition key: `seller_id`) $\rightarrow$ consumed by Portfolio Service.
 10. **Commits the transaction:** If any step fails, all balance debits/credits, reservation consumptions, ledger rows, `settled_trades` row, and outbox rows roll back completely.
 
 **Outbox Multi-Worker Safety, Crash Recovery & Ordering Preservation (Migrations 00004 & 00006):**
@@ -255,12 +255,12 @@ All balances are `DECIMAL(30,10)` in PostgreSQL and `string` in Go. This prevent
 | Table | Purpose |
 |---|---|
 | `supported_assets` | Platform asset registry — defines valid assets and seed amounts |
-| `wallets` | Live balance state per (user, asset) |
+| `wallets` | Live balance state per (user, asset) — enforced by `chk_wallet_total_balance` CHECK constraint (Migration 00008) |
 | `wallet_reservations` | Fund locks per order (ACTIVE → CONSUMED/RELEASED) |
 | `wallet_transactions` | Immutable ledger — every balance change, forever |
-| `outbox` | Pending Kafka events (Transactional Outbox pattern) |
+| `outbox` | Pending Kafka events with deterministic FIFO claim index (Migrations 00004 & 00006) |
 | `wallet_transfers` | Deposit/withdrawal lifecycle tracking |
-| `settled_trades` | Dedicated trade settlement primary idempotency table (Migration 00005) |
+| `settled_trades` | Dedicated trade settlement primary idempotency table (Migration 00005) with unique sequence integrity `uq_settled_trades_market_seq` (Migration 00007) |
 
 See [migration/README.md](./migration/README.md) for full table documentation.
 

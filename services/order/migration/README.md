@@ -22,6 +22,8 @@ It establishes the schema for:
 | File | Role |
 | :--- | :--- |
 | [`001_create_orders.sql`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/order/migration/001_create_orders.sql) | Creates `orders` and `outbox` tables, constraint definitions, and performance indexes |
+| [`002_alter_idempotency_key.sql`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/order/migration/002_alter_idempotency_key.sql) | Changes `orders.idempotency_key` column type to `VARCHAR(64)` for client string flexibility |
+| [`003_create_processed_trades.sql`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/order/migration/003_create_processed_trades.sql) | Creates `processed_trades` idempotency ledger table for deduplicating Kafka trade execution events |
 
 ---
 
@@ -41,15 +43,28 @@ CREATE TABLE IF NOT EXISTS orders (
     filled_quantity     DECIMAL(30,10)  NOT NULL DEFAULT 0,
     remaining_quantity  DECIMAL(30,10)  NOT NULL,
     status              VARCHAR(20)     NOT NULL,
-    idempotency_key     UUID            UNIQUE,
+    idempotency_key     VARCHAR(64)     UNIQUE,
     created_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     updated_at          TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
 ```
 
 * **`price`**: `DECIMAL(30,10)` — Nullable for pure `MARKET` sell orders.
-* **`idempotency_key`**: `UUID UNIQUE` — Prevents duplicate order placements via PostgreSQL constraint code `23505` (`orders_idempotency_key_key`).
-* **`remaining_quantity`**: Regular column updated during partial execution fills.
+* **`idempotency_key`**: `VARCHAR(64) UNIQUE` (Migration 002) — Prevents duplicate order placements via PostgreSQL constraint code `23505` (`orders_idempotency_key_key`).
+* **`remaining_quantity`**: Regular column updated atomically during execution fills.
+
+---
+
+### 3.2 `processed_trades` Table (Migration 003)
+
+```sql
+CREATE TABLE IF NOT EXISTS processed_trades (
+    trade_id     VARCHAR(64) PRIMARY KEY,
+    processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+```
+
+* **`trade_id`**: Primary key anchor preventing duplicate processing of trade execution fills on Kafka consumer replays or reconnections (`INSERT INTO processed_trades ... ON CONFLICT (trade_id) DO NOTHING`).
 
 ---
 

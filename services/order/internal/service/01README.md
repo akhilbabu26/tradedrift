@@ -65,7 +65,9 @@ When the Order Service processes `CreateOrder`:
 
 | File | Role |
 | :--- | :--- |
-| [`errors.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/order/internal/service/errors.go) | Defines domain service sentinel errors (`ErrInvalidSide`, `ErrInsufficientFunds`, etc.) |
+| [`errors.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/order/internal/service/errors.go) | Defines domain service sentinel errors (`ErrInvalidSide`, `ErrInsufficientFunds`, `ErrPriceBandExceeded`, etc.) |
+| [`price_filter.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/order/internal/service/price_filter.go) | Pre-trade price band & slippage guard evaluating orders against live Redis MM quotes |
+| [`price_filter_test.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/order/internal/service/price_filter_test.go) | Comprehensive unit tests for price deviation bounds and filter failure JSON structures |
 | [`service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/order/internal/service/service.go) | Implements the `Service` interface and order processing orchestration logic |
 | [`validation.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/order/internal/service/validation.go) | Parameter validation, decimal price/quantity equality helpers (`sameRequest`, `pricesEqual`), and market format parsers |
 
@@ -82,6 +84,7 @@ When the Order Service processes `CreateOrder`:
 | `strings` | Capitalization and delimiter parsing (`strings.Split(market, "-")`). |
 | `time` | Generation of UTC creation timestamps. |
 | `github.com/google/uuid` | Generates timestamp-sortable **UUIDv7** primary keys in the application layer. |
+| `github.com/redis/go-redis/v9` | Low-latency querying of live Market Maker quotes for pre-trade price verification. |
 | `github.com/shopspring/decimal` | **Arbitrary-precision fixed-point decimal arithmetic**. Eliminates binary floating-point representation bugs (e.g. `0.1 + 0.2 != 0.3`). |
 | `go.uber.org/zap` | High-performance structured logging. |
 | `google.golang.org/grpc/codes` | Intercepts gRPC status codes from external services (`codes.FailedPrecondition`). |
@@ -103,27 +106,29 @@ When the Order Service processes `CreateOrder`:
 | `ErrInsufficientFunds` | User's available balance in Wallet Service is lower than the required reservation. |
 | `ErrOrderNotCancellable` | Order is already `CANCELLED`, `FILLED`, or `CANCELLING`. |
 | `ErrInvalidPaginationCursor` | Cursor decoding failed. |
+| `ErrInvalidPriceBand` | Price filter parameters or MM quotes are invalid/missing. |
+| `ErrPriceBandExceeded` | Order price violates the percentage price band deviation limit (`FILTER_FAILURE_PERCENT_PRICE`). |
 
 ---
 
 ## 6. Money Flow & Order Rules Matrix
 
 ```
-──────────────────────────────────────────────────────────────────────────────────────────
-Order Type   | Quantity (Base Asset) | Price Parameter   | Reserved Asset | Reserved Amount
-──────────────────────────────────────────────────────────────────────────────────────────
-BUY LIMIT    | e.g. "0.1" (BTC)      | Required (Limit)  | Quote (USDT)   | Price × Quantity
-BUY MARKET   | e.g. "0.1" (BTC)      | Required (Max Cap)| Quote (USDT)   | Max Price × Quantity
-SELL LIMIT   | e.g. "0.1" (BTC)      | Required (Limit)  | Base (BTC)     | Quantity
-SELL MARKET  | e.g. "0.1" (BTC)      | Omitted           | Base (BTC)     | Quantity
-──────────────────────────────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────────────────────────────────
+Order Type   | Quantity (Base Asset) | Price Parameter   | Reserved Asset | Reservation Rule
+──────────────────────────────────────────────────────────────────────────────────────────────────
+BUY LIMIT    | e.g. "0.1" (BTC)      | Required (Limit)  | Quote (USDT)   | RoundCeil(Price × Qty, Decimals)
+BUY MARKET   | e.g. "0.1" (BTC)      | Required (Max Cap)| Quote (USDT)   | RoundCeil(Max Price × Qty, Decimals)
+SELL LIMIT   | e.g. "0.1" (BTC)      | Required (Limit)  | Base (BTC)     | Truncate(Qty, Decimals)
+SELL MARKET  | e.g. "0.1" (BTC)      | Omitted           | Base (BTC)     | Truncate(Qty, Decimals)
+──────────────────────────────────────────────────────────────────────────────────────────────────
 ```
 
-* **Invariant**: `Order.Quantity` **ALWAYS** represents base asset quantity across all 4 order types.
+* **Precision Guarantee**: Quote asset reservation amount is rounded **UP** (`RoundCeil`) to the quote asset's defined precision (e.g., 2 decimals for USDT) via `getAssetDecimals()` to guarantee reserved funds cover execution fees and rounding dust.
 
 ---
 
-## 7. Function & Method Analysis (`service.go` & `validation.go`)
+## 7. Function & Method Analysis (`service.go`, `price_filter.go` & `validation.go`)
 
 ### 7.1 `CreateOrder(ctx, params)` (`service.go`)
 * **Signature:** `(s *orderService) CreateOrder(ctx context.Context, p *CreateOrderParams) (*repository.Order, error)`
@@ -134,32 +139,45 @@ SELL MARKET  | e.g. "0.1" (BTC)      | Omitted           | Base (BTC)     | Quan
      - Returns existing order if parameters match; returns `ErrDuplicateIdempotencyKey` if altered.
   3. **Market Parsing**: Parses `"BTC-USDT"` into `base = "BTC"`, `quote = "USDT"`.
   4. **Decimal Validation**: Parses `p.Quantity` and `p.Price` using `decimal.NewFromString`.
-  5. **Reservation Math**:
-     - `BUY` orders: `reserveAsset = quoteAsset`, `reserveAmount = (priceDec * qty).StringFixed(10)`.
-     - `SELL` orders: `reserveAsset = baseAsset`, `reserveAmount = qty.StringFixed(10)`.
+  4.5. **Pre-Trade Price Band & Slippage Protection**: Invokes `s.priceFilter.ValidatePriceBand(ctx, market, side, orderType, priceDec)` if order price is positive. If the price deviates beyond `max_price_deviation` from MM quotes in Redis, halts and returns `FILTER_FAILURE_PERCENT_PRICE`.
+  5. **Exact Reservation Math**:
+     - `BUY` orders: `reserveAsset = quoteAsset`, `reserveAmount = totalQuote.RoundCeil(decimals).StringFixed(decimals)`.
+     - `SELL` orders: `reserveAsset = baseAsset`, `reserveAmount = qty.Truncate(decimals).StringFixed(decimals)`.
   6. **UUIDv7 Generation**: Generates application-level `uuid.NewV7()`.
-  7. **Pre-Network Struct & Outbox Assembly**: Constructs `repository.Order` and serializes `payloadBytes` (`json.Marshal`).
-  8. **Wallet Fund Reservation**: Calls `s.wallet.ReserveFunds(...)` over gRPC. Converts `codes.FailedPrecondition` to `ErrInsufficientFunds`.
+  7. **Outbox Serialization & MM Account Branching**:
+     - Standard User: Serializes `OrderCreated` payload for transactional outbox.
+     - System MM Account (`00000000-0000-0000-0000-000000000001`): Skips outbox enqueue (LE publishes directly) and skips wallet `ReserveFunds` (inventory managed in LE).
+  8. **Wallet Fund Reservation**: For non-MM accounts, calls `s.wallet.ReserveFunds(...)` over gRPC. Converts `codes.FailedPrecondition` to `ErrInsufficientFunds`.
   9. **Database Persistence & Saga Compensation**: Executes `s.repo.CreateOrder(...)`.
      - **Compensating Action**: If PostgreSQL insertion fails after funds were reserved, triggers `s.wallet.ReleaseFunds(ctx, orderID.String())` immediately!
 
-### 7.2 `CancelOrder(ctx, orderID, userID)` (`service.go`)
+### 7.2 `PriceFilter` Implementation (`price_filter.go`)
+* **Interface `PriceFilter`**:
+  ```go
+  type PriceFilter interface {
+      ValidatePriceBand(ctx context.Context, market string, side repository.OrderSide, orderType repository.OrderType, price decimal.Decimal) error
+  }
+  ```
+* **Redis Key**: Fetches current quotes from Redis key `orderbook:ticker:{market}` or MM stream.
+* **Calculation**:
+  - `BUY`: Rejects if `price > best_ask * (1 + max_deviation)`.
+  - `SELL`: Rejects if `price < best_bid * (1 - max_deviation)`.
+* **Structured Error**: Emits error formatted with code `FILTER_FAILURE_PERCENT_PRICE` and metadata for client consumption.
+
+### 7.3 `CancelOrder(ctx, orderID, userID)` (`service.go`)
 * **Signature:** `(s *orderService) CancelOrder(ctx context.Context, orderID, userID string) (*repository.Order, error)`
 * **Flow**: Checks that order status is `OPEN` or `PARTIALLY_FILLED`. Constructs `OrderCancelRequested` JSON payload and calls `s.repo.UpdateStatusToCancelling`.
 
-### 7.3 `GetOrder(ctx, orderID, userID)` (`service.go`)
+### 7.4 `GetOrder(ctx, orderID, userID)` (`service.go`)
 * **Signature:** `(s *orderService) GetOrder(ctx context.Context, orderID, userID string) (*repository.Order, error)`
 * **Flow**: Fetches order from repository and translates `repository.ErrOrderNotFound` to `service.ErrOrderNotFound`.
 
-### 7.4 `ListOrders(ctx, userID, marketID, cursor, side, status, fromTime, toTime, limit)` (`service.go`)
+### 7.5 `ListOrders(ctx, userID, marketID, cursor, side, status, fromTime, toTime, limit)` (`service.go`)
 * **Signature:** `(s *orderService) ListOrders(...) ([]*repository.Order, error)`
 * **Flow**: Queries repository and converts `repository.ErrInvalidPaginationCursor` to `service.ErrInvalidPaginationCursor`.
 
-### 7.5 Helper `sameRequest(existing, p)` (`validation.go`)
-* **Purpose**: Performs full equality checks on `UserID`, `MarketID`, `Side`, `OrderType`, `Quantity` (via `quantitiesEqual`), and `Price` (via `pricesEqual`).
-
-### 7.6 Helper `pricesEqual(p1, p2)` / `quantitiesEqual(q1, q2)` (`validation.go`)
-* **Purpose**: Compares numeric decimal equality rather than string matching (e.g. `"60000.0000000000"` equals `"60000"`).
-
-### 7.7 Helper `parseMarketID(market)` (`validation.go`)
-* **Purpose**: Parses `"BTC-USDT"` into base asset (`"BTC"`) and quote asset (`"USDT"`).
+### 7.6 Precision & Equality Helpers (`validation.go`)
+* `sameRequest(existing, p)`: Performs full equality checks on `UserID`, `MarketID`, `Side`, `OrderType`, `Quantity` (via `quantitiesEqual`), and `Price` (via `pricesEqual`).
+* `pricesEqual(p1, p2)` / `quantitiesEqual(q1, q2)`: Compares numeric decimal equality rather than string matching.
+* `parseMarketID(market)`: Parses `"BTC-USDT"` into base asset (`"BTC"`) and quote asset (`"USDT"`).
+* `getAssetDecimals(asset)`: Returns canonical precision decimals (USDT: 2, BTC/ETH: 8, SOL: 9).

@@ -357,7 +357,10 @@ The `internal/publisher/` directory implements the background worker that reliab
 5. **`recoverOrphans(ctx context.Context)`**:
    * **Signature**: `func (p *Publisher) recoverOrphans(ctx context.Context)`
    * **Purpose**: Calls `repo.ReleaseOutboxClaims(ctx, 60*time.Second)` to reset expired leases.
-6. **`Stop()`**:
+6. **`runRetentionCleanup(ctx context.Context)`**:
+   * **Signature**: `func (p *Publisher) runRetentionCleanup(ctx context.Context)`
+   * **Purpose**: Periodically purges historical `PROCESSED` outbox rows via `PurgePublished` using configured retention cutoffs (24 hours for ephemeral `user:portfolio:` snapshots, 7 days for `user:notifications:` alerts) to prevent table bloat, incrementing `OutboxPurgedTotal`.
+7. **`Stop()`**:
    * **Signature**: `func (p *Publisher) Stop()`
    * **Purpose**: Releases active claims and terminates background tickers cleanly.
 
@@ -382,7 +385,7 @@ The `internal/repository/` directory provides data access abstractions and imple
   5. `GetNotificationIDByEventID` & `GetNotificationByID`: Idempotency recovery helpers.
 
 #### File: `internal/repository/postgres/outbox.go`
-* **Purpose**: Outbox table lifecycle operations.
+* **Purpose**: Outbox table lifecycle operations and retention maintenance.
 * **What Problem It Solves**: Enforces distributed locking and lease validation at the database layer.
 * **Key Functions**:
   1. `StageOutboxEvent`: Inserts raw outbox record (used for ephemeral portfolio updates).
@@ -390,6 +393,7 @@ The `internal/repository/` directory provides data access abstractions and imple
   3. `MarkOutboxPublished`: Marks event `PROCESSED` where `id = $1 AND claim_token = $2`. Returns `ErrOutboxClaimLost` if rows affected is 0.
   4. `IncrementOutboxRetry`: Schedules backoff retry where `id = $1 AND claim_token = $2`. Marks `FAILED` if retry limit reached.
   5. `ReleaseOutboxClaims`: Resets stalled events with expired leases back to `PENDING`.
+  6. `PurgePublished`: Deletes `PROCESSED` outbox records older than a specific cutoff using the `idx_notification_outbox_processed` partial index (Migration 00004).
 
 ---
 
@@ -513,8 +517,9 @@ The `migration/` directory contains versioned SQL migrations executed via Goose.
    - Reference: TradeID (TRADE)                        - Reference: TradeID (TRADE)
    - Title:     "Trade Executed"                       - Title:     "Trade Executed"
    - Message:   "Your BUY order of 1 BTC               - Message:   "Your SELL order of 1 BTC
-                 filled at 95,000 USDT"                             filled at 95,000 USDT"
-   *(Seller ID & Sell Order ID OMITTED)*              *(Buyer ID & Buy Order ID OMITTED)*
+                 filled at 95,000 USDT (Order: ID)"                  filled at 95,000 USDT (Order: ID)"
+   *(Seller ID & Sell Order ID OMITTED;                   *(Buyer ID & Buy Order ID OMITTED;
+     own BuyOrderID included for direct UI tracking)*       own SellOrderID included for direct UI tracking)*
              │                                                   │
              ▼                                                   ▼
    Outbox TargetChannel:                               Outbox TargetChannel:

@@ -124,6 +124,7 @@ type OrderRepository interface {
     GetByID(ctx context.Context, orderID, userID string) (*Order, error)
     UpdateStatusToCancelling(ctx context.Context, o *Order, outboxPayload []byte) error
     ListOrders(ctx context.Context, userID, marketID, cursor string, side OrderSide, status OrderStatus, limit int32) ([]*Order, error)
+    ApplyTradeFill(ctx context.Context, tradeID, buyOrderID, sellOrderID, fillQty string) error
 }
 ```
 
@@ -146,7 +147,30 @@ type OrderRepository interface {
 ### 7.5 `ListOrders(ctx, userID, marketID, cursorStr, side, status, limit)` (`order_repository.go`)
 * **Purpose**: Serves paginated user order history using **Keyset Cursor Pagination**.
 
-### 7.6 `GetUnpublishedOutboxEvents(ctx, limit)` (`outbox_repository.go`)
+### 7.6 `ApplyTradeFill(ctx, tradeID, buyOrderID, sellOrderID, fillQty)` (`order_repository.go`)
+* **Purpose**: Atomically records a trade execution fill against both the buy and sell orders while maintaining idempotent delivery guarantees via the `processed_trades` table (Migration 003).
+* **Database Steps**:
+  1. **Idempotency Guard**:
+     ```sql
+     INSERT INTO processed_trades (trade_id) VALUES ($1)
+     ON CONFLICT (trade_id) DO NOTHING
+     RETURNING trade_id
+     ```
+     If 0 rows returned (`pgx.ErrNoRows`), the trade has already been processed — returns `nil` immediately.
+  2. **Atomic Order Update**: Updates `filled_quantity`, `remaining_quantity`, and sets status to `'FILLED'` or `'PARTIALLY_FILLED'` for `buyOrderID` and `sellOrderID`:
+     ```sql
+     UPDATE orders
+     SET filled_quantity = LEAST(quantity, filled_quantity + $1::numeric),
+         remaining_quantity = GREATEST(0, remaining_quantity - $1::numeric),
+         status = CASE 
+             WHEN remaining_quantity - $1::numeric <= 0 THEN 'FILLED' 
+             ELSE 'PARTIALLY_FILLED' 
+         END,
+         updated_at = NOW()
+     WHERE id = $2 AND status IN ('OPEN', 'PARTIALLY_FILLED')
+     ```
+
+### 7.7 `GetUnpublishedOutboxEvents(ctx, limit)` (`outbox_repository.go`)
 * **Purpose**: Claims up to `limit` unpublished outbox events for worker delivery using an **atomic claim query**:
   ```sql
   UPDATE outbox
@@ -163,8 +187,9 @@ type OrderRepository interface {
   ```
 * **Multi-Instance Safety**: Uses `FOR UPDATE SKIP LOCKED` inside the `UPDATE` subquery so concurrent replicas never claim the same events. Stale leases (`processing_at < NOW()`) are automatically reclaimed.
 
-### 7.7 `MarkOutboxEventAsPublished(ctx, id)` (`outbox_repository.go`)
+### 7.8 `MarkOutboxEventAsPublished(ctx, id)` (`outbox_repository.go`)
 * **Purpose**: Updates `published_at = NOW()`, `processing_at = NULL`, and `last_error = NULL` after receiving Kafka delivery ACK.
 
-### 7.8 `RecordOutboxPublishError(ctx, id, errMsg)` (`outbox_repository.go`)
+### 7.9 `RecordOutboxPublishError(ctx, id, errMsg)` (`outbox_repository.go`)
 * **Purpose**: Records `last_error = errMsg` and sets `processing_at = NOW() + (INTERVAL '1 second' * LEAST(attempts, 60))`, enforcing **linear retry backoff** (1s, 2s, 3s... up to 60s max).
+

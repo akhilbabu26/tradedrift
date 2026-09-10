@@ -41,9 +41,10 @@ type PoisonError struct{ Err error }
 ### `type TradeSettledEvent struct`
 ```go
 type TradeSettledEvent struct {
+    EventID      string `json:"event_id"`       // Wallet outbox UUID (for notification deduplication)
     TradeID      string `json:"trade_id"`
-    BuyerID      string `json:"buyer_id"`
-    SellerID     string `json:"seller_id"`
+    BuyerID      string `json:"buyer_user_id"`  // Renamed from buyer_id in wallet outbox schema
+    SellerID     string `json:"seller_user_id"` // Renamed from seller_id in wallet outbox schema
     BuyOrderID   string `json:"buy_order_id"`
     SellOrderID  string `json:"sell_order_id"`
     MarketID     string `json:"market_id"`
@@ -52,11 +53,15 @@ type TradeSettledEvent struct {
     Price        string `json:"price"`
     Quantity     string `json:"quantity"`
     Sequence     uint64 `json:"sequence"`
-    ExecutedAt   string `json:"executed_at"` // RFC3339Nano (Matching Engine timestamp)
-    SettledAt    string `json:"settled_at"`  // RFC3339Nano (Wallet settlement timestamp)
+    ExecutedAt   string `json:"executed_at"`    // RFC3339Nano (Matching Engine timestamp)
+    SettledAt    string `json:"settled_at"`     // RFC3339Nano (Wallet settlement timestamp)
 }
 ```
 * **Format**: JSON wire payload consistent with all platform events.
+* **Dual-Schema Compatibility (`UnmarshalJSON`)**: Implements custom JSON unmarshaling to accept both the updated canonical fields (`buyer_user_id`, `seller_user_id`) and legacy payloads (`buyer_id`, `seller_id`), ensuring zero downtime or poison pill drops during platform upgrades:
+  ```go
+  func (e *TradeSettledEvent) UnmarshalJSON(data []byte) error { ... }
+  ```
 
 ---
 

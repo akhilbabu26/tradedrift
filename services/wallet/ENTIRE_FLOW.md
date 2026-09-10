@@ -353,9 +353,9 @@ sequenceDiagram
 
     rect rgb(240, 248, 255)
         Note over Svc,Validator: Phase 2: Domain Validation & Truncation
-        Svc->>Validator: Truncate to 8 decimals (price, qty)
+        Svc->>Validator: Truncate to asset precision (QuoteAmount)
         Svc->>Validator: Validate Positive Non-Zero
-        Svc->>Validator: Check 5% Max Slippage Cap (Price <= ReservedPrice * 1.05)
+        Svc->>Validator: Slippage Cap: Clamp quote_amount to buyer reservation remaining (MM absorbs deficit)
         Svc->>Validator: Evaluate Market Maker Flag (IsMM bypasses reservations)
     end
 
@@ -385,7 +385,7 @@ sequenceDiagram
         Note over Svc,DB: Phase 4: Commit Settlement & Stage Outbox
         Svc->>DB: INSERT INTO settled_trades (trade_id, market_id, sequence, price, quantity, ...)
         
-        Svc->>Outbox: INSERT INTO outbox (EventType='TradeSettled', Topic='trades.settled.v1', Key=buyer_id)
+        Svc->>Outbox: INSERT INTO outbox (EventType='TradeSettled', Topic='trades.settled.v1', Key=buyer_user_id, EventID=uuid)
         Svc->>Outbox: INSERT INTO outbox (EventType='PortfolioUserTrade', Topic='portfolio.user.trades.v1', Key=buyer_id, Role='BUY')
         Svc->>Outbox: INSERT INTO outbox (EventType='PortfolioUserTrade', Topic='portfolio.user.trades.v1', Key=seller_id, Role='SELL')
         

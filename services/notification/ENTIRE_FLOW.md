@@ -170,8 +170,9 @@ In a Central Limit Order Book (CLOB), revealing counterparty identities or order
    - Reference: TradeID (TRADE)                        - Reference: TradeID (TRADE)
    - Title:     "Trade Executed"                       - Title:     "Trade Executed"
    - Message:   "Your BUY order of 1 BTC               - Message:   "Your SELL order of 1 BTC
-                 filled at 95,000 USDT"                             filled at 95,000 USDT"
-   *(Seller ID & Sell Order ID OMITTED)*              *(Buyer ID & Buy Order ID OMITTED)*
+                 filled at 95,000 USDT (Order: ID)"                  filled at 95,000 USDT (Order: ID)"
+   *(Seller ID & Sell Order ID OMITTED;                   *(Buyer ID & Buy Order ID OMITTED;
+     own BuyOrderID included for direct UI tracking)*       own SellOrderID included for direct UI tracking)*
              │                                                   │
              ▼                                                   ▼
    Outbox TargetChannel:                               Outbox TargetChannel:

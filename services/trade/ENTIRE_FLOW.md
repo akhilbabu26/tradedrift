@@ -87,7 +87,7 @@ sequenceDiagram
     Wallet->>Kafka: Publish TradeSettled event
     Kafka->>Consumer: FetchMessage(ctx)
     Consumer->>Metrics: Record Event Freshness (ConsumerEventAgeSeconds)
-    Consumer->>Consumer: json.Unmarshal() -> TradeSettledEvent
+    Consumer->>Consumer: json.Unmarshal() -> TradeSettledEvent (supports buyer_user_id/seller_user_id & legacy aliases)
     Consumer->>Consumer: Validate UUIDs, Price > 0, Qty > 0, Sequence > 0
     Consumer->>Repo: Create(ctx, trade)
     Repo->>DB: INSERT INTO trades (...) VALUES (...) ON CONFLICT (id) DO NOTHING

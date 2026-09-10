@@ -19,6 +19,7 @@ import (
 	"tradedrift/platform/postgres"
 	orderconfig "tradedrift/services/order/internal/config"
 	"tradedrift/services/order/internal/handler"
+	orderconsumer "tradedrift/services/order/internal/kafka/consumer"
 	"tradedrift/services/order/internal/kafka/publisher"
 	repoPostgres "tradedrift/services/order/internal/repository/postgres"
 	"tradedrift/services/order/internal/service"
@@ -76,15 +77,21 @@ func main() {
 	}
 	defer kafkaProducer.Close()
 
-	// 5. Background Outbox Worker Lifecycle Context with WaitGroup Sync
-	outboxCtx, cancelOutbox := context.WithCancel(context.Background())
+	// 5. Background Workers Lifecycle Context with WaitGroup Sync
+	workerCtx, cancelWorkers := context.WithCancel(context.Background())
 	outboxPublisher := publisher.NewOutboxPublisher(orderRepo, kafkaProducer, appLogger, 200*time.Millisecond)
+	tradeConsumer := orderconsumer.NewConsumer(cfg.KafkaBrokers, cfg.KafkaGroupID, cfg.TopicTradesSettled, orderRepo, appLogger)
+	defer tradeConsumer.Close()
 
 	var wg sync.WaitGroup
-	wg.Add(1)
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		outboxPublisher.Start(outboxCtx)
+		outboxPublisher.Start(workerCtx)
+	}()
+	go func() {
+		defer wg.Done()
+		tradeConsumer.Start(workerCtx)
 	}()
 
 	// 6. Start gRPC Server
@@ -97,7 +104,7 @@ func main() {
 	orderv1.RegisterOrderServiceServer(grpcServer, grpcHandler)
 	reflection.Register(grpcServer) // Enable gRPC Server Reflection for Postman / gRPC tools
 
-	// 7. Graceful Shutdown Signal Trap (gRPC GracefulStop -> Outbox Worker Stop -> Cleanup)
+	// 7. Graceful Shutdown Signal Trap (gRPC GracefulStop -> Background Workers Stop -> Cleanup)
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -119,11 +126,11 @@ func main() {
 			grpcServer.Stop()
 		}
 
-		// Step B: Signal Outbox publisher worker to stop & wait for loop termination
-		appLogger.Info("Stopping Outbox worker goroutine...")
-		cancelOutbox()
+		// Step B: Signal workers to stop & wait for loop termination
+		appLogger.Info("Stopping background workers...")
+		cancelWorkers()
 		wg.Wait()
-		appLogger.Info("Outbox worker stopped cleanly")
+		appLogger.Info("Background workers stopped cleanly")
 	}()
 
 	appLogger.Info("Order gRPC server listening", zap.String("port", cfg.GRPCPort))

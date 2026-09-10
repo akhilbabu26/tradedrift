@@ -42,9 +42,10 @@ func poisonf(format string, args ...any) *PoisonError {
 // Format: JSON — consistent with all existing TradeDrift Kafka events.
 // The platform uses JSON-over-Kafka throughout (ME, Settlement, Market).
 type TradeSettledEvent struct {
+	EventID      string `json:"event_id"`      // wallet outbox UUID — ignored here, used by notification service
 	TradeID      string `json:"trade_id"`
-	BuyerID      string `json:"buyer_id"`
-	SellerID     string `json:"seller_id"`
+	BuyerID      string `json:"buyer_user_id"` // renamed from buyer_id in wallet outbox schema
+	SellerID     string `json:"seller_user_id"` // renamed from seller_id in wallet outbox schema
 	BuyOrderID   string `json:"buy_order_id"`
 	SellOrderID  string `json:"sell_order_id"`
 	MarketID     string `json:"market_id"`
@@ -58,6 +59,27 @@ type TradeSettledEvent struct {
 	Sequence   uint64 `json:"sequence"`
 	ExecutedAt string `json:"executed_at"` // RFC3339Nano — ME clock
 	SettledAt  string `json:"settled_at"`  // RFC3339Nano — Wallet clock
+}
+
+func (e *TradeSettledEvent) UnmarshalJSON(data []byte) error {
+	type Alias TradeSettledEvent
+	aux := &struct {
+		*Alias
+		AltBuyerID  string `json:"buyer_id"`
+		AltSellerID string `json:"seller_id"`
+	}{
+		Alias: (*Alias)(e),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if e.BuyerID == "" && aux.AltBuyerID != "" {
+		e.BuyerID = aux.AltBuyerID
+	}
+	if e.SellerID == "" && aux.AltSellerID != "" {
+		e.SellerID = aux.AltSellerID
+	}
+	return nil
 }
 
 // ── Consumer ─────────────────────────────────────────────────────────────────

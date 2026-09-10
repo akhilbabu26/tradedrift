@@ -18,6 +18,7 @@ COPY services/settlement/       ./services/settlement/
 COPY services/liquidity-engine/ ./services/liquidity-engine/
 COPY services/trade/            ./services/trade/
 COPY services/portfolio/        ./services/portfolio/
+COPY services/notification/     ./services/notification/
 
 # Build binary using Go module cache mount
 RUN --mount=type=cache,target=/go/pkg/mod \

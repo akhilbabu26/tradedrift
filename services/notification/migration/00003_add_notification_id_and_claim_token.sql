@@ -12,14 +12,17 @@ ALTER TABLE processed_events
     ADD COLUMN IF NOT EXISTS notification_id UUID;
 
 -- 3. Closed-enum CHECK constraints to enforce data integrity at the database layer.
+ALTER TABLE notification_outbox DROP CONSTRAINT IF EXISTS chk_outbox_status;
 ALTER TABLE notification_outbox
     ADD CONSTRAINT chk_outbox_status
     CHECK (status IN ('PENDING', 'PROCESSING', 'PROCESSED', 'FAILED'));
 
+ALTER TABLE notifications DROP CONSTRAINT IF EXISTS chk_notification_type;
 ALTER TABLE notifications
     ADD CONSTRAINT chk_notification_type
     CHECK (type IN ('INFO', 'TRADE_FILL', 'SYSTEM', 'ACCOUNT'));
 
+ALTER TABLE notifications DROP CONSTRAINT IF EXISTS chk_notification_reference_type;
 ALTER TABLE notifications
     ADD CONSTRAINT chk_notification_reference_type
     CHECK (reference_type IS NULL OR reference_type IN ('TRADE', 'ORDER', 'DEPOSIT'));

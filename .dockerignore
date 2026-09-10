@@ -1,0 +1,10 @@
+.git
+.gitignore
+.vscode
+*.exe
+*.test
+*.log
+tmp/
+bin/
+frontend/node_modules/
+frontend/dist/

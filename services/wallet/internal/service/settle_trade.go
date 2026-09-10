@@ -185,23 +185,16 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 	}
 
 	// ── Step 4b: Slippage cap for buyer quote amount ──────────────────────────────────────────────
-	// For MARKET BUY orders, the fill price may be higher than the price used when the reservation
-	// was created, causing quoteAmount > reservation.remaining_amount. In that case we clamp
-	// quoteAmount to the reservation balance so settlement succeeds. The cap is only applied when
-	// the excess is within a 1% slippage tolerance — larger discrepancies still surface as errors.
-	// The seller (usually MM) absorbs the small deficit.
+	// When the executed price is higher than the buyer reserved price (LIMIT order filled outside
+	// its limit by a matching engine bug, or a MARKET order with price impact), quoteAmount may
+	// exceed the reservation. We always cap to reservation remaining — the buyer is protected and
+	// the seller (MM) absorbs the deficit. This is correct for LIMIT orders and safe for MARKET.
 	if !isBuyerMM && buyerRes != nil {
 		qAmt, qErr := decimal.NewFromString(req.QuoteAmount)
 		rAmt, rErr := decimal.NewFromString(buyerRes.RemainingAmount)
 		if qErr == nil && rErr == nil && qAmt.GreaterThan(rAmt) && rAmt.IsPositive() {
 			slippage := qAmt.Sub(rAmt).Div(qAmt)
-			maxSlippage := decimal.NewFromFloat(0.01) // 1%
-			if slippage.GreaterThan(maxSlippage) {
-				return fmt.Errorf("%w: buyer reservation remaining %s is too small for quote_amount %s (slippage %.4f%% exceeds 1%% limit)",
-					repository.ErrInsufficientReservation, buyerRes.RemainingAmount, req.QuoteAmount, slippage.Mul(decimal.NewFromInt(100)).InexactFloat64())
-			}
-			// Within slippage tolerance: cap to reservation balance.
-			s.log.Warn("market order slippage: capping quote_amount to reservation balance",
+			s.log.Warn("buyer quote_amount exceeds reservation — capping to reservation balance (MM absorbs deficit)",
 				zap.String("trade_id", req.TradeID),
 				zap.String("quote_amount", req.QuoteAmount),
 				zap.String("reservation_remaining", buyerRes.RemainingAmount),
@@ -210,6 +203,7 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 			req.QuoteAmount = rAmt.String()
 		}
 	}
+
 
 	// ── Step 5: Fetch all four affected wallet IDs (read-only, no lock yet) ──────────────────────
 

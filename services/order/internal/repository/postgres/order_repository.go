@@ -256,3 +256,63 @@ func scanOrder(row pgx.Row) (*repository.Order, error) {
 	o.Status = repository.OrderStatus(statusStr)
 	return &o, nil
 }
+
+func (r *orderRepository) ApplyTradeFill(ctx context.Context, tradeID, buyOrderID, sellOrderID, fillQty string) error {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx for trade fill: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// Idempotency: record processed trade
+	var insertedTradeID string
+	err = tx.QueryRow(ctx,
+		`INSERT INTO processed_trades (trade_id) VALUES ($1)
+		 ON CONFLICT (trade_id) DO NOTHING
+		 RETURNING trade_id`,
+		tradeID,
+	).Scan(&insertedTradeID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Already processed this trade — idempotent no-op
+			return nil
+		}
+		return fmt.Errorf("record processed trade %s: %w", tradeID, err)
+	}
+
+	updateQuery := `
+		UPDATE orders
+		SET filled_quantity = LEAST(quantity, filled_quantity + $1::numeric),
+		    remaining_quantity = GREATEST(0, remaining_quantity - $1::numeric),
+		    status = CASE 
+		        WHEN remaining_quantity - $1::numeric <= 0 THEN 'FILLED' 
+		        ELSE 'PARTIALLY_FILLED' 
+		    END,
+		    updated_at = NOW()
+		WHERE id = $2 AND status IN ('OPEN', 'PARTIALLY_FILLED')`
+
+	if buyOrderID != "" {
+		if _, err := tx.Exec(ctx, updateQuery, fillQty, buyOrderID); err != nil {
+			return fmt.Errorf("update buy order %s: %w", buyOrderID, err)
+		}
+	}
+
+	if sellOrderID != "" {
+		if _, err := tx.Exec(ctx, updateQuery, fillQty, sellOrderID); err != nil {
+			return fmt.Errorf("update sell order %s: %w", sellOrderID, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit trade fill tx: %w", err)
+	}
+
+	r.logger.Info("Applied trade fill to orders",
+		zap.String("trade_id", tradeID),
+		zap.String("buy_order_id", buyOrderID),
+		zap.String("sell_order_id", sellOrderID),
+		zap.String("fill_qty", fillQty),
+	)
+	return nil
+}
+

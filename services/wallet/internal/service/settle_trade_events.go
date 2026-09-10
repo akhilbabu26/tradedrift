@@ -10,21 +10,25 @@ import (
 )
 
 // tradeSettledPayload is the JSON schema for the TradeSettled outbox event.
-// Consumed by Trade Service via the trades.settled.v1 Kafka topic.
+// Consumed by the Notification Service via the trades.settled.v1 Kafka topic.
+// Field names must match the notification service's TradeSettledEvent struct exactly.
 type tradeSettledPayload struct {
-	TradeID     string `json:"trade_id"`
-	BuyerID     string `json:"buyer_id"`
-	SellerID    string `json:"seller_id"`
-	BuyOrderID  string `json:"buy_order_id"`
-	SellOrderID string `json:"sell_order_id"`
-	MarketID    string `json:"market_id"`
-	BaseAsset   string `json:"base_asset"`
-	QuoteAsset  string `json:"quote_asset"`
-	Price       string `json:"price"`
-	Quantity    string `json:"quantity"`
-	Sequence    uint64 `json:"sequence"`
-	ExecutedAt  string `json:"executed_at"` // RFC3339Nano — ME clock
-	SettledAt   string `json:"settled_at"`  // RFC3339Nano — Wallet clock
+	EventID      string `json:"event_id"`       // outbox row UUID — deduplication key in notification service
+	TradeID      string `json:"trade_id"`
+	BuyerUserID  string `json:"buyer_user_id"`
+	SellerUserID string `json:"seller_user_id"`
+	BuyerID      string `json:"buyer_id,omitempty"`
+	SellerID     string `json:"seller_id,omitempty"`
+	BuyOrderID   string `json:"buy_order_id"`
+	SellOrderID  string `json:"sell_order_id"`
+	MarketID     string `json:"market_id"`
+	BaseAsset    string `json:"base_asset"`
+	QuoteAsset   string `json:"quote_asset"`
+	Price        string `json:"price"`
+	Quantity     string `json:"quantity"`
+	Sequence     uint64 `json:"sequence"`
+	ExecutedAt   string `json:"executed_at"` // RFC3339Nano — ME clock
+	SettledAt    string `json:"settled_at"`  // RFC3339Nano — Wallet clock
 }
 
 // portfolioUserTradePayload is the JSON schema for PortfolioUserTrade outbox events.
@@ -45,7 +49,7 @@ type portfolioUserTradePayload struct {
 	SettledAt  string `json:"settled_at"`
 }
 
-// buildTradeSettledEvent constructs the TradeSettled outbox event for the Trade Service.
+// buildTradeSettledEvent constructs the TradeSettled outbox event for the Notification Service.
 // Partitioned by BuyerUserID so that all events for a buyer land in the same Kafka partition.
 func buildTradeSettledEvent(req TradeSettlementRequest, settledAt time.Time) (*repository.OutboxEvent, error) {
 	id, err := platformuuid.New()
@@ -53,19 +57,22 @@ func buildTradeSettledEvent(req TradeSettlementRequest, settledAt time.Time) (*r
 		return nil, fmt.Errorf("failed to generate TradeSettled event ID: %w", err)
 	}
 	payload, err := json.Marshal(tradeSettledPayload{
-		TradeID:     req.TradeID,
-		BuyerID:     req.BuyerUserID,
-		SellerID:    req.SellerUserID,
-		BuyOrderID:  req.BuyOrderID,
-		SellOrderID: req.SellerOrderID,
-		MarketID:    req.MarketID,
-		BaseAsset:   req.BaseAsset,
-		QuoteAsset:  req.QuoteAsset,
-		Price:       req.Price,
-		Quantity:    req.Quantity,
-		Sequence:    req.Sequence,
-		ExecutedAt:  req.ExecutedAt,
-		SettledAt:   settledAt.Format(time.RFC3339Nano),
+		EventID:      id,                // outbox row UUID used by notification service for deduplication
+		TradeID:      req.TradeID,
+		BuyerUserID:  req.BuyerUserID,
+		SellerUserID: req.SellerUserID,
+		BuyerID:      req.BuyerUserID,
+		SellerID:     req.SellerUserID,
+		BuyOrderID:   req.BuyOrderID,
+		SellOrderID:  req.SellerOrderID,
+		MarketID:     req.MarketID,
+		BaseAsset:    req.BaseAsset,
+		QuoteAsset:   req.QuoteAsset,
+		Price:        req.Price,
+		Quantity:     req.Quantity,
+		Sequence:     req.Sequence,
+		ExecutedAt:   req.ExecutedAt,
+		SettledAt:    settledAt.Format(time.RFC3339Nano),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal TradeSettled payload: %w", err)
@@ -79,6 +86,7 @@ func buildTradeSettledEvent(req TradeSettlementRequest, settledAt time.Time) (*r
 		CreatedAt:    settledAt,
 	}, nil
 }
+
 
 // buildPortfolioEvent constructs a user-scoped PortfolioUserTrade outbox event.
 // role must be "BUY" (for the buyer leg) or "SELL" (for the seller leg).

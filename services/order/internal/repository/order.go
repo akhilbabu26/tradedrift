@@ -67,4 +67,7 @@ type OrderRepository interface {
 
 	// ListOrders returns a paginated list of orders matching filters.
 	ListOrders(ctx context.Context, userID, marketID, cursor string, side OrderSide, status OrderStatus, fromTime, toTime *time.Time, limit int32) ([]*Order, error)
+
+	// ApplyTradeFill idempotently updates buy and sell orders with fill quantity and status.
+	ApplyTradeFill(ctx context.Context, tradeID, buyOrderID, sellOrderID, fillQty string) error
 }

@@ -18,6 +18,7 @@ COPY services/settlement/       ./services/settlement/
 COPY services/liquidity-engine/ ./services/liquidity-engine/
 COPY services/trade/            ./services/trade/
 COPY services/portfolio/        ./services/portfolio/
+COPY services/notification/     ./services/notification/
 
 # Build using Go module cache mount to share downloads across parallel builds
 RUN --mount=type=cache,target=/go/pkg/mod \

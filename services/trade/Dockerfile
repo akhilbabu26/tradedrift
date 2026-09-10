@@ -18,6 +18,7 @@ COPY services/settlement/       ./services/settlement/
 COPY services/liquidity-engine/ ./services/liquidity-engine/
 COPY services/trade/            ./services/trade/
 COPY services/portfolio/        ./services/portfolio/
+COPY services/notification/     ./services/notification/
 
 # Build the trade binary
 RUN --mount=type=cache,target=/go/pkg/mod \

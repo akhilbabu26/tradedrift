@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -124,11 +125,14 @@ func (s *orderService) CreateOrder(ctx context.Context, p *CreateOrderParams) (*
 		// BUY Order: reserve quote asset (Price * Quantity)
 		reserveAsset = quoteAsset
 		totalQuote := priceDec.Mul(qty)
-		reserveAmount = totalQuote.String()
+		decimals := getAssetDecimals(quoteAsset)
+		// Round UP to quote asset precision to ensure reservation covers execution cost
+		reserveAmount = totalQuote.RoundCeil(decimals).StringFixed(decimals)
 	} else {
 		// SELL Order: reserve base asset (Quantity)
 		reserveAsset = baseAsset
-		reserveAmount = qty.String()
+		decimals := getAssetDecimals(baseAsset)
+		reserveAmount = qty.Truncate(decimals).StringFixed(decimals)
 	}
 
 	// 6. Generate UUIDv7 Order ID
@@ -321,3 +325,17 @@ func (s *orderService) ListOrders(ctx context.Context, userID, marketID, cursor 
 	}
 	return orders, nil
 }
+
+func getAssetDecimals(asset string) int32 {
+	switch strings.ToUpper(asset) {
+	case "USDT":
+		return 2
+	case "BTC", "ETH":
+		return 8
+	case "SOL":
+		return 9
+	default:
+		return 2
+	}
+}
+

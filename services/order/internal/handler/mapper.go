@@ -25,6 +25,14 @@ func mapServiceError(err error) error {
 		return status.Error(codes.FailedPrecondition, priceViolation.Error())
 	}
 
+	type grpcStatus interface {
+		GRPCStatus() *status.Status
+	}
+	var gs grpcStatus
+	if errors.As(err, &gs) {
+		return gs.GRPCStatus().Err()
+	}
+
 	switch {
 	case errors.Is(err, service.ErrInvalidSide),
 		errors.Is(err, service.ErrInvalidType),

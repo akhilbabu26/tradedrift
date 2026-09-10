@@ -24,6 +24,9 @@ func mapToGRPCError(err error) error {
 		return status.Error(codes.FailedPrecondition, "wallet is frozen")
 	case errors.Is(err, repository.ErrDuplicate):
 		return status.Error(codes.AlreadyExists, "already processed")
+	case errors.Is(err, repository.ErrInvalidReservation),
+		errors.Is(err, repository.ErrInvalidSettlement):
+		return status.Error(codes.InvalidArgument, err.Error())
 	default:
 		return status.Errorf(codes.Internal, "internal server error: %v", err)
 	}

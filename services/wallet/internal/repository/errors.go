@@ -43,5 +43,12 @@ var (
 	// existing reservation has reached a terminal status (RELEASED or CONSUMED) that
 	// cannot be reused — orderID represents one immutable reservation lifecycle.
 	ErrReservationConflict = errors.New("reservation conflict: order_id already has a reservation with different identity or terminal status")
+
+	// ErrInvalidDeposit is returned when DepositFunds inputs fail domain validation.
+	ErrInvalidDeposit = errors.New("invalid deposit parameters")
+
+	// ErrWalletNotFound is returned when a wallet for the requested user and asset does not exist.
+	ErrWalletNotFound = errors.New("wallet not found")
 )
+
 

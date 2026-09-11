@@ -16,7 +16,8 @@ func mapToGRPCError(err error) error {
 		return nil
 	}
 	switch {
-	case errors.Is(err, repository.ErrNotFound):
+	case errors.Is(err, repository.ErrNotFound),
+		errors.Is(err, repository.ErrWalletNotFound):
 		return status.Error(codes.NotFound, "resource not found")
 	case errors.Is(err, repository.ErrInsufficientBalance):
 		return status.Error(codes.FailedPrecondition, "insufficient balance")
@@ -25,8 +26,10 @@ func mapToGRPCError(err error) error {
 	case errors.Is(err, repository.ErrDuplicate):
 		return status.Error(codes.AlreadyExists, "already processed")
 	case errors.Is(err, repository.ErrInvalidReservation),
-		errors.Is(err, repository.ErrInvalidSettlement):
+		errors.Is(err, repository.ErrInvalidSettlement),
+		errors.Is(err, repository.ErrInvalidDeposit):
 		return status.Error(codes.InvalidArgument, err.Error())
+
 	default:
 		return status.Errorf(codes.Internal, "internal server error: %v", err)
 	}

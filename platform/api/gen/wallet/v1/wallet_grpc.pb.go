@@ -23,6 +23,7 @@ const (
 	WalletService_ReserveFunds_FullMethodName       = "/tradedrift.wallet.v1.WalletService/ReserveFunds"
 	WalletService_ReleaseFunds_FullMethodName       = "/tradedrift.wallet.v1.WalletService/ReleaseFunds"
 	WalletService_SettleTrade_FullMethodName        = "/tradedrift.wallet.v1.WalletService/SettleTrade"
+	WalletService_DepositFunds_FullMethodName       = "/tradedrift.wallet.v1.WalletService/DepositFunds"
 	WalletService_GetBalance_FullMethodName         = "/tradedrift.wallet.v1.WalletService/GetBalance"
 	WalletService_GetBalances_FullMethodName        = "/tradedrift.wallet.v1.WalletService/GetBalances"
 	WalletService_GetSupportedAssets_FullMethodName = "/tradedrift.wallet.v1.WalletService/GetSupportedAssets"
@@ -37,6 +38,7 @@ type WalletServiceClient interface {
 	ReserveFunds(ctx context.Context, in *ReserveFundsRequest, opts ...grpc.CallOption) (*ReserveFundsResponse, error)
 	ReleaseFunds(ctx context.Context, in *ReleaseFundsRequest, opts ...grpc.CallOption) (*ReleaseFundsResponse, error)
 	SettleTrade(ctx context.Context, in *SettleTradeRequest, opts ...grpc.CallOption) (*SettleTradeResponse, error)
+	DepositFunds(ctx context.Context, in *DepositFundsRequest, opts ...grpc.CallOption) (*DepositFundsResponse, error)
 	GetBalance(ctx context.Context, in *GetBalanceRequest, opts ...grpc.CallOption) (*GetBalanceResponse, error)
 	GetBalances(ctx context.Context, in *GetBalancesRequest, opts ...grpc.CallOption) (*GetBalancesResponse, error)
 	GetSupportedAssets(ctx context.Context, in *GetSupportedAssetsRequest, opts ...grpc.CallOption) (*GetSupportedAssetsResponse, error)
@@ -91,6 +93,16 @@ func (c *walletServiceClient) SettleTrade(ctx context.Context, in *SettleTradeRe
 	return out, nil
 }
 
+func (c *walletServiceClient) DepositFunds(ctx context.Context, in *DepositFundsRequest, opts ...grpc.CallOption) (*DepositFundsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DepositFundsResponse)
+	err := c.cc.Invoke(ctx, WalletService_DepositFunds_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *walletServiceClient) GetBalance(ctx context.Context, in *GetBalanceRequest, opts ...grpc.CallOption) (*GetBalanceResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetBalanceResponse)
@@ -139,6 +151,7 @@ type WalletServiceServer interface {
 	ReserveFunds(context.Context, *ReserveFundsRequest) (*ReserveFundsResponse, error)
 	ReleaseFunds(context.Context, *ReleaseFundsRequest) (*ReleaseFundsResponse, error)
 	SettleTrade(context.Context, *SettleTradeRequest) (*SettleTradeResponse, error)
+	DepositFunds(context.Context, *DepositFundsRequest) (*DepositFundsResponse, error)
 	GetBalance(context.Context, *GetBalanceRequest) (*GetBalanceResponse, error)
 	GetBalances(context.Context, *GetBalancesRequest) (*GetBalancesResponse, error)
 	GetSupportedAssets(context.Context, *GetSupportedAssetsRequest) (*GetSupportedAssetsResponse, error)
@@ -164,6 +177,9 @@ func (UnimplementedWalletServiceServer) ReleaseFunds(context.Context, *ReleaseFu
 }
 func (UnimplementedWalletServiceServer) SettleTrade(context.Context, *SettleTradeRequest) (*SettleTradeResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method SettleTrade not implemented")
+}
+func (UnimplementedWalletServiceServer) DepositFunds(context.Context, *DepositFundsRequest) (*DepositFundsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DepositFunds not implemented")
 }
 func (UnimplementedWalletServiceServer) GetBalance(context.Context, *GetBalanceRequest) (*GetBalanceResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetBalance not implemented")
@@ -270,6 +286,24 @@ func _WalletService_SettleTrade_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletService_DepositFunds_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DepositFundsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).DepositFunds(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_DepositFunds_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).DepositFunds(ctx, req.(*DepositFundsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _WalletService_GetBalance_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetBalanceRequest)
 	if err := dec(in); err != nil {
@@ -364,6 +398,10 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "SettleTrade",
 			Handler:    _WalletService_SettleTrade_Handler,
+		},
+		{
+			MethodName: "DepositFunds",
+			Handler:    _WalletService_DepositFunds_Handler,
 		},
 		{
 			MethodName: "GetBalance",

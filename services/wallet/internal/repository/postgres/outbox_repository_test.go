@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	platformuuid "tradedrift/platform/uuid"
+	platformpg "tradedrift/platform/postgres"
 	"tradedrift/services/wallet/internal/repository"
 	"tradedrift/services/wallet/internal/repository/postgres"
 )
@@ -32,6 +33,10 @@ func getWalletTestPool(t *testing.T) (*pgxpool.Pool, func()) {
 	if err := pool.Ping(ctx); err != nil {
 		t.Skipf("Skipping postgres integration tests: ping failed to %s: %v", dsn, err)
 		return nil, nil
+	}
+
+	if err := platformpg.RunMigrations(dsn, "../../../migration"); err != nil {
+		t.Logf("Migration run note: %v", err)
 	}
 
 	cleanup := func() {
@@ -274,7 +279,7 @@ func TestMarkPublished_OnlyProcessesClaimedRow(t *testing.T) {
 	}
 
 	// 2. MarkPublished must FAIL because row is in PENDING, not PROCESSING
-	err = repo.MarkPublished(ctx, eventID)
+	err = repo.MarkPublished(ctx, eventID, "dummy-token")
 	if err == nil {
 		t.Fatalf("expected MarkPublished to fail on PENDING event, but succeeded")
 	}
@@ -286,7 +291,7 @@ func TestMarkPublished_OnlyProcessesClaimedRow(t *testing.T) {
 	}
 
 	// 4. MarkPublished must now SUCCEED
-	err = repo.MarkPublished(ctx, eventID)
+	err = repo.MarkPublished(ctx, eventID, claimed[0].ClaimToken)
 	if err != nil {
 		t.Fatalf("expected MarkPublished to succeed on PROCESSING event, got %v", err)
 	}
@@ -301,7 +306,7 @@ func TestMarkPublished_OnlyProcessesClaimedRow(t *testing.T) {
 	}
 
 	// 6. Calling MarkPublished again must FAIL (already PROCESSED, not PROCESSING)
-	err = repo.MarkPublished(ctx, eventID)
+	err = repo.MarkPublished(ctx, eventID, claimed[0].ClaimToken)
 	if err == nil {
 		t.Fatalf("expected duplicate MarkPublished to fail, but succeeded")
 	}
@@ -340,7 +345,7 @@ func TestReleaseClaim_ResetsToPending(t *testing.T) {
 	}
 
 	// Release claims
-	if err := repo.ReleaseClaims(ctx, []string{eventID1, eventID2}); err != nil {
+	if err := repo.ReleaseClaims(ctx, []string{eventID1, eventID2}, claimed[0].ClaimToken); err != nil {
 		t.Fatalf("ReleaseClaims failed: %v", err)
 	}
 
@@ -362,4 +367,254 @@ func TestReleaseClaim_ResetsToPending(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkFailed_FencedByClaimToken(t *testing.T) {
+	pool, cleanup := getWalletTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := postgres.NewOutboxRepository(pool)
+
+	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
+
+	eventID, _ := platformuuid.New()
+	_, err := pool.Exec(ctx, `
+		INSERT INTO outbox (id, aggregate_id, event_type, payload, partition_key, status, created_at)
+		VALUES ($1, $1, 'TradeSettled', '{}', 'user-fenced-fail-test', 'PENDING', NOW())
+	`, eventID)
+	if err != nil {
+		t.Fatalf("failed to insert test event: %v", err)
+	}
+
+	claimed, err := repo.FetchPending(ctx, 1)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed to claim event: %v", err)
+	}
+	if claimed[0].ClaimToken == "" {
+		t.Fatalf("expected claim token on claimed event")
+	}
+	workerToken := claimed[0].ClaimToken
+
+	wrongToken, _ := platformuuid.New()
+	// 1. Worker with wrong token attempts MarkFailed -> must be fenced out
+	err = repo.MarkFailed(ctx, eventID, "unknown event", wrongToken)
+	if err == nil {
+		t.Fatalf("expected error when MarkFailed is called with mismatched token, got nil")
+	}
+
+	// Verify status is still PROCESSING and claim_token unchanged
+	var status string
+	var currentToken *string
+	err = pool.QueryRow(ctx, "SELECT status, claim_token FROM outbox WHERE id = $1", eventID).Scan(&status, &currentToken)
+	if err != nil {
+		t.Fatalf("failed to query row: %v", err)
+	}
+	if status != "PROCESSING" || currentToken == nil || *currentToken != workerToken {
+		t.Fatalf("expected status PROCESSING with workerToken, got status=%s, token=%v", status, currentToken)
+	}
+
+	// 2. Legitimate worker with correct token calls MarkFailed -> succeeds
+	err = repo.MarkFailed(ctx, eventID, "unknown event", workerToken)
+	if err != nil {
+		t.Fatalf("expected MarkFailed with matching token to succeed, got %v", err)
+	}
+
+	err = pool.QueryRow(ctx, "SELECT status, claim_token FROM outbox WHERE id = $1", eventID).Scan(&status, &currentToken)
+	if err != nil {
+		t.Fatalf("failed to query row: %v", err)
+	}
+	if status != "FAILED" || currentToken != nil {
+		t.Fatalf("expected status FAILED and nil claim_token, got status=%s, token=%v", status, currentToken)
+	}
+}
+
+func TestReleaseClaims_FencedByClaimToken(t *testing.T) {
+	pool, cleanup := getWalletTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := postgres.NewOutboxRepository(pool)
+
+	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
+
+	eventID, _ := platformuuid.New()
+	_, err := pool.Exec(ctx, `
+		INSERT INTO outbox (id, aggregate_id, event_type, payload, partition_key, status, created_at)
+		VALUES ($1, $1, 'TradeSettled', '{}', 'user-fenced-release-test', 'PENDING', NOW())
+	`, eventID)
+	if err != nil {
+		t.Fatalf("failed to insert test event: %v", err)
+	}
+
+	claimed, err := repo.FetchPending(ctx, 1)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed to claim event: %v", err)
+	}
+	if claimed[0].ClaimToken == "" {
+		t.Fatalf("expected claim token on claimed event")
+	}
+	workerToken := claimed[0].ClaimToken
+
+	// 1. Worker with wrong token attempts ReleaseClaims -> row must NOT be released
+	wrongToken2, _ := platformuuid.New()
+	err = repo.ReleaseClaims(ctx, []string{eventID}, wrongToken2)
+	if err != nil {
+		t.Fatalf("ReleaseClaims returned unexpected error: %v", err)
+	}
+
+	var status string
+	var currentToken *string
+	err = pool.QueryRow(ctx, "SELECT status, claim_token FROM outbox WHERE id = $1", eventID).Scan(&status, &currentToken)
+	if err != nil {
+		t.Fatalf("failed to query row: %v", err)
+	}
+	if status != "PROCESSING" || currentToken == nil || *currentToken != workerToken {
+		t.Fatalf("expected event to remain PROCESSING under workerToken, got status=%s, token=%v", status, currentToken)
+	}
+
+	// 2. Legitimate worker with correct token calls ReleaseClaims -> row is released to PENDING
+	err = repo.ReleaseClaims(ctx, []string{eventID}, workerToken)
+	if err != nil {
+		t.Fatalf("ReleaseClaims with valid token failed: %v", err)
+	}
+
+	err = pool.QueryRow(ctx, "SELECT status, claim_token FROM outbox WHERE id = $1", eventID).Scan(&status, &currentToken)
+	if err != nil {
+		t.Fatalf("failed to query row: %v", err)
+	}
+	if status != "PENDING" || currentToken != nil {
+		t.Fatalf("expected status PENDING and nil claim_token, got status=%s, token=%v", status, currentToken)
+	}
+}
+
+func TestMarkPublished_FencedByClaimToken(t *testing.T) {
+	pool, cleanup := getWalletTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	repo := postgres.NewOutboxRepository(pool)
+
+	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
+
+	eventID, _ := platformuuid.New()
+	_, err := pool.Exec(ctx, `
+		INSERT INTO outbox (id, aggregate_id, event_type, payload, partition_key, status, created_at)
+		VALUES ($1, $1, 'TradeSettled', '{}', 'user-fenced-pub-test', 'PENDING', NOW())
+	`, eventID)
+	if err != nil {
+		t.Fatalf("failed to insert test event: %v", err)
+	}
+
+	claimed, err := repo.FetchPending(ctx, 1)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("failed to claim event: %v", err)
+	}
+	workerToken := claimed[0].ClaimToken
+	wrongToken, _ := platformuuid.New()
+
+	// 1. Worker with wrong token attempts MarkPublished -> must be fenced out
+	err = repo.MarkPublished(ctx, eventID, wrongToken)
+	if err == nil {
+		t.Fatalf("expected error when MarkPublished is called with mismatched token, got nil")
+	}
+
+	// Verify status is still PROCESSING and claim_token unchanged
+	var status string
+	var currentToken *string
+	err = pool.QueryRow(ctx, "SELECT status, claim_token FROM outbox WHERE id = $1", eventID).Scan(&status, &currentToken)
+	if err != nil {
+		t.Fatalf("failed to query row: %v", err)
+	}
+	if status != "PROCESSING" || currentToken == nil || *currentToken != workerToken {
+		t.Fatalf("expected status PROCESSING with workerToken, got status=%s, token=%v", status, currentToken)
+	}
+
+	// 2. Worker with correct token calls MarkPublished -> succeeds
+	err = repo.MarkPublished(ctx, eventID, workerToken)
+	if err != nil {
+		t.Fatalf("expected MarkPublished with matching token to succeed, got %v", err)
+	}
+
+	err = pool.QueryRow(ctx, "SELECT status, claim_token FROM outbox WHERE id = $1", eventID).Scan(&status, &currentToken)
+	if err != nil {
+		t.Fatalf("failed to query row: %v", err)
+	}
+	if status != "PROCESSED" || currentToken != nil {
+		t.Fatalf("expected status PROCESSED and nil claim_token, got status=%s, token=%v", status, currentToken)
+	}
+}
+
+func TestOutboxRepository_ConfigurableLease(t *testing.T) {
+	pool, cleanup := getWalletTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	// Short lease: 50ms
+	repo := postgres.NewOutboxRepository(pool, 50*time.Millisecond)
+
+	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
+
+	eventID, _ := platformuuid.New()
+	_, err := pool.Exec(ctx, `
+		INSERT INTO outbox (id, aggregate_id, event_type, payload, partition_key, status, created_at)
+		VALUES ($1, $1, 'TradeSettled', '{}', 'user-lease-test', 'PENDING', NOW())
+	`, eventID)
+	if err != nil {
+		t.Fatalf("failed to insert test event: %v", err)
+	}
+
+	// Worker 1 claims
+	claimed1, err := repo.FetchPending(ctx, 1)
+	if err != nil || len(claimed1) != 1 {
+		t.Fatalf("failed to claim event: %v", err)
+	}
+	worker1Token := claimed1[0].ClaimToken
+
+	// Immediate fetch should find 0 events (it's within the 50ms lease)
+	claimedImmediate, err := repo.FetchPending(ctx, 1)
+	if err != nil {
+		t.Fatalf("unexpected error on immediate fetch: %v", err)
+	}
+	if len(claimedImmediate) != 0 {
+		t.Fatalf("expected 0 events within active lease, got %d", len(claimedImmediate))
+	}
+
+	// Wait 60ms for lease to expire
+	time.Sleep(60 * time.Millisecond)
+
+	// Worker 2 should reclaim the event due to expired lease
+	claimed2, err := repo.FetchPending(ctx, 1)
+	if err != nil || len(claimed2) != 1 {
+		t.Fatalf("expected Worker 2 to reclaim expired event, got %d events, err: %v", len(claimed2), err)
+	}
+	worker2Token := claimed2[0].ClaimToken
+	if worker2Token == worker1Token {
+		t.Fatalf("expected new claim token for reclaimed event")
+	}
+
+	// Stale Worker 1 attempts MarkPublished with old token -> fenced out!
+	err = repo.MarkPublished(ctx, eventID, worker1Token)
+	if err == nil {
+		t.Fatalf("expected stale Worker 1 to be fenced out, but MarkPublished succeeded")
+	}
+
+	// Worker 2 finishes with valid token -> succeeds
+	err = repo.MarkPublished(ctx, eventID, worker2Token)
+	if err != nil {
+		t.Fatalf("expected Worker 2 to succeed, got %v", err)
+	}
+}
+
 

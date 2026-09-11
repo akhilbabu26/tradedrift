@@ -85,7 +85,8 @@ TradeDrift/
 │   ├── portfolio/                       # Portfolio & PnL Projector — Kafka consumer
 │   ├── notification/                    # Real-Time Notification — WebSocket hub
 │   ├── trade/                           # Trade History & Public Feed — read-side projector
-│   └── admin/                           # Admin Control Plane — suspend/freeze/halt
+│   ├── admin/                           # Admin Control Plane — suspend/freeze/halt
+│   └── wallet-topup/                    # Wallet Top-Up Service — fiat micro-payments & daily limits
 │
 │   # Every service follows this internal layout.
 │   # kafka/ and client/ are OPTIONAL — only created when the service needs them.

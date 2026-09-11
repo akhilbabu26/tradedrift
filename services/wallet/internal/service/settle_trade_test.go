@@ -40,6 +40,8 @@ func getWalletServiceTestPool(t *testing.T) (*pgxpool.Pool, func()) {
 		return nil, nil
 	}
 
+	_, _ = pool.Exec(ctx, "DELETE FROM settled_trades")
+
 	cleanup := func() {
 		pool.Close()
 	}
@@ -59,6 +61,8 @@ func setupTestWalletsAndReservation(
 	buyerID, sellerID, buyOrderID, sellerOrderID string,
 	sellerReservedBTC, buyerReservedUSDT string,
 ) {
+	_, _ = pool.Exec(ctx, "DELETE FROM settled_trades")
+
 	// 1. Buyer BTC wallet
 	buyerBTCWalletID, _ := platformuuid.New()
 	_, err := pool.Exec(ctx, `

@@ -44,19 +44,48 @@ func (r *TransactionRepository) Create(ctx context.Context, t *repository.Wallet
 	return nil
 }
 
-func (r *TransactionRepository) ExistsByKey(ctx context.Context, referenceID, referenceType, asset string) (bool, error) {
+func (r *TransactionRepository) GetByWalletAndReference(ctx context.Context, walletID, referenceID, referenceType string) (*repository.WalletTransaction, error) {
+	query := `
+		SELECT id, wallet_id, reference_id, reference_type, transaction_type, asset, amount, created_at
+		FROM wallet_transactions
+		WHERE wallet_id = $1
+		  AND reference_id = $2
+		  AND reference_type = $3
+		LIMIT 1;
+	`
+	var t repository.WalletTransaction
+	err := r.db.QueryRow(ctx, query, walletID, referenceID, referenceType).Scan(
+		&t.ID,
+		&t.WalletID,
+		&t.ReferenceID,
+		&t.ReferenceType,
+		&t.TransactionType,
+		&t.Asset,
+		&t.Amount,
+		&t.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get transaction by wallet and reference: %w", err)
+	}
+	return &t, nil
+}
+
+func (r *TransactionRepository) ExistsByWalletAndReference(ctx context.Context, walletID, referenceID, referenceType string) (bool, error) {
 	query := `
 		SELECT EXISTS (
 			SELECT 1 FROM wallet_transactions
-			WHERE reference_id = $1
-			  AND reference_type = $2
-			  AND asset = $3
+			WHERE wallet_id = $1
+			  AND reference_id = $2
+			  AND reference_type = $3
 		)
 	`
 	var exists bool
-	err := r.db.QueryRow(ctx, query, referenceID, referenceType, asset).Scan(&exists)
+	err := r.db.QueryRow(ctx, query, walletID, referenceID, referenceType).Scan(&exists)
 	if err != nil {
-		return false, fmt.Errorf("failed to check transaction existence: %w", err)
+		return false, fmt.Errorf("failed to check transaction existence for wallet: %w", err)
 	}
 	return exists, nil
 }

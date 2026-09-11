@@ -29,9 +29,13 @@ type TransactionRepository interface {
 	Create(ctx context.Context, t *WalletTransaction) error
 
 
-	// ExistsByKey checks if a transaction row already exists for the given key.
-	// Used for upfront idempotency checks before touching balances.
-	ExistsByKey(ctx context.Context, referenceID, referenceType, asset string) (bool, error)
+	// GetByWalletAndReference retrieves a transaction row for a specific wallet and reference.
+	// Matches DB constraint UNIQUE(wallet_id, reference_id, reference_type).
+	GetByWalletAndReference(ctx context.Context, walletID, referenceID, referenceType string) (*WalletTransaction, error)
+
+	// ExistsByWalletAndReference checks if a transaction row already exists for a specific wallet.
+	// This matches the DB constraint UNIQUE(wallet_id, reference_id, reference_type).
+	ExistsByWalletAndReference(ctx context.Context, walletID, referenceID, referenceType string) (bool, error)
 
 	// CreateBatch inserts multiple transaction rows in a single statement.
 	// Used by SettleTrade to insert buyer + seller rows atomically.

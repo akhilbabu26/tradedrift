@@ -1,7 +1,7 @@
 // go.work is the configuration file for Go Workspace Mode (introduced in Go 1.18).
 // It is used to manage projects that contain multiple independent Go modules (folders with their own go.mod files).
 
-go 1.26.3
+go 1.25.0
 
 use (
 	./platform
@@ -10,10 +10,11 @@ use (
 	./services/liquidity-engine
 	./services/market
 	./services/matching-engine
+	./services/notification
 	./services/order
 	./services/portfolio
 	./services/settlement
 	./services/trade
 	./services/wallet
-	./services/notification
+	./services/wallet-topup
 )

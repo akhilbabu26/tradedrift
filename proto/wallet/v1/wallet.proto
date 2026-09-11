@@ -97,6 +97,24 @@ message GetSupportedAssetsRequest  {}
 message GetSupportedAssetsResponse { repeated AssetInfo assets = 1; }
 
 // ─────────────────────────────────────────────
+// DepositFunds
+// ─────────────────────────────────────────────
+
+message DepositFundsRequest {
+    string user_id        = 1;
+    string asset          = 2;
+    string amount         = 3;
+    string reference_id   = 4;
+    string reference_type = 5;
+}
+
+message DepositFundsResponse {
+    bool   success        = 1;
+    string transaction_id = 2;
+    string new_balance    = 3;
+}
+
+// ─────────────────────────────────────────────
 // Health
 // ─────────────────────────────────────────────
 
@@ -112,8 +130,9 @@ service WalletService {
     rpc ReserveFunds       (ReserveFundsRequest)        returns (ReserveFundsResponse);
     rpc ReleaseFunds       (ReleaseFundsRequest)        returns (ReleaseFundsResponse);
     rpc SettleTrade        (SettleTradeRequest)         returns (SettleTradeResponse);
+    rpc DepositFunds       (DepositFundsRequest)        returns (DepositFundsResponse);
     rpc GetBalance         (GetBalanceRequest)          returns (GetBalanceResponse);
     rpc GetBalances        (GetBalancesRequest)         returns (GetBalancesResponse);
     rpc GetSupportedAssets (GetSupportedAssetsRequest)  returns (GetSupportedAssetsResponse);
     rpc Health             (HealthRequest)              returns (HealthResponse);
-}
+}

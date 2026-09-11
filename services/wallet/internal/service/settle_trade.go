@@ -70,7 +70,7 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 		return fmt.Errorf("%w: sequence must be > 0", repository.ErrInvalidSettlement)
 	}
 	// Financial field validation: decimal parsing, positivity, scale, cross-field invariants.
-	if err := validateSettlementAmounts(req); err != nil {
+	if err := validateSettlementAmounts(ctx, s.assetRepo, req); err != nil {
 		return err
 	}
 
@@ -184,23 +184,15 @@ func (s *Service) SettleTrade(ctx context.Context, req TradeSettlementRequest) e
 		}
 	}
 
-	// ── Step 4b: Slippage cap for buyer quote amount ──────────────────────────────────────────────
-	// When the executed price is higher than the buyer reserved price (LIMIT order filled outside
-	// its limit by a matching engine bug, or a MARKET order with price impact), quoteAmount may
-	// exceed the reservation. We always cap to reservation remaining — the buyer is protected and
-	// the seller (MM) absorbs the deficit. This is correct for LIMIT orders and safe for MARKET.
+	// ── Step 4b: Assert buyer quote amount does not exceed remaining reservation ─────────────────
+	// The wallet ledger must never silently alter executed trade economics or shortchange the seller.
+	// If the matched trade quote exceeds the buyer's remaining reservation, settlement fails.
 	if !isBuyerMM && buyerRes != nil {
 		qAmt, qErr := decimal.NewFromString(req.QuoteAmount)
 		rAmt, rErr := decimal.NewFromString(buyerRes.RemainingAmount)
-		if qErr == nil && rErr == nil && qAmt.GreaterThan(rAmt) && rAmt.IsPositive() {
-			slippage := qAmt.Sub(rAmt).Div(qAmt)
-			s.log.Warn("buyer quote_amount exceeds reservation — capping to reservation balance (MM absorbs deficit)",
-				zap.String("trade_id", req.TradeID),
-				zap.String("quote_amount", req.QuoteAmount),
-				zap.String("reservation_remaining", buyerRes.RemainingAmount),
-				zap.String("slippage_pct", slippage.Mul(decimal.NewFromInt(100)).String()),
-			)
-			req.QuoteAmount = rAmt.String()
+		if qErr == nil && rErr == nil && qAmt.GreaterThan(rAmt) {
+			return fmt.Errorf("%w: quote_amount %s exceeds buyer remaining reservation %s",
+				repository.ErrInsufficientReservation, req.QuoteAmount, buyerRes.RemainingAmount)
 		}
 	}
 

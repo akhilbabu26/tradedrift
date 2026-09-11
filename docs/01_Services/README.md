@@ -28,3 +28,5 @@ This directory contains the detailed service design specifications for each micr
 * **[`10_Trade_Service`](10_Trade_Service/Trade_Service.md):** Query model tracking executed trades for charts, tickers, and public history endpoints.
 * **[`11_Admin_Service`](11_Admin_Service/Admin_Service.md):** Control-plane orchestrator for user suspension, wallet freezing, and market halting.
 * **[`12_Automated_Liquidity_Engine_Bot`](12_Automated_Liquidity_Engine_Bot/01_Overview.md):** Autonomous market-making bot providing initial orderbook laddering, counterparty depth, and micro-trade execution for cold-start bootstrapping.
+* **[`13_Wallet_TopUp_Service`](13_Wallet_TopUp_Service/Wallet_TopUp_Service.md):** Fiat micro-payment onboarding, daily top-up limit enforcement, HMAC webhook verification, and automated USDT ledger crediting.
+

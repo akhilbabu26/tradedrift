@@ -15,6 +15,7 @@ type OutboxEvent struct {
 	Payload      []byte // Raw JSON
 	PartitionKey string
 	CreatedAt    time.Time
+	ClaimToken   string
 }
 
 // OutboxRepository defines the persistence contract for the transactional outbox.
@@ -27,27 +28,26 @@ type OutboxRepository interface {
 	// is committed atomically with the balance changes.
 	Insert(ctx context.Context, event *OutboxEvent) error
 
-
 	// FetchPending returns up to `limit` PENDING outbox events ordered by created_at ASC,
 	// locked with FOR UPDATE SKIP LOCKED to prevent concurrent publisher instances
 	// from picking the same row.
 	FetchPending(ctx context.Context, limit int) ([]*OutboxEvent, error)
 
 	// MarkPublished sets status=PROCESSED and published_at=NOW() for the given event ID.
-	// Called after a successful Kafka write.
-	MarkPublished(ctx context.Context, id string) error
+	// Strictly verifies claim_token to fence against stale worker completions.
+	MarkPublished(ctx context.Context, id string, claimToken string) error
 
 	// MarkFailed sets status=FAILED and records the failure reason.
-	// Called when the Kafka write fails and the event should not be retried.
-	MarkFailed(ctx context.Context, id string, reason string) error
+	// Strictly verifies claim_token to fence against stale worker failures.
+	MarkFailed(ctx context.Context, id string, reason string, claimToken string) error
 
 	// ReleaseClaim releases an in-flight claimed event back to 'PENDING' status and clears claimed_at.
-	// Called when a publisher encounters a transient error and halts batch processing, ensuring
-	// the event is immediately retried on the next poll cycle without waiting for lease timeout.
-	ReleaseClaim(ctx context.Context, id string) error
+	// Strictly verifies claim_token to fence against stale worker releases.
+	ReleaseClaim(ctx context.Context, id string, claimToken string) error
 
 	// ReleaseClaims releases multiple in-flight claimed events back to 'PENDING' status and clears claimed_at.
-	ReleaseClaims(ctx context.Context, ids []string) error
+	// Strictly verifies claim_token to fence against stale worker releases.
+	ReleaseClaims(ctx context.Context, ids []string, claimToken string) error
 }
 
 

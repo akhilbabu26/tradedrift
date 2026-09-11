@@ -27,6 +27,8 @@ This directory is organized into the following modular design documents:
 * **[`08_Admin_API.md`](08_Admin_API.md):** User suspension, wallet freeze, trading halts, and resuming controls.
 * **[`09_WebSocket_API.md`](09_WebSocket_API.md):** Real-time subscription controls, socket handshakes, and public/private message frames.
 * **[`10_Health_API.md`](10_Health_API.md):** Probes for liveness, readiness, and components checkups.
+* **[`11_Wallet_TopUp_API.md`](11_Wallet_TopUp_API.md):** Fiat micro-payment top-ups, daily usage metrics, and payment provider webhook ingestion.
+
 
 ---
 

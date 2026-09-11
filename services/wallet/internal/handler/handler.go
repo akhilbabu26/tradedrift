@@ -104,6 +104,22 @@ func (h *GRPCHandler) SettleTrade(ctx context.Context, req *walletv1.SettleTrade
 	return &walletv1.SettleTradeResponse{Success: true}, nil
 }
 
+func (h *GRPCHandler) DepositFunds(ctx context.Context, req *walletv1.DepositFundsRequest) (*walletv1.DepositFundsResponse, error) {
+	if req.UserId == "" || req.Asset == "" || req.Amount == "" || req.ReferenceId == "" || req.ReferenceType == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id, asset, amount, reference_id and reference_type are required")
+	}
+	res, err := h.svc.DepositFunds(ctx, req.UserId, req.Asset, req.Amount, req.ReferenceId, req.ReferenceType)
+	if err != nil {
+		return nil, mapToGRPCError(err)
+	}
+	return &walletv1.DepositFundsResponse{
+		Success:       true,
+		TransactionId: res.TransactionID,
+		NewBalance:    res.NewBalance,
+	}, nil
+}
+
+
 func (h *GRPCHandler) GetBalance(ctx context.Context, req *walletv1.GetBalanceRequest) (*walletv1.GetBalanceResponse, error) {
 	if req.UserId == "" || req.Asset == "" {
 		return nil, status.Error(codes.InvalidArgument, "user_id and asset are required")

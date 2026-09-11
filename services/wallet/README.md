@@ -18,6 +18,10 @@ No other service can directly modify a user's balance. If Order Service wants to
 - Settles trades by crediting buyer and debiting seller (called by Settlement Service)
 - Exposes balance views to the API Gateway (for the user dashboard)
 - Publishes `TradeSettled` and `PortfolioUserTrade` events to Kafka via the Transactional Outbox
+- Credits fiat top-ups via `DepositFunds` with dual-layer idempotency (called by Wallet Top-Up Service)
+
+> 📘 **Operational Flow Guide**: See the comprehensive [docs/ENTIRE_FLOW.md](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/wallet/docs/ENTIRE_FLOW.md) guide with ASCII flowcharts, 28 detailed flows, state transitions, and outbox fencing mechanics.  
+> ⚠️ **Problems & Solutions Post-Mortem**: See the in-depth [docs/PROBLEMS_FACED.md](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/wallet/docs/PROBLEMS_FACED.md) covering the 22 major concurrency, deadlock, and idempotency challenges solved.
 
 ---
 
@@ -291,6 +295,7 @@ services/wallet/
 │   ├── service/                      ← Business logic (one file per operation)
 │   │   ├── service.go                ← Service struct + constructor
 │   │   ├── initialize_wallet.go      ← InitializeWallet RPC
+│   │   ├── deposit_funds.go          ← DepositFunds RPC (Top-Up & External Credits)
 │   │   ├── reserve_funds.go          ← ReserveFunds RPC
 │   │   ├── release_funds.go          ← ReleaseFunds RPC
 │   │   ├── settle_trade.go           ← SettleTrade RPC
@@ -301,7 +306,65 @@ services/wallet/
 └── migration/
     ├── 00001_create_wallet_core_tables.sql
     ├── 00002_create_wallet_transfer_tables.sql
+    ├── 00009_allow_topup_reference_type.sql ← Allows 'TOPUP' for wallet-topup service
+    ├── 00010_outbox_claim_token.sql
     └── README.md                     ← Migration and table documentation
+```
+
+---
+
+## Top-Up Service Integration (`DepositFunds`)
+
+When we built the **Wallet Top-Up Microservice** (`wallet-topup`), we integrated it directly into Core Wallet Service via the `DepositFunds` gRPC interface rather than allowing direct database mutations.
+
+### Key Additions for Top-Up Support:
+1. **Migration `00009_allow_topup_reference_type.sql`**:
+   Updated `wallet_transactions_reference_type_check` to include `'TOPUP'`. This gives top-up transactions distinct auditability separate from generic `'DEPOSIT'` or `'SETTLEMENT'` ledger entries.
+2. **Repository Constant `RefTopUp`**:
+   In [internal/repository/constants.go](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/wallet/internal/repository/constants.go): `RefTopUp = "TOPUP"`.
+3. **Dual-Layer Idempotency in `DepositFunds`**:
+   In [internal/service/deposit_funds.go](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/wallet/internal/service/deposit_funds.go):
+   - **Layer 1 (Fast-path)**: Queries `GetByWalletAndReference(wallet_id, reference_id, "TOPUP")`. If the record already exists, returns the existing transaction and balance immediately.
+   - **Layer 2 (PostgreSQL Invariant)**: In concurrent race conditions, the composite unique constraint `uq_wallet_transactions_key UNIQUE (wallet_id, reference_id, reference_type)` catches duplicates at the database engine level (error `23505`), rolling back the transaction safely without double-crediting balances.
+
+```text
+               TOP-UP RECONCILER TO WALLET SERVICE FLOW
+
+        Wallet Top-Up Service                Core Wallet Service
+                 │                                    │
+                 │ gRPC DepositFunds()                │
+                 │ ref_id = topup_id                  │
+                 │ ref_type = "TOPUP"                 │
+                 ├───────────────────────────────────>│
+                 │                                    ▼
+                 │                    ┌───────────────────────────────┐
+                 │                    │ Step 1: Input & Asset Validate│
+                 │                    │ Verify "USDT" & 10 Decimals   │
+                 │                    └───────────────┬───────────────┘
+                 │                                    │
+                 │                                    ▼
+                 │                    ┌───────────────────────────────┐
+                 │                    │ Step 2: Layer 1 Fast Check    │
+                 │                    │ SELECT FROM wallet_txns       │
+                 │                    │ WHERE wallet, ref_id, "TOPUP" │
+                 │                    └───────────────┬───────────────┘
+                 │                                    │
+                 │                     ┌──────────────┴──────────────┐
+                 │                     │                             │
+                 │                 Found (Old)                   Not Found
+                 │                     │                             │
+                 │                     ▼                             ▼
+                 │              Return Existing        ┌───────────────────────────┐
+                 │              Balance Receipt        │ BEGIN DB TRANSACTION      │
+                 │                     │               │ 1. Lock wallet row        │
+                 │                     │               │ 2. Increment available    │
+                 │                     │               │ 3. Increment total        │
+                 │                     │               │ 4. Insert wallet_txns row │
+                 │                     │               │ COMMIT DB TRANSACTION     │
+                 │                     │               └─────────────┬─────────────┘
+                 │                     │                             │
+                 │<────────────────────┴─────────────────────────────┘
+                 │ 200 OK (Idempotent Success)
 ```
 
 ---
@@ -316,6 +379,7 @@ These must hold true at all times. The database enforces them with CHECK constra
 4. A reservation is released or consumed **exactly once** — enforced by status guard in `ReleaseFunds`
 5. A given `trade_id` is settled **exactly once** — enforced by the unique constraint on `wallet_transactions`
 6. A given `(user_id, asset)` receives `INITIAL_ALLOCATION` **exactly once** — enforced by the unique constraint
+7. A given top-up order `(wallet_id, topup_id, 'TOPUP')` is credited **exactly once** — enforced by `uq_wallet_transactions_key` constraint
 
 ---
 

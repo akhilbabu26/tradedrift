@@ -23,9 +23,9 @@ const maxDecimalScale = 10
 //   - Scientific notation is rejected (e.g. "5e4", "1E10") — plain decimal notation only
 //   - Decimal scale must be <= maxDecimalScale (matches DECIMAL(30,10) column)
 //   - BaseAmount == Quantity (quantity of base asset the buyer receives)
-//   - QuoteAmount == Price × Quantity (within 1e-10 rounding tolerance)
+//   - QuoteAmount == Price × Quantity (within quote asset precision rounding tolerance)
 //   - MarketID == BaseAsset + "-" + QuoteAsset (platform market ID convention)
-func validateSettlementAmounts(req TradeSettlementRequest) error {
+func validateSettlementAmounts(ctx context.Context, assetRepo repository.AssetRepository, req TradeSettlementRequest) error {
 	parse := func(field, value string) (decimal.Decimal, error) {
 		d, err := decimal.NewFromString(value)
 		if err != nil {
@@ -73,18 +73,23 @@ func validateSettlementAmounts(req TradeSettlementRequest) error {
 		return fmt.Errorf("%w: base_amount %s must equal quantity %s", repository.ErrInvalidSettlement, req.BaseAmount, req.Quantity)
 	}
 
-	// QuoteAmount must be within 1.0 of Price × Quantity.
+	// QuoteAmount must be within precision tolerance of Price × Quantity.
 	// After floor-rounding to the quote asset's precision (e.g. USDT=2dp), the computed
-	// quoteAmount may differ from exact price×qty by up to one unit in the last declared
-	// decimal place (e.g. up to 0.01 USDT). A tolerance of 1.0 covers all legitimate
-	// rounding cases while still catching any attempt to manipulate the quote amount
-	// by a meaningful sum (which would differ by far more than 1 unit).
+	// quoteAmount may differ from exact price×qty by at most one unit in the least significant
+	// decimal place (e.g. 0.01 for USDT).
 	expectedQuote := price.Mul(quantity)
-	tolerance := decimal.NewFromInt(1)
+	quoteAsset, err := assetRepo.GetByCode(ctx, req.QuoteAsset)
+	if err != nil {
+		return fmt.Errorf("failed to lookup quote asset %s: %w", req.QuoteAsset, err)
+	}
+	if quoteAsset == nil {
+		return fmt.Errorf("%w: quote asset %s is not supported", repository.ErrInvalidSettlement, req.QuoteAsset)
+	}
+	tolerance := decimal.New(1, -int32(quoteAsset.Decimals))
 	diff := quoteAmount.Sub(expectedQuote).Abs()
 	if diff.GreaterThan(tolerance) {
-		return fmt.Errorf("%w: quote_amount %s does not match price(%s) × quantity(%s) = %s (diff %s exceeds tolerance 1.0)",
-			repository.ErrInvalidSettlement, req.QuoteAmount, req.Price, req.Quantity, expectedQuote.String(), diff.String())
+		return fmt.Errorf("%w: quote_amount %s does not match price(%s) × quantity(%s) = %s (diff %s exceeds tolerance %s)",
+			repository.ErrInvalidSettlement, req.QuoteAmount, req.Price, req.Quantity, expectedQuote.String(), diff.String(), tolerance.String())
 	}
 
 	// MarketID must be BaseAsset + "-" + QuoteAsset.

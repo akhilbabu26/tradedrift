@@ -20,11 +20,21 @@ func (s *Service) InitializeWallet(ctx context.Context, userID string) error {
 		return fmt.Errorf("failed to load supported assets: %w", err)
 	}
 
+	// 2. Execute all wallet creations inside a single atomic transaction
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to begin wallet initialization transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	walletRepo := s.walletRepo.WithTx(tx)
+	txnRepo := s.txnRepo.WithTx(tx)
+
 	now := time.Now().UTC()
 
 	for _, asset := range assets {
-		// 2. Check if wallet already exists for this (user, asset) pair
-		existing, err := s.walletRepo.GetByUserAndAsset(ctx, userID, asset.AssetCode)
+		// 3. Check if wallet already exists for this (user, asset) pair
+		existing, err := walletRepo.GetByUserAndAsset(ctx, userID, asset.AssetCode)
 		if err != nil {
 			return fmt.Errorf("failed to check existing wallet for asset %s: %w", asset.AssetCode, err)
 		}
@@ -37,9 +47,9 @@ func (s *Service) InitializeWallet(ctx context.Context, userID string) error {
 			continue
 		}
 
-		// 3. Create the wallet row
+		// 4. Create the wallet row
 		walletID, err := platformuuid.New()
-		if err != nil{
+		if err != nil {
 			return fmt.Errorf("failed to generate wallet ID: %w", err)
 		}
 		wallet := &repository.Wallet{
@@ -53,11 +63,11 @@ func (s *Service) InitializeWallet(ctx context.Context, userID string) error {
 			TotalBalance:     asset.SeedAmount,
 		}
 
-		if err := s.walletRepo.Create(ctx, wallet); err != nil {
+		if err := walletRepo.Create(ctx, wallet); err != nil {
 			return fmt.Errorf("failed to create wallet for asset %s: %w", asset.AssetCode, err)
 		}
 
-		// 4. If seed amount > 0, write an INITIAL_ALLOCATION transaction (ledger entry)
+		// 5. If seed amount > 0, write an INITIAL_ALLOCATION transaction (ledger entry)
 		if asset.SeedAmount != "0" && asset.SeedAmount != "0.0000000000" {
 			txnID, err := platformuuid.New()
 			if err != nil {
@@ -73,7 +83,7 @@ func (s *Service) InitializeWallet(ctx context.Context, userID string) error {
 				Amount:          asset.SeedAmount,
 				CreatedAt:       now,
 			}
-			if err := s.txnRepo.Create(ctx, txn); err != nil {
+			if err := txnRepo.Create(ctx, txn); err != nil {
 				return fmt.Errorf("failed to insert INITIAL_ALLOCATION transaction for asset %s: %w", asset.AssetCode, err)
 			}
 		}
@@ -83,6 +93,10 @@ func (s *Service) InitializeWallet(ctx context.Context, userID string) error {
 			zap.String("asset", asset.AssetCode),
 			zap.String("seedAmount", asset.SeedAmount),
 		)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit wallet initialization transaction: %w", err)
 	}
 
 	return nil

@@ -323,6 +323,86 @@ ALTER TABLE wallets
 
 ---
 
+## Migration 00009 — Allow TOPUP Reference Type
+
+This migration was introduced specifically to support the **Wallet Top-Up Service** (`wallet-topup`).
+
+### Constraint: `wallet_transactions_reference_type_check`
+
+```sql
+ALTER TABLE wallet_transactions DROP CONSTRAINT IF EXISTS wallet_transactions_reference_type_check;
+ALTER TABLE wallet_transactions ADD CONSTRAINT wallet_transactions_reference_type_check
+    CHECK (reference_type IN (
+        'INITIAL_ALLOCATION', 'RESERVATION', 'RELEASE',
+        'SETTLEMENT', 'DEPOSIT', 'TOPUP', 'WITHDRAWAL'
+    ));
+```
+
+### Why was this change required?
+1. **First-Class Top-Up Auditing**:
+   When the `wallet-topup` microservice was built to handle fiat-to-simulated-USDT deposits, attributing balance changes to a generic `'DEPOSIT'` obscured whether funds originated from internal administrative deposits, external crypto bridges, or the UPI/Card fiat top-up flow.
+2. **Dedicated Financial Partitioning**:
+   Adding `'TOPUP'` enables distinct financial reporting, daily reconciliation audits, and automated accounting filters without polluting trading ledger logs.
+3. **Idempotency Anchor**:
+   Works directly with the composite unique constraint:
+   ```sql
+   UNIQUE (wallet_id, reference_id, reference_type)
+   ```
+   When `wallet-topup`'s background reconciler calls `DepositFunds`, it sets:
+   - `reference_id = <topup_order_uuid>`
+   - `reference_type = 'TOPUP'`
+   
+   If the reconciler worker retries due to network jitter, the database strictly detects the duplicate `(wallet_id, order_id, 'TOPUP')` record and prevents double-crediting balances.
+
+```text
+               TOP-UP LEDGER INTEGRATION IN WALLET SERVICE
+
+          Wallet Top-Up Service                Core Wallet Service
+                    │                                   │
+                    │ gRPC DepositFunds()               │
+                    │ ref_id = topup_order_id           │
+                    │ ref_type = "TOPUP"                │
+                    ├──────────────────────────────────>│
+                    │                                   ▼
+                    │                   ┌───────────────────────────────┐
+                    │                   │ Check reference_type enum:    │
+                    │                   │ 'TOPUP' allowed via Mig 00009 │
+                    │                   └───────────────┬───────────────┘
+                    │                                   │
+                    │                                   ▼
+                    │                   ┌───────────────────────────────┐
+                    │                   │ UNIQUE (wallet_id,            │
+                    │                   │         reference_id,         │
+                    │                   │         reference_type)       │
+                    │                   └───────────────┬───────────────┘
+                    │                                   │
+                    │                     ┌─────────────┴─────────────┐
+                    │                     │                           │
+                    │                Key is New                  Key Exists
+                    │                     │                           │
+                    │                     ▼                           ▼
+                    │             Insert Ledger Row           Return Existing
+                    │             Credit Available Balance    Ledger Record
+                    │                     │                           │
+                    │<────────────────────┴───────────────────────────┘
+                    │ 200 OK (Idempotent Receipt)
+```
+
+---
+
+## Migration 00010 — Outbox Claim Token for Publisher Fencing
+
+Adds a `claim_token UUID` column to the `outbox` table.
+
+```sql
+ALTER TABLE outbox ADD COLUMN IF NOT EXISTS claim_token UUID;
+```
+
+### Why was this change required?
+Protects background Kafka event publisher workers against split-brain double-publishing. Just like the `wallet-topup` reconciler worker, if a publisher worker experiences a long GC pause, its lease expires, and a second worker takes over. The `claim_token` ensures the stale worker is fenced out when marking the outbox event as `PUBLISHED`.
+
+---
+
 ## Migration Summary
 
 | File | What it contains | Purpose |
@@ -335,6 +415,8 @@ ALTER TABLE wallets
 | `00006` | Outbox deterministic ordering index | Guarantees deterministic FIFO claiming order `(created_at ASC, id ASC)` |
 | `00007` | Settled trades unique sequence constraint | Enforces `UNIQUE (market_id, sequence)` on `settled_trades` |
 | `00008` | Wallet total balance CHECK constraint | Enforces `total_balance = available_balance + reserved_balance` |
+| `00009` | Allow `TOPUP` reference type | Integrates `wallet-topup` microservice with dedicated ledger auditing |
+| `00010` | Outbox claim token UUID | Tokenized worker lease fencing for outbox event publishers |
 
 ---
 

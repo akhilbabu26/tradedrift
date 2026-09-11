@@ -126,7 +126,8 @@ func (p *OutboxPublisher) publishBatch(ctx context.Context) (int, error) {
 			for _, ev := range events[i:] {
 				remainingIDs = append(remainingIDs, ev.ID)
 			}
-			if relErr := p.outbox.ReleaseClaims(ctx, remainingIDs); relErr != nil {
+			relErr := p.outbox.ReleaseClaims(ctx, remainingIDs, events[i].ClaimToken)
+			if relErr != nil {
 				p.log.Error("failed to release claims for uncompleted outbox events",
 					zap.Int("count", len(remainingIDs)),
 					zap.Error(relErr),
@@ -140,7 +141,9 @@ func (p *OutboxPublisher) publishBatch(ctx context.Context) (int, error) {
 }
 
 // publishOne writes one outbox event to Kafka, retrying up to maxRetries times.
-// On persistent failure the event is MarkFailed and an alert is logged.
+// Transient network/Kafka write failures return an error causing the caller to release
+// claims back to PENDING for in-order retry. Non-recoverable failures (e.g. unknown event type)
+// are marked as FAILED with claim token fencing to avoid blocking the queue.
 func (p *OutboxPublisher) publishOne(ctx context.Context, event *repository.OutboxEvent) error {
 	var targetTopic string
 	switch event.EventType {
@@ -153,7 +156,10 @@ func (p *OutboxPublisher) publishOne(ctx context.Context, event *repository.Outb
 			zap.String("outbox_id", event.ID),
 			zap.String("event_type", event.EventType),
 		)
-		p.outbox.MarkFailed(ctx, event.ID, "unknown event type: "+event.EventType)
+		markErr := p.outbox.MarkFailed(ctx, event.ID, "unknown event type: "+event.EventType, event.ClaimToken)
+		if markErr != nil {
+			p.log.Error("failed to mark unknown event failed", zap.Error(markErr))
+		}
 		return nil
 	}
 
@@ -174,12 +180,13 @@ func (p *OutboxPublisher) publishOne(ctx context.Context, event *repository.Outb
 		cancel()
 
 		if lastErr == nil {
-			// Successfully published — mark as PROCESSED.
-			if err := p.outbox.MarkPublished(ctx, event.ID); err != nil {
+			// Successfully published — mark as PROCESSED with fencing token.
+			markErr := p.outbox.MarkPublished(ctx, event.ID, event.ClaimToken)
+			if markErr != nil {
 				p.log.Error("failed to mark outbox event published — will redeliver safely",
 					zap.String("outbox_id", event.ID),
 					zap.String("trade_id", event.AggregateID),
-					zap.Error(err),
+					zap.Error(markErr),
 				)
 			}
 			p.log.Debug("outbox event published",

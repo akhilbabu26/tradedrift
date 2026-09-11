@@ -913,6 +913,142 @@ func (x *GetSupportedAssetsResponse) GetAssets() []*AssetInfo {
 	return nil
 }
 
+type DepositFundsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Asset         string                 `protobuf:"bytes,2,opt,name=asset,proto3" json:"asset,omitempty"`
+	Amount        string                 `protobuf:"bytes,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	ReferenceId   string                 `protobuf:"bytes,4,opt,name=reference_id,json=referenceId,proto3" json:"reference_id,omitempty"`
+	ReferenceType string                 `protobuf:"bytes,5,opt,name=reference_type,json=referenceType,proto3" json:"reference_type,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DepositFundsRequest) Reset() {
+	*x = DepositFundsRequest{}
+	mi := &file_wallet_v1_wallet_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DepositFundsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DepositFundsRequest) ProtoMessage() {}
+
+func (x *DepositFundsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_v1_wallet_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DepositFundsRequest.ProtoReflect.Descriptor instead.
+func (*DepositFundsRequest) Descriptor() ([]byte, []int) {
+	return file_wallet_v1_wallet_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *DepositFundsRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *DepositFundsRequest) GetAsset() string {
+	if x != nil {
+		return x.Asset
+	}
+	return ""
+}
+
+func (x *DepositFundsRequest) GetAmount() string {
+	if x != nil {
+		return x.Amount
+	}
+	return ""
+}
+
+func (x *DepositFundsRequest) GetReferenceId() string {
+	if x != nil {
+		return x.ReferenceId
+	}
+	return ""
+}
+
+func (x *DepositFundsRequest) GetReferenceType() string {
+	if x != nil {
+		return x.ReferenceType
+	}
+	return ""
+}
+
+type DepositFundsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	TransactionId string                 `protobuf:"bytes,2,opt,name=transaction_id,json=transactionId,proto3" json:"transaction_id,omitempty"`
+	NewBalance    string                 `protobuf:"bytes,3,opt,name=new_balance,json=newBalance,proto3" json:"new_balance,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DepositFundsResponse) Reset() {
+	*x = DepositFundsResponse{}
+	mi := &file_wallet_v1_wallet_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DepositFundsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DepositFundsResponse) ProtoMessage() {}
+
+func (x *DepositFundsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_v1_wallet_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DepositFundsResponse.ProtoReflect.Descriptor instead.
+func (*DepositFundsResponse) Descriptor() ([]byte, []int) {
+	return file_wallet_v1_wallet_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *DepositFundsResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *DepositFundsResponse) GetTransactionId() string {
+	if x != nil {
+		return x.TransactionId
+	}
+	return ""
+}
+
+func (x *DepositFundsResponse) GetNewBalance() string {
+	if x != nil {
+		return x.NewBalance
+	}
+	return ""
+}
+
 type HealthRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -921,7 +1057,7 @@ type HealthRequest struct {
 
 func (x *HealthRequest) Reset() {
 	*x = HealthRequest{}
-	mi := &file_wallet_v1_wallet_proto_msgTypes[16]
+	mi := &file_wallet_v1_wallet_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -933,7 +1069,7 @@ func (x *HealthRequest) String() string {
 func (*HealthRequest) ProtoMessage() {}
 
 func (x *HealthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_v1_wallet_proto_msgTypes[16]
+	mi := &file_wallet_v1_wallet_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -946,7 +1082,7 @@ func (x *HealthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthRequest.ProtoReflect.Descriptor instead.
 func (*HealthRequest) Descriptor() ([]byte, []int) {
-	return file_wallet_v1_wallet_proto_rawDescGZIP(), []int{16}
+	return file_wallet_v1_wallet_proto_rawDescGZIP(), []int{18}
 }
 
 type HealthResponse struct {
@@ -958,7 +1094,7 @@ type HealthResponse struct {
 
 func (x *HealthResponse) Reset() {
 	*x = HealthResponse{}
-	mi := &file_wallet_v1_wallet_proto_msgTypes[17]
+	mi := &file_wallet_v1_wallet_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -970,7 +1106,7 @@ func (x *HealthResponse) String() string {
 func (*HealthResponse) ProtoMessage() {}
 
 func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_wallet_v1_wallet_proto_msgTypes[17]
+	mi := &file_wallet_v1_wallet_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -983,7 +1119,7 @@ func (x *HealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
 func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_wallet_v1_wallet_proto_rawDescGZIP(), []int{17}
+	return file_wallet_v1_wallet_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *HealthResponse) GetOk() bool {
@@ -1061,15 +1197,27 @@ const file_wallet_v1_wallet_proto_rawDesc = "" +
 	"\bbalances\x18\x01 \x03(\v2\".tradedrift.wallet.v1.AssetBalanceR\bbalances\"\x1b\n" +
 	"\x19GetSupportedAssetsRequest\"U\n" +
 	"\x1aGetSupportedAssetsResponse\x127\n" +
-	"\x06assets\x18\x01 \x03(\v2\x1f.tradedrift.wallet.v1.AssetInfoR\x06assets\"\x0f\n" +
+	"\x06assets\x18\x01 \x03(\v2\x1f.tradedrift.wallet.v1.AssetInfoR\x06assets\"\xa6\x01\n" +
+	"\x13DepositFundsRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x14\n" +
+	"\x05asset\x18\x02 \x01(\tR\x05asset\x12\x16\n" +
+	"\x06amount\x18\x03 \x01(\tR\x06amount\x12!\n" +
+	"\freference_id\x18\x04 \x01(\tR\vreferenceId\x12%\n" +
+	"\x0ereference_type\x18\x05 \x01(\tR\rreferenceType\"x\n" +
+	"\x14DepositFundsResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12%\n" +
+	"\x0etransaction_id\x18\x02 \x01(\tR\rtransactionId\x12\x1f\n" +
+	"\vnew_balance\x18\x03 \x01(\tR\n" +
+	"newBalance\"\x0f\n" +
 	"\rHealthRequest\" \n" +
 	"\x0eHealthResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok2\xc7\x06\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok2\xae\a\n" +
 	"\rWalletService\x12q\n" +
 	"\x10InitializeWallet\x12-.tradedrift.wallet.v1.InitializeWalletRequest\x1a..tradedrift.wallet.v1.InitializeWalletResponse\x12e\n" +
 	"\fReserveFunds\x12).tradedrift.wallet.v1.ReserveFundsRequest\x1a*.tradedrift.wallet.v1.ReserveFundsResponse\x12e\n" +
 	"\fReleaseFunds\x12).tradedrift.wallet.v1.ReleaseFundsRequest\x1a*.tradedrift.wallet.v1.ReleaseFundsResponse\x12b\n" +
-	"\vSettleTrade\x12(.tradedrift.wallet.v1.SettleTradeRequest\x1a).tradedrift.wallet.v1.SettleTradeResponse\x12_\n" +
+	"\vSettleTrade\x12(.tradedrift.wallet.v1.SettleTradeRequest\x1a).tradedrift.wallet.v1.SettleTradeResponse\x12e\n" +
+	"\fDepositFunds\x12).tradedrift.wallet.v1.DepositFundsRequest\x1a*.tradedrift.wallet.v1.DepositFundsResponse\x12_\n" +
 	"\n" +
 	"GetBalance\x12'.tradedrift.wallet.v1.GetBalanceRequest\x1a(.tradedrift.wallet.v1.GetBalanceResponse\x12b\n" +
 	"\vGetBalances\x12(.tradedrift.wallet.v1.GetBalancesRequest\x1a).tradedrift.wallet.v1.GetBalancesResponse\x12w\n" +
@@ -1088,7 +1236,7 @@ func file_wallet_v1_wallet_proto_rawDescGZIP() []byte {
 	return file_wallet_v1_wallet_proto_rawDescData
 }
 
-var file_wallet_v1_wallet_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
+var file_wallet_v1_wallet_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_wallet_v1_wallet_proto_goTypes = []any{
 	(*AssetBalance)(nil),               // 0: tradedrift.wallet.v1.AssetBalance
 	(*AssetInfo)(nil),                  // 1: tradedrift.wallet.v1.AssetInfo
@@ -1106,8 +1254,10 @@ var file_wallet_v1_wallet_proto_goTypes = []any{
 	(*GetBalancesResponse)(nil),        // 13: tradedrift.wallet.v1.GetBalancesResponse
 	(*GetSupportedAssetsRequest)(nil),  // 14: tradedrift.wallet.v1.GetSupportedAssetsRequest
 	(*GetSupportedAssetsResponse)(nil), // 15: tradedrift.wallet.v1.GetSupportedAssetsResponse
-	(*HealthRequest)(nil),              // 16: tradedrift.wallet.v1.HealthRequest
-	(*HealthResponse)(nil),             // 17: tradedrift.wallet.v1.HealthResponse
+	(*DepositFundsRequest)(nil),        // 16: tradedrift.wallet.v1.DepositFundsRequest
+	(*DepositFundsResponse)(nil),       // 17: tradedrift.wallet.v1.DepositFundsResponse
+	(*HealthRequest)(nil),              // 18: tradedrift.wallet.v1.HealthRequest
+	(*HealthResponse)(nil),             // 19: tradedrift.wallet.v1.HealthResponse
 }
 var file_wallet_v1_wallet_proto_depIdxs = []int32{
 	0,  // 0: tradedrift.wallet.v1.GetBalanceResponse.balance:type_name -> tradedrift.wallet.v1.AssetBalance
@@ -1117,20 +1267,22 @@ var file_wallet_v1_wallet_proto_depIdxs = []int32{
 	4,  // 4: tradedrift.wallet.v1.WalletService.ReserveFunds:input_type -> tradedrift.wallet.v1.ReserveFundsRequest
 	6,  // 5: tradedrift.wallet.v1.WalletService.ReleaseFunds:input_type -> tradedrift.wallet.v1.ReleaseFundsRequest
 	8,  // 6: tradedrift.wallet.v1.WalletService.SettleTrade:input_type -> tradedrift.wallet.v1.SettleTradeRequest
-	10, // 7: tradedrift.wallet.v1.WalletService.GetBalance:input_type -> tradedrift.wallet.v1.GetBalanceRequest
-	12, // 8: tradedrift.wallet.v1.WalletService.GetBalances:input_type -> tradedrift.wallet.v1.GetBalancesRequest
-	14, // 9: tradedrift.wallet.v1.WalletService.GetSupportedAssets:input_type -> tradedrift.wallet.v1.GetSupportedAssetsRequest
-	16, // 10: tradedrift.wallet.v1.WalletService.Health:input_type -> tradedrift.wallet.v1.HealthRequest
-	3,  // 11: tradedrift.wallet.v1.WalletService.InitializeWallet:output_type -> tradedrift.wallet.v1.InitializeWalletResponse
-	5,  // 12: tradedrift.wallet.v1.WalletService.ReserveFunds:output_type -> tradedrift.wallet.v1.ReserveFundsResponse
-	7,  // 13: tradedrift.wallet.v1.WalletService.ReleaseFunds:output_type -> tradedrift.wallet.v1.ReleaseFundsResponse
-	9,  // 14: tradedrift.wallet.v1.WalletService.SettleTrade:output_type -> tradedrift.wallet.v1.SettleTradeResponse
-	11, // 15: tradedrift.wallet.v1.WalletService.GetBalance:output_type -> tradedrift.wallet.v1.GetBalanceResponse
-	13, // 16: tradedrift.wallet.v1.WalletService.GetBalances:output_type -> tradedrift.wallet.v1.GetBalancesResponse
-	15, // 17: tradedrift.wallet.v1.WalletService.GetSupportedAssets:output_type -> tradedrift.wallet.v1.GetSupportedAssetsResponse
-	17, // 18: tradedrift.wallet.v1.WalletService.Health:output_type -> tradedrift.wallet.v1.HealthResponse
-	11, // [11:19] is the sub-list for method output_type
-	3,  // [3:11] is the sub-list for method input_type
+	16, // 7: tradedrift.wallet.v1.WalletService.DepositFunds:input_type -> tradedrift.wallet.v1.DepositFundsRequest
+	10, // 8: tradedrift.wallet.v1.WalletService.GetBalance:input_type -> tradedrift.wallet.v1.GetBalanceRequest
+	12, // 9: tradedrift.wallet.v1.WalletService.GetBalances:input_type -> tradedrift.wallet.v1.GetBalancesRequest
+	14, // 10: tradedrift.wallet.v1.WalletService.GetSupportedAssets:input_type -> tradedrift.wallet.v1.GetSupportedAssetsRequest
+	18, // 11: tradedrift.wallet.v1.WalletService.Health:input_type -> tradedrift.wallet.v1.HealthRequest
+	3,  // 12: tradedrift.wallet.v1.WalletService.InitializeWallet:output_type -> tradedrift.wallet.v1.InitializeWalletResponse
+	5,  // 13: tradedrift.wallet.v1.WalletService.ReserveFunds:output_type -> tradedrift.wallet.v1.ReserveFundsResponse
+	7,  // 14: tradedrift.wallet.v1.WalletService.ReleaseFunds:output_type -> tradedrift.wallet.v1.ReleaseFundsResponse
+	9,  // 15: tradedrift.wallet.v1.WalletService.SettleTrade:output_type -> tradedrift.wallet.v1.SettleTradeResponse
+	17, // 16: tradedrift.wallet.v1.WalletService.DepositFunds:output_type -> tradedrift.wallet.v1.DepositFundsResponse
+	11, // 17: tradedrift.wallet.v1.WalletService.GetBalance:output_type -> tradedrift.wallet.v1.GetBalanceResponse
+	13, // 18: tradedrift.wallet.v1.WalletService.GetBalances:output_type -> tradedrift.wallet.v1.GetBalancesResponse
+	15, // 19: tradedrift.wallet.v1.WalletService.GetSupportedAssets:output_type -> tradedrift.wallet.v1.GetSupportedAssetsResponse
+	19, // 20: tradedrift.wallet.v1.WalletService.Health:output_type -> tradedrift.wallet.v1.HealthResponse
+	12, // [12:21] is the sub-list for method output_type
+	3,  // [3:12] is the sub-list for method input_type
 	3,  // [3:3] is the sub-list for extension type_name
 	3,  // [3:3] is the sub-list for extension extendee
 	0,  // [0:3] is the sub-list for field type_name
@@ -1147,7 +1299,7 @@ func file_wallet_v1_wallet_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wallet_v1_wallet_proto_rawDesc), len(file_wallet_v1_wallet_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   18,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -1,6 +1,6 @@
 module tradedrift/services/gateway
 
-go 1.26.3
+go 1.25.0
 
 require (
 	github.com/cespare/xxhash/v2 v2.3.0

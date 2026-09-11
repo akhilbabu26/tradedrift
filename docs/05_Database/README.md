@@ -28,6 +28,8 @@ This directory is organized into the following modular design documents:
 * **[`09_Market_Database.md`](09_Market_Database.md):** Schemas for active trading pairs and OHLCV statistics.
 * **[`10_Index_Strategy.md`](10_Index_Strategy.md):** Master index configurations designed directly around expected read query patterns.
 * **[`11_Migration_Order.md`](11_Migration_Order.md):** Specifies the chronologically sequenced schema migration order and dependencies.
+* **[`12_Wallet_TopUp_Database.md`](12_Wallet_TopUp_Database.md):** Schemas for fiat top-up orders, payment gateway state mappings, and daily allowance tracking.
+
 
 ---
 

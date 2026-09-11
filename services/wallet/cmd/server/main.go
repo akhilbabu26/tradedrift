@@ -98,7 +98,13 @@ func main() {
 	}()
 
 	// 8. Outbox publisher — polls the outbox table and publishes to trades.settled.v1 & portfolio.user.trades.v1
-	outboxRepo := walletpg.NewOutboxRepository(dbPool)
+	outboxClaimLease := 1 * time.Minute
+	if rawLease := config.GetEnv("OUTBOX_CLAIM_LEASE", "60s"); rawLease != "" {
+		if d, err := time.ParseDuration(rawLease); err == nil && d > 0 {
+			outboxClaimLease = d
+		}
+	}
+	outboxRepo := walletpg.NewOutboxRepository(dbPool, outboxClaimLease)
 	outboxPub := publisher.NewOutboxPublisher(outboxRepo, kafkaBrokers, kafkaTopicTradeSettled, kafkaTopicPortfolioUserTrades, appLogger)
 
 	wg.Add(1)

@@ -23,4 +23,6 @@ const (
 	RefSettlement        = "SETTLEMENT"         // Trade settled (buyer credited, seller debited)
 	RefDeposit           = "DEPOSIT"            // External deposit
 	RefWithdrawal        = "WITHDRAWAL"         // External withdrawal
+	RefTopUp             = "TOPUP"              // Wallet Top-Up deposit
 )
+

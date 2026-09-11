@@ -68,7 +68,7 @@ CREATE TABLE wallet_transactions (
     id                UUID PRIMARY KEY,                      -- UUIDv7
     wallet_id         UUID NOT NULL REFERENCES wallets(id),
     reference_id      UUID NOT NULL,                         -- order_id, trade_id, or transfer_id
-    reference_type    VARCHAR(30) NOT NULL,                  -- 'INITIAL_ALLOCATION', 'RESERVATION', 'SETTLEMENT', 'TRANSFER'
+    reference_type    VARCHAR(30) NOT NULL,                  -- 'INITIAL_ALLOCATION', 'RESERVATION', 'RELEASE', 'SETTLEMENT', 'DEPOSIT', 'TOPUP', 'WITHDRAWAL'
     transaction_type  VARCHAR(10) NOT NULL,                  -- 'CREDIT', 'DEBIT'
     asset             VARCHAR(10) NOT NULL,
     amount            DECIMAL(30,10) NOT NULL,
@@ -88,7 +88,7 @@ CREATE TABLE settled_trades (
 );
 ```
 
-### 2.6 Table: `outbox` (Migrations 00001, 00004 & 00006)
+### 2.6 Table: `outbox` (Migrations 00001, 00004, 00006 & 00010)
 ```sql
 CREATE TABLE outbox (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -98,6 +98,7 @@ CREATE TABLE outbox (
     partition_key VARCHAR(50) NOT NULL,
     status        VARCHAR(20) NOT NULL DEFAULT 'PENDING', -- 'PENDING', 'PROCESSING', 'PUBLISHED', 'FAILED'
     claimed_at    TIMESTAMPTZ,
+    claim_token   UUID,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     published_at  TIMESTAMPTZ
 );

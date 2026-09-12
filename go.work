@@ -5,6 +5,7 @@ go 1.25.0
 
 use (
 	./platform
+	./services/admin
 	./services/auth
 	./services/gateway
 	./services/liquidity-engine

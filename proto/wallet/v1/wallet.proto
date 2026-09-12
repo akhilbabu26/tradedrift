@@ -122,6 +122,22 @@ message HealthRequest  {}
 message HealthResponse { bool ok = 1; }
 
 // ─────────────────────────────────────────────
+// FreezeWallet (internal — admin only)
+// ─────────────────────────────────────────────
+
+message FreezeWalletRequest {
+    string user_id = 1;
+    string asset   = 2;
+    bool   freeze  = 3;  // true = freeze, false = unfreeze
+    string reason  = 4;
+}
+
+message FreezeWalletResponse {
+    bool success   = 1;
+    bool is_frozen = 2;  // reflects the resulting state after the operation
+}
+
+// ─────────────────────────────────────────────
 // Service
 // ─────────────────────────────────────────────
 
@@ -135,4 +151,5 @@ service WalletService {
     rpc GetBalances        (GetBalancesRequest)         returns (GetBalancesResponse);
     rpc GetSupportedAssets (GetSupportedAssetsRequest)  returns (GetSupportedAssetsResponse);
     rpc Health             (HealthRequest)              returns (HealthResponse);
+    rpc FreezeWallet       (FreezeWalletRequest)        returns (FreezeWalletResponse);
 }

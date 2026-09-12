@@ -6,7 +6,8 @@ import golangjwt "github.com/golang-jwt/jwt/v5"
 type Claims struct {
 	UserID       string `json:"user_id"`
 	Email        string `json:"email"`
-	JTI          string `json:"jti"` // Unique token identifier used for single session logout
+	Role         string `json:"role"`          // User role: "user", "admin"
+	JTI          string `json:"jti"`           // Unique token identifier used for single session logout
 	TokenVersion int    `json:"token_version"` // Added for global session revocation
 	golangjwt.RegisteredClaims
 }

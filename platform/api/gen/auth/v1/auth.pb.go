@@ -1029,6 +1029,104 @@ func (x *LogoutAllResponse) GetSuccess() bool {
 	return false
 }
 
+type InvalidateUserSessionsRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. UUID of the user whose sessions will be revoked.
+	UserId string `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// Optional. Human-readable reason for audit purposes.
+	Reason        string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InvalidateUserSessionsRequest) Reset() {
+	*x = InvalidateUserSessionsRequest{}
+	mi := &file_auth_v1_auth_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InvalidateUserSessionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InvalidateUserSessionsRequest) ProtoMessage() {}
+
+func (x *InvalidateUserSessionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InvalidateUserSessionsRequest.ProtoReflect.Descriptor instead.
+func (*InvalidateUserSessionsRequest) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *InvalidateUserSessionsRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *InvalidateUserSessionsRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type InvalidateUserSessionsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *InvalidateUserSessionsResponse) Reset() {
+	*x = InvalidateUserSessionsResponse{}
+	mi := &file_auth_v1_auth_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *InvalidateUserSessionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*InvalidateUserSessionsResponse) ProtoMessage() {}
+
+func (x *InvalidateUserSessionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use InvalidateUserSessionsResponse.ProtoReflect.Descriptor instead.
+func (*InvalidateUserSessionsResponse) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *InvalidateUserSessionsResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
 type ChangePasswordRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Required. Currently active password.
@@ -1041,7 +1139,7 @@ type ChangePasswordRequest struct {
 
 func (x *ChangePasswordRequest) Reset() {
 	*x = ChangePasswordRequest{}
-	mi := &file_auth_v1_auth_proto_msgTypes[19]
+	mi := &file_auth_v1_auth_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1053,7 +1151,7 @@ func (x *ChangePasswordRequest) String() string {
 func (*ChangePasswordRequest) ProtoMessage() {}
 
 func (x *ChangePasswordRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_v1_auth_proto_msgTypes[19]
+	mi := &file_auth_v1_auth_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1066,7 +1164,7 @@ func (x *ChangePasswordRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangePasswordRequest.ProtoReflect.Descriptor instead.
 func (*ChangePasswordRequest) Descriptor() ([]byte, []int) {
-	return file_auth_v1_auth_proto_rawDescGZIP(), []int{19}
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *ChangePasswordRequest) GetOldPassword() string {
@@ -1092,7 +1190,7 @@ type ChangePasswordResponse struct {
 
 func (x *ChangePasswordResponse) Reset() {
 	*x = ChangePasswordResponse{}
-	mi := &file_auth_v1_auth_proto_msgTypes[20]
+	mi := &file_auth_v1_auth_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1104,7 +1202,7 @@ func (x *ChangePasswordResponse) String() string {
 func (*ChangePasswordResponse) ProtoMessage() {}
 
 func (x *ChangePasswordResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_auth_v1_auth_proto_msgTypes[20]
+	mi := &file_auth_v1_auth_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1117,7 +1215,7 @@ func (x *ChangePasswordResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChangePasswordResponse.ProtoReflect.Descriptor instead.
 func (*ChangePasswordResponse) Descriptor() ([]byte, []int) {
-	return file_auth_v1_auth_proto_rawDescGZIP(), []int{20}
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *ChangePasswordResponse) GetSuccess() bool {
@@ -1190,12 +1288,17 @@ const file_auth_v1_auth_proto_rawDesc = "" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\"\x12\n" +
 	"\x10LogoutAllRequest\"-\n" +
 	"\x11LogoutAllResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"P\n" +
+	"\x1dInvalidateUserSessionsRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\":\n" +
+	"\x1eInvalidateUserSessionsResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\"]\n" +
 	"\x15ChangePasswordRequest\x12!\n" +
 	"\fold_password\x18\x01 \x01(\tR\voldPassword\x12!\n" +
 	"\fnew_password\x18\x02 \x01(\tR\vnewPassword\"2\n" +
 	"\x16ChangePasswordResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess2\xd9\a\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess2\xda\b\n" +
 	"\vAuthService\x12U\n" +
 	"\bRegister\x12#.tradedrift.auth.v1.RegisterRequest\x1a$.tradedrift.auth.v1.RegisterResponse\x12^\n" +
 	"\vVerifyEmail\x12&.tradedrift.auth.v1.VerifyEmailRequest\x1a'.tradedrift.auth.v1.VerifyEmailResponse\x12\x7f\n" +
@@ -1206,7 +1309,8 @@ const file_auth_v1_auth_proto_rawDesc = "" +
 	"\rResetPassword\x12(.tradedrift.auth.v1.ResetPasswordRequest\x1a).tradedrift.auth.v1.ResetPasswordResponse\x12O\n" +
 	"\x06Logout\x12!.tradedrift.auth.v1.LogoutRequest\x1a\".tradedrift.auth.v1.LogoutResponse\x12X\n" +
 	"\tLogoutAll\x12$.tradedrift.auth.v1.LogoutAllRequest\x1a%.tradedrift.auth.v1.LogoutAllResponse\x12g\n" +
-	"\x0eChangePassword\x12).tradedrift.auth.v1.ChangePasswordRequest\x1a*.tradedrift.auth.v1.ChangePasswordResponseB(Z&tradedrift/platform/api/auth/v1;authv1b\x06proto3"
+	"\x0eChangePassword\x12).tradedrift.auth.v1.ChangePasswordRequest\x1a*.tradedrift.auth.v1.ChangePasswordResponse\x12\x7f\n" +
+	"\x16InvalidateUserSessions\x121.tradedrift.auth.v1.InvalidateUserSessionsRequest\x1a2.tradedrift.auth.v1.InvalidateUserSessionsResponseB(Z&tradedrift/platform/api/auth/v1;authv1b\x06proto3"
 
 var (
 	file_auth_v1_auth_proto_rawDescOnce sync.Once
@@ -1220,7 +1324,7 @@ func file_auth_v1_auth_proto_rawDescGZIP() []byte {
 	return file_auth_v1_auth_proto_rawDescData
 }
 
-var file_auth_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 21)
+var file_auth_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
 var file_auth_v1_auth_proto_goTypes = []any{
 	(*User)(nil),                           // 0: tradedrift.auth.v1.User
 	(*RegisterRequest)(nil),                // 1: tradedrift.auth.v1.RegisterRequest
@@ -1241,19 +1345,21 @@ var file_auth_v1_auth_proto_goTypes = []any{
 	(*LogoutResponse)(nil),                 // 16: tradedrift.auth.v1.LogoutResponse
 	(*LogoutAllRequest)(nil),               // 17: tradedrift.auth.v1.LogoutAllRequest
 	(*LogoutAllResponse)(nil),              // 18: tradedrift.auth.v1.LogoutAllResponse
-	(*ChangePasswordRequest)(nil),          // 19: tradedrift.auth.v1.ChangePasswordRequest
-	(*ChangePasswordResponse)(nil),         // 20: tradedrift.auth.v1.ChangePasswordResponse
-	(*timestamppb.Timestamp)(nil),          // 21: google.protobuf.Timestamp
+	(*InvalidateUserSessionsRequest)(nil),  // 19: tradedrift.auth.v1.InvalidateUserSessionsRequest
+	(*InvalidateUserSessionsResponse)(nil), // 20: tradedrift.auth.v1.InvalidateUserSessionsResponse
+	(*ChangePasswordRequest)(nil),          // 21: tradedrift.auth.v1.ChangePasswordRequest
+	(*ChangePasswordResponse)(nil),         // 22: tradedrift.auth.v1.ChangePasswordResponse
+	(*timestamppb.Timestamp)(nil),          // 23: google.protobuf.Timestamp
 }
 var file_auth_v1_auth_proto_depIdxs = []int32{
 	0,  // 0: tradedrift.auth.v1.VerifyEmailResponse.user:type_name -> tradedrift.auth.v1.User
-	21, // 1: tradedrift.auth.v1.VerifyEmailResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
-	21, // 2: tradedrift.auth.v1.VerifyEmailResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
+	23, // 1: tradedrift.auth.v1.VerifyEmailResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
+	23, // 2: tradedrift.auth.v1.VerifyEmailResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
 	0,  // 3: tradedrift.auth.v1.LoginResponse.user:type_name -> tradedrift.auth.v1.User
-	21, // 4: tradedrift.auth.v1.LoginResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
-	21, // 5: tradedrift.auth.v1.LoginResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
-	21, // 6: tradedrift.auth.v1.RefreshTokenResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
-	21, // 7: tradedrift.auth.v1.RefreshTokenResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
+	23, // 4: tradedrift.auth.v1.LoginResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
+	23, // 5: tradedrift.auth.v1.LoginResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
+	23, // 6: tradedrift.auth.v1.RefreshTokenResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
+	23, // 7: tradedrift.auth.v1.RefreshTokenResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
 	1,  // 8: tradedrift.auth.v1.AuthService.Register:input_type -> tradedrift.auth.v1.RegisterRequest
 	3,  // 9: tradedrift.auth.v1.AuthService.VerifyEmail:input_type -> tradedrift.auth.v1.VerifyEmailRequest
 	5,  // 10: tradedrift.auth.v1.AuthService.ResendVerificationCode:input_type -> tradedrift.auth.v1.ResendVerificationCodeRequest
@@ -1263,19 +1369,21 @@ var file_auth_v1_auth_proto_depIdxs = []int32{
 	13, // 14: tradedrift.auth.v1.AuthService.ResetPassword:input_type -> tradedrift.auth.v1.ResetPasswordRequest
 	15, // 15: tradedrift.auth.v1.AuthService.Logout:input_type -> tradedrift.auth.v1.LogoutRequest
 	17, // 16: tradedrift.auth.v1.AuthService.LogoutAll:input_type -> tradedrift.auth.v1.LogoutAllRequest
-	19, // 17: tradedrift.auth.v1.AuthService.ChangePassword:input_type -> tradedrift.auth.v1.ChangePasswordRequest
-	2,  // 18: tradedrift.auth.v1.AuthService.Register:output_type -> tradedrift.auth.v1.RegisterResponse
-	4,  // 19: tradedrift.auth.v1.AuthService.VerifyEmail:output_type -> tradedrift.auth.v1.VerifyEmailResponse
-	6,  // 20: tradedrift.auth.v1.AuthService.ResendVerificationCode:output_type -> tradedrift.auth.v1.ResendVerificationCodeResponse
-	8,  // 21: tradedrift.auth.v1.AuthService.Login:output_type -> tradedrift.auth.v1.LoginResponse
-	10, // 22: tradedrift.auth.v1.AuthService.RefreshToken:output_type -> tradedrift.auth.v1.RefreshTokenResponse
-	12, // 23: tradedrift.auth.v1.AuthService.ForgotPassword:output_type -> tradedrift.auth.v1.ForgotPasswordResponse
-	14, // 24: tradedrift.auth.v1.AuthService.ResetPassword:output_type -> tradedrift.auth.v1.ResetPasswordResponse
-	16, // 25: tradedrift.auth.v1.AuthService.Logout:output_type -> tradedrift.auth.v1.LogoutResponse
-	18, // 26: tradedrift.auth.v1.AuthService.LogoutAll:output_type -> tradedrift.auth.v1.LogoutAllResponse
-	20, // 27: tradedrift.auth.v1.AuthService.ChangePassword:output_type -> tradedrift.auth.v1.ChangePasswordResponse
-	18, // [18:28] is the sub-list for method output_type
-	8,  // [8:18] is the sub-list for method input_type
+	21, // 17: tradedrift.auth.v1.AuthService.ChangePassword:input_type -> tradedrift.auth.v1.ChangePasswordRequest
+	19, // 18: tradedrift.auth.v1.AuthService.InvalidateUserSessions:input_type -> tradedrift.auth.v1.InvalidateUserSessionsRequest
+	2,  // 19: tradedrift.auth.v1.AuthService.Register:output_type -> tradedrift.auth.v1.RegisterResponse
+	4,  // 20: tradedrift.auth.v1.AuthService.VerifyEmail:output_type -> tradedrift.auth.v1.VerifyEmailResponse
+	6,  // 21: tradedrift.auth.v1.AuthService.ResendVerificationCode:output_type -> tradedrift.auth.v1.ResendVerificationCodeResponse
+	8,  // 22: tradedrift.auth.v1.AuthService.Login:output_type -> tradedrift.auth.v1.LoginResponse
+	10, // 23: tradedrift.auth.v1.AuthService.RefreshToken:output_type -> tradedrift.auth.v1.RefreshTokenResponse
+	12, // 24: tradedrift.auth.v1.AuthService.ForgotPassword:output_type -> tradedrift.auth.v1.ForgotPasswordResponse
+	14, // 25: tradedrift.auth.v1.AuthService.ResetPassword:output_type -> tradedrift.auth.v1.ResetPasswordResponse
+	16, // 26: tradedrift.auth.v1.AuthService.Logout:output_type -> tradedrift.auth.v1.LogoutResponse
+	18, // 27: tradedrift.auth.v1.AuthService.LogoutAll:output_type -> tradedrift.auth.v1.LogoutAllResponse
+	22, // 28: tradedrift.auth.v1.AuthService.ChangePassword:output_type -> tradedrift.auth.v1.ChangePasswordResponse
+	20, // 29: tradedrift.auth.v1.AuthService.InvalidateUserSessions:output_type -> tradedrift.auth.v1.InvalidateUserSessionsResponse
+	19, // [19:30] is the sub-list for method output_type
+	8,  // [8:19] is the sub-list for method input_type
 	8,  // [8:8] is the sub-list for extension type_name
 	8,  // [8:8] is the sub-list for extension extendee
 	0,  // [0:8] is the sub-list for field type_name
@@ -1292,7 +1400,7 @@ func file_auth_v1_auth_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_auth_v1_auth_proto_rawDesc), len(file_auth_v1_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   21,
+			NumMessages:   23,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

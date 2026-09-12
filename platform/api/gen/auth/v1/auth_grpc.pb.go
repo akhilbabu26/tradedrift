@@ -29,6 +29,7 @@ const (
 	AuthService_Logout_FullMethodName                 = "/tradedrift.auth.v1.AuthService/Logout"
 	AuthService_LogoutAll_FullMethodName              = "/tradedrift.auth.v1.AuthService/LogoutAll"
 	AuthService_ChangePassword_FullMethodName         = "/tradedrift.auth.v1.AuthService/ChangePassword"
+	AuthService_InvalidateUserSessions_FullMethodName = "/tradedrift.auth.v1.AuthService/InvalidateUserSessions"
 )
 
 // AuthServiceClient is the client API for AuthService service.
@@ -63,6 +64,9 @@ type AuthServiceClient interface {
 	LogoutAll(ctx context.Context, in *LogoutAllRequest, opts ...grpc.CallOption) (*LogoutAllResponse, error)
 	// Changes password for the authenticated user and revokes all other sessions.
 	ChangePassword(ctx context.Context, in *ChangePasswordRequest, opts ...grpc.CallOption) (*ChangePasswordResponse, error)
+	// Revokes all active sessions for the specified user by user_id.
+	// Called by the Admin service during user suspension. Idempotent.
+	InvalidateUserSessions(ctx context.Context, in *InvalidateUserSessionsRequest, opts ...grpc.CallOption) (*InvalidateUserSessionsResponse, error)
 }
 
 type authServiceClient struct {
@@ -173,6 +177,16 @@ func (c *authServiceClient) ChangePassword(ctx context.Context, in *ChangePasswo
 	return out, nil
 }
 
+func (c *authServiceClient) InvalidateUserSessions(ctx context.Context, in *InvalidateUserSessionsRequest, opts ...grpc.CallOption) (*InvalidateUserSessionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(InvalidateUserSessionsResponse)
+	err := c.cc.Invoke(ctx, AuthService_InvalidateUserSessions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AuthServiceServer is the server API for AuthService service.
 // All implementations must embed UnimplementedAuthServiceServer
 // for forward compatibility.
@@ -205,6 +219,9 @@ type AuthServiceServer interface {
 	LogoutAll(context.Context, *LogoutAllRequest) (*LogoutAllResponse, error)
 	// Changes password for the authenticated user and revokes all other sessions.
 	ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error)
+	// Revokes all active sessions for the specified user by user_id.
+	// Called by the Admin service during user suspension. Idempotent.
+	InvalidateUserSessions(context.Context, *InvalidateUserSessionsRequest) (*InvalidateUserSessionsResponse, error)
 	mustEmbedUnimplementedAuthServiceServer()
 }
 
@@ -244,6 +261,9 @@ func (UnimplementedAuthServiceServer) LogoutAll(context.Context, *LogoutAllReque
 }
 func (UnimplementedAuthServiceServer) ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ChangePassword not implemented")
+}
+func (UnimplementedAuthServiceServer) InvalidateUserSessions(context.Context, *InvalidateUserSessionsRequest) (*InvalidateUserSessionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method InvalidateUserSessions not implemented")
 }
 func (UnimplementedAuthServiceServer) mustEmbedUnimplementedAuthServiceServer() {}
 func (UnimplementedAuthServiceServer) testEmbeddedByValue()                     {}
@@ -446,6 +466,24 @@ func _AuthService_ChangePassword_Handler(srv interface{}, ctx context.Context, d
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuthService_InvalidateUserSessions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(InvalidateUserSessionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).InvalidateUserSessions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_InvalidateUserSessions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).InvalidateUserSessions(ctx, req.(*InvalidateUserSessionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AuthService_ServiceDesc is the grpc.ServiceDesc for AuthService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -492,6 +530,10 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ChangePassword",
 			Handler:    _AuthService_ChangePassword_Handler,
+		},
+		{
+			MethodName: "InvalidateUserSessions",
+			Handler:    _AuthService_InvalidateUserSessions_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

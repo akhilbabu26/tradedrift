@@ -28,6 +28,7 @@ const (
 	WalletService_GetBalances_FullMethodName        = "/tradedrift.wallet.v1.WalletService/GetBalances"
 	WalletService_GetSupportedAssets_FullMethodName = "/tradedrift.wallet.v1.WalletService/GetSupportedAssets"
 	WalletService_Health_FullMethodName             = "/tradedrift.wallet.v1.WalletService/Health"
+	WalletService_FreezeWallet_FullMethodName       = "/tradedrift.wallet.v1.WalletService/FreezeWallet"
 )
 
 // WalletServiceClient is the client API for WalletService service.
@@ -43,6 +44,7 @@ type WalletServiceClient interface {
 	GetBalances(ctx context.Context, in *GetBalancesRequest, opts ...grpc.CallOption) (*GetBalancesResponse, error)
 	GetSupportedAssets(ctx context.Context, in *GetSupportedAssetsRequest, opts ...grpc.CallOption) (*GetSupportedAssetsResponse, error)
 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
+	FreezeWallet(ctx context.Context, in *FreezeWalletRequest, opts ...grpc.CallOption) (*FreezeWalletResponse, error)
 }
 
 type walletServiceClient struct {
@@ -143,6 +145,16 @@ func (c *walletServiceClient) Health(ctx context.Context, in *HealthRequest, opt
 	return out, nil
 }
 
+func (c *walletServiceClient) FreezeWallet(ctx context.Context, in *FreezeWalletRequest, opts ...grpc.CallOption) (*FreezeWalletResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(FreezeWalletResponse)
+	err := c.cc.Invoke(ctx, WalletService_FreezeWallet_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // WalletServiceServer is the server API for WalletService service.
 // All implementations must embed UnimplementedWalletServiceServer
 // for forward compatibility.
@@ -156,6 +168,7 @@ type WalletServiceServer interface {
 	GetBalances(context.Context, *GetBalancesRequest) (*GetBalancesResponse, error)
 	GetSupportedAssets(context.Context, *GetSupportedAssetsRequest) (*GetSupportedAssetsResponse, error)
 	Health(context.Context, *HealthRequest) (*HealthResponse, error)
+	FreezeWallet(context.Context, *FreezeWalletRequest) (*FreezeWalletResponse, error)
 	mustEmbedUnimplementedWalletServiceServer()
 }
 
@@ -192,6 +205,9 @@ func (UnimplementedWalletServiceServer) GetSupportedAssets(context.Context, *Get
 }
 func (UnimplementedWalletServiceServer) Health(context.Context, *HealthRequest) (*HealthResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Health not implemented")
+}
+func (UnimplementedWalletServiceServer) FreezeWallet(context.Context, *FreezeWalletRequest) (*FreezeWalletResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FreezeWallet not implemented")
 }
 func (UnimplementedWalletServiceServer) mustEmbedUnimplementedWalletServiceServer() {}
 func (UnimplementedWalletServiceServer) testEmbeddedByValue()                       {}
@@ -376,6 +392,24 @@ func _WalletService_Health_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _WalletService_FreezeWallet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(FreezeWalletRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(WalletServiceServer).FreezeWallet(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: WalletService_FreezeWallet_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(WalletServiceServer).FreezeWallet(ctx, req.(*FreezeWalletRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // WalletService_ServiceDesc is the grpc.ServiceDesc for WalletService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -418,6 +452,10 @@ var WalletService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Health",
 			Handler:    _WalletService_Health_Handler,
+		},
+		{
+			MethodName: "FreezeWallet",
+			Handler:    _WalletService_FreezeWallet_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

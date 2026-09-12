@@ -52,6 +52,14 @@ service AuthService {
 
     // Changes password for the authenticated user and revokes all other sessions.
     rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+
+    // ==========================================
+    // Internal RPCs (Admin service only — no JWT required)
+    // ==========================================
+
+    // Revokes all active sessions for the specified user by user_id.
+    // Called by the Admin service during user suspension. Idempotent.
+    rpc InvalidateUserSessions(InvalidateUserSessionsRequest) returns (InvalidateUserSessionsResponse);
 }
 
 // ==========================================
@@ -188,6 +196,21 @@ message LogoutResponse {
 message LogoutAllRequest {}
 
 message LogoutAllResponse {
+    bool success = 1;
+}
+
+// ==========================================
+// InvalidateUserSessions (internal — admin only)
+// ==========================================
+
+message InvalidateUserSessionsRequest {
+    // Required. UUID of the user whose sessions will be revoked.
+    string user_id = 1;
+    // Optional. Human-readable reason for audit purposes.
+    string reason  = 2;
+}
+
+message InvalidateUserSessionsResponse {
     bool success = 1;
 }
 

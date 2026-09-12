@@ -1129,6 +1129,126 @@ func (x *HealthResponse) GetOk() bool {
 	return false
 }
 
+type FreezeWalletRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Asset         string                 `protobuf:"bytes,2,opt,name=asset,proto3" json:"asset,omitempty"`
+	Freeze        bool                   `protobuf:"varint,3,opt,name=freeze,proto3" json:"freeze,omitempty"` // true = freeze, false = unfreeze
+	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FreezeWalletRequest) Reset() {
+	*x = FreezeWalletRequest{}
+	mi := &file_wallet_v1_wallet_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FreezeWalletRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FreezeWalletRequest) ProtoMessage() {}
+
+func (x *FreezeWalletRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_v1_wallet_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FreezeWalletRequest.ProtoReflect.Descriptor instead.
+func (*FreezeWalletRequest) Descriptor() ([]byte, []int) {
+	return file_wallet_v1_wallet_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *FreezeWalletRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *FreezeWalletRequest) GetAsset() string {
+	if x != nil {
+		return x.Asset
+	}
+	return ""
+}
+
+func (x *FreezeWalletRequest) GetFreeze() bool {
+	if x != nil {
+		return x.Freeze
+	}
+	return false
+}
+
+func (x *FreezeWalletRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type FreezeWalletResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	IsFrozen      bool                   `protobuf:"varint,2,opt,name=is_frozen,json=isFrozen,proto3" json:"is_frozen,omitempty"` // reflects the resulting state after the operation
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FreezeWalletResponse) Reset() {
+	*x = FreezeWalletResponse{}
+	mi := &file_wallet_v1_wallet_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FreezeWalletResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FreezeWalletResponse) ProtoMessage() {}
+
+func (x *FreezeWalletResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_wallet_v1_wallet_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FreezeWalletResponse.ProtoReflect.Descriptor instead.
+func (*FreezeWalletResponse) Descriptor() ([]byte, []int) {
+	return file_wallet_v1_wallet_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *FreezeWalletResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *FreezeWalletResponse) GetIsFrozen() bool {
+	if x != nil {
+		return x.IsFrozen
+	}
+	return false
+}
+
 var File_wallet_v1_wallet_proto protoreflect.FileDescriptor
 
 const file_wallet_v1_wallet_proto_rawDesc = "" +
@@ -1211,7 +1331,15 @@ const file_wallet_v1_wallet_proto_rawDesc = "" +
 	"newBalance\"\x0f\n" +
 	"\rHealthRequest\" \n" +
 	"\x0eHealthResponse\x12\x0e\n" +
-	"\x02ok\x18\x01 \x01(\bR\x02ok2\xae\a\n" +
+	"\x02ok\x18\x01 \x01(\bR\x02ok\"t\n" +
+	"\x13FreezeWalletRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x14\n" +
+	"\x05asset\x18\x02 \x01(\tR\x05asset\x12\x16\n" +
+	"\x06freeze\x18\x03 \x01(\bR\x06freeze\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\"M\n" +
+	"\x14FreezeWalletResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x1b\n" +
+	"\tis_frozen\x18\x02 \x01(\bR\bisFrozen2\x95\b\n" +
 	"\rWalletService\x12q\n" +
 	"\x10InitializeWallet\x12-.tradedrift.wallet.v1.InitializeWalletRequest\x1a..tradedrift.wallet.v1.InitializeWalletResponse\x12e\n" +
 	"\fReserveFunds\x12).tradedrift.wallet.v1.ReserveFundsRequest\x1a*.tradedrift.wallet.v1.ReserveFundsResponse\x12e\n" +
@@ -1222,7 +1350,8 @@ const file_wallet_v1_wallet_proto_rawDesc = "" +
 	"GetBalance\x12'.tradedrift.wallet.v1.GetBalanceRequest\x1a(.tradedrift.wallet.v1.GetBalanceResponse\x12b\n" +
 	"\vGetBalances\x12(.tradedrift.wallet.v1.GetBalancesRequest\x1a).tradedrift.wallet.v1.GetBalancesResponse\x12w\n" +
 	"\x12GetSupportedAssets\x12/.tradedrift.wallet.v1.GetSupportedAssetsRequest\x1a0.tradedrift.wallet.v1.GetSupportedAssetsResponse\x12S\n" +
-	"\x06Health\x12#.tradedrift.wallet.v1.HealthRequest\x1a$.tradedrift.wallet.v1.HealthResponseB0Z.tradedrift/platform/api/gen/wallet/v1;walletv1b\x06proto3"
+	"\x06Health\x12#.tradedrift.wallet.v1.HealthRequest\x1a$.tradedrift.wallet.v1.HealthResponse\x12e\n" +
+	"\fFreezeWallet\x12).tradedrift.wallet.v1.FreezeWalletRequest\x1a*.tradedrift.wallet.v1.FreezeWalletResponseB0Z.tradedrift/platform/api/gen/wallet/v1;walletv1b\x06proto3"
 
 var (
 	file_wallet_v1_wallet_proto_rawDescOnce sync.Once
@@ -1236,7 +1365,7 @@ func file_wallet_v1_wallet_proto_rawDescGZIP() []byte {
 	return file_wallet_v1_wallet_proto_rawDescData
 }
 
-var file_wallet_v1_wallet_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
+var file_wallet_v1_wallet_proto_msgTypes = make([]protoimpl.MessageInfo, 22)
 var file_wallet_v1_wallet_proto_goTypes = []any{
 	(*AssetBalance)(nil),               // 0: tradedrift.wallet.v1.AssetBalance
 	(*AssetInfo)(nil),                  // 1: tradedrift.wallet.v1.AssetInfo
@@ -1258,6 +1387,8 @@ var file_wallet_v1_wallet_proto_goTypes = []any{
 	(*DepositFundsResponse)(nil),       // 17: tradedrift.wallet.v1.DepositFundsResponse
 	(*HealthRequest)(nil),              // 18: tradedrift.wallet.v1.HealthRequest
 	(*HealthResponse)(nil),             // 19: tradedrift.wallet.v1.HealthResponse
+	(*FreezeWalletRequest)(nil),        // 20: tradedrift.wallet.v1.FreezeWalletRequest
+	(*FreezeWalletResponse)(nil),       // 21: tradedrift.wallet.v1.FreezeWalletResponse
 }
 var file_wallet_v1_wallet_proto_depIdxs = []int32{
 	0,  // 0: tradedrift.wallet.v1.GetBalanceResponse.balance:type_name -> tradedrift.wallet.v1.AssetBalance
@@ -1272,17 +1403,19 @@ var file_wallet_v1_wallet_proto_depIdxs = []int32{
 	12, // 9: tradedrift.wallet.v1.WalletService.GetBalances:input_type -> tradedrift.wallet.v1.GetBalancesRequest
 	14, // 10: tradedrift.wallet.v1.WalletService.GetSupportedAssets:input_type -> tradedrift.wallet.v1.GetSupportedAssetsRequest
 	18, // 11: tradedrift.wallet.v1.WalletService.Health:input_type -> tradedrift.wallet.v1.HealthRequest
-	3,  // 12: tradedrift.wallet.v1.WalletService.InitializeWallet:output_type -> tradedrift.wallet.v1.InitializeWalletResponse
-	5,  // 13: tradedrift.wallet.v1.WalletService.ReserveFunds:output_type -> tradedrift.wallet.v1.ReserveFundsResponse
-	7,  // 14: tradedrift.wallet.v1.WalletService.ReleaseFunds:output_type -> tradedrift.wallet.v1.ReleaseFundsResponse
-	9,  // 15: tradedrift.wallet.v1.WalletService.SettleTrade:output_type -> tradedrift.wallet.v1.SettleTradeResponse
-	17, // 16: tradedrift.wallet.v1.WalletService.DepositFunds:output_type -> tradedrift.wallet.v1.DepositFundsResponse
-	11, // 17: tradedrift.wallet.v1.WalletService.GetBalance:output_type -> tradedrift.wallet.v1.GetBalanceResponse
-	13, // 18: tradedrift.wallet.v1.WalletService.GetBalances:output_type -> tradedrift.wallet.v1.GetBalancesResponse
-	15, // 19: tradedrift.wallet.v1.WalletService.GetSupportedAssets:output_type -> tradedrift.wallet.v1.GetSupportedAssetsResponse
-	19, // 20: tradedrift.wallet.v1.WalletService.Health:output_type -> tradedrift.wallet.v1.HealthResponse
-	12, // [12:21] is the sub-list for method output_type
-	3,  // [3:12] is the sub-list for method input_type
+	20, // 12: tradedrift.wallet.v1.WalletService.FreezeWallet:input_type -> tradedrift.wallet.v1.FreezeWalletRequest
+	3,  // 13: tradedrift.wallet.v1.WalletService.InitializeWallet:output_type -> tradedrift.wallet.v1.InitializeWalletResponse
+	5,  // 14: tradedrift.wallet.v1.WalletService.ReserveFunds:output_type -> tradedrift.wallet.v1.ReserveFundsResponse
+	7,  // 15: tradedrift.wallet.v1.WalletService.ReleaseFunds:output_type -> tradedrift.wallet.v1.ReleaseFundsResponse
+	9,  // 16: tradedrift.wallet.v1.WalletService.SettleTrade:output_type -> tradedrift.wallet.v1.SettleTradeResponse
+	17, // 17: tradedrift.wallet.v1.WalletService.DepositFunds:output_type -> tradedrift.wallet.v1.DepositFundsResponse
+	11, // 18: tradedrift.wallet.v1.WalletService.GetBalance:output_type -> tradedrift.wallet.v1.GetBalanceResponse
+	13, // 19: tradedrift.wallet.v1.WalletService.GetBalances:output_type -> tradedrift.wallet.v1.GetBalancesResponse
+	15, // 20: tradedrift.wallet.v1.WalletService.GetSupportedAssets:output_type -> tradedrift.wallet.v1.GetSupportedAssetsResponse
+	19, // 21: tradedrift.wallet.v1.WalletService.Health:output_type -> tradedrift.wallet.v1.HealthResponse
+	21, // 22: tradedrift.wallet.v1.WalletService.FreezeWallet:output_type -> tradedrift.wallet.v1.FreezeWalletResponse
+	13, // [13:23] is the sub-list for method output_type
+	3,  // [3:13] is the sub-list for method input_type
 	3,  // [3:3] is the sub-list for extension type_name
 	3,  // [3:3] is the sub-list for extension extendee
 	0,  // [0:3] is the sub-list for field type_name
@@ -1299,7 +1432,7 @@ func file_wallet_v1_wallet_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_wallet_v1_wallet_proto_rawDesc), len(file_wallet_v1_wallet_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   20,
+			NumMessages:   22,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

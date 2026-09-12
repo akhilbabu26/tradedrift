@@ -170,3 +170,29 @@ func (h *GRPCHandler) ChangePassword(ctx context.Context, req *authv1.ChangePass
 		Success: true,
 	}, nil
 }
+
+// InvalidateUserSessions is an internal RPC called by the Admin service to revoke
+// all active sessions for a given user_id. Unlike LogoutAll, this does NOT require
+// a JWT context — the user_id is taken directly from the request.
+// This is intentionally an internal-facing endpoint; the gateway should NOT expose it.
+func (h *GRPCHandler) InvalidateUserSessions(ctx context.Context, req *authv1.InvalidateUserSessionsRequest) (*authv1.InvalidateUserSessionsResponse, error) {
+	if req.UserId == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	}
+
+	if err := h.svc.LogoutAll(ctx, req.UserId); err != nil {
+		h.log.Error("InvalidateUserSessions: LogoutAll failed",
+			zap.String("user_id", req.UserId),
+			zap.String("reason", req.Reason),
+			zap.Error(err),
+		)
+		return nil, mapToGRPCError(err)
+	}
+
+	h.log.Info("InvalidateUserSessions: sessions revoked",
+		zap.String("user_id", req.UserId),
+		zap.String("reason", req.Reason),
+	)
+	return &authv1.InvalidateUserSessionsResponse{Success: true}, nil
+}
+

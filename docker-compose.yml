@@ -98,6 +98,34 @@ services:
       wallet:
         condition: service_started
 
+  admin:
+    build:
+      context: .
+      dockerfile: services/admin/Dockerfile
+    container_name: tradedrift-admin
+    restart: unless-stopped
+    environment:
+      PORT: "8085"
+      POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_admin?sslmode=disable
+      AUTH_GRPC_ADDR: auth:50051
+      WALLET_GRPC_ADDR: wallet:50052
+      JWT_SECRET: super-secret-jwt-key-tradedrift-dev-32bytes
+      KAFKA_BROKERS: kafka:29092
+      TRADE_HEALTH_URL: http://trade:9090/ready
+      PORTFOLIO_HEALTH_URL: http://portfolio:9091/ready
+      LIQUIDITY_HEALTH_URL: http://liquidity-engine:8080/readyz
+      NOTIFICATION_HEALTH_URL: http://notification:9092/ready
+      LOG_LEVEL: info
+    ports:
+      - "8085:8085"
+    depends_on:
+      kafka:
+        condition: service_started
+      auth:
+        condition: service_started
+      wallet:
+        condition: service_started
+
   order:
     build:
       context: .

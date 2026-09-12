@@ -8,8 +8,7 @@ import "github.com/google/uuid"
 func MustNewV7() string {
 	u, err := uuid.NewV7()
 	if err != nil {
-		// Fallback should never realistically be reached unless system clock is completely broken
-		return uuid.New().String()
+		panic("domain: failed to generate UUIDv7: " + err.Error())
 	}
 	return u.String()
 }

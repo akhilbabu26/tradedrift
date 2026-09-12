@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 
 	platformjwt "tradedrift/platform/jwt"
@@ -19,9 +20,10 @@ func NewRouter(
 
 	adminAuth := RequireAdmin(jwtValidator)
 
-	// ─── 1. Health & Probes (Unauthenticated) ────────────────────────────────────
+	// ─── 1. Health & Probes & Metrics (Unauthenticated) ──────────────────────────
 	mux.HandleFunc("GET /health", healthHandler.HandleLiveness)
 	mux.HandleFunc("GET /ready", healthHandler.HandleReadiness)
+	mux.Handle("GET /metrics", promhttp.Handler())
 
 	// ─── 2. System Diagnostic Health (Authenticated) ─────────────────────────────
 	mux.HandleFunc("GET /api/v1/admin/system/health", adminAuth(healthHandler.HandleSystemHealth))
@@ -47,7 +49,9 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/admin/markets/{market_id}/resume",
 		adminAuth(RequireIdempotencyKey(adminHandler.HandleResumeMarket)))
 
-	// Wrap entire router with structured logging middleware
-	loggingMiddleware := StructuredLoggingMiddleware(log)
-	return loggingMiddleware(mux)
+	// Wrap entire router with metrics and structured logging middleware
+	var h http.Handler = mux
+	h = MetricsMiddleware()(h)
+	h = StructuredLoggingMiddleware(log)(h)
+	return h
 }

@@ -1,4 +1,4 @@
-package handler_test
+package test
 
 import (
 	"strings"
@@ -8,7 +8,6 @@ import (
 )
 
 func TestValidateReason(t *testing.T) {
-	// Valid reason
 	val, err := handler.ValidateReason("Fraudulent trading activity detected")
 	if err != nil {
 		t.Fatalf("expected valid reason, got error: %v", err)
@@ -17,19 +16,16 @@ func TestValidateReason(t *testing.T) {
 		t.Fatalf("unexpected trimmed value: %s", val)
 	}
 
-	// White space only
 	_, err = handler.ValidateReason("     ")
 	if err != handler.ErrInvalidReason {
 		t.Fatalf("expected ErrInvalidReason for whitespace, got: %v", err)
 	}
 
-	// Too short
 	_, err = handler.ValidateReason("bad")
 	if err != handler.ErrInvalidReason {
 		t.Fatalf("expected ErrInvalidReason for short string, got: %v", err)
 	}
 
-	// Too long (> 500 chars)
 	longReason := strings.Repeat("a", 501)
 	_, err = handler.ValidateReason(longReason)
 	if err != handler.ErrInvalidReason {
@@ -38,12 +34,10 @@ func TestValidateReason(t *testing.T) {
 }
 
 func TestValidateUserID(t *testing.T) {
-	// Valid UUID
 	if err := handler.ValidateUserID("1f85afe9-e866-4629-bf51-c8dc8a72d7aa"); err != nil {
 		t.Fatalf("expected valid UUID, got: %v", err)
 	}
 
-	// Invalid strings
 	if err := handler.ValidateUserID("invalid-id"); err != handler.ErrInvalidUserID {
 		t.Fatalf("expected ErrInvalidUserID for invalid string, got: %v", err)
 	}

@@ -22,6 +22,7 @@ type Config struct {
 
 	OutboxInterval time.Duration
 	SagaInterval   time.Duration
+	HealthInterval time.Duration
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -37,10 +38,11 @@ func Load() *Config {
 		TradeHealthURL: getEnv("TRADE_HEALTH_URL", "http://localhost:9090/ready"),
 		PortHealthURL:  getEnv("PORTFOLIO_HEALTH_URL", "http://localhost:9091/ready"),
 		LiqHealthURL:   getEnv("LIQUIDITY_HEALTH_URL", "http://localhost:8080/readyz"),
-		NotifHealthURL: getEnv("NOTIFICATION_HEALTH_URL", "http://localhost:9092/ready"),
+		NotifHealthURL: getEnv("NOTIFICATION_HEALTH_URL", "http://localhost:9095/ready"),
 
 		OutboxInterval: 1 * time.Second,
 		SagaInterval:   5 * time.Second,
+		HealthInterval: 15 * time.Second,
 	}
 }
 

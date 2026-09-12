@@ -60,6 +60,7 @@ func (r *outboxRepo) FetchDue(ctx context.Context, workerToken string, limit int
 		WHERE id IN (
 		    SELECT id FROM admin_outbox
 		    WHERE published = FALSE
+		      AND status IN ('PENDING', 'PROCESSING')
 		      AND next_attempt_at <= NOW()
 		      AND (locked_at IS NULL OR locked_at < NOW() - INTERVAL '2 minutes')
 		    ORDER BY next_attempt_at ASC
@@ -106,7 +107,9 @@ func (r *outboxRepo) FetchDue(ctx context.Context, workerToken string, limit int
 }
 
 // MarkPublished marks an event as published after verified Kafka ACK.
-func (r *outboxRepo) MarkPublished(ctx context.Context, id string) error {
+// Strictly verifies worker lease ownership (locked_by) so that stale workers
+// whose leases expired never overwrite a newly claimed lease.
+func (r *outboxRepo) MarkPublished(ctx context.Context, id string, workerToken string) error {
 	query := `
 		UPDATE admin_outbox
 		SET published    = TRUE,
@@ -115,17 +118,21 @@ func (r *outboxRepo) MarkPublished(ctx context.Context, id string) error {
 		    locked_at    = NULL,
 		    locked_by    = NULL,
 		    updated_at   = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND locked_by = $2
 	`
-	_, err := r.db.Exec(ctx, query, id)
+	tag, err := r.db.Exec(ctx, query, id, workerToken)
 	if err != nil {
 		return fmt.Errorf("outbox_repo: mark published: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrWorkerLeaseLost
 	}
 	return nil
 }
 
 // UpdateRetry schedules a retry for an outbox event after a transient Kafka failure.
-func (r *outboxRepo) UpdateRetry(ctx context.Context, id string, nextAttemptAt time.Time, attemptCount int, lastError string) error {
+// Strictly verifies worker lease ownership (locked_by).
+func (r *outboxRepo) UpdateRetry(ctx context.Context, id string, workerToken string, nextAttemptAt time.Time, attemptCount int, lastError string) error {
 	query := `
 		UPDATE admin_outbox
 		SET status          = CASE WHEN $2 >= max_attempts THEN 'FAILED' ELSE 'PENDING' END,
@@ -135,11 +142,14 @@ func (r *outboxRepo) UpdateRetry(ctx context.Context, id string, nextAttemptAt t
 		    locked_at       = NULL,
 		    locked_by       = NULL,
 		    updated_at      = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND locked_by = $5
 	`
-	_, err := r.db.Exec(ctx, query, id, attemptCount, nextAttemptAt, lastError)
+	tag, err := r.db.Exec(ctx, query, id, attemptCount, nextAttemptAt, lastError, workerToken)
 	if err != nil {
 		return fmt.Errorf("outbox_repo: update retry: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrWorkerLeaseLost
 	}
 	return nil
 }

@@ -61,7 +61,6 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to connect to PostgreSQL", zap.Error(err))
 	}
-	defer dbPool.Close()
 
 	// 6. Repositories
 	txMgr := postgresRepo.NewTxManager(dbPool)
@@ -74,13 +73,11 @@ func main() {
 	if err != nil {
 		log.Fatal("Failed to initialize Auth gRPC client", zap.String("addr", cfg.AuthGRPCAddr), zap.Error(err))
 	}
-	defer authCli.Close()
 
 	walletCli, err := client.NewWalletClient(cfg.WalletGRPCAddr)
 	if err != nil {
 		log.Fatal("Failed to initialize Wallet gRPC client", zap.String("addr", cfg.WalletGRPCAddr), zap.Error(err))
 	}
-	defer walletCli.Close()
 
 	// 8. Services
 	adminSvc := service.NewAdminService(txMgr, opsRepo, authCli, walletCli, log)
@@ -88,11 +85,21 @@ func main() {
 	// 9. Background Workers
 	outboxPub := service.NewOutboxPublisher(outboxRepo, cfg.KafkaBrokers, log, cfg.OutboxInterval)
 	outboxPub.Start(ctx)
-	defer outboxPub.Stop()
 
-	sagaWorker := service.NewSagaWorker(sagaRepo, opsRepo, authCli, log, cfg.SagaInterval)
+	sagaWorker := service.NewSagaWorker(txMgr, sagaRepo, opsRepo, authCli, log, cfg.SagaInterval)
 	sagaWorker.Start(ctx)
-	defer sagaWorker.Stop()
+
+	healthWorkerCfg := service.HealthWorkerConfig{
+		AuthGRPCAddr:   cfg.AuthGRPCAddr,
+		WalletGRPCAddr: cfg.WalletGRPCAddr,
+		TradeHealthURL: cfg.TradeHealthURL,
+		PortHealthURL:  cfg.PortHealthURL,
+		LiqHealthURL:   cfg.LiqHealthURL,
+		NotifHealthURL: cfg.NotifHealthURL,
+		KafkaBrokers:   cfg.SplitKafkaBrokers(),
+	}
+	healthWorker := service.NewHealthWorker(dbPool, authCli, walletCli, outboxRepo, sagaRepo, healthWorkerCfg, log, cfg.HealthInterval)
+	healthWorker.Start(ctx)
 
 	// 10. HTTP Layer
 	healthCfg := handler.HealthConfig{
@@ -105,6 +112,7 @@ func main() {
 		KafkaBrokers:   cfg.SplitKafkaBrokers(),
 	}
 	healthHdr := handler.NewHealthHandler(dbPool, authCli, walletCli, outboxRepo, sagaRepo, healthCfg, log)
+	healthHdr.SetHealthWorker(healthWorker)
 	adminHdr := handler.NewAdminHandler(adminSvc, log)
 	jwtValidator := platformjwt.NewHMACValidator([]byte(cfg.JWTSecret))
 
@@ -133,12 +141,29 @@ func main() {
 	healthHdr.SetShuttingDown()
 	log.Info("Readiness probe set to 503 (shutting down)")
 
-	// Step B: Drain inflight HTTP requests
+	// Step B: Drain in-flight HTTP requests
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Error("HTTP server shutdown error", zap.Error(err))
 	}
+	log.Info("HTTP server drained")
+
+	// Step C: Stop background workers and wait for active batches to finish
+	log.Info("Stopping background workers...")
+	healthWorker.Stop()
+	log.Info("Health worker stopped cleanly")
+	sagaWorker.Stop()
+	log.Info("Saga worker stopped cleanly")
+	outboxPub.Stop()
+	log.Info("Outbox publisher stopped and flushed")
+
+	// Step D: Close downstream gRPC clients
+	_ = authCli.Close()
+	_ = walletCli.Close()
+
+	// Step E: Close PostgreSQL connection pool
+	dbPool.Close()
 
 	log.Info("Admin Service terminated cleanly")
 }

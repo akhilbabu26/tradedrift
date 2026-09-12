@@ -1,4 +1,4 @@
-package domain_test
+package test
 
 import (
 	"testing"

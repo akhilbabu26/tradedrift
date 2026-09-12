@@ -20,9 +20,10 @@ type AdminOperationTxResult struct {
 	Operation *domain.AdminOperation
 }
 
-// TxManager coordinates the multi-table atomic mutation inside a single PostgreSQL transaction.
+// TxManager coordinates multi-table atomic mutations inside a single PostgreSQL transaction.
 type TxManager interface {
 	ExecAdminOperationTx(ctx context.Context, req AdminOperationTxRequest) (*AdminOperationTxResult, error)
+	CompleteAuthSaga(ctx context.Context, opID string, sagaID string, responseBody []byte) error
 }
 
 // OperationsRepository manages admin_operations persistence.
@@ -43,8 +44,8 @@ type OutboxBacklogStats struct {
 type OutboxRepository interface {
 	Insert(ctx context.Context, event *domain.OutboxEvent) error
 	FetchDue(ctx context.Context, workerToken string, limit int) ([]*domain.OutboxEvent, error)
-	MarkPublished(ctx context.Context, id string) error
-	UpdateRetry(ctx context.Context, id string, nextAttemptAt time.Time, attemptCount int, lastError string) error
+	MarkPublished(ctx context.Context, id string, workerToken string) error
+	UpdateRetry(ctx context.Context, id string, workerToken string, nextAttemptAt time.Time, attemptCount int, lastError string) error
 	GetBacklogStats(ctx context.Context) (*OutboxBacklogStats, error)
 }
 
@@ -59,9 +60,9 @@ type SagaQueueStats struct {
 type SagaRepository interface {
 	Insert(ctx context.Context, task *domain.SagaTask) error
 	FetchDue(ctx context.Context, workerToken string, limit int) ([]*domain.SagaTask, error)
-	UpdateRetry(ctx context.Context, id string, nextAttemptAt time.Time, attemptCount int, lastError string) error
-	MarkCompleted(ctx context.Context, id string) error
-	MarkExhausted(ctx context.Context, id string, lastError string) error
+	UpdateRetry(ctx context.Context, id string, workerToken string, nextAttemptAt time.Time, attemptCount int, lastError string) error
+	MarkCompleted(ctx context.Context, id string, workerToken string) error
+	MarkExhausted(ctx context.Context, id string, workerToken string, lastError string) error
 	GetQueueStats(ctx context.Context) (*SagaQueueStats, error)
 }
 

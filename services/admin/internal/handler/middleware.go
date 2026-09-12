@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 
 	platformjwt "tradedrift/platform/jwt"
 	"tradedrift/services/admin/internal/domain"
+	"tradedrift/services/admin/internal/metrics"
 )
 
 type contextKey string
@@ -125,6 +127,74 @@ func StructuredLoggingMiddleware(log *zap.Logger) func(http.Handler) http.Handle
 	}
 }
 
+var (
+	routeSuspendRegex   = regexp.MustCompile(`^/api/v1/admin/users/[^/]+/suspend$`)
+	routeUnsuspendRegex = regexp.MustCompile(`^/api/v1/admin/users/[^/]+/unsuspend$`)
+	routeFreezeRegex    = regexp.MustCompile(`^/api/v1/admin/users/[^/]+/wallets/[^/]+/freeze$`)
+	routeUnfreezeRegex  = regexp.MustCompile(`^/api/v1/admin/users/[^/]+/wallets/[^/]+/unfreeze$`)
+	routeHaltRegex      = regexp.MustCompile(`^/api/v1/admin/markets/[^/]+/halt$`)
+	routeResumeRegex    = regexp.MustCompile(`^/api/v1/admin/markets/[^/]+/resume$`)
+)
+
+// NormalizeRoute maps arbitrary requested paths to strictly bounded, parameterized route patterns
+// preventing Prometheus metric label explosion.
+func NormalizeRoute(pattern, path string) string {
+	if pattern != "" {
+		parts := strings.SplitN(pattern, " ", 2)
+		if len(parts) == 2 {
+			return parts[1]
+		}
+		return pattern
+	}
+
+	switch path {
+	case "/health":
+		return "/health"
+	case "/ready":
+		return "/ready"
+	case "/metrics":
+		return "/metrics"
+	case "/api/v1/admin/system/health":
+		return "/api/v1/admin/system/health"
+	}
+
+	if routeSuspendRegex.MatchString(path) {
+		return "/api/v1/admin/users/{user_id}/suspend"
+	}
+	if routeUnsuspendRegex.MatchString(path) {
+		return "/api/v1/admin/users/{user_id}/unsuspend"
+	}
+	if routeFreezeRegex.MatchString(path) {
+		return "/api/v1/admin/users/{user_id}/wallets/{asset}/freeze"
+	}
+	if routeUnfreezeRegex.MatchString(path) {
+		return "/api/v1/admin/users/{user_id}/wallets/{asset}/unfreeze"
+	}
+	if routeHaltRegex.MatchString(path) {
+		return "/api/v1/admin/markets/{market_id}/halt"
+	}
+	if routeResumeRegex.MatchString(path) {
+		return "/api/v1/admin/markets/{market_id}/resume"
+	}
+
+	return "unmatched"
+}
+
+// MetricsMiddleware tracks HTTP request count and latency histograms with normalized route labels.
+func MetricsMiddleware() func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			rw := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			next.ServeHTTP(rw, r)
+			duration := time.Since(start)
+
+			route := NormalizeRoute(r.Pattern, r.URL.Path)
+			metrics.RecordHTTPRequest(r.Method, route, rw.status, duration)
+		})
+	}
+}
+
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -133,6 +203,13 @@ type statusRecorder struct {
 func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
 }
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

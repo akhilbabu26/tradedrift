@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"net/http"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -13,17 +12,18 @@ import (
 
 	"tradedrift/services/admin/internal/client"
 	"tradedrift/services/admin/internal/repository"
+	"tradedrift/services/admin/internal/service"
 )
 
 // HealthConfig holds endpoint configurations for system health monitoring.
 type HealthConfig struct {
-	AuthGRPCAddr    string
-	WalletGRPCAddr  string
-	TradeHealthURL  string
-	PortHealthURL   string
-	LiqHealthURL    string
-	NotifHealthURL  string
-	KafkaBrokers    []string
+	AuthGRPCAddr   string
+	WalletGRPCAddr string
+	TradeHealthURL string
+	PortHealthURL  string
+	LiqHealthURL   string
+	NotifHealthURL string
+	KafkaBrokers   []string
 }
 
 // HealthHandler serves /health, /ready, and /api/v1/admin/system/health.
@@ -33,9 +33,9 @@ type HealthHandler struct {
 	walletCli      *client.WalletClient
 	outboxRepo     repository.OutboxRepository
 	sagaRepo       repository.SagaRepository
+	healthWorker   *service.HealthWorker
 	cfg            HealthConfig
 	log            *zap.Logger
-	httpClient     *http.Client
 	isShuttingDown atomic.Bool
 }
 
@@ -57,8 +57,12 @@ func NewHealthHandler(
 		sagaRepo:   sagaRepo,
 		cfg:        cfg,
 		log:        log,
-		httpClient: &http.Client{Timeout: 1500 * time.Millisecond},
 	}
+}
+
+// SetHealthWorker attaches the autonomous background health monitor.
+func (h *HealthHandler) SetHealthWorker(hw *service.HealthWorker) {
+	h.healthWorker = hw
 }
 
 // SetShuttingDown marks the service as transitioning to offline (for /ready -> 503).
@@ -99,15 +103,22 @@ func (h *HealthHandler) HandleReadiness(w http.ResponseWriter, r *http.Request) 
 		checks["postgres"] = "ok"
 	}
 
-	// 2. Kafka check
+	// 2. Kafka check (considered ready if at least one configured broker is reachable)
 	if len(h.cfg.KafkaBrokers) > 0 {
-		conn, err := kafka.DialContext(ctx, "tcp", h.cfg.KafkaBrokers[0])
-		if err != nil {
+		kafkaOK := false
+		for _, broker := range h.cfg.KafkaBrokers {
+			conn, err := kafka.DialContext(ctx, "tcp", broker)
+			if err == nil {
+				_ = conn.Close()
+				kafkaOK = true
+				break
+			}
+		}
+		if kafkaOK {
+			checks["kafka"] = "ok"
+		} else {
 			checks["kafka"] = "unavailable"
 			allReady = false
-		} else {
-			_ = conn.Close()
-			checks["kafka"] = "ok"
 		}
 	} else {
 		checks["kafka"] = "ok"
@@ -148,204 +159,30 @@ func (h *HealthHandler) HandleReadiness(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-// ServiceStatusReport is the health status of a single TradeDrift subsystem.
-type ServiceStatusReport struct {
-	Name        string `json:"name"`
-	Status      string `json:"status"` // "UP", "DEGRADED", "DOWN", "TIMEOUT"
-	LatencyMs   int64  `json:"latency_ms"`
-	HTTPStatus  int    `json:"http_status,omitempty"`
-	Error       string `json:"error,omitempty"`
-}
+// Type aliases ensuring full backward-compatibility while HealthWorker remains the single source of truth.
+type ServiceStatusReport = service.ServiceStatusReport
+type AdminHealthReport = service.AdminHealthReport
+type SystemHealthResponse = service.SystemHealthResponse
 
-// SystemHealthResponse is the comprehensive diagnostic view of the whole TradeDrift platform.
-type SystemHealthResponse struct {
-	OverallStatus string                          `json:"overall_status"` // "HEALTHY", "DEGRADED", "UNHEALTHY"
-	Timestamp     string                          `json:"timestamp"`
-	Services      map[string]ServiceStatusReport `json:"services"`
-	AdminInternal map[string]interface{}          `json:"admin_internal"`
-}
-
-// HandleSystemHealth aggregates the health of all TradeDrift services concurrently with individual timeouts.
+// HandleSystemHealth serves the comprehensive platform diagnostic health report.
+// It delegates strictly to the autonomous background HealthWorker (single source of truth).
+// Note: This endpoint returns HTTP 200 on successful diagnostic delivery. Downstream component
+// outages or degradations are reflected within the payload's "overall_status" and "services" fields.
 func (h *HealthHandler) HandleSystemHealth(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
-	defer cancel()
-
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	services := make(map[string]ServiceStatusReport)
-
-	addReport := func(name string, rep ServiceStatusReport) {
-		mu.Lock()
-		defer mu.Unlock()
-		services[name] = rep
-	}
-
-	// Target endpoints to probe concurrently
-	probes := []struct {
-		name string
-		url  string
-	}{
-		{"trade", h.cfg.TradeHealthURL},
-		{"portfolio", h.cfg.PortHealthURL},
-		{"liquidity_engine", h.cfg.LiqHealthURL},
-		{"notification", h.cfg.NotifHealthURL},
-	}
-
-	// 1. Concurrently probe HTTP-based services
-	for _, p := range probes {
-		if p.url == "" {
-			continue
-		}
-		wg.Add(1)
-		go func(name, url string) {
-			defer wg.Done()
-			rep := h.probeHTTPService(ctx, name, url)
-			addReport(name, rep)
-		}(p.name, p.url)
-	}
-
-	// 2. Concurrently probe gRPC services
-	if h.authCli != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			start := time.Now()
-			status := "UP"
-			var errStr string
-			if err := h.authCli.Ping(ctx); err != nil {
-				status = "DOWN"
-				errStr = err.Error()
-			}
-			addReport("auth", ServiceStatusReport{
-				Name:      "auth",
-				Status:    status,
-				LatencyMs: time.Since(start).Milliseconds(),
-				Error:     errStr,
-			})
-		}()
-	}
-
-	if h.walletCli != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			start := time.Now()
-			status := "UP"
-			var errStr string
-			if err := h.walletCli.Ping(ctx); err != nil {
-				status = "DOWN"
-				errStr = err.Error()
-			}
-			addReport("wallet", ServiceStatusReport{
-				Name:      "wallet",
-				Status:    status,
-				LatencyMs: time.Since(start).Milliseconds(),
-				Error:     errStr,
-			})
-		}()
-	}
-
-	// 3. Concurrently probe Postgres
-	if h.dbPool != nil {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			start := time.Now()
-			status := "UP"
-			var errStr string
-			if err := h.dbPool.Ping(ctx); err != nil {
-				status = "DOWN"
-				errStr = err.Error()
-			}
-			addReport("postgres", ServiceStatusReport{
-				Name:      "postgres",
-				Status:    status,
-				LatencyMs: time.Since(start).Milliseconds(),
-				Error:     errStr,
-			})
-		}()
-	}
-
-	// 4. Concurrently probe Kafka
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		start := time.Now()
-		status := "UP"
-		var errStr string
-		if len(h.cfg.KafkaBrokers) > 0 {
-			conn, err := kafka.DialContext(ctx, "tcp", h.cfg.KafkaBrokers[0])
-			if err != nil {
-				status = "DOWN"
-				errStr = err.Error()
-			} else {
-				_ = conn.Close()
-			}
-		}
-		addReport("kafka", ServiceStatusReport{
-			Name:      "kafka",
-			Status:    status,
-			LatencyMs: time.Since(start).Milliseconds(),
-			Error:     errStr,
+	if h.healthWorker == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "health_monitor_unavailable",
 		})
-	}()
-
-	wg.Wait()
-
-	// 5. Gather internal admin operational metrics
-	outboxStats, _ := h.outboxRepo.GetBacklogStats(ctx)
-	sagaStats, _ := h.sagaRepo.GetQueueStats(ctx)
-
-	// 6. Compute overall aggregated status
-	overall := "HEALTHY"
-	downCount := 0
-	for _, rep := range services {
-		if rep.Status == "DOWN" || rep.Status == "TIMEOUT" {
-			downCount++
-		} else if rep.Status == "DEGRADED" && overall == "HEALTHY" {
-			overall = "DEGRADED"
-		}
-	}
-	if downCount > 0 {
-		if services["postgres"].Status == "DOWN" || services["auth"].Status == "DOWN" || services["wallet"].Status == "DOWN" {
-			overall = "UNHEALTHY"
-		} else {
-			overall = "DEGRADED"
-		}
+		return
 	}
 
-	resp := SystemHealthResponse{
-		OverallStatus: overall,
-		Timestamp:     time.Now().UTC().Format(time.RFC3339),
-		Services:      services,
-		AdminInternal: map[string]interface{}{
-			"outbox": outboxStats,
-			"saga":   sagaStats,
-		},
+	latest := h.healthWorker.GetLatestHealth()
+	if latest == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"status": "health_snapshot_unavailable",
+		})
+		return
 	}
 
-	writeJSON(w, http.StatusOK, resp)
-}
-
-func (h *HealthHandler) probeHTTPService(ctx context.Context, name, url string) ServiceStatusReport {
-	start := time.Now()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return ServiceStatusReport{Name: name, Status: "DOWN", Error: err.Error()}
-	}
-
-	resp, err := h.httpClient.Do(req)
-	duration := time.Since(start).Milliseconds()
-	if err != nil {
-		if ctx.Err() != nil {
-			return ServiceStatusReport{Name: name, Status: "TIMEOUT", LatencyMs: duration, Error: "request timed out"}
-		}
-		return ServiceStatusReport{Name: name, Status: "DOWN", LatencyMs: duration, Error: err.Error()}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		return ServiceStatusReport{Name: name, Status: "UP", LatencyMs: duration, HTTPStatus: resp.StatusCode}
-	}
-	return ServiceStatusReport{Name: name, Status: "DEGRADED", LatencyMs: duration, HTTPStatus: resp.StatusCode}
+	writeJSON(w, http.StatusOK, latest)
 }

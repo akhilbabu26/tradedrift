@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"net"
 	"time"
 
 	"google.golang.org/grpc"
@@ -17,8 +18,9 @@ import (
 
 // AuthClient wraps the Auth gRPC client with correlation metadata injection and error classification.
 type AuthClient struct {
-	client authv1.AuthServiceClient
-	conn   *grpc.ClientConn
+	client   authv1.AuthServiceClient
+	conn     *grpc.ClientConn
+	grpcAddr string
 }
 
 // NewAuthClient creates a gRPC connection to the Auth service.
@@ -29,7 +31,7 @@ func NewAuthClient(grpcAddr string) (*AuthClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("auth_client: dial %s: %w", grpcAddr, err)
 	}
-	return &AuthClient{client: authv1.NewAuthServiceClient(conn), conn: conn}, nil
+	return &AuthClient{client: authv1.NewAuthServiceClient(conn), conn: conn, grpcAddr: grpcAddr}, nil
 }
 
 // Close releases the underlying gRPC connection.
@@ -40,7 +42,9 @@ func (c *AuthClient) Close() error {
 	return nil
 }
 
-// Ping checks if the underlying connection to Auth service is healthy.
+// Ping performs a transport-level connectivity probe against the Auth service endpoint.
+// Note: Auth service does not expose a native gRPC Health RPC in auth.proto (like Wallet does in wallet.proto);
+// this verifies active TCP reachability and gRPC transport connection state.
 func (c *AuthClient) Ping(ctx context.Context) error {
 	if c == nil || c.conn == nil {
 		return fmt.Errorf("auth_client: connection is nil")
@@ -49,6 +53,13 @@ func (c *AuthClient) Ping(ctx context.Context) error {
 	if state == connectivity.TransientFailure || state == connectivity.Shutdown {
 		return fmt.Errorf("auth_client: connection state is %s", state.String())
 	}
+	// Active network probe with timeout
+	d := net.Dialer{Timeout: 1 * time.Second}
+	dialConn, err := d.DialContext(ctx, "tcp", c.grpcAddr)
+	if err != nil {
+		return fmt.Errorf("auth_client: tcp dial probe to %s failed: %w", c.grpcAddr, err)
+	}
+	_ = dialConn.Close()
 	return nil
 }
 

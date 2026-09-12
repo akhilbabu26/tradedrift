@@ -1,0 +1,62 @@
+groups:
+  - name: tradedrift-admin-alerts
+    rules:
+      - alert: AdminSagaTaskExhausted
+        expr: increase(tradedrift_admin_saga_tasks_total{result="EXHAUSTED"}[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: admin
+        annotations:
+          summary: "Admin Saga Task Exhausted: Immediate Manual Intervention Required"
+          description: "An administrative saga task (e.g. Auth session invalidation) has exceeded all retry attempts and failed permanently."
+
+      - alert: AdminOutboxBacklogSpike
+        expr: tradedrift_admin_outbox_backlog_depth > 50 or tradedrift_admin_outbox_oldest_unpublished_seconds > 120
+        for: 2m
+        labels:
+          severity: warning
+          service: admin
+        annotations:
+          summary: "Admin Outbox Backlog Spike or Lag Detected"
+          description: "Admin outbox events backlog is > 50 or oldest event unpublished age exceeds 120s."
+
+      - alert: AdminServiceDown
+        expr: up{job="admin"} == 0 or absent(up{job="admin"}) == 1
+        for: 1m
+        labels:
+          severity: critical
+          service: admin
+        annotations:
+          summary: "TradeDrift Admin Service is Down"
+          description: "Prometheus cannot scrape TradeDrift Admin Service at admin:8085."
+
+      - alert: CriticalDependencyDown
+        expr: tradedrift_admin_system_overall_status == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: admin
+        annotations:
+          summary: "TradeDrift Critical Dependency Down"
+          description: "Platform overall status has fallen to UNHEALTHY due to a core dependency outage (Auth, Wallet, Trade, Portfolio, Liquidity Engine, or Postgres)."
+
+      - alert: AdminHealthProbeStale
+        expr: time() - tradedrift_admin_health_probe_last_run_timestamp_seconds > 60
+        for: 1m
+        labels:
+          severity: warning
+          service: admin
+        annotations:
+          summary: "Admin Health Probe Stale (HealthWorker not reporting)"
+          description: "The background HealthWorker has not successfully recorded a health probe run in the last 60 seconds."
+
+      - alert: HighAdminErrorRate
+        expr: (sum(rate(tradedrift_admin_http_requests_total{status=~"5.."}[5m])) / sum(rate(tradedrift_admin_http_requests_total[5m])) > 0.05) and (sum(rate(tradedrift_admin_http_requests_total[5m])) > 0)
+        for: 5m
+        labels:
+          severity: warning
+          service: admin
+        annotations:
+          summary: "High Admin HTTP 5xx Error Rate (> 5%)"
+          description: "Admin service HTTP 5xx error responses represent more than 5% of all traffic over the last 5 minutes."

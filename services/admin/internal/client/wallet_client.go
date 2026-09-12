@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 
@@ -38,14 +37,17 @@ func (c *WalletClient) Close() error {
 	return nil
 }
 
-// Ping checks if the underlying connection to Wallet service is healthy.
+// Ping performs a real Health RPC check to verify the Wallet service is actually responding.
 func (c *WalletClient) Ping(ctx context.Context) error {
-	if c == nil || c.conn == nil {
-		return fmt.Errorf("wallet_client: connection is nil")
+	if c == nil || c.client == nil {
+		return fmt.Errorf("wallet_client: client is nil")
 	}
-	state := c.conn.GetState()
-	if state == connectivity.TransientFailure || state == connectivity.Shutdown {
-		return fmt.Errorf("wallet_client: connection state is %s", state.String())
+	callCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+	defer cancel()
+
+	_, err := c.client.Health(callCtx, &walletv1.HealthRequest{})
+	if err != nil {
+		return fmt.Errorf("wallet_client: health rpc failed: %w", err)
 	}
 	return nil
 }

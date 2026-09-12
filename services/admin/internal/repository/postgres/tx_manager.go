@@ -69,6 +69,47 @@ func (t *txManager) ExecAdminOperationTx(ctx context.Context, req repository.Adm
 	return &repository.AdminOperationTxResult{Operation: req.Operation}, nil
 }
 
+// CompleteAuthSaga atomically transitions both the admin_operation and its associated
+// admin_saga_task to COMPLETED in a single PostgreSQL transaction. This eliminates race
+// conditions where the background SagaWorker re-runs an already-succeeded Auth invalidation.
+func (t *txManager) CompleteAuthSaga(ctx context.Context, opID string, sagaID string, responseBody []byte) error {
+	tx, err := t.db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fmt.Errorf("tx_manager: begin complete auth saga tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// 1. Mark admin operation completed
+	_, err = tx.Exec(ctx, `
+		UPDATE admin_operations
+		SET status        = 'COMPLETED',
+		    response_body = $1,
+		    updated_at    = NOW()
+		WHERE id = $2`,
+		responseBody, opID,
+	)
+	if err != nil {
+		return fmt.Errorf("tx_manager: update operation completed: %w", err)
+	}
+
+	// 2. Mark saga task completed
+	_, err = tx.Exec(ctx, `
+		UPDATE admin_saga_tasks
+		SET status       = 'COMPLETED',
+		    completed_at = NOW(),
+		    locked_at    = NULL,
+		    locked_by    = NULL,
+		    updated_at   = NOW()
+		WHERE id = $1`,
+		sagaID,
+	)
+	if err != nil {
+		return fmt.Errorf("tx_manager: update saga task completed: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
 // ─── Transactional helpers ────────────────────────────────────────────────────
 
 func insertAuditLogTx(ctx context.Context, tx pgx.Tx, log *domain.AuditLog) error {

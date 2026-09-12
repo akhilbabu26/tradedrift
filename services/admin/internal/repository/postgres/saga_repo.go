@@ -89,7 +89,8 @@ func (r *sagaRepo) FetchDue(ctx context.Context, workerToken string, limit int) 
 }
 
 // UpdateRetry advances the retry schedule after a failed attempt.
-func (r *sagaRepo) UpdateRetry(ctx context.Context, id string, nextAttemptAt time.Time, attemptCount int, lastError string) error {
+// Strictly verifies worker lease ownership (locked_by).
+func (r *sagaRepo) UpdateRetry(ctx context.Context, id string, workerToken string, nextAttemptAt time.Time, attemptCount int, lastError string) error {
 	query := `
 		UPDATE admin_saga_tasks
 		SET status          = 'RETRYING',
@@ -99,17 +100,21 @@ func (r *sagaRepo) UpdateRetry(ctx context.Context, id string, nextAttemptAt tim
 		    locked_at       = NULL,
 		    locked_by       = NULL,
 		    updated_at      = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND locked_by = $5
 	`
-	_, err := r.db.Exec(ctx, query, id, attemptCount, nextAttemptAt, lastError)
+	tag, err := r.db.Exec(ctx, query, id, attemptCount, nextAttemptAt, lastError, workerToken)
 	if err != nil {
 		return fmt.Errorf("saga_repo: update retry: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrWorkerLeaseLost
 	}
 	return nil
 }
 
 // MarkCompleted transitions the task to the COMPLETED terminal state.
-func (r *sagaRepo) MarkCompleted(ctx context.Context, id string) error {
+// Strictly verifies worker lease ownership (locked_by).
+func (r *sagaRepo) MarkCompleted(ctx context.Context, id string, workerToken string) error {
 	query := `
 		UPDATE admin_saga_tasks
 		SET status       = 'COMPLETED',
@@ -117,17 +122,21 @@ func (r *sagaRepo) MarkCompleted(ctx context.Context, id string) error {
 		    locked_at    = NULL,
 		    locked_by    = NULL,
 		    updated_at   = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND locked_by = $2
 	`
-	_, err := r.db.Exec(ctx, query, id)
+	tag, err := r.db.Exec(ctx, query, id, workerToken)
 	if err != nil {
 		return fmt.Errorf("saga_repo: mark completed: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrWorkerLeaseLost
 	}
 	return nil
 }
 
 // MarkExhausted transitions the task to the EXHAUSTED terminal state.
-func (r *sagaRepo) MarkExhausted(ctx context.Context, id string, lastError string) error {
+// Strictly verifies worker lease ownership (locked_by).
+func (r *sagaRepo) MarkExhausted(ctx context.Context, id string, workerToken string, lastError string) error {
 	query := `
 		UPDATE admin_saga_tasks
 		SET status      = 'EXHAUSTED',
@@ -135,11 +144,14 @@ func (r *sagaRepo) MarkExhausted(ctx context.Context, id string, lastError strin
 		    locked_at   = NULL,
 		    locked_by   = NULL,
 		    updated_at  = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND locked_by = $3
 	`
-	_, err := r.db.Exec(ctx, query, id, lastError)
+	tag, err := r.db.Exec(ctx, query, id, lastError, workerToken)
 	if err != nil {
 		return fmt.Errorf("saga_repo: mark exhausted: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrWorkerLeaseLost
 	}
 	return nil
 }

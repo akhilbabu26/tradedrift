@@ -24,4 +24,7 @@ var (
 	// Downstream
 	ErrAuthUnavailable   = errors.New("auth service temporarily unavailable")
 	ErrWalletUnavailable = errors.New("wallet service temporarily unavailable")
+
+	// Worker Leasing
+	ErrWorkerLeaseLost = errors.New("worker lease lost or expired; operation aborted")
 )

@@ -10,6 +10,7 @@ COPY go.work go.work.sum ./
 COPY platform/                  ./platform/
 COPY services/auth/             ./services/auth/
 COPY services/wallet/           ./services/wallet/
+COPY services/wallet-topup/     ./services/wallet-topup/
 COPY services/gateway/          ./services/gateway/
 COPY services/order/            ./services/order/
 COPY services/market/           ./services/market/

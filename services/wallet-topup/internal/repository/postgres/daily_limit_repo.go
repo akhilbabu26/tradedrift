@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -136,7 +137,7 @@ func (r *DailyLimitRepo) GetDailyUsage(ctx context.Context, userID, usageDate st
 	`
 	row := r.db.QueryRow(ctx, query, userID, usageDate)
 	var limit domain.DailyTopUpLimit
-	var uDate string
+	var uDate time.Time
 	err := row.Scan(
 		&limit.UserID,
 		&uDate,
@@ -156,7 +157,7 @@ func (r *DailyLimitRepo) GetDailyUsage(ctx context.Context, userID, usageDate st
 		}
 		return nil, fmt.Errorf("failed to fetch daily topup limit: %w", err)
 	}
-	limit.UsageDate = uDate
+	limit.UsageDate = uDate.Format("2006-01-02")
 	return &limit, nil
 }
 

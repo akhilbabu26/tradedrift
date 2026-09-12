@@ -74,7 +74,7 @@ func (s *WebhookService) ProcessWebhook(ctx context.Context, provider string, ra
 		return fmt.Errorf("failed to generate webhook event ID: %w", err)
 	}
 
-	// ── 1. Cryptographic Verification & Replay Protection ─────────────────────
+	// ── 1.Verify HMAC SHA256 signature/Cryptographic Verification & Replay Protection ─────────────────────
 	if err := s.verifier.Verify(provider, rawPayload, signature, timestamp); err != nil {
 		s.log.Warn("ProcessWebhook: signature verification or replay check failed",
 			zap.String("provider", provider),
@@ -177,8 +177,8 @@ func (s *WebhookService) ProcessWebhook(ctx context.Context, provider string, ra
 		return lookupErr
 	}
 
-	// Validate provider matches order
-	if order.Provider != provider {
+	// Validate provider matches order (case-insensitive)
+	if !strings.EqualFold(order.Provider, provider) {
 		s.log.Warn("ProcessWebhook: provider mismatch",
 			zap.String("expectedProvider", order.Provider),
 			zap.String("receivedProvider", provider),

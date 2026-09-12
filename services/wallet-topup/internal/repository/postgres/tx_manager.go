@@ -25,7 +25,21 @@ func NewPostgresTxManager(db *pgxpool.Pool) *PostgresTxManager {
 	return &PostgresTxManager{db: db}
 }
 
-// ProcessPaymentConfirmationTx executes the complete webhook confirmation inside a single atomic transaction.
+// ProcessPaymentConfirmationTx executes the complete webhook payment confirmation
+// inside a single unified atomic PostgreSQL transaction.
+//
+// WHY THIS EXISTS / PROBLEM SOLVED:
+// Payment providers (like Razorpay) send webhooks over the public internet. Webhooks can be:
+//  1. Retried multiple times (at-least-once delivery, network timeouts).
+//  2. Delayed across midnight (order created at 23:59 Day 1, paid at 00:02 Day 2).
+//  3. Delayed past order expiration (user completed payment on UPI after our 15m timer expired).
+//
+// This method handles ALL these edge cases atomically:
+//  - Prevents double crediting via row locks (SELECT ... FOR UPDATE).
+//  - Transitions daily limits from 'reserved_inr' to 'consumed_inr'.
+//  - Handles cross-midnight daily limit accounting without exceeding caps.
+//  - Flags expired orders that received late payments as 'REFUND_REQUIRED'.
+//  - Marks the webhook event as 'PROCESSED' all within the exact same COMMIT.
 func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 	ctx context.Context,
 	orderID string,
@@ -42,7 +56,10 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 	}
 	defer tx.Rollback(ctx)
 
-	// ── 1. Check/Lock Webhook Event Deduplication ──────────────────────────────
+	// ── STEP 1: Webhook Event Deduplication (Idempotency) ──────────────────────
+	// Webhook providers frequently retry the same webhook if an ACK is delayed.
+	// We query the webhook_events table for this specific (provider, event_id).
+	// Locking with FOR UPDATE ensures concurrent duplicate webhooks queue sequentially.
 	var existingWebhookID string
 	var existingWebhookStatus string
 	err = tx.QueryRow(ctx, `
@@ -53,12 +70,14 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 
 	webhookRowID := existingWebhookID
 	if err == nil {
+		// If this exact webhook was already completely processed in the past,
+		// we exit immediately and return AlreadyProcessed=true.
+		// The caller will respond with HTTP 200 OK without re-running financial mutations.
 		if existingWebhookStatus == domain.WebhookStatusProcessed {
-			// Already completely processed -> idempotent 200 OK
 			return &repository.PaymentConfirmationResult{AlreadyProcessed: true}, nil
 		}
 	} else if errors.Is(err, pgx.ErrNoRows) {
-		// New event -> insert with status = RECEIVED
+		// This is a brand new webhook event: record it in state 'RECEIVED'.
 		webhookRowID, err = platformuuid.New()
 		if err != nil {
 			return nil, fmt.Errorf("failed to generate webhook event ID: %w", err)
@@ -70,6 +89,8 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 		`, webhookRowID, provider, eventID, paymentID, rawPayload, domain.WebhookStatusReceived)
 		if err != nil {
 			var pgErr *pgconn.PgError
+			// PostgreSQL Error 23505 = unique_violation.
+			// Protects against simultaneous race conditions where two identical webhooks hit at the exact same millisecond.
 			if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 				return &repository.PaymentConfirmationResult{AlreadyProcessed: true}, nil
 			}
@@ -79,7 +100,9 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 		return nil, fmt.Errorf("failed to query webhook event: %w", err)
 	}
 
-	// ── 2. Lock Order Row Deterministically (FOR UPDATE) ──────────────────────
+	// ── STEP 2: Lock Order Row Deterministically (Pessimistic Row Locking) ────
+	// We lock the specific topup_order row using SELECT ... FOR UPDATE.
+	// This serializes all operations on this order, preventing concurrent status transitions.
 	var order domain.TopUpOrder
 	var rDate time.Time
 	err = tx.QueryRow(ctx, `
@@ -100,11 +123,12 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 	}
 	order.ReservationDate = rDate.Format("2006-01-02")
 
-	// Check existing order status
+	// ── STEP 2A: Check if Order is Already Completed or Being Credited ─────────
+	// If the order has already moved forward to CREDIT_PENDING, CREDIT_PROCESSING, or COMPLETED,
+	// money has already been accounted for. Mark the webhook as PROCESSED and return success.
 	if order.Status == domain.StatusCreditPending ||
 		order.Status == domain.StatusCreditProcessing ||
 		order.Status == domain.StatusCompleted {
-		// Mark webhook PROCESSED and return success
 		_, _ = tx.Exec(ctx, `
 			UPDATE webhook_events SET status = $1, processed_at = NOW() WHERE id = $2;
 		`, domain.WebhookStatusProcessed, webhookRowID)
@@ -114,8 +138,19 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 		return &repository.PaymentConfirmationResult{AlreadyProcessed: true, Order: &order}, nil
 	}
 
+	// ── STEP 2B: Late-Arriving Webhook on Expired Order (Refund Defense) ───────
+	// RACE CONDITION SCENARIO:
+	// 1. User created order with 15-minute expiry.
+	// 2. 15 minutes passed -> ExpiryWorker marked order EXPIRED and released the reserved ₹10 quota.
+	// 3. User immediately created a new order with that released quota.
+	// 4. LATER, the bank completes the old payment and sends a delayed "payment.captured" webhook!
+	//
+	// CRITICAL ACTION:
+	// - We CANNOT fulfill/credit this order because the user's daily quota was already released!
+	// - We CANNOT ignore it because the bank took the user's real money!
+	// - SOLUTION: Mark the order as 'REFUND_REQUIRED' with the payment ID.
+	//   This protects our quota invariant while queuing the user's funds for a bank refund.
 	if order.Status == domain.StatusExpired {
-		// Payment captured after order expired -> REFUND_REQUIRED
 		_, err = tx.Exec(ctx, `
 			UPDATE topup_orders
 			SET status = $1, payment_id = $2, last_error = 'payment captured after order expiration', updated_at = NOW()
@@ -134,13 +169,19 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 		return &repository.PaymentConfirmationResult{AlreadyProcessed: false, Order: &order}, nil
 	}
 
+	// If the order is in any state other than PAYMENT_PENDING (e.g. FAILED, REFUND_REQUIRED),
+	// it cannot receive payment confirmation.
 	if order.Status != domain.StatusPaymentPending {
 		return nil, domain.ErrOrderTerminalStatus
 	}
 
-	// ── 3. Quota Accounting & Order State Transition ──────────────────────────
+	// ── STEP 3: Daily Limit Quota Accounting & Order Status Transition ─────────
 	if order.ReservationDate == paidDate {
-		// Same-day: shift reserved -> consumed atomically
+		// CASE 1: Same-Day Payment (Standard Flow)
+		// The order was created and paid on the exact same calendar day (IST).
+		// We atomically convert the reserved quota to consumed quota:
+		//   reserved_inr = reserved_inr - amount
+		//   consumed_inr = consumed_inr + amount
 		tag, err := tx.Exec(ctx, `
 			UPDATE daily_topup_limits
 			SET reserved_inr = reserved_inr - $1,
@@ -157,7 +198,8 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 			return nil, fmt.Errorf("invariant violation: cannot consume %d INR reserved quota", order.INRAmount)
 		}
 
-		// Transition order to CREDIT_PENDING
+		// Move order status from PAYMENT_PENDING -> CREDIT_PENDING
+		// This signals the background ReconcilerWorker to credit USDT to the user's wallet.
 		_, err = tx.Exec(ctx, `
 			UPDATE topup_orders
 			SET status     = $1,
@@ -170,8 +212,11 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 		}
 		order.Status = domain.StatusCreditPending
 	} else {
-		// Cross-midnight:
-		// 1. Release Day 1 reserved
+		// CASE 2: Cross-Midnight Payment
+		// Example: Order created at 23:55 on Monday (Day 1), but user paid at 00:05 on Tuesday (Day 2).
+		// Indian financial rules attribute daily limits to the actual payment capture date.
+		//
+		// Step 1: Release Day 1's reserved quota (unblocking yesterday's allocation).
 		tag, err := tx.Exec(ctx, `
 			UPDATE daily_topup_limits
 			SET reserved_inr = reserved_inr - $1,
@@ -187,7 +232,7 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 			return nil, fmt.Errorf("invariant violation: Day 1 reserved quota < %d", order.INRAmount)
 		}
 
-		// 2. Ensure Day 2 record exists
+		// Step 2: Ensure Day 2's daily quota row exists in the database.
 		_, err = tx.Exec(ctx, `
 			INSERT INTO daily_topup_limits (user_id, usage_date, limit_inr, reserved_inr, consumed_inr)
 			VALUES ($1, $2, $3, 0, 0)
@@ -197,7 +242,8 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 			return nil, fmt.Errorf("failed to ensure Day 2 limit record: %w", err)
 		}
 
-		// 3. Attempt Day 2 consumption
+		// Step 3: Attempt to charge Day 2's consumed quota.
+		// Conditional check: (reserved + consumed + amount) <= limit_inr
 		tag, err = tx.Exec(ctx, `
 			UPDATE daily_topup_limits
 			SET consumed_inr = consumed_inr + $1,
@@ -211,7 +257,7 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 		}
 
 		if tag.RowsAffected() == 1 {
-			// Day 2 quota available -> CREDIT_PENDING
+			// Day 2 has sufficient quota available -> Order can be fulfilled!
 			_, err = tx.Exec(ctx, `
 				UPDATE topup_orders
 				SET status     = $1,
@@ -224,7 +270,9 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 			}
 			order.Status = domain.StatusCreditPending
 		} else {
-			// Day 2 quota exhausted -> REFUND_REQUIRED (consumed is NOT incremented!)
+			// Day 2 quota is already exhausted! (e.g., user already topped up ₹10 on Day 2 morning).
+			// Fulfilling this order would breach the ₹10 daily regulatory limit.
+			// Transition order to REFUND_REQUIRED so money is returned safely.
 			_, err = tx.Exec(ctx, `
 				UPDATE topup_orders
 				SET status     = $1,
@@ -240,7 +288,8 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 		}
 	}
 
-	// ── 4. Mark Webhook Event PROCESSED in Same Transaction ───────────────────
+	// ── STEP 4: Mark Webhook Event PROCESSED ───────────────────────────────────
+	// Everything succeeded. Mark this webhook event as PROCESSED so future retries are skipped.
 	_, err = tx.Exec(ctx, `
 		UPDATE webhook_events
 		SET status       = $1,
@@ -251,7 +300,8 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 		return nil, fmt.Errorf("failed to update webhook event status: %w", err)
 	}
 
-	// ── 5. Commit Transaction ─────────────────────────────────────────────────
+	// ── STEP 5: Commit Everything Atomically ───────────────────────────────────
+	// Either all mutations commit together, or none do (zero partial state changes).
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("failed to commit webhook transaction: %w", err)
 	}
@@ -262,7 +312,14 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 	}, nil
 }
 
-// ExpireOrderAndReleaseQuotaTx atomically expires an order and releases its reserved quota.
+// ExpireOrderAndReleaseQuotaTx atomically cancels an unpaid expired order and
+// returns the held quota back to the user in a single transaction.
+//
+// WHY THIS EXISTS:
+// When a user initiates a top-up, we pre-reserve quota (e.g. ₹2) to prevent daily limit bypass.
+// If the user abandons payment or closes their browser, their ₹2 quota is trapped in 'reserved_inr'.
+// The ExpiryWorker runs every 30s, finds orders where expires_at < NOW(), and calls this function
+// to mark the order EXPIRED and decrement 'reserved_inr' so the user can use their quota again.
 func (m *PostgresTxManager) ExpireOrderAndReleaseQuotaTx(
 	ctx context.Context,
 	orderID string,
@@ -276,7 +333,9 @@ func (m *PostgresTxManager) ExpireOrderAndReleaseQuotaTx(
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Mark order EXPIRED
+	// 1. Mark order as EXPIRED (only if it is still in PAYMENT_PENDING or INITIATED state).
+	// If a payment webhook just confirmed the order a millisecond ago, status will not match,
+	// RowsAffected will be 0, and this will safely abort without rolling back real payment.
 	orderTag, err := tx.Exec(ctx, `
 		UPDATE topup_orders
 		SET status = $1, updated_at = NOW()
@@ -289,7 +348,7 @@ func (m *PostgresTxManager) ExpireOrderAndReleaseQuotaTx(
 		return domain.ErrOrderTerminalStatus
 	}
 
-	// 2. Release reserved quota
+	// 2. Release reserved quota (+amount back to user's available daily limit)
 	quotaTag, err := tx.Exec(ctx, `
 		UPDATE daily_topup_limits
 		SET reserved_inr = reserved_inr - $1,
@@ -308,7 +367,14 @@ func (m *PostgresTxManager) ExpireOrderAndReleaseQuotaTx(
 	return tx.Commit(ctx)
 }
 
-// InitiateTopUpTx creates order in INITIATED status and reserves quota atomically.
+// InitiateTopUpTx pre-reserves daily quota and inserts the top-up order in 'INITIATED' status.
+//
+// WHY THIS EXISTS:
+// When a user clicks "Top Up", we MUST reserve their quota BEFORE calling the external payment gateway.
+// If we called Razorpay first and 5 concurrent requests hit simultaneously, a user could bypass
+// the ₹10 limit by opening 5 orders at once (TOCTOU race condition).
+// By inserting 'INITIATED' and incrementing 'reserved_inr' in an atomic DB transaction,
+// the daily limit is strictly enforced before external network I/O begins.
 func (m *PostgresTxManager) InitiateTopUpTx(
 	ctx context.Context,
 	order *domain.TopUpOrder,
@@ -320,7 +386,8 @@ func (m *PostgresTxManager) InitiateTopUpTx(
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Check idempotency key under transaction lock
+	// 1. Check idempotency key under transaction row lock (FOR UPDATE).
+	// Prevents duplicate charges if the user double-clicks or their client retries.
 	var existing domain.TopUpOrder
 	err = tx.QueryRow(ctx, `
 		SELECT id, inr_amount, status
@@ -330,16 +397,18 @@ func (m *PostgresTxManager) InitiateTopUpTx(
 	`, order.UserID, order.IdempotencyKey).Scan(&existing.ID, &existing.INRAmount, &existing.Status)
 
 	if err == nil {
+		// If the request was retried with the exact same amount, return the existing order.
 		if existing.INRAmount == order.INRAmount {
 			_ = tx.Rollback(ctx)
 			return &existing, nil
 		}
+		// If the same key was sent with a different amount, reject it as a conflict!
 		return nil, domain.ErrIdempotencyConflict
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, fmt.Errorf("failed to check idempotency key: %w", err)
 	}
 
-	// 2. Ensure daily limit record exists
+	// 2. Ensure today's daily limit record exists for the user.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO daily_topup_limits (user_id, usage_date, limit_inr, reserved_inr, consumed_inr)
 		VALUES ($1, $2, $3, 0, 0)
@@ -349,7 +418,9 @@ func (m *PostgresTxManager) InitiateTopUpTx(
 		return nil, fmt.Errorf("failed to ensure daily limit record: %w", err)
 	}
 
-	// 3. Atomically reserve quota
+	// 3. Atomically reserve quota.
+	// The WHERE clause ensures (reserved_inr + consumed_inr + amount) <= limit_inr.
+	// If the user has already used their ₹10 limit, 0 rows are affected and we return ErrDailyLimitExceeded.
 	quotaTag, err := tx.Exec(ctx, `
 		UPDATE daily_topup_limits
 		SET reserved_inr = reserved_inr + $1,
@@ -365,7 +436,8 @@ func (m *PostgresTxManager) InitiateTopUpTx(
 		return nil, domain.ErrDailyLimitExceeded
 	}
 
-	// 4. Insert order in INITIATED status
+	// 4. Insert the new order in 'INITIATED' status.
+	// Database unique constraint uq_topup_user_idempotency guarantees exactly-once creation.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO topup_orders (
 			id, user_id, idempotency_key, inr_amount, usdt_amount, reservation_date,
@@ -386,10 +458,11 @@ func (m *PostgresTxManager) InitiateTopUpTx(
 		return nil, fmt.Errorf("failed to commit initiate topup tx: %w", err)
 	}
 
-	return nil, nil // proceed to provider
+	return nil, nil // Proceed to call the payment provider
 }
 
-// ActivatePaymentPending moves an INITIATED order to PAYMENT_PENDING with provider order ID.
+// ActivatePaymentPending transitions an order from 'INITIATED' to 'PAYMENT_PENDING'
+// once the payment gateway has successfully created the external checkout order.
 func (m *PostgresTxManager) ActivatePaymentPending(ctx context.Context, orderID, providerOrderID string) error {
 	query := `
 		UPDATE topup_orders
@@ -408,7 +481,13 @@ func (m *PostgresTxManager) ActivatePaymentPending(ctx context.Context, orderID,
 	return nil
 }
 
-// CancelInitiatedOrderTx cancels an INITIATED order and releases reserved quota atomically.
+// CancelInitiatedOrderTx cancels an 'INITIATED' order if calling the payment provider fails.
+//
+// WHY THIS EXISTS:
+// If Razorpay or the mock gateway experiences a network timeout while creating an order,
+// we cannot leave the order in 'INITIATED' (which would trap the user's reserved quota).
+// This function marks the order 'FAILED' and releases the reserved quota back to the user
+// so they can immediately try again.
 func (m *PostgresTxManager) CancelInitiatedOrderTx(
 	ctx context.Context,
 	orderID string,
@@ -423,7 +502,7 @@ func (m *PostgresTxManager) CancelInitiatedOrderTx(
 	}
 	defer tx.Rollback(ctx)
 
-	// 1. Mark order FAILED
+	// 1. Mark order FAILED (only if it is still in INITIATED state).
 	orderTag, err := tx.Exec(ctx, `
 		UPDATE topup_orders
 		SET status = $1, last_error = $2, updated_at = NOW()
@@ -436,7 +515,7 @@ func (m *PostgresTxManager) CancelInitiatedOrderTx(
 		return fmt.Errorf("order %s was not in INITIATED state; aborting quota release", orderID)
 	}
 
-	// 2. Release reserved quota
+	// 2. Release reserved quota back to user
 	quotaTag, err := tx.Exec(ctx, `
 		UPDATE daily_topup_limits
 		SET reserved_inr = reserved_inr - $1,

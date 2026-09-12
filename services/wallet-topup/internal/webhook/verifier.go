@@ -2,6 +2,7 @@ package webhook
 
 import (
 	"math"
+	"strings"
 	"time"
 
 	"tradedrift/services/wallet-topup/internal/domain"
@@ -22,7 +23,7 @@ func NewVerifier(providers ...payment.PaymentProvider) *Verifier {
 
 // Verify checks HMAC signature and replay window (|T_now - T_event| <= 300s).
 func (v *Verifier) Verify(providerName string, rawPayload []byte, signature string, timestamp int64) error {
-	p, ok := v.providers[providerName]
+	p, ok := v.providers[strings.ToUpper(providerName)]
 	if !ok {
 		return domain.ErrInvalidSignature
 	}

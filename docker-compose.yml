@@ -80,6 +80,24 @@ services:
       kafka:
         condition: service_started
 
+  wallet-topup:
+    build:
+      context: .
+      dockerfile: services/wallet-topup/Dockerfile
+    container_name: tradedrift-wallet-topup
+    restart: unless-stopped
+    environment:
+      PORT: "8084"
+      POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_topup?sslmode=disable
+      WALLET_GRPC_ADDR: wallet:50052
+      DAILY_LIMIT_INR: "10"
+      WEBHOOK_SECRET: topup_mock_secret_key_12345
+    ports:
+      - "8084:8084"
+    depends_on:
+      wallet:
+        condition: service_started
+
   order:
     build:
       context: .

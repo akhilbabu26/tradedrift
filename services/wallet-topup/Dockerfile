@@ -1,12 +1,12 @@
-# ── Stage 1: Build ────────────────────────────────────────────────────────────
+# ─── Stage 1: Build ───────────────────────────────────────────────────────────
 FROM golang:1.26-alpine AS builder
 
 WORKDIR /workspace
 
-# Copy the entire Go workspace (go.work resolves all modules)
+# Copy the entire Go workspace
 COPY go.work go.work.sum ./
 
-# Copy all modules referenced in go.work
+# Copy all modules the workspace references
 COPY platform/                  ./platform/
 COPY services/auth/             ./services/auth/
 COPY services/wallet/           ./services/wallet/
@@ -21,22 +21,24 @@ COPY services/trade/            ./services/trade/
 COPY services/portfolio/        ./services/portfolio/
 COPY services/notification/     ./services/notification/
 
-# Build the trade binary
+# Build using Go module cache mount to share downloads across parallel builds
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS=linux go build \
-    -o /trade ./services/trade/cmd/server
+    CGO_ENABLED=0 GOOS=linux go build -o /wallet-topup-server ./services/wallet-topup/cmd/server
 
-# ── Stage 2: Runtime ──────────────────────────────────────────────────────────
+# ─── Stage 2: Runtime ─────────────────────────────────────────────────────────
 FROM alpine:3.20
 
 RUN apk --no-cache add ca-certificates tzdata
 
 WORKDIR /app
 
-COPY --from=builder /trade ./trade
-COPY services/trade/migration/ ./services/trade/migration/
+# Copy the compiled binary
+COPY --from=builder /wallet-topup-server ./wallet-topup-server
 
-EXPOSE 50057 9090
+# Copy migration files so the service can run them at startup
+COPY services/wallet-topup/migrations/ ./migrations/
 
-ENTRYPOINT ["./trade"]
+EXPOSE 8084
+
+ENTRYPOINT ["./wallet-topup-server"]

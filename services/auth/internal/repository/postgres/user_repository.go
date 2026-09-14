@@ -22,14 +22,17 @@ func NewUserRepository(db *pgxpool.Pool) *UserRepository {
 }
 
 func (r *UserRepository) Create(ctx context.Context, u *repository.User) error {
+	if u.Role == "" {
+		u.Role = "user"
+	}
 	query := `
 		INSERT INTO users (
-			id, email, username, password_hash, token_version, status,
+			id, email, username, password_hash, token_version, role, status,
 			failed_login_attempts, locked_until, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`
 	_, err := r.db.Exec(ctx, query,
-		u.ID, u.Email, u.Username, u.PasswordHash, u.TokenVersion, u.Status,
+		u.ID, u.Email, u.Username, u.PasswordHash, u.TokenVersion, u.Role, u.Status,
 		u.FailedLoginAttempts, u.LockedUntil, u.CreatedAt, u.UpdatedAt,
 	)
 	if err != nil {
@@ -40,7 +43,7 @@ func (r *UserRepository) Create(ctx context.Context, u *repository.User) error {
 
 func (r *UserRepository) GetByID(ctx context.Context, id string) (*repository.User, error) {
 	query := `
-		SELECT id, email, username, password_hash, token_version, status,
+		SELECT id, email, username, password_hash, token_version, role, status,
 		       failed_login_attempts, locked_until, last_login_at, email_verified_at,
 		       created_at, updated_at
 		FROM users
@@ -48,7 +51,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id string) (*repository.Us
 	`
 	var u repository.User
 	err := r.db.QueryRow(ctx, query, id).Scan(
-		&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.TokenVersion, &u.Status,
+		&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.TokenVersion, &u.Role, &u.Status,
 		&u.FailedLoginAttempts, &u.LockedUntil, &u.LastLoginAt, &u.EmailVerifiedAt,
 		&u.CreatedAt, &u.UpdatedAt,
 	)
@@ -63,7 +66,7 @@ func (r *UserRepository) GetByID(ctx context.Context, id string) (*repository.Us
 
 func (r *UserRepository) GetByIdentifier(ctx context.Context, identifier string) (*repository.User, error) {
 	query := `
-		SELECT id, email, username, password_hash, token_version, status,
+		SELECT id, email, username, password_hash, token_version, role, status,
 		       failed_login_attempts, locked_until, last_login_at, email_verified_at,
 		       created_at, updated_at
 		FROM users
@@ -71,7 +74,7 @@ func (r *UserRepository) GetByIdentifier(ctx context.Context, identifier string)
 	`
 	var u repository.User
 	err := r.db.QueryRow(ctx, query, identifier).Scan(
-		&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.TokenVersion, &u.Status,
+		&u.ID, &u.Email, &u.Username, &u.PasswordHash, &u.TokenVersion, &u.Role, &u.Status,
 		&u.FailedLoginAttempts, &u.LockedUntil, &u.LastLoginAt, &u.EmailVerifiedAt,
 		&u.CreatedAt, &u.UpdatedAt,
 	)

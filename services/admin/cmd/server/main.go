@@ -10,10 +10,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/zap"
 
+	platformconfig "tradedrift/platform/config"
 	platformjwt "tradedrift/platform/jwt"
+	platformlogger "tradedrift/platform/logger"
 	platformpg "tradedrift/platform/postgres"
 	"tradedrift/services/admin/internal/client"
 	"tradedrift/services/admin/internal/config"
@@ -23,23 +24,26 @@ import (
 )
 
 func main() {
-	// 1. Logger
-	log, err := zap.NewProduction()
+	// 1. Load environment: Process Env > services/admin/.env > .env
+	platformconfig.LoadEnv("services/admin/.env", ".env")
+
+	// 2. Config (Fail-fast validation on critical secrets and bounded intervals)
+	cfg, err := config.Load()
 	if err != nil {
-		fmt.Printf("Failed to initialize logger: %v\n", err)
+		fmt.Printf("Fatal configuration error: %v\n", err)
 		os.Exit(1)
 	}
+
+	// 3. Logger (Platform-standard structured JSON with dynamic log level)
+	log := platformlogger.New(cfg.LogLevel)
 	defer log.Sync()
-	log.Info("Starting TradeDrift Admin Service...")
+	log.Info("Starting TradeDrift Admin Service...", zap.String("log_level", cfg.LogLevel))
 
-	// 2. Config
-	cfg := config.Load()
-
-	// 3. Root shutdown context
+	// 4. Root shutdown context
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// 4. Database Migrations (Fail-fast: do not continue if migrations fail)
+	// 5. Database Migrations (Fail-fast: do not continue if migrations fail)
 	migrationDir := "migrations"
 	if _, err := os.Stat(migrationDir); os.IsNotExist(err) {
 		migrationDir = "services/admin/migrations"
@@ -49,15 +53,11 @@ func main() {
 		log.Fatal("Could not apply database migrations; halting startup", zap.Error(err))
 	}
 
-	// 5. Database Connection Pool
-	poolCfg, err := pgxpool.ParseConfig(cfg.PostgresDSN)
-	if err != nil {
-		log.Fatal("Failed to parse postgres DSN", zap.Error(err))
-	}
-	poolCfg.MaxConns = 25
-	poolCfg.MinConns = 5
-
-	dbPool, err := pgxpool.NewWithConfig(ctx, poolCfg)
+	// 6. Database Connection Pool (Pooled with verified startup reachability via ping)
+	dbPool, err := platformpg.NewPool(ctx, cfg.PostgresDSN, platformpg.PoolConfig{
+		MaxConns: 25,
+		MinConns: 5,
+	})
 	if err != nil {
 		log.Fatal("Failed to connect to PostgreSQL", zap.Error(err))
 	}

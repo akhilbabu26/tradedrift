@@ -68,7 +68,7 @@ func (s *Service) Login(ctx context.Context, identifier, password string) (*User
 	}
 
 	// Issue token pair
-	tp, err := s.issueTokenPair(ctx, u.ID, u.Email, u.TokenVersion)
+	tp, err := s.issueTokenPair(ctx, u.ID, u.Email, u.Role, u.TokenVersion)
 	if err != nil {
 		s.log.Error("Login: failed to issue token pair", zap.String("userID", u.ID), zap.Error(err))
 		return nil, nil, err

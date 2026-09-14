@@ -12,6 +12,7 @@ type User struct{
 	Username 				string
 	PasswordHash			string
 	TokenVersion			int
+	Role					string // "user", "admin"
 	Status					string //// PENDING_VERIFICATION, VERIFIED, SUSPENDED, BANNED
 	FailedLoginAttempts		int
 	LockedUntil				*time.Time

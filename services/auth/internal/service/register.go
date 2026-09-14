@@ -39,6 +39,7 @@ func (s *Service) Register(ctx context.Context, email, username, password string
 		Username:     username,
 		PasswordHash: string(hashBytes),
 		TokenVersion: 1,
+		Role:         "user",
 		Status:       "PENDING_VERIFICATION",
 		CreatedAt:    now,
 		UpdatedAt:    now,

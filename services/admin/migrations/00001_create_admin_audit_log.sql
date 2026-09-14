@@ -29,6 +29,7 @@ CREATE INDEX IF NOT EXISTS idx_admin_audit_operation_id
 -- Any UPDATE or DELETE on admin_audit_log raises PostgreSQL error P0001.
 -- This prevents tampering from both application code and direct operator queries.
 
+-- +goose StatementBegin
 CREATE OR REPLACE FUNCTION trg_enforce_audit_immutability()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -36,6 +37,7 @@ BEGIN
         USING ERRCODE = 'P0001';
 END;
 $$ LANGUAGE plpgsql;
+-- +goose StatementEnd
 
 CREATE TRIGGER trg_no_update_admin_audit_log
     BEFORE UPDATE ON admin_audit_log

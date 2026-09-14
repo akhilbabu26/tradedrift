@@ -91,11 +91,11 @@ type TokenPairDTO struct {
 // Internal Helpers
 // ==========================================
 
-func (s *Service) issueTokenPair(ctx context.Context, userID, email string, tokenVersion int) (*TokenPairDTO, error) {
+func (s *Service) issueTokenPair(ctx context.Context, userID, email, role string, tokenVersion int) (*TokenPairDTO, error) {
 	now := time.Now().UTC()
 
 	// Issue Access Token
-	accessToken, _, err := platformjwt.IssueAccessToken(userID, email, tokenVersion, s.jwtSecret, s.accessTTL)
+	accessToken, _, err := platformjwt.IssueAccessToken(userID, email, role, tokenVersion, s.jwtSecret, s.accessTTL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to issue access token: %w", err)
 	}

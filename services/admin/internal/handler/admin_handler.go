@@ -2,12 +2,10 @@ package handler
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 
 	"go.uber.org/zap"
 
-	"tradedrift/services/admin/internal/domain"
 	"tradedrift/services/admin/internal/service"
 )
 
@@ -276,15 +274,5 @@ func (h *AdminHandler) HandleResumeMarket(w http.ResponseWriter, r *http.Request
 
 // handleServiceError maps domain errors to appropriate HTTP status codes.
 func (h *AdminHandler) handleServiceError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, domain.ErrOperationInProgress):
-		writeJSON(w, http.StatusConflict, errorResponse(err.Error()))
-	case errors.Is(err, domain.ErrInvalidTarget), errors.Is(err, domain.ErrInvalidReason):
-		writeJSON(w, http.StatusBadRequest, errorResponse(err.Error()))
-	case errors.Is(err, domain.ErrAuthUnavailable), errors.Is(err, domain.ErrWalletUnavailable):
-		writeJSON(w, http.StatusServiceUnavailable, errorResponse("downstream service unavailable"))
-	default:
-		h.log.Error("admin handler: error executing request", zap.Error(err))
-		writeJSON(w, http.StatusInternalServerError, errorResponse(err.Error()))
-	}
+	HandleServiceError(w, err, h.log)
 }

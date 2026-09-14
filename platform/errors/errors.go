@@ -18,6 +18,8 @@ const (
 	CodeInternal           = "INTERNAL"
 	CodePermissionDenied   = "PERMISSION_DENIED"
 	CodeFailedPrecondition = "FAILED_PRECONDITION"
+	CodeUnauthenticated    = "UNAUTHENTICATED"
+	CodeUnavailable        = "UNAVAILABLE"
 )
 
 // PlatformError represents a structured, code-carrying error.
@@ -31,6 +33,9 @@ type PlatformError struct {
 // Error implements the standard error interface.
 func (e *PlatformError) Error() string {
 	if e.Err != nil {
+		if e.Message == "" || e.Message == e.Err.Error() {
+			return e.Err.Error()
+		}
 		return fmt.Sprintf("[%s] %s: %v", e.Code, e.Message, e.Err)
 	}
 	return fmt.Sprintf("[%s] %s", e.Code, e.Message)
@@ -54,6 +59,19 @@ func Wrap(err error, code, message string) error {
 	return &PlatformError{
 		Code:    code,
 		Message: message,
+		Err:     err,
+	}
+}
+
+// WithCode attaches a platform canonical code to an existing error without modifying its error string.
+// Because PlatformError implements Unwrap(), errors.Is(wrapper, err) remains true.
+func WithCode(err error, code string) error {
+	if err == nil {
+		return nil
+	}
+	return &PlatformError{
+		Code:    code,
+		Message: err.Error(),
 		Err:     err,
 	}
 }

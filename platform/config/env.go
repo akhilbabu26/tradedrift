@@ -13,7 +13,7 @@ import (
 // It silently ignores missing files.
 func LoadEnv(filenames ...string) {
 	if len(filenames) == 0 {
-		filenames = []string{".env", "services/auth/.env"}
+		filenames = []string{".env"}
 	}
 	for _, filename := range filenames {
 		data, err := os.ReadFile(filename)

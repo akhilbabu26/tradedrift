@@ -81,7 +81,7 @@ func (s *Service) RefreshToken(ctx context.Context, rawRefreshToken string) (*To
 	}
 
 	// Issue new access token
-	newAccessToken, _, err := platformjwt.IssueAccessToken(u.ID, u.Email, u.TokenVersion, s.jwtSecret, s.accessTTL)
+	newAccessToken, _, err := platformjwt.IssueAccessToken(u.ID, u.Email, u.Role, u.TokenVersion, s.jwtSecret, s.accessTTL)
 	if err != nil {
 		return nil, err
 	}

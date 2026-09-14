@@ -78,12 +78,7 @@ func (h *IncidentHandler) HandleGetIncident(w http.ResponseWriter, r *http.Reque
 
 	inc, err := h.incidentSvc.GetIncidentByID(r.Context(), id)
 	if err != nil {
-		if errors.Is(err, domain.ErrIncidentNotFound) {
-			writeJSON(w, http.StatusNotFound, errorResponse("incident not found"))
-			return
-		}
-		h.log.Error("incident handler: failed to get incident", zap.Error(err))
-		writeJSON(w, http.StatusInternalServerError, errorResponse(err.Error()))
+		HandleServiceError(w, err, h.log)
 		return
 	}
 
@@ -94,7 +89,7 @@ func (h *IncidentHandler) HandleGetIncident(w http.ResponseWriter, r *http.Reque
 func (h *IncidentHandler) HandleGetCorrelatedIncident(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("incident_id")
 	if id == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("incident_id is required"))
+		writeJSON(w, http.StatusBadRequest, errorResponse("incident_id is required", "INVALID_ARGUMENT"))
 		return
 	}
 
@@ -110,12 +105,7 @@ func (h *IncidentHandler) HandleGetCorrelatedIncident(w http.ResponseWriter, r *
 
 	correlated, err := h.incidentSvc.GetCorrelatedIncident(r.Context(), id, windowBefore, windowAfter)
 	if err != nil {
-		if errors.Is(err, domain.ErrIncidentNotFound) {
-			writeJSON(w, http.StatusNotFound, errorResponse("incident not found"))
-			return
-		}
-		h.log.Error("incident handler: failed to correlate incident", zap.Error(err))
-		writeJSON(w, http.StatusInternalServerError, errorResponse(err.Error()))
+		HandleServiceError(w, err, h.log)
 		return
 	}
 
@@ -131,30 +121,21 @@ type ResolveIncidentRequest struct {
 func (h *IncidentHandler) HandleResolveIncident(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("incident_id")
 	if id == "" {
-		writeJSON(w, http.StatusBadRequest, errorResponse("incident_id is required"))
+		writeJSON(w, http.StatusBadRequest, errorResponse("incident_id is required", "INVALID_ARGUMENT"))
 		return
 	}
 
 	var body ResolveIncidentRequest
 	if r.Body != nil && r.Body != http.NoBody {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
-			writeJSON(w, http.StatusBadRequest, errorResponse("malformed json request body"))
+			writeJSON(w, http.StatusBadRequest, errorResponse("malformed json request body", "INVALID_ARGUMENT"))
 			return
 		}
 	}
 
 	err := h.incidentSvc.ResolveIncident(r.Context(), id, body.RootCause)
 	if err != nil {
-		if errors.Is(err, domain.ErrIncidentNotFound) {
-			writeJSON(w, http.StatusNotFound, errorResponse("incident not found"))
-			return
-		}
-		if errors.Is(err, domain.ErrIncidentAlreadyResolved) {
-			writeJSON(w, http.StatusConflict, errorResponse("incident is already resolved"))
-			return
-		}
-		h.log.Error("incident handler: failed to resolve incident", zap.Error(err))
-		writeJSON(w, http.StatusInternalServerError, errorResponse(err.Error()))
+		HandleServiceError(w, err, h.log)
 		return
 	}
 
@@ -176,8 +157,7 @@ func (h *IncidentHandler) HandleGetIncidentStats(w http.ResponseWriter, r *http.
 
 	stats, err := h.incidentSvc.GetIncidentStats(r.Context(), since)
 	if err != nil {
-		h.log.Error("incident handler: failed to get incident stats", zap.Error(err))
-		writeJSON(w, http.StatusInternalServerError, errorResponse(err.Error()))
+		HandleServiceError(w, err, h.log)
 		return
 	}
 

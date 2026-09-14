@@ -67,7 +67,7 @@ func (s *Service) VerifyEmail(ctx context.Context, email, code string) (*UserDTO
 	}
 
 	// 5. Issue access + refresh token session pair directly
-	tp, err := s.issueTokenPair(ctx, u.ID, u.Email, u.TokenVersion)
+	tp, err := s.issueTokenPair(ctx, u.ID, u.Email, u.Role, u.TokenVersion)
 	if err != nil {
 		return nil, nil, err
 	}

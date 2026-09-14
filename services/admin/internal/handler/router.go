@@ -43,7 +43,7 @@ func WithTopologyHandler(h *TopologyHandler) RouterOption {
 func NewRouter(
 	adminHandler *AdminHandler,
 	healthHandler *HealthHandler,
-	jwtValidator *platformjwt.HMACValidator,
+	jwtValidator platformjwt.Validator,
 	log *zap.Logger,
 	opts ...RouterOption,
 ) http.Handler {

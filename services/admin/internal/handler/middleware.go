@@ -48,23 +48,23 @@ func IdempotencyKeyFromContext(ctx context.Context) string {
 }
 
 // RequireAdmin validates the Bearer JWT and asserts Role == "admin".
-func RequireAdmin(jwtValidator *platformjwt.HMACValidator) func(http.HandlerFunc) http.HandlerFunc {
+func RequireAdmin(jwtValidator platformjwt.Validator) func(http.HandlerFunc) http.HandlerFunc {
 	return func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-				writeJSON(w, http.StatusUnauthorized, errorResponse("missing or malformed Authorization header"))
+				writeJSON(w, http.StatusUnauthorized, errorResponse("missing or malformed Authorization header", "UNAUTHENTICATED"))
 				return
 			}
 			tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
 
 			claims, err := jwtValidator.Validate(r.Context(), tokenStr)
 			if err != nil {
-				writeJSON(w, http.StatusUnauthorized, errorResponse("invalid or expired token"))
+				writeJSON(w, http.StatusUnauthorized, errorResponse("invalid or expired token", "UNAUTHENTICATED"))
 				return
 			}
 			if claims.Role != "admin" {
-				writeJSON(w, http.StatusForbidden, errorResponse("admin role required"))
+				writeJSON(w, http.StatusForbidden, errorResponse("admin role required", "PERMISSION_DENIED"))
 				return
 			}
 
@@ -86,11 +86,11 @@ func RequireIdempotencyKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 		if key == "" {
-			writeJSON(w, http.StatusBadRequest, errorResponse("Idempotency-Key header is required"))
+			writeJSON(w, http.StatusBadRequest, errorResponse("Idempotency-Key header is required", "INVALID_ARGUMENT"))
 			return
 		}
 		if len(key) > 128 {
-			writeJSON(w, http.StatusBadRequest, errorResponse("Idempotency-Key must be 1-128 characters"))
+			writeJSON(w, http.StatusBadRequest, errorResponse("Idempotency-Key must be 1-128 characters", "INVALID_ARGUMENT"))
 			return
 		}
 		ctx := context.WithValue(r.Context(), ctxKeyIdempotency, key)
@@ -225,6 +225,10 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	_ = json.NewEncoder(w).Encode(data)
 }
 
-func errorResponse(msg string) map[string]string {
-	return map[string]string{"error": msg}
+func errorResponse(msg string, code ...string) ErrorResponse {
+	c := ""
+	if len(code) > 0 {
+		c = code[0]
+	}
+	return ErrorResponse{Error: msg, Code: c}
 }

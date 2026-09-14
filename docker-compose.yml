@@ -241,7 +241,7 @@ services:
       LOG_LEVEL: info
     ports:
       - "50057:50057"
-      - "9090:9090"
+      - "9096:9090" # Host port 9096 mapped to container 9090 (avoids collision with Prometheus's 9090)
     depends_on:
       kafka:
         condition: service_started

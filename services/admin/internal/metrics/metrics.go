@@ -24,6 +24,7 @@ const (
 
 // Canonical service names ensuring bounded label cardinality
 const (
+	ServiceAdmin           = "admin"
 	ServiceAuth            = "auth"
 	ServiceWallet          = "wallet"
 	ServiceTrade           = "trade"
@@ -266,7 +267,57 @@ var (
 		},
 		[]string{"service", "reason"},
 	)
+
+	// Phase 3 Operational Metrics: Stateful Market Halt & Worker Reliability
+	// Note on Metric Cardinality: market_id is strictly restricted to TradeDrift's configured finite market
+	// universe (e.g. BTC-USDT, ETH-USDT). Dynamic unbounded IDs must never be registered as labels.
+	MarketHaltStatus = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: Namespace,
+			Subsystem: Subsystem,
+			Name:      "market_halt_status",
+			Help:      "Stateful gauge indicating market status (1 = HALTED, 0 = ACTIVE).",
+		},
+		[]string{"market_id"},
+	)
+
+	MarketHaltStartTimestampSeconds = promauto.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Namespace: Namespace,
+			Subsystem: Subsystem,
+			Name:      "market_halt_start_timestamp_seconds",
+			Help:      "Epoch seconds when the market was halted (0 if active).",
+		},
+		[]string{"market_id"},
+	)
+
+	IncidentWorkerErrorsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: Namespace,
+			Subsystem: Subsystem,
+			Name:      "incident_worker_errors_total",
+			Help:      "Total count of errors encountered by background incident worker loops (e.g. heartbeat, transition).",
+		},
+		[]string{"operation"},
+	)
 )
+
+// RecordMarketHalted updates stateful market halt gauges
+func RecordMarketHalted(marketID string, haltTime time.Time) {
+	MarketHaltStatus.WithLabelValues(marketID).Set(1.0)
+	MarketHaltStartTimestampSeconds.WithLabelValues(marketID).Set(float64(haltTime.Unix()))
+}
+
+// RecordMarketResumed resets stateful market halt gauges
+func RecordMarketResumed(marketID string) {
+	MarketHaltStatus.WithLabelValues(marketID).Set(0.0)
+	MarketHaltStartTimestampSeconds.WithLabelValues(marketID).Set(0.0)
+}
+
+// RecordIncidentWorkerError increments failure count for an incident lifecycle operation
+func RecordIncidentWorkerError(operation string) {
+	IncidentWorkerErrorsTotal.WithLabelValues(operation).Inc()
+}
 
 // RecordHTTPRequest records status code and duration with parameterized route
 func RecordHTTPRequest(method, route string, statusCode int, duration time.Duration) {

@@ -115,37 +115,24 @@ The Admin Service follows **Clean / Hexagonal Architecture** principles, enforci
 ---
 
 ### 2.3 `internal/service/`
-> 📖 **Comprehensive Service & Workers Guide**: See [internal/service/README.md](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/README.md) for full orchestration flows, fast-path/saga fallbacks, autonomous health loops, and outbox publisher mechanics.
+> 📖 **Comprehensive Service & Workers Guide**: See [internal/service/01README.md](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/01README.md) for full orchestration flows, fast-path/saga fallbacks, incident FSM, analytics, topology, and outbox/saga mechanics.
 
-- **Purpose**: Houses business logic and continuous background processing engines.
-- **Files**:
-  - [`admin_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/admin_service.go):
-    - *Problem*: Executing administrative actions requires an atomic unit of work across operations, audit logs, outbox events, and distributed saga tasks.
-    - *How Solved*:
-      1. Wraps operations in `TxManager.RunInTx`.
-      2. Handles concurrent idempotency key collisions: if an insertion conflict occurs, it loads the existing operation, verifies parameters, and returns the existing result safely.
-      3. For market halts/resumes: enqueues an outbox event for Kafka broadcast to Trading and Matching Engines.
-      4. For user suspensions: enqueues an outbox event AND queues a Saga task to asynchronously revoke active JWT sessions in the Auth microservice.
-      5. For wallet freezing: enqueues an outbox event AND invokes downstream Wallet gRPC to lock balances.
-  - [`health_worker.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/health_worker.go):
-    - *Problem*: Real-time health probing of multiple services inside HTTP request handlers causes cascading latency spikes and timeouts if a downstream dependency hangs.
-    - *How Solved*:
-      1. Runs an autonomous 15-second background loop.
-      2. Concurrently probes HTTP services (`trade`, `portfolio`, `liquidity_engine`, `notification`), gRPC transports (`auth`, `wallet`), database pool (`postgres`), and Kafka brokers.
-      3. Probes Kafka with individual broker timeouts (1500ms), ensuring a dead broker does not consume the overall probe budget.
-      4. Concurrently collects Outbox and Saga backlog statistics within a dedicated 1-second timeout.
-      5. Enforces explicit status semantics:
-         - `Postgres` $\ne$ `UP` $\to$ Overall status **`UNHEALTHY`**
-         - `Kafka` $\ne$ `UP` $\to$ Overall status **`DEGRADED`**
-      6. Enforces the strict 1-hot boolean invariant across all 5 states: `UP`, `DOWN`, `DEGRADED`, `TIMEOUT`, `UNKNOWN`.
-      7. Caches the diagnostic report in memory (`sync.RWMutex`). HTTP requests to `/system/health` read the defensive copy in **< 1ms**.
-      8. Features idempotent `Start()` and `Stop()`, with instant probe context cancellation on shutdown.
-  - [`outbox_publisher.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/outbox_publisher.go):
-    - *Problem*: Dual-write vulnerability: database updates succeed, but Kafka message is lost due to crash before publishing.
-    - *How Solved*: Polls leased outbox records and writes to Kafka using `kafka-go.Writer` with `RequiredAcks: RequireAll` (synchronous replica acknowledgment). Only marks `published_at = NOW()` after Kafka confirms the write. If Kafka fails, backs off and increments `tradedrift_admin_outbox_retries_total`.
-  - [`saga_worker.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/saga_worker.go):
-    - *Problem*: Downstream side-effects (e.g. invalidating tokens in Auth service) can fail due to transient network drops.
-    - *How Solved*: Polls due saga tasks, executes the action, and checks `IsRetryableGRPCError(err)`. On retryable failure, calculates exponential backoff with jitter and reschedules. If max attempts are reached, marks `EXHAUSTED` and triggers Prometheus critical alerts.
+- **Purpose**: Houses business logic and continuous background processing engines. Methods on `AdminService` and `HealthWorker` are distributed across domain-scoped files within the same `package service`.
+
+| File | Responsibility |
+|------|----------------|
+| [`admin_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/admin_service.go) | `AdminService` struct, constructor, `resolveConcurrentConflict`, `isUniqueViolation` |
+| [`user_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/user_service.go) | `SuspendUser`, `UnsuspendUser` — user lifecycle with Auth saga fallback |
+| [`wallet_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/wallet_service.go) | `FreezeWallet`, `UnfreezeWallet`, `executeWalletMutation` |
+| [`market_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/market_service.go) | `HaltMarket`, `ResumeMarket`, `ReconstructMarketState` (startup gauge restoration) |
+| [`health_worker.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/health_worker.go) | `HealthWorker` struct + lifecycle (`Start`/`Stop`/`GetLatestHealth`) + `RunProbe` orchestration |
+| [`health_probe.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/health_probe.go) | `probeHTTPService`, `probeAuthGRPC`, `probeWalletGRPC`, `probePostgres`, `probeKafka`, `classifyFailureReason` |
+| [`incident_transitions.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/incident_transitions.go) | Incident FSM — `processIncidentTransitions`, `handleDownTransition`, `handleSustainedDegradation`, `handleRecovery`, `outageIncidentSeverity` |
+| [`incident_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/incident_service.go) | `IncidentService` — paginated listing, manual resolution, forensic correlation, stats (`avg_mttd`, `avg_mttr`) |
+| [`analytics_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/analytics_service.go) | `AnalyticsService` — operations volume analytics & heuristic risk signals |
+| [`topology.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/topology.go) | `TopologyEngine` — 9-node dependency graph with real-time `HealthWorker` overlay |
+| [`outbox_publisher.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/outbox_publisher.go) | `OutboxPublisher` — guaranteed Kafka delivery with `RequireAll` ACKs |
+| [`saga_worker.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/saga_worker.go) | `SagaWorker` — distributed saga retries with exponential backoff up to 8 hours |
 
 ---
 
@@ -155,13 +142,12 @@ The Admin Service follows **Clean / Hexagonal Architecture** principles, enforci
 - **Purpose**: Manages outbound gRPC communication to Auth and Wallet services.
 - **Files**:
   - [`auth_client.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/client/auth_client.go):
-    - Connects to Auth service gRPC.
-    - Provides `Ping(ctx)` for liveness probes via TCP socket and connection state.
-    - Provides `InvalidateUserSessions(ctx, userID, reason, requestID, operationID)` for saga task execution with metadata injection.
-    - Implements `IsRetryableGRPCError(err)` to categorize transient network errors (`Unavailable`, `DeadlineExceeded`, `ResourceExhausted`) vs permanent validation errors (`InvalidArgument`, `NotFound`).
+    - `Ping(ctx)` — liveness probe via TCP socket and connection state.
+    - `InvalidateUserSessions(ctx, userID, reason, requestID, operationID)` — saga task execution with gRPC metadata injection.
+    - `IsRetryableGRPCError(err)` — retryable: `Unavailable`, `DeadlineExceeded`, `ResourceExhausted`, `Internal`; non-retryable: `InvalidArgument`, `NotFound`, `PermissionDenied`.
   - [`wallet_client.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/client/wallet_client.go):
-    - Connects to Wallet service gRPC.
-    - Provides `Ping(ctx)` via native application `Health()` RPC and `FreezeWallet(ctx, userID, asset, reason, requestID, operationID, freeze)`.
+    - `Ping(ctx)` — via native `Health()` RPC.
+    - `FreezeWallet(ctx, userID, asset, reason, requestID, operationID, freeze bool)` — idempotent freeze/unfreeze via the `freeze` flag.
 
 ---
 
@@ -170,18 +156,14 @@ The Admin Service follows **Clean / Hexagonal Architecture** principles, enforci
 
 - **Purpose**: HTTP transport layer, input validation, and routing.
 - **Files**:
-  - [`router.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/router.go): Configures Go 1.22+ `http.ServeMux` with static and parameterized routes (`/api/v1/admin/markets/{market_id}/halt`).
-  - [`admin_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/admin_handler.go): Handles HTTP endpoints for market and user operations, mapping domain results to JSON responses.
-  - [`health_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/health_handler.go):
-    - `/health`: Liveness probe (returns 200 OK if process is running).
-    - `/ready`: Readiness probe checking PostgreSQL, Auth, Wallet, and all configured Kafka brokers (with fallback). Returns 503 during graceful drainage.
-    - `/api/v1/admin/system/health`: Serves the cached platform diagnostic report directly from `HealthWorker` with zero on-demand probing.
-  - [`middleware.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/middleware.go):
-    - `RequireAdmin`: Validates JWT HMAC signature and enforces `role == "admin"`.
-    - `RequireIdempotencyKey`: Enforces mandatory `Idempotency-Key` header on all mutation endpoints.
-    - `Recoverer`: Recovers from unhandled panics, logs stack traces, and returns HTTP 500 cleanly.
-    - `MetricsMiddleware`: Measures duration and normalizes route labels for Prometheus.
-  - [`validation.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/validation.go) & [`dto.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/dto.go): Validates market IDs (e.g. `BTC-USDT`), user IDs, assets, and minimum reason lengths.
+  - [`router.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/router.go): Configures Go 1.22+ `http.ServeMux` with static and parameterized routes.
+  - [`admin_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/admin_handler.go): `HandleHaltMarket`, `HandleResumeMarket`, `HandleSuspendUser`, `HandleUnsuspendUser`, `HandleFreezeWallet`, `HandleUnfreezeWallet`.
+  - [`incident_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/incident_handler.go): `GET /incidents` (paginated), `GET /incidents/{id}`, `POST /incidents/{id}/resolve`, `GET /incidents/{id}/correlated`.
+  - [`analytics_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/analytics_handler.go): `GET /analytics/operations?window=24h`, `GET /analytics/risk`.
+  - [`topology_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/topology_handler.go): `GET /topology` — live platform dependency graph with node status and edge health.
+  - [`health_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/health_handler.go): `/health` (liveness), `/ready` (DB+gRPC+Kafka probe, 503 during drainage), `/system/health` (cached sub-ms diagnostic).
+  - [`middleware.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/middleware.go): `RequireAdmin` (JWT + `role=admin`), `RequireIdempotencyKey`, `Recoverer`, `MetricsMiddleware` (route normalization).
+  - [`validation.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/validation.go) & [`dto.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/dto.go): Market IDs (`BTC-USDT`), user UUIDs, asset symbols, reason strings, window duration strings.
 
 ---
 

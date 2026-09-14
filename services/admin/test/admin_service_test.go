@@ -77,6 +77,49 @@ func (m *mockOpsRepo) UpdateStatus(ctx context.Context, id string, status domain
 	return nil
 }
 
+func (m *mockOpsRepo) GetOperationsSummary(ctx context.Context, since time.Time) (*repository.OperationsSummaryStats, error) {
+	stats := &repository.OperationsSummaryStats{
+		ByType: make(map[string]int),
+	}
+	for _, op := range m.operations {
+		stats.TotalOperations++
+		stats.ByType[op.OperationType]++
+		switch op.Status {
+		case domain.OperationStatusCompleted:
+			stats.CompletedOperations++
+		case domain.OperationStatusFailed:
+			stats.FailedOperations++
+		case domain.OperationStatusPending:
+			stats.PendingOperations++
+		case domain.OperationStatusProcessing:
+			stats.ProcessingOperations++
+		}
+	}
+	return stats, nil
+}
+
+func (m *mockOpsRepo) GetLatestMarketStates(ctx context.Context) ([]repository.MarketStateSnapshot, error) {
+	latestByMarket := make(map[string]domain.AdminOperation)
+	for _, op := range m.operations {
+		if (op.OperationType == domain.OpHaltMarket || op.OperationType == domain.OpResumeMarket) && op.Status == domain.OperationStatusCompleted {
+			existing, ok := latestByMarket[op.TargetID]
+			if !ok || op.CreatedAt.After(existing.CreatedAt) {
+				latestByMarket[op.TargetID] = *op
+			}
+		}
+	}
+
+	var res []repository.MarketStateSnapshot
+	for marketID, op := range latestByMarket {
+		res = append(res, repository.MarketStateSnapshot{
+			MarketID:  marketID,
+			IsHalted:  op.OperationType == domain.OpHaltMarket,
+			UpdatedAt: op.CreatedAt,
+		})
+	}
+	return res, nil
+}
+
 func TestAdminService_HaltMarket_Idempotent(t *testing.T) {
 	opsRepo := newMockOpsRepo()
 	txMgr := &mockTxManager{

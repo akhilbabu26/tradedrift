@@ -177,6 +177,13 @@ func NormalizeRoute(pattern, path string) string {
 		return "/api/v1/admin/markets/{market_id}/resume"
 	}
 
+	if strings.HasPrefix(path, "/api/v1/admin/incidents/") {
+		if strings.HasSuffix(path, "/correlated") {
+			return "/api/v1/admin/incidents/{incident_id}/correlated"
+		}
+		return "/api/v1/admin/incidents/{incident_id}"
+	}
+
 	return "unmatched"
 }
 

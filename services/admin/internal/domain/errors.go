@@ -27,4 +27,9 @@ var (
 
 	// Worker Leasing
 	ErrWorkerLeaseLost = errors.New("worker lease lost or expired; operation aborted")
+
+	// Incidents
+	ErrIncidentNotFound        = errors.New("incident not found")
+	ErrIncidentAlreadyResolved = errors.New("incident is already resolved")
+	ErrActiveIncidentExists    = errors.New("active incident already exists for service")
 )

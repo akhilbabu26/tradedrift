@@ -60,3 +60,64 @@ groups:
         annotations:
           summary: "High Admin HTTP 5xx Error Rate (> 5%)"
           description: "Admin service HTTP 5xx error responses represent more than 5% of all traffic over the last 5 minutes."
+
+      # ─── Phase 3: Advanced Operational & Anomaly Alerts ──────────────────────────
+
+      - alert: MassUserSuspensionAnomaly
+        expr: increase(tradedrift_admin_operations_total{operation_type="SUSPEND_USER",status="SUCCESS"}[10m]) >= 5
+        for: 1m
+        labels:
+          severity: critical
+          service: admin
+          category: anomaly
+        annotations:
+          summary: "Mass User Suspension Anomaly Detected"
+          description: "Over 5 user suspension operations have succeeded within a 10-minute window. Verify operator authorization immediately."
+
+      - alert: MassWalletFreezeAnomaly
+        expr: increase(tradedrift_admin_operations_total{operation_type="FREEZE_WALLET",status="SUCCESS"}[10m]) >= 5
+        for: 1m
+        labels:
+          severity: critical
+          service: admin
+          category: anomaly
+        annotations:
+          summary: "Mass Wallet Freeze Anomaly Detected"
+          description: "Over 5 wallet freeze operations have succeeded within a 10-minute window. Inspect admin audit logs for account security."
+
+      - alert: ExtendedMarketHaltWarning
+        expr: (tradedrift_admin_market_halt_status == 1) and ((time() - tradedrift_admin_market_halt_start_timestamp_seconds) > 1800)
+        for: 2m
+        labels:
+          severity: warning
+          service: admin
+          category: market_operations
+        annotations:
+          summary: "Extended Market Halt Warning (> 30m): {{ $labels.market_id }}"
+          description: "Market {{ $labels.market_id }} has remained in a HALTED state for over 30 minutes without resumption."
+
+      - alert: CascadingDependencyOutage
+        expr: count(tradedrift_admin_service_health_status{status="DOWN"} == 1) >= 2
+        for: 1m
+        labels:
+          severity: critical
+          service: admin
+          category: platform_resilience
+        annotations:
+          summary: "Cascading Dependency Outage: Multiple Core Services Down"
+          description: "Two or more platform services are reporting DOWN status simultaneously, indicating a cluster or network failure."
+
+      - alert: AdminAPIHighErrorBudgetBurnRate
+        expr: (
+            sum(rate(tradedrift_admin_http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(tradedrift_admin_http_requests_total[5m])), 0.001)
+          ) > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          service: admin
+          category: slo_burn_rate
+        annotations:
+          summary: "Admin API 1-Hour SLO Burn Rate Exceeded (14.4x)"
+          description: "Admin Service 5xx error budget is burning at 14.4x normal rate over 5 minutes (consuming >2% of monthly error budget in 1 hour)."

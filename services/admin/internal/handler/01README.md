@@ -283,6 +283,39 @@ Internally, `isShuttingDown.Store(true)` ensures `/ready` returns HTTP 503 immed
 
 ---
 
+### Flow 4: Incident Correlation & Topological Root-Cause Flow
+
+```
+                     Operator / Dashboard Request
+                   GET /api/v1/admin/incidents/{id}/correlated
+                                │
+                                ▼
+                       RequireAdmin (JWT)
+                                │
+                                ▼
+                         IncidentHandler
+                                │
+                                ▼
+                         IncidentService
+                                │
+     ┌──────────────────────────┼──────────────────────────┐
+     ▼                          ▼                          ▼
+GetIncidentByID(id)    GetAuditLogsInWindow(±15m)  GetRelatedDependencies(svc)
+(PostgreSQL Record)    (Correlated Operator Logs)  (Static Topology Engine)
+     │                          │                          │
+     └──────────────────────────┼──────────────────────────┘
+                                │
+                                ▼
+                    CorrelatedIncident Response
+           ┌──────────────────────────────────────────┐
+           │ • Root Incident & MTTR                   │
+           │ • Upstream / Downstream Impact (Graph)   │
+           │ • Operator Audit Events (Pre-incident)   │
+           └──────────────────────────────────────────┘
+```
+
+---
+
 ## 6. API Endpoints Reference Table
 
 | HTTP Method | Path Pattern | Required Headers | Description |
@@ -297,3 +330,11 @@ Internally, `isShuttingDown.Store(true)` ensures `/ready` returns HTTP 503 immed
 | `POST` | `/api/v1/admin/users/{user_id}/wallets/{asset}/unfreeze` | `Authorization`, `Idempotency-Key` | Unfreeze user balance for a specific asset. |
 | `POST` | `/api/v1/admin/markets/{market_id}/halt` | `Authorization`, `Idempotency-Key` | Halt trading on an active order book. |
 | `POST` | `/api/v1/admin/markets/{market_id}/resume` | `Authorization`, `Idempotency-Key` | Resume trading on a halted order book. |
+| `GET` | `/api/v1/admin/incidents` | `Authorization: Bearer <jwt>` | List system outage & degradation incidents with filtering. |
+| `GET` | `/api/v1/admin/incidents/stats` | `Authorization: Bearer <jwt>` | Query MTTA, MTTD, MTTR performance metrics across incidents. |
+| `GET` | `/api/v1/admin/incidents/{incident_id}` | `Authorization: Bearer <jwt>` | Fetch individual incident details with lifecycle timestamps. |
+| `GET` | `/api/v1/admin/incidents/{incident_id}/correlated` | `Authorization: Bearer <jwt>` | Correlate incident with audit logs in time window & topology. |
+| `POST` | `/api/v1/admin/incidents/{incident_id}/resolve` | `Authorization: Bearer <jwt>` | Manually resolve incident with root cause documentation. |
+| `GET` | `/api/v1/admin/analytics/overview` | `Authorization: Bearer <jwt>` | PostgreSQL-backed executive operations volume and breakdown. |
+| `GET` | `/api/v1/admin/analytics/risk-signals` | `Authorization: Bearer <jwt>` | Real-time administrative risk heuristics and anomaly signals. |
+| `GET` | `/api/v1/admin/topology` | `Authorization: Bearer <jwt>` | Platform service dependency graph with runtime health overlays. |

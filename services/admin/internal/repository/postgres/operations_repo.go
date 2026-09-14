@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -101,6 +102,94 @@ func (r *operationsRepo) UpdateStatus(ctx context.Context, id string, status dom
 		return fmt.Errorf("operations_repo: update status: %w", err)
 	}
 	return nil
+}
+
+// GetOperationsSummary aggregates counts by status and by operation_type since a given timestamp.
+func (r *operationsRepo) GetOperationsSummary(ctx context.Context, since time.Time) (*repository.OperationsSummaryStats, error) {
+	stats := &repository.OperationsSummaryStats{
+		ByType: make(map[string]int),
+	}
+
+	// 1. Status Aggregation (separating PENDING vs PROCESSING, and finding oldest PROCESSING age)
+	statusQuery := `
+		SELECT
+			COUNT(*) AS total_ops,
+			COUNT(*) FILTER (WHERE status = 'COMPLETED') AS completed_ops,
+			COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_ops,
+			COUNT(*) FILTER (WHERE status = 'PENDING') AS pending_ops,
+			COUNT(*) FILTER (WHERE status = 'PROCESSING') AS processing_ops,
+			COALESCE(EXTRACT(EPOCH FROM (NOW() - MIN(created_at) FILTER (WHERE status = 'PROCESSING'))), 0.0) AS oldest_processing_age
+		FROM admin_operations
+		WHERE created_at >= $1
+	`
+	row := r.db.QueryRow(ctx, statusQuery, since)
+	err := row.Scan(
+		&stats.TotalOperations,
+		&stats.CompletedOperations,
+		&stats.FailedOperations,
+		&stats.PendingOperations,
+		&stats.ProcessingOperations,
+		&stats.OldestProcessingAgeSeconds,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("operations_repo: status summary: %w", err)
+	}
+
+	// 2. Breakdown by Operation Type
+	typeQuery := `
+		SELECT operation_type, COUNT(*)
+		FROM admin_operations
+		WHERE created_at >= $1
+		GROUP BY operation_type
+	`
+	rows, err := r.db.Query(ctx, typeQuery, since)
+	if err != nil {
+		return nil, fmt.Errorf("operations_repo: type summary: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var opType string
+		var count int
+		if err := rows.Scan(&opType, &count); err != nil {
+			return nil, err
+		}
+		stats.ByType[opType] = count
+	}
+
+	return stats, nil
+}
+
+// GetLatestMarketStates queries PostgreSQL to reconstruct the operational state of all markets.
+func (r *operationsRepo) GetLatestMarketStates(ctx context.Context) ([]repository.MarketStateSnapshot, error) {
+	query := `
+		SELECT DISTINCT ON (target_id) target_id, operation_type, created_at
+		FROM admin_operations
+		WHERE operation_type IN ('HALT_MARKET', 'RESUME_MARKET')
+		  AND status = 'COMPLETED'
+		ORDER BY target_id, created_at DESC
+	`
+	rows, err := r.db.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("operations_repo: get latest market states: %w", err)
+	}
+	defer rows.Close()
+
+	var states []repository.MarketStateSnapshot
+	for rows.Next() {
+		var marketID string
+		var opType string
+		var createdAt time.Time
+		if err := rows.Scan(&marketID, &opType, &createdAt); err != nil {
+			return nil, fmt.Errorf("operations_repo: scan market state: %w", err)
+		}
+		states = append(states, repository.MarketStateSnapshot{
+			MarketID:  marketID,
+			IsHalted:  opType == domain.OpHaltMarket,
+			UpdatedAt: createdAt,
+		})
+	}
+	return states, nil
 }
 
 func scanOperation(row pgx.Row) (*domain.AdminOperation, error) {

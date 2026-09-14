@@ -1,6 +1,6 @@
-# TradeDrift Admin Service Architecture & Implementation Guide
+# TradeDrift Admin Service — Architecture & Implementation Guide
 
-The **Admin Service** is the mission-critical **control plane, supervisor, and operational telemetry hub** of the TradeDrift platform. It orchestrates high-privilege administrative actions (emergency market halts, user suspensions, wallet freezes), guarantees strict audit immutability, coordinates distributed sagas, publishes guaranteed events via the Transactional Outbox pattern, and autonomously monitors platform-wide microservice health.
+The **Admin Service** is the mission-critical **control plane, supervisor, and operational telemetry hub** of the TradeDrift platform. It orchestrates high-privilege administrative actions (emergency market halts, user suspensions, wallet freezes), guarantees strict audit immutability, coordinates distributed sagas, publishes guaranteed events via the Transactional Outbox pattern, autonomously monitors platform-wide microservice health, and provides a complete incident lifecycle and analytics engine.
 
 ---
 
@@ -8,60 +8,75 @@ The **Admin Service** is the mission-critical **control plane, supervisor, and o
 
 ```
 services/admin/
-├── README.md                                  # This comprehensive architectural & operational manual
-├── Dockerfile                                 # Multi-stage production container build (scratch/alpine base)
-├── go.mod / go.sum                            # Dependency definitions (jackc/pgx, segmentio/kafka-go, prometheus)
+├── README.md                                       # This comprehensive architectural & operational manual
+├── Dockerfile                                      # Multi-stage production container build (scratch/alpine base)
+├── go.mod / go.sum                                 # Dependency definitions (jackc/pgx, segmentio/kafka-go, prometheus)
 ├── cmd/
 │   └── server/
-│       └── main.go                            # Service bootstrap, dependency injection & coordinated shutdown
-├── migrations/                                # PostgreSQL relational schema and immutability triggers
-│   ├── 00001_create_admin_audit_log.sql       # Append-only immutable audit trail with tamper-proof trigger
-│   ├── 00002_create_admin_operations.sql      # Idempotent operations ledger with conflict recovery
-│   ├── 00003_create_admin_outbox.sql          # Transactional outbox table with distributed worker leasing
-│   └── 00004_create_admin_saga_tasks.sql      # Distributed saga queue with exponential backoff & leases
+│       └── main.go                                 # Service bootstrap, dependency injection & coordinated shutdown
+├── migrations/                                     # PostgreSQL relational schema and immutability triggers
+│   ├── 00001_create_admin_audit_log.sql            # Append-only immutable audit trail with tamper-proof trigger
+│   ├── 00002_create_admin_operations.sql           # Idempotent operations ledger with conflict recovery
+│   ├── 00003_create_admin_outbox.sql               # Transactional outbox table with distributed worker leasing
+│   ├── 00004_create_admin_saga_tasks.sql           # Distributed saga queue with exponential backoff & leases
+│   └── 00005_create_admin_incidents.sql            # Incident tracking with partial unique index & MTTD/MTTR
 ├── internal/
-│   ├── client/                                # Resilient downstream gRPC client wrappers
-│   │   ├── auth_client.go                     # Auth service client with retryable error classification
-│   │   └── wallet_client.go                   # Wallet service client with Ping & Freeze RPCs
-│   ├── config/                                # Environment configuration loader
-│   │   └── config.go                          # Strongly-typed environment variables with defaults
-│   ├── domain/                                # Pure enterprise business domain models & errors
-│   │   ├── audit.go                           # Audit entry struct and action types
-│   │   ├── errors.go                          # Sentinel domain errors (ErrConflict, ErrNotFound, etc.)
-│   │   ├── events.go                          # Event payloads for Outbox Kafka streaming
-│   │   ├── operations.go                      # AdminOperation state machine & status enums
-│   │   ├── saga.go                            # SagaTask model, lease tokens, and backoff calculator
-│   │   └── uuid.go                            # RFC 9562 UUIDv7 generator (time-ordered indexing)
-│   ├── handler/                               # HTTP transport layer (Go 1.22+ ServeMux)
-│   │   ├── admin_handler.go                   # REST handlers for Halt, Resume, Suspend, Freeze
-│   │   ├── dto.go                             # Request and response JSON transfer objects
-│   │   ├── health_handler.go                  # /health (liveness), /ready, and /system/health (cached)
-│   │   ├── middleware.go                      # JWT auth, role enforcement, panic recovery & Prometheus metrics
-│   │   ├── router.go                          # URL routing table with parameterized routes
-│   │   └── validation.go                      # Input validators (UUIDs, symbols, reasons)
-│   ├── metrics/                               # Centralized Prometheus telemetry registry
-│   │   └── metrics.go                         # Gauges, counters, histograms, route normalizer & 1-hot logic
-│   ├── repository/                            # Storage interface layer
-│   │   ├── interfaces.go                      # Repository abstractions for testing & decoupling
-│   │   └── postgres/                          # Production pgx/v5 PostgreSQL implementation
-│   │       ├── audit_repo.go                  # Write-only append operations for audit logs
-│   │       ├── operations_repo.go             # Operations ledger with idempotency lookup & status transitions
-│   │       ├── outbox_repo.go                 # Polling with FOR UPDATE SKIP LOCKED and batching
-│   │       ├── saga_repo.go                   # Saga task claiming, retry scheduling, and completion
-│   │       └── tx_manager.go                  # Atomic transaction manager wrapper
-│   └── service/                               # Business orchestration & background processing
-│       ├── admin_service.go                   # Core business logic: Halt, Resume, Suspend, Freeze, Reconcile
-│       ├── health_worker.go                   # Autonomous 15s health monitor, cache & 1-hot gauge updater
-│       ├── outbox_publisher.go                # Background worker polling outbox & publishing to Kafka with ACKs
-│       └── saga_worker.go                     # Background worker driving distributed sagas with backoff
-└── test/                                      # Centralized test suite (37 automated tests)
-    ├── admin_service_test.go                  # Operation idempotency, conflicts, and lease loss tests
-    ├── grpc_test.go                           # Downstream gRPC error classification tests
-    ├── health_handler_test.go                 # Liveness, readiness, multi-broker Kafka & cached health tests
-    ├── metrics_test.go                        # 1-hot invariants, sub-ms latency, and Prometheus consistency
-    ├── middleware_test.go                     # Admin role validation and Idempotency-Key enforcement
-    ├── uuid_test.go                           # UUIDv7 monotonic ordering tests
-    └── validation_test.go                     # Request input sanitization tests
+│   ├── client/                                     # Resilient downstream gRPC client wrappers
+│   │   ├── auth_client.go                          # Auth service client with retryable error classification
+│   │   └── wallet_client.go                        # Wallet service client with Ping & Freeze RPCs
+│   ├── config/                                     # Environment configuration loader
+│   │   └── config.go                               # Strongly-typed environment variables with defaults
+│   ├── domain/                                     # Pure enterprise business domain models & errors
+│   │   ├── audit.go                                # Audit entry struct and action types
+│   │   ├── errors.go                               # Sentinel domain errors (ErrConflict, ErrNotFound, etc.)
+│   │   ├── events.go                               # Event payloads for Outbox Kafka streaming
+│   │   ├── incidents.go                            # Incident model, severity enum, MTTD/MTTR semantics
+│   │   ├── operations.go                           # AdminOperation state machine & status enums
+│   │   ├── saga.go                                 # SagaTask model, lease tokens, and backoff calculator
+│   │   └── uuid.go                                 # RFC 9562 UUIDv7 generator (time-ordered indexing)
+│   ├── handler/                                    # HTTP transport layer (Go 1.22+ ServeMux)
+│   │   ├── admin_handler.go                        # REST handlers for Halt, Resume, Suspend, Freeze
+│   │   ├── analytics_handler.go                    # GET /analytics/operations & /analytics/risk
+│   │   ├── dto.go                                  # Request and response JSON transfer objects
+│   │   ├── health_handler.go                       # /health (liveness), /ready, and /system/health (cached)
+│   │   ├── incident_handler.go                     # CRUD + resolution + forensic correlation endpoints
+│   │   ├── middleware.go                           # JWT auth, role enforcement, panic recovery & Prometheus metrics
+│   │   ├── router.go                               # URL routing table with parameterized routes
+│   │   ├── topology_handler.go                     # GET /topology endpoint
+│   │   └── validation.go                          # Input validators (UUIDs, symbols, reasons)
+│   ├── metrics/                                    # Centralized Prometheus telemetry registry
+│   │   └── metrics.go                              # Gauges, counters, histograms, route normalizer & 1-hot logic
+│   ├── repository/                                 # Storage interface layer
+│   │   ├── interfaces.go                           # Repository abstractions for testing & decoupling
+│   │   └── postgres/                              # Production pgx/v5 PostgreSQL implementation
+│   │       ├── audit_repo.go                       # Write-only append operations for audit logs
+│   │       ├── incident_repo.go                    # Incident CRUD, heartbeat updates, pagination & stats
+│   │       ├── operations_repo.go                  # Operations ledger with idempotency lookup & status transitions
+│   │       ├── outbox_repo.go                      # Polling with FOR UPDATE SKIP LOCKED and batching
+│   │       ├── saga_repo.go                        # Saga task claiming, retry scheduling, and completion
+│   │       └── tx_manager.go                       # Atomic transaction manager wrapper
+│   └── service/                                    # Business orchestration & background processing
+│       ├── admin_service.go                        # AdminService struct, constructor, and shared helpers
+│       ├── analytics_service.go                    # Operations volume analytics & heuristic risk signals
+│       ├── health_probe.go                         # Transport-level probe functions (HTTP, gRPC, Kafka, Postgres)
+│       ├── health_worker.go                        # Autonomous 15s health monitor lifecycle & RunProbe orchestration
+│       ├── incident_service.go                     # Incident listing, pagination, forensic correlation & resolution
+│       ├── incident_transitions.go                 # Transition-based incident FSM (DOWN/DEGRADED/UP handling)
+│       ├── market_service.go                       # HaltMarket, ResumeMarket, ReconstructMarketState
+│       ├── outbox_publisher.go                     # Background worker polling outbox & publishing to Kafka with ACKs
+│       ├── saga_worker.go                          # Background worker driving distributed sagas with backoff
+│       ├── topology.go                             # Platform dependency graph with HealthWorker overlay
+│       ├── user_service.go                         # SuspendUser, UnsuspendUser
+│       └── wallet_service.go                       # FreezeWallet, UnfreezeWallet, executeWalletMutation
+└── test/                                           # Centralized test suite (31+ automated tests)
+    ├── admin_service_test.go                       # Operation idempotency, conflicts, and lease loss tests
+    ├── grpc_test.go                                # Downstream gRPC error classification tests
+    ├── health_handler_test.go                      # Liveness, readiness, multi-broker Kafka & cached health tests
+    ├── metrics_test.go                             # 1-hot invariants, sub-ms latency, and Prometheus consistency
+    ├── middleware_test.go                          # Admin role validation and Idempotency-Key enforcement
+    ├── phase3_intelligence_test.go                 # Incident FSM, analytics, topology, and market reconstruction
+    ├── uuid_test.go                                # UUIDv7 monotonic ordering tests
+    └── validation_test.go                         # Request input sanitization tests
 ```
 
 ---
@@ -69,159 +84,112 @@ services/admin/
 ## 2. Purpose and Problem-Solving Details by Folder
 
 ### 2.1 `cmd/server/`
-> 📖 **Comprehensive Entrypoint Guide**: See [cmd/README.md](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/cmd/README.md) for complete lifecycle breakdowns, fail-fast bootstrapping, and 5-step graceful drainage flows.
+> 📖 See [cmd/README.md](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/cmd/README.md) for complete lifecycle breakdowns.
 
 - **Purpose**: Application composition root and entrypoint.
-- **Files**:
-  - [`cmd/server/main.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/cmd/server/main.go)
-    - *What Problem It Solves*: Microservices often suffer from race conditions on startup (partial initialization) and ungraceful shutdowns (severing in-flight database transactions or dropping HTTP requests).
-    - *How It Solves It*:
-      1. Performs sequential, fail-fast bootstrapping: Config $\to$ Logger $\to$ DB Connection Pool $\to$ Downstream gRPC Clients $\to$ Repositories $\to$ Core Services $\to$ Background Workers (`SagaWorker`, `OutboxPublisher`, `HealthWorker`) $\to$ HTTP Router.
-      2. Coordinates a **5-step graceful drainage** upon receiving `SIGINT`/`SIGTERM`:
-         - **Step A**: Immediately transitions `/ready` to HTTP 503 (`isShuttingDown = true`), causing upstream load balancers to cease traffic routing.
-         - **Step B**: Drains in-flight HTTP connections with a 10-second timeout (`srv.Shutdown()`).
-         - **Step C**: Stops background workers (`HealthWorker.Stop()`, `SagaWorker.Stop()`, `OutboxPublisher.Stop()`) using idempotent `sync.Once` and active probe context cancellation.
-         - **Step D**: Gracefully closes downstream gRPC client connections (`authCli`, `walletCli`).
-         - **Step E**: Closes the PostgreSQL connection pool (`dbPool.Close()`).
-    - *Why We Need It*: Ensures zero dropped requests and zero corrupted transactions during deployments or container restarts.
+- [`cmd/server/main.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/cmd/server/main.go):
+  - *Problem*: Microservices suffer from partial initialization and ungraceful shutdowns that corrupt in-flight database transactions.
+  - *How Solved*: Sequential, fail-fast bootstrapping: Config → Logger → DB → gRPC Clients → Repositories → Services → Background Workers → HTTP Router. Includes **`ReconstructMarketState()`** on startup — queries `admin_operations` to restore Prometheus market halt gauges that would otherwise be lost across restarts.
+  - 5-step graceful drainage on `SIGINT`/`SIGTERM`: (A) `/ready` → 503, (B) HTTP drain, (C) Worker stop, (D) gRPC close, (E) DB pool close.
 
 ---
 
 ### 2.2 `migrations/`
-> 📖 **Comprehensive Migrations Manual**: See [migrations/README.md](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/migrations/README.md) for full schema breakdowns, PL/pgSQL triggers, partial index optimizations, and sequence flows.
+> 📖 See [migrations/README.md](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/migrations/README.md) for full schema breakdowns.
 
-- **Purpose**: Defines PostgreSQL relational DDL schemas with strict data integrity guarantees.
-- **Files**:
-  - [`00001_create_admin_audit_log.sql`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/migrations/00001_create_admin_audit_log.sql):
-    - *Problem*: Compliance regulations in financial systems demand that audit trails can never be altered or purged, even by a database administrator.
-    - *How Solved*: Creates `admin_audit_log` with an immutable PostgreSQL trigger function `trg_enforce_audit_immutability()` that executes `BEFORE UPDATE OR DELETE` and raises an uncatchable exception: `RAISE EXCEPTION 'admin_audit_log entries are strictly immutable and append-only' USING ERRCODE = 'P0001'`.
-  - [`00002_create_admin_operations.sql`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/migrations/00002_create_admin_operations.sql):
-    - *Problem*: Network timeouts can cause operators to resend mutations (e.g. Halt Market), risking double executions or state inconsistencies.
-    - *How Solved*: Creates `admin_operations` with a `UNIQUE(admin_id, idempotency_key)` constraint and state machine columns (`PENDING`, `PROCESSING`, `COMPLETED`, `FAILED`).
-  - [`00003_create_admin_outbox.sql`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/migrations/00003_create_admin_outbox.sql):
-    - *Problem*: Dual-write problem: updating a database and publishing to Kafka cannot be done in a single atomic transaction without 2-Phase Commit.
-    - *How Solved*: Stores outbound Kafka events in `admin_outbox` within the **same atomic database transaction** as the business operation. Includes worker lease columns (`locked_at`, `locked_by`) and partial indexes (`WHERE published = FALSE`) for ultra-fast polling.
-  - [`00004_create_admin_saga_tasks.sql`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/migrations/00004_create_admin_saga_tasks.sql):
-    - *Problem*: Asynchronous multi-step operations (e.g. revoking auth tokens in external services) can fail halfway through.
-    - *How Solved*: Creates `admin_saga_tasks` with exponential backoff columns (`attempt_count`, `next_attempt_at`, `max_attempts`, `status`) to power distributed saga execution.
-- *Why We Need It*: Enforces foundational ACID guarantees and legal immutability at the database level.
+- [`00001_create_admin_audit_log.sql`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/migrations/00001_create_admin_audit_log.sql): Immutable audit trail via `BEFORE UPDATE OR DELETE` trigger (`RAISE EXCEPTION … ERRCODE = 'P0001'`).
+- [`00002_create_admin_operations.sql`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/migrations/00002_create_admin_operations.sql): Idempotency via `UNIQUE(admin_id, idempotency_key)`.
+- [`00003_create_admin_outbox.sql`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/migrations/00003_create_admin_outbox.sql): Transactional Outbox with worker lease columns and `WHERE published = FALSE` partial indexes.
+- [`00004_create_admin_saga_tasks.sql`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/migrations/00004_create_admin_saga_tasks.sql): Distributed saga queue with exponential backoff columns.
+- [`00005_create_admin_incidents.sql`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/migrations/00005_create_admin_incidents.sql):
+  - *Problem*: Multiple `HealthWorker` probe cycles hitting a DOWN service could create duplicate open incidents.
+  - *How Solved*: Enforces a **partial unique index**: `UNIQUE(service_name) WHERE status = 'OPEN'`. Only one active incident per service can exist at the database level. `mttd_seconds` is explicitly `NULL` for autonomous HealthWorker incidents (no independent failure-start timestamp is known).
 
 ---
 
 ### 2.3 `internal/client/`
-- **Purpose**: Handles outbound gRPC transport to downstream microservices with smart error handling.
-- **Files**:
-  - [`internal/client/auth_client.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/client/auth_client.go) & [`internal/client/wallet_client.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/client/wallet_client.go):
-    - *Problem*: Downstream gRPC errors vary wildly (transient network drops vs. permanent validation failures). Retrying permanent errors wastes CPU, while failing on transient errors aborts operations unnecessarily.
-    - *How Solved*: Implements [`IsRetryableGRPCError(err)`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/client/auth_client.go#L44):
-      - **Retryable**: `codes.Unavailable`, `codes.DeadlineExceeded`, `codes.ResourceExhausted`, `codes.Internal`, network connection resets.
-      - **Non-Retryable (Permanent)**: `codes.InvalidArgument`, `codes.NotFound`, `codes.PermissionDenied`, `codes.Unauthenticated`.
-      - Provides transport `Ping(ctx)` methods with deadline enforcement for liveness checking.
-    - *Why We Need It*: Prevents transient network glitches from permanently failing administrative sagas.
+- [`auth_client.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/client/auth_client.go) & [`wallet_client.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/client/wallet_client.go):
+  - **Retryable**: `Unavailable`, `DeadlineExceeded`, `ResourceExhausted`, `Internal`, connection resets.
+  - **Non-Retryable**: `InvalidArgument`, `NotFound`, `PermissionDenied`, `Unauthenticated`.
 
 ---
 
-### 2.4 `internal/config/`
-- **Purpose**: Environment configuration loading and validation.
-- **Files**:
-  - [`internal/config/config.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/config/config.go):
-    - *Problem*: Hardcoded configuration values lead to environment drift and secret leaks.
-    - *How Solved*: Reads environment variables (`PORT`, `DATABASE_URL`, `KAFKA_BROKERS`, `JWT_SECRET`, downstream service URLs) with production fallbacks and parsing helpers (e.g. `SplitKafkaBrokers()`).
-    - *Why We Need It*: Facilitates 12-factor cloud-native container execution.
+### 2.4 `internal/domain/`
+- [`operations.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/domain/operations.go): Operation types and status states (`PROCESSING`, `COMPLETED`, `FAILED`).
+- [`incidents.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/domain/incidents.go): `Incident` struct with `MTTDSeconds *float64` (pointer — intentionally `nil` for probe-created incidents) and `MTTRSeconds float64`. Severity enum: `P1Critical`, `P2High`, `P3Moderate`.
+- [`audit.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/domain/audit.go): Immutable audit entry.
+- [`events.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/domain/events.go): Versioned Kafka event envelope schemas.
+- [`saga.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/domain/saga.go): Exponential backoff with ±10% randomized jitter.
+- [`uuid.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/domain/uuid.go): RFC 9562 UUIDv7 — monotonic, sequential database inserts.
+- [`errors.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/domain/errors.go): Typed sentinel errors including `ErrActiveIncidentExists` for deduplication.
 
 ---
 
-### 2.5 `internal/domain/`
-- **Purpose**: Core business domain logic, data structures, and errors completely decoupled from frameworks or transport layers.
-- **Files**:
-  - [`operations.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/domain/operations.go): Defines operation types (`halt_market`, `resume_market`, `suspend_user`, `unsuspend_user`, `freeze_wallet`, `unfreeze_wallet`) and transition states (`PENDING`, `COMPLETED`, `FAILED`).
-  - [`audit.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/domain/audit.go): Defines `AuditLogEntry` capturing `AdminID`, `Action`, `TargetResource`, `Reason`, `ClientIP`, and `UserAgent`.
-  - [`events.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/domain/events.go): Event payload definitions published to Kafka topics (`admin.market.halted`, `admin.user.suspended`, etc.).
-  - [`saga.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/domain/saga.go): Defines `SagaTask` and calculates exponential backoff with full jitter to avoid the "thundering herd" problem on downstream services.
-  - [`uuid.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/domain/uuid.go): Implements RFC 9562 **UUIDv7** generation (combining millisecond timestamp and cryptographic entropy). This ensures sequential database B-Tree index inserts, avoiding the massive random I/O fragmentation caused by standard UUIDv4.
-  - [`errors.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/domain/errors.go): Standardized domain errors (`ErrConflict`, `ErrNotFound`, `ErrUnauthorized`, `ErrValidation`).
+### 2.5 `internal/repository/` & `internal/repository/postgres/`
+- [`interfaces.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/repository/interfaces.go): Declares `TxManager`, `OperationsRepository`, `OutboxRepository`, `SagaRepository`, `AuditRepository`, and **`IncidentRepository`**.
+- [`incident_repo.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/repository/postgres/incident_repo.go):
+  - `Create` — inserts with partial unique index guard; translates `23505` to `ErrActiveIncidentExists`.
+  - `GetActiveByService` — fetches the single open incident per service.
+  - `UpdateHeartbeat` — advances `last_seen_at` and `probe_failure_count`.
+  - `Resolve` — sets `resolved_at`, `mttr_seconds`, and flips status to `RESOLVED`.
+  - `List` with stable pagination (`triggered_at DESC, id DESC`).
+  - `GetStats` — total, open, resolved counts and `avg_mttd_seconds` / `avg_mttr_seconds`.
+- [`operations_repo.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/repository/postgres/operations_repo.go): Includes `GetLatestMarketStates` for startup market halt reconstruction.
+- [`tx_manager.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/repository/postgres/tx_manager.go): Atomic `COMMIT`/`ROLLBACK` manager for multi-table operations.
+- All polling repos use `FOR UPDATE SKIP LOCKED` for non-blocking distributed worker leasing.
 
 ---
 
-### 2.6 `internal/repository/` & `internal/repository/postgres/`
-- **Purpose**: Data access layer managing persistence, row locking, and transactions.
-- **Files**:
-  - [`interfaces.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/repository/interfaces.go): Repository contracts enabling pure unit testing with mocks.
-  - [`tx_manager.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/repository/postgres/tx_manager.go): Implements `RunInTx(ctx, fn)` with automatic `COMMIT` on success and `ROLLBACK` on error or panic.
-  - [`operations_repo.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/repository/postgres/operations_repo.go): Manages operation records with `ON CONFLICT (idempotency_key) DO NOTHING`.
-  - [`outbox_repo.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/repository/postgres/outbox_repo.go): Implements non-blocking distributed worker leasing using `SELECT ... FOR UPDATE SKIP LOCKED`. Multiple admin replicas can poll outbox events without locking each other or processing duplicates.
-  - [`saga_repo.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/repository/postgres/saga_repo.go): Implements `FetchDue` using `FOR UPDATE SKIP LOCKED` to lease due saga tasks, and tracks transition states (`PENDING`, `RETRYING`, `COMPLETED`, `EXHAUSTED`).
-  - [`audit_repo.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/repository/postgres/audit_repo.go): Append-only audit logger.
+### 2.6 `internal/service/`
+> 📖 See [internal/service/01README.md](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/01README.md) for full orchestration flows.
+
+The service package is split into focused files within the same Go package (`package service`):
+
+| File | Responsibility |
+|------|---------------|
+| [`admin_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/admin_service.go) | `AdminService` struct, `NewAdminService`, `resolveConcurrentConflict`, `isUniqueViolation` |
+| [`user_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/user_service.go) | `SuspendUser`, `UnsuspendUser` — user lifecycle with Auth saga |
+| [`wallet_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/wallet_service.go) | `FreezeWallet`, `UnfreezeWallet`, `executeWalletMutation` |
+| [`market_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/market_service.go) | `HaltMarket`, `ResumeMarket`, `ReconstructMarketState` |
+| [`health_worker.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/health_worker.go) | `HealthWorker` struct + lifecycle (`Start`/`Stop`/`GetLatestHealth`) + `RunProbe` orchestration |
+| [`health_probe.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/health_probe.go) | `probeHTTPService`, `probeAuthGRPC`, `probeWalletGRPC`, `probePostgres`, `probeKafka`, `classifyFailureReason` |
+| [`incident_transitions.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/incident_transitions.go) | `processIncidentTransitions` FSM — `handleDownTransition`, `handleSustainedDegradation`, `handleRecovery`, `outageIncidentSeverity` |
+| [`incident_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/incident_service.go) | `IncidentService` — list with pagination, manual resolution, forensic correlation |
+| [`analytics_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/analytics_service.go) | `AnalyticsService` — operations volume analytics & heuristic risk signal evaluation |
+| [`topology.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/topology.go) | `TopologyEngine` — platform dependency graph with HealthWorker real-time overlay |
+| [`outbox_publisher.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/outbox_publisher.go) | `OutboxPublisher` — guaranteed Kafka delivery with `RequireAll` ACKs |
+| [`saga_worker.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/saga_worker.go) | `SagaWorker` — distributed saga retries with exponential backoff |
 
 ---
 
-### 2.7 `internal/service/`
-- **Purpose**: Core business orchestration and asynchronous worker routines.
-- **Files**:
-  - [`admin_service.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/admin_service.go):
-    - *Problem*: Orchestrating multi-table atomic operations (e.g. record operation + write immutable audit + insert outbox event + insert saga task) while handling concurrent requests with the same idempotency key.
-    - *How Solved*: Implements atomic transactions via `TxManager`. If a concurrent collision occurs, reads the existing operation and safely returns it or reports progress.
-  - [`health_worker.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/health_worker.go):
-    - *Problem*: Evaluating downstream microservice availability synchronously in incoming HTTP requests causes high latency and cascade failures if a dependency hangs.
-    - *How Solved*: An autonomous background worker running on a 15s cadence:
-      1. Concurrently probes downstream HTTP services, gRPC endpoints, PostgreSQL, and Kafka with per-broker/service timeouts.
-      2. Concurrently collects Outbox and Saga backlog statistics.
-      3. Classifies timeouts as `TIMEOUT` and unconfigured endpoints as `UNKNOWN`.
-      4. Calculates overall platform status (`HEALTHY`, `DEGRADED`, `UNHEALTHY`) and Admin status.
-      5. Updates 1-hot boolean Prometheus gauges and sub-millisecond latencies.
-      6. Caches the result in memory (`sync.RWMutex`). Subsequent `/system/health` requests are served in **< 1 millisecond**.
-      7. Features idempotent `Start()` and `Stop()`, plus instant probe cancellation on shutdown.
-  - [`outbox_publisher.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/outbox_publisher.go):
-    - *Problem*: Ensuring events are published to Kafka without message loss or double publishing.
-    - *How Solved*: Polls leased outbox events, writes to Kafka with `RequiredAcks: RequireAll` (synchronous broker ACK), and marks records `published_at = NOW()` only upon receiving the broker ACK. If Kafka is down, backs off and increments retry metrics.
-  - [`saga_worker.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/service/saga_worker.go):
-    - *Problem*: Asynchronous side effects (like invalidating sessions in the Auth microservice) can fail due to network blips.
-    - *How Solved*: Claims tasks with leases, executes the action, and on transient error calculates exponential backoff with jitter (`next_attempt_at`). If `attempt_count >= max_attempts`, marks `EXHAUSTED` and fires Prometheus alert.
+### 2.7 `internal/handler/`
+- [`router.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/router.go): Go 1.22+ `http.ServeMux` with parameterized patterns.
+- [`admin_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/admin_handler.go): `HandleSuspendUser`, `HandleUnsuspendUser`, `HandleFreezeWallet`, `HandleUnfreezeWallet`, `HandleHaltMarket`, `HandleResumeMarket`.
+- [`incident_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/incident_handler.go): `GET /incidents`, `GET /incidents/{id}`, `POST /incidents/{id}/resolve`, `GET /incidents/{id}/correlated`. Uses strict `json.NewDecoder` with `DisallowUnknownFields` for resolution payloads.
+- [`analytics_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/analytics_handler.go): `GET /analytics/operations?window=24h` and `GET /analytics/risk`.
+- [`topology_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/topology_handler.go): `GET /topology` — live platform graph with node status and edge health.
+- [`health_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/health_handler.go): `/health` (instant liveness), `/ready` (DB+gRPC+Kafka probe), `/api/v1/admin/system/health` (cached sub-ms diagnostic).
+- [`middleware.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/middleware.go): JWT HMAC validation + `role=admin` enforcement, mandatory `Idempotency-Key` on mutations, panic recovery, Prometheus route normalization.
 
 ---
 
-### 2.8 `internal/handler/`
-- **Purpose**: HTTP routing, serialization, and middleware enforcement.
-- **Files**:
-  - [`router.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/router.go): Sets up standard Go 1.22 `http.ServeMux` with parameterized pattern matching (`POST /api/v1/admin/markets/{market_id}/halt`).
-  - [`admin_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/admin_handler.go): Parses requests, validates `Idempotency-Key` headers, invokes `AdminService`, and returns structured JSON responses.
-  - [`health_handler.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/health_handler.go):
-    - `/health`: Instant process liveness check (200 OK).
-    - `/ready`: Readiness check probing DB, Auth, Wallet, and all configured Kafka brokers. Returns 503 during graceful drainage.
-    - `/api/v1/admin/system/health`: Serves the cached platform diagnostic from `HealthWorker` in sub-millisecond time with zero on-demand probing.
-  - [`middleware.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/middleware.go):
-    - Enforces JWT cryptographic signature and verifies `role == "admin"`.
-    - Enforces mandatory `Idempotency-Key` header on mutations.
-    - Protects against panics using defer/recover (returns HTTP 500 cleanly).
-    - Measures request duration and normalizes route labels for Prometheus.
-  - [`validation.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/validation.go) & [`dto.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/handler/dto.go): Request parameter validation (reason length, UUID syntax, asset symbols).
+### 2.8 `internal/metrics/`
+- [`metrics.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/metrics/metrics.go):
+  - `NormalizeRoute` — strips dynamic path segments to static templates, preventing cardinality explosion.
+  - **1-hot boolean invariant**: for each service × status combination, exactly one gauge = `1.0`; all other 4 states = `0.0`.
+  - Market halt gauges: `tradedrift_admin_market_halted{market_id}` (binary gauge) and `tradedrift_admin_market_halt_start_timestamp_seconds{market_id}` (Unix epoch float for alerting on duration).
+  - Incident worker error counter: `tradedrift_admin_incident_worker_errors_total{operation}`.
 
 ---
 
-### 2.9 `internal/metrics/`
-- **Purpose**: Centralized Prometheus instrumentation and metric registration.
-- **Files**:
-  - [`metrics.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/admin/internal/metrics/metrics.go):
-    - *Problem*: High-cardinality labels (UUIDs, user IDs) crash Prometheus TSDB. Inconsistent metric naming leads to broken alerts and broken Grafana panels.
-    - *How Solved*:
-      1. Normalizes all routes to static template strings (`/api/v1/admin/users/{user_id}/suspend`), stripping dynamic IDs.
-      2. Implements a strict **1-hot boolean invariant** for component health:
-         $$\text{UP} + \text{DEGRADED} + \text{DOWN} + \text{TIMEOUT} + \text{UNKNOWN} = 1.0$$
-         Exactly one gauge is set to `1.0`; all other 4 states are set to `0.0`.
-      3. Preserves nanosecond/sub-millisecond latency precision in histograms and gauges (`latency.Seconds()`).
-      4. Centralizes all metric definitions under the `tradedrift_admin_*` namespace.
-
----
-
-### 2.10 `test/`
-- **Purpose**: Comprehensive unit, regression, and integration testing suite.
-- **Files**:
-  - `admin_service_test.go`: Tests idempotent execution, concurrent conflict handling, and lease safety.
-  - `health_handler_test.go`: Tests liveness, 503 readiness drainage, multi-broker Kafka fallback, and cached system health responses.
-  - `metrics_test.go`: Tests 1-hot boolean invariants, sub-millisecond latency preservation, worker start/stop idempotency, probe overlap serialization, Kafka/Postgres degradation logic, and Prometheus metric registry consistency.
-  - `middleware_test.go`: Tests admin role enforcement, invalid JWTs, and missing idempotency keys.
-  - `grpc_test.go`: Tests retryable vs non-retryable gRPC error categorization.
-  - `uuid_test.go` & `validation_test.go`: Tests UUIDv7 monotonicity and input sanitization.
+### 2.9 `test/`
+- `admin_service_test.go`: Idempotency, concurrent collision, wallet reconciliation.
+- `health_handler_test.go`: Liveness, 503 drainage, multi-broker Kafka, cached diagnostic.
+- `metrics_test.go`: 1-hot invariants, sub-ms precision, worker lifecycle idempotency.
+- `middleware_test.go`: JWT role enforcement, missing idempotency key.
+- `grpc_test.go`: Retryable vs non-retryable gRPC error classification.
+- `phase3_intelligence_test.go`: Incident FSM (DOWN→create, DEGRADED×3→create, UP→resolve, DEGRADED→DOWN heartbeat continuity), analytics (burst detection, window validation), topology (UNKNOWN edges for missing health), market halt reconstruction.
+- `uuid_test.go` / `validation_test.go`: UUIDv7 monotonicity and input sanitization.
 
 ---
 
@@ -229,130 +197,136 @@ services/admin/
 
 ### Flow 1: Administrative Mutation (Market Halt) with Transactional Outbox
 ```
-                      Admin Operator
-                            │
-                            ▼
-              POST /api/v1/admin/markets/BTC-USDT/halt
-      (RequireAdmin JWT + RequireIdempotencyKey Middleware)
-                            │
-                            ▼
-                AdminService.HaltMarket()
-                            │
-                            ▼
-           PostgreSQL ACID Transaction (pgxpool)
-                            │
-         ┌──────────────────┼──────────────────┐
-         ▼                  ▼                  ▼
-INSERT admin_ops   INSERT admin_audit   INSERT admin_outbox
-(status='PENDING') (tamper-proof log)   (admin.market.halted)
-         │                  │                  │
-         └──────────────────┼──────────────────┘
-                            │
-                            ▼
-             UPDATE admin_ops (status='COMPLETED')
-                            │
-                            ▼
-                 tx.Commit() -> HTTP 200 OK
-                            │
-                            ▼
-                 OutboxPublisher (Every 1s)
-              SELECT FOR UPDATE SKIP LOCKED
-                            │
-                            ▼
-                 Produce to Apache Kafka
-                  (Acks: RequireAll)
-                            │
-                            ▼
-                Broker ACK -> Published=TRUE
-```
-
----
-
-### Flow 2: Distributed Saga Coordination (User Suspension)
-```
-                      Admin Operator
-                            │
-                            ▼
-            POST /api/v1/admin/users/usr_123/suspend
-                            │
-                            ▼
-               AdminService.SuspendUser()
-                            │
-                            ▼
-           PostgreSQL ACID Transaction (pgxpool)
-  (Insert Operation, AuditLog, Outbox, and SagaTask)
-                            │
-                            ▼
-        HTTP 200 OK (Account Suspended Locally)
-                            │
-                            ▼
-                 SagaWorker (Every 1s)
+                  Admin Operator
+                        │
+                        ▼
+          POST /api/v1/admin/markets/BTC-USDT/halt
+  (RequireAdmin JWT + RequireIdempotencyKey Middleware)
+                        │
+                        ▼
+            AdminService.HaltMarket()
+                        │
+                        ▼
+         PostgreSQL ACID Transaction (pgxpool)
+                        │
+       ┌────────────────┼────────────────┐
+       ▼                ▼                ▼
+INSERT admin_ops  INSERT audit_log  INSERT admin_outbox
+(COMPLETED)       (tamper-proof)   (admin.market.halted)
+       │                │                │
+       └────────────────┼────────────────┘
+                        │
+                        ▼
+             tx.Commit() -> HTTP 200 OK
+                        │
+                        ▼
+    metrics.RecordMarketHalted(marketID, now)
+                        │
+                        ▼
+            OutboxPublisher (Every 1s)
          SELECT FOR UPDATE SKIP LOCKED
-                            │
-                            ▼
-            Call Auth gRPC: RevokeUserSessions
-                            │
-        ┌───────────────────┴───────────────────┐
- (RPC Success)                           (RPC Error)
-        ▼                                       ▼
-  MarkCompleted(taskID)                  IsRetryableGRPCError?
-        │                                 /                 \
-        ▼                           (Yes)/                   \(No / Max Attr)
-  Saga COMPLETED                        ▼                     ▼
-                               UpdateRetry(taskID)      MarkExhausted(taskID)
-                               Exponential Backoff      Prometheus Alert Fires
-                               (30s to 8h)
+                        │
+                        ▼
+             Produce to Apache Kafka
+              (Acks: RequireAll)
+                        │
+                        ▼
+            Broker ACK -> Published=TRUE
 ```
 
----
-
-### Flow 3: Autonomous Health Aggregation & Sub-Millisecond Diagnosis
+### Flow 2: Autonomous Incident Lifecycle (Service DOWN)
 ```
-                       HealthWorker
-                     (Every 15s Loop)
-                            │
-        ┌───────────────────┴───────────────────┐
-        ▼                                       ▼
- Concurrent Downstream Probes            Concurrent Backlog Stats
-  [Trade, Portfolio, Liq, Notif]          Query Outbox backlog depth
-  [Auth & Wallet gRPC, Postgres]          Query Saga queue counts
-  [Kafka brokers: 1.5s timeout]                 │
-        │                                       │
-        └───────────────────┬───────────────────┘
-                            │
-                            ▼
-               Compute Platform Health Score
-            (HEALTHY = 2, DEGRADED = 1, DOWN = 0)
-                            │
-                            ▼
-               RecordHealthProbe (Prometheus)
-              Update 1-Hot Boolean Status Gauges
-                            │
-                            ▼
-              Store in latestHealth Cache
-                 (Protected by RWMutex)
-                            │
-            ┌───────────────┴───────────────┐
-            ▼                               ▼
-     Prometheus Scraping        GET /api/v1/admin/system/health
-       (Scrapes /metrics)          (Returns In-Memory JSON < 1ms)
+                   HealthWorker
+                  (Every 15s probe)
+                        │
+              Service status = DOWN
+                        │
+                        ▼
+         processIncidentTransitions()
+          → handleDownTransition()
+                        │
+              GetActiveByService()
+              ┌──────────┴──────────┐
+          Exists                 None
+              │                    │
+              ▼                    ▼
+    UpdateHeartbeat()      Create Incident
+    (last_seen, count++)   (severity=P1/P2/P3)
+                           (partial UQ guard)
+                                   │
+              Service recovers → UP
+                                   │
+                                   ▼
+                         handleRecovery()
+                                   │
+                                   ▼
+                     incidentRepo.Resolve()
+                   (MTTR = now - triggered_at)
+```
+
+### Flow 3: Market Halt State Reconstruction on Startup
+```
+                     main.go startup
+                          │
+                          ▼
+         adminSvc.ReconstructMarketState(ctx)
+                          │
+                          ▼
+         opsRepo.GetLatestMarketStates()
+         (Latest HALT_MARKET / RESUME_MARKET
+          per market_id from admin_operations)
+                          │
+               ┌──────────┴──────────┐
+           IsHalted                Resumed
+               │                    │
+               ▼                    ▼
+  metrics.RecordMarketHalted()  metrics.RecordMarketResumed()
+  (Restores halt gauge + start   (Zeros halt gauge)
+   timestamp in Prometheus)
+```
+
+### Flow 4: Autonomous Health Aggregation & Sub-Millisecond Diagnosis
+```
+                     HealthWorker
+                   (Every 15s Loop)
+                          │
+       ┌──────────────────┴───────────────────┐
+       ▼                                      ▼
+Concurrent Probes (5 goroutines)     Concurrent Backlog Stats
+ probeHTTPService × 4                 outboxRepo.GetBacklogStats
+ probeAuthGRPC                        sagaRepo.GetQueueStats
+ probeWalletGRPC
+ probePostgres
+ probeKafka
+       │                                      │
+       └──────────────────┬───────────────────┘
+                          │
+                          ▼
+            Compute Platform Health Score
+         Postgres≠UP → UNHEALTHY
+         Kafka≠UP    → DEGRADED
+                          │
+                          ▼
+         1-Hot Gauge Updates (Prometheus)
+         Store latestHealth (RWMutex)
+                          │
+                          ▼
+    processIncidentTransitions(services, adminComponents)
 ```
 
 ---
 
 ## 4. Verification & Testing Strategy
 
-The Admin Service maintains a 100% passing test suite across all subsystems:
-
 ```powershell
-# Run full automated test suite (37 tests)
-go test -v ./services/admin/test/...
+# Run full automated test suite
+go test -v ./test/...
 
-# Verify static analysis & formatting
-go vet ./services/admin/...
+# Verify static analysis
+go vet ./...
 
-# Verify complete workspace package compilation
-go build ./services/admin/...
+# Verify complete package compilation
+go build ./...
 ```
 
-All architectural patterns—from **idempotency** and **immutable audit logging** to **zero-drift Prometheus telemetry** and **non-blocking worker leasing**—are rigorously enforced to ensure maximum reliability and operational excellence.
+All architectural patterns — from **idempotency** and **immutable audit logging** to **zero-drift Prometheus telemetry**, **non-blocking worker leasing**, and **transition-based incident tracking** — are enforced to ensure maximum reliability and operational excellence.

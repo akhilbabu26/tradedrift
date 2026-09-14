@@ -2,17 +2,11 @@ package service
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	statusRpc "google.golang.org/grpc/status"
 
 	"tradedrift/services/admin/internal/client"
 	"tradedrift/services/admin/internal/metrics"
@@ -67,15 +61,16 @@ type DBPinger interface {
 // Lifecycle contract: Start must be called at most once. Stop must be called after Start.
 // Workers cannot be restarted after Stop.
 type HealthWorker struct {
-	dbPool     DBPinger
-	authCli    *client.AuthClient
-	walletCli  *client.WalletClient
-	outboxRepo repository.OutboxRepository
-	sagaRepo   repository.SagaRepository
-	cfg        HealthWorkerConfig
-	log        *zap.Logger
-	httpClient *http.Client
-	interval   time.Duration
+	dbPool       DBPinger
+	authCli      *client.AuthClient
+	walletCli    *client.WalletClient
+	outboxRepo   repository.OutboxRepository
+	sagaRepo     repository.SagaRepository
+	incidentRepo repository.IncidentRepository
+	cfg          HealthWorkerConfig
+	log          *zap.Logger
+	httpClient   *http.Client
+	interval     time.Duration
 
 	done         chan struct{}
 	workerCancel context.CancelFunc
@@ -84,8 +79,10 @@ type HealthWorker struct {
 	stopOnce     sync.Once
 	probeMu      sync.Mutex
 
-	mu           sync.RWMutex
-	latestHealth *SystemHealthResponse
+	prevStatus    map[string]string
+	degradedCount map[string]int
+	mu            sync.RWMutex
+	latestHealth  *SystemHealthResponse
 }
 
 // NewHealthWorker creates a new autonomous background health monitor.
@@ -103,17 +100,24 @@ func NewHealthWorker(
 		interval = 15 * time.Second
 	}
 	return &HealthWorker{
-		dbPool:     dbPool,
-		authCli:    authCli,
-		walletCli:  walletCli,
-		outboxRepo: outboxRepo,
-		sagaRepo:   sagaRepo,
-		cfg:        cfg,
-		log:        log,
-		httpClient: &http.Client{Timeout: 1500 * time.Millisecond},
-		interval:   interval,
-		done:       make(chan struct{}),
+		dbPool:        dbPool,
+		authCli:       authCli,
+		walletCli:     walletCli,
+		outboxRepo:    outboxRepo,
+		sagaRepo:      sagaRepo,
+		cfg:           cfg,
+		log:           log,
+		httpClient:    &http.Client{Timeout: 1500 * time.Millisecond},
+		interval:      interval,
+		done:          make(chan struct{}),
+		prevStatus:    make(map[string]string),
+		degradedCount: make(map[string]int),
 	}
+}
+
+// SetIncidentRepo configures the incident repository for autonomous incident tracking.
+func (w *HealthWorker) SetIncidentRepo(repo repository.IncidentRepository) {
+	w.incidentRepo = repo
 }
 
 // Start launches the background health probe ticker. It is idempotent.
@@ -193,14 +197,13 @@ func (w *HealthWorker) RunProbe(ctx context.Context) *SystemHealthResponse {
 		defer mu.Unlock()
 		services[name] = rep
 	}
-
 	addAdminReport := func(name string, rep ServiceStatusReport) {
 		mu.Lock()
 		defer mu.Unlock()
 		adminComponents[name] = rep
 	}
 
-	// 1. HTTP Services
+	// 1. HTTP Services (trade, portfolio, liquidity, notification)
 	httpTargets := []struct {
 		name string
 		url  string
@@ -210,7 +213,6 @@ func (w *HealthWorker) RunProbe(ctx context.Context) *SystemHealthResponse {
 		{metrics.ServiceLiquidityEngine, w.cfg.LiqHealthURL},
 		{metrics.ServiceNotification, w.cfg.NotifHealthURL},
 	}
-
 	for _, t := range httpTargets {
 		if t.url == "" {
 			addServiceReport(t.name, ServiceStatusReport{
@@ -223,159 +225,36 @@ func (w *HealthWorker) RunProbe(ctx context.Context) *SystemHealthResponse {
 		probeWg.Add(1)
 		go func(name, url string) {
 			defer probeWg.Done()
-			rep := w.probeHTTPService(ctx, name, url)
-			addServiceReport(name, rep)
+			addServiceReport(name, w.probeHTTPService(ctx, name, url))
 		}(t.name, t.url)
 	}
 
-	// 2. Auth gRPC Transport Check (Transport & connection liveness probe)
-	if w.authCli != nil {
-		probeWg.Add(1)
-		go func() {
-			defer probeWg.Done()
-			start := time.Now()
-			status := metrics.StatusUP
-			var errStr string
-			if err := w.authCli.Ping(ctx); err != nil {
-				if statusRpc.Code(err) == codes.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded) {
-					status = metrics.StatusTimeout
-				} else {
-					status = metrics.StatusDown
-				}
-				errStr = err.Error()
-			}
-			elapsed := time.Since(start)
-			addServiceReport(metrics.ServiceAuth, ServiceStatusReport{
-				Name:      metrics.ServiceAuth,
-				Status:    status,
-				Latency:   elapsed,
-				LatencyMs: elapsed.Milliseconds(),
-				Error:     errStr,
-			})
-		}()
-	} else if w.cfg.AuthGRPCAddr != "" {
-		addServiceReport(metrics.ServiceAuth, ServiceStatusReport{
-			Name:   metrics.ServiceAuth,
-			Status: "DOWN",
-			Error:  "auth gRPC client not initialized",
-		})
-	} else {
-		addServiceReport(metrics.ServiceAuth, ServiceStatusReport{
-			Name:   metrics.ServiceAuth,
-			Status: "UNKNOWN",
-			Error:  "auth gRPC address not configured",
-		})
-	}
-
-	// 3. Wallet gRPC Application Check (Application-level Health RPC probe)
-	if w.walletCli != nil {
-		probeWg.Add(1)
-		go func() {
-			defer probeWg.Done()
-			start := time.Now()
-			status := metrics.StatusUP
-			var errStr string
-			if err := w.walletCli.Ping(ctx); err != nil {
-				if statusRpc.Code(err) == codes.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded) {
-					status = metrics.StatusTimeout
-				} else {
-					status = metrics.StatusDown
-				}
-				errStr = err.Error()
-			}
-			elapsed := time.Since(start)
-			addServiceReport(metrics.ServiceWallet, ServiceStatusReport{
-				Name:      metrics.ServiceWallet,
-				Status:    status,
-				Latency:   elapsed,
-				LatencyMs: elapsed.Milliseconds(),
-				Error:     errStr,
-			})
-		}()
-	} else if w.cfg.WalletGRPCAddr != "" {
-		addServiceReport(metrics.ServiceWallet, ServiceStatusReport{
-			Name:   metrics.ServiceWallet,
-			Status: "DOWN",
-			Error:  "wallet gRPC client not initialized",
-		})
-	} else {
-		addServiceReport(metrics.ServiceWallet, ServiceStatusReport{
-			Name:   metrics.ServiceWallet,
-			Status: "UNKNOWN",
-			Error:  "wallet gRPC address not configured",
-		})
-	}
-
-	// 4. PostgreSQL Probe (Mandatory Admin infrastructure)
-	if w.dbPool != nil {
-		probeWg.Add(1)
-		go func() {
-			defer probeWg.Done()
-			start := time.Now()
-			status := "UP"
-			var errStr string
-			if err := w.dbPool.Ping(ctx); err != nil {
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-					status = metrics.StatusTimeout
-				} else {
-					status = metrics.StatusDown
-				}
-				errStr = err.Error()
-			}
-			elapsed := time.Since(start)
-			addAdminReport(metrics.ServicePostgres, ServiceStatusReport{
-				Name:      metrics.ServicePostgres,
-				Status:    status,
-				Latency:   elapsed,
-				LatencyMs: elapsed.Milliseconds(),
-				Error:     errStr,
-			})
-		}()
-	} else {
-		addAdminReport(metrics.ServicePostgres, ServiceStatusReport{
-			Name:   metrics.ServicePostgres,
-			Status: "UNKNOWN",
-			Error:  "postgres connection pool not configured",
-		})
-	}
-
-	// 5. Kafka Broker Availability Probe (Considered UP if at least one configured broker is reachable)
+	// 2. Auth gRPC Transport Check
 	probeWg.Add(1)
 	go func() {
 		defer probeWg.Done()
-		start := time.Now()
-		status := "DOWN"
-		var errStr string
-		if len(w.cfg.KafkaBrokers) > 0 {
-			for _, broker := range w.cfg.KafkaBrokers {
-				brokerCtx, brokerCancel := context.WithTimeout(ctx, 1500*time.Millisecond)
-				conn, err := kafka.DialContext(brokerCtx, "tcp", broker)
-				brokerCancel()
-				if err == nil {
-					_ = conn.Close()
-					status = "UP"
-					errStr = ""
-					break
-				}
-				if errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.Is(brokerCtx.Err(), context.DeadlineExceeded) || errors.Is(err, context.DeadlineExceeded) {
-					status = metrics.StatusTimeout
-				} else {
-					status = metrics.StatusDown
-				}
-				errStr = err.Error()
-			}
-		} else {
-			status = "UNKNOWN"
-			errStr = "no kafka brokers configured"
-		}
-		elapsed := time.Since(start)
-		addAdminReport(metrics.ServiceKafka, ServiceStatusReport{
-			Name:      metrics.ServiceKafka,
-			Status:    status,
-			Latency:   elapsed,
-			LatencyMs: elapsed.Milliseconds(),
-			Error:     errStr,
-		})
+		w.probeAuthGRPC(ctx, addServiceReport)
+	}()
+
+	// 3. Wallet gRPC Application Health Check
+	probeWg.Add(1)
+	go func() {
+		defer probeWg.Done()
+		w.probeWalletGRPC(ctx, addServiceReport)
+	}()
+
+	// 4. PostgreSQL Probe (Mandatory Admin infrastructure)
+	probeWg.Add(1)
+	go func() {
+		defer probeWg.Done()
+		w.probePostgres(ctx, addAdminReport)
+	}()
+
+	// 5. Kafka Broker Availability Probe
+	probeWg.Add(1)
+	go func() {
+		defer probeWg.Done()
+		addAdminReport(metrics.ServiceKafka, probeKafka(ctx, w.cfg.KafkaBrokers))
 	}()
 
 	probeWg.Wait()
@@ -446,14 +325,11 @@ func (w *HealthWorker) RunProbe(ctx context.Context) *SystemHealthResponse {
 		overall = "UNHEALTHY"
 	}
 	// Kafka DOWN, UNKNOWN, or TIMEOUT degrades platform operations
-	if kafkaStatus != metrics.StatusUP {
-		if overall == "HEALTHY" {
-			overall = "DEGRADED"
-		}
+	if kafkaStatus != metrics.StatusUP && overall == "HEALTHY" {
+		overall = "DEGRADED"
 	}
 
 	// 9. Record Prometheus Telemetry
-	// Update 1-hot gauges, latencies, and last run timestamp for all services
 	for name, rep := range services {
 		metrics.RecordHealthProbe(name, rep.Status, rep.Latency, runTime)
 		if rep.Status != "UP" {
@@ -470,7 +346,7 @@ func (w *HealthWorker) RunProbe(ctx context.Context) *SystemHealthResponse {
 
 	resp := &SystemHealthResponse{
 		OverallStatus: overall,
-		Timestamp:     runTime.Format(time.RFC3339),
+		Timestamp:     runTime.Format("2006-01-02T15:04:05Z07:00"),
 		Services:      services,
 		Admin: AdminHealthReport{
 			Status:   adminStatus,
@@ -485,69 +361,9 @@ func (w *HealthWorker) RunProbe(ctx context.Context) *SystemHealthResponse {
 	w.latestHealth = resp
 	w.mu.Unlock()
 
+	// 10. Autonomous Incident Tracking (Transition-Based & Concurrency-Safe)
+	// Implementation lives in incident_transitions.go
+	w.processIncidentTransitions(ctx, runTime, services, adminComponents)
+
 	return resp
-}
-
-func (w *HealthWorker) probeHTTPService(ctx context.Context, name, url string) ServiceStatusReport {
-	start := time.Now()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return ServiceStatusReport{Name: name, Status: "DOWN", Error: err.Error()}
-	}
-
-	resp, err := w.httpClient.Do(req)
-	elapsed := time.Since(start)
-	durationMs := elapsed.Milliseconds()
-	if err != nil {
-		if ctx.Err() != nil {
-			return ServiceStatusReport{Name: name, Status: "TIMEOUT", Latency: elapsed, LatencyMs: durationMs, Error: "request timed out"}
-		}
-		return ServiceStatusReport{Name: name, Status: "DOWN", Latency: elapsed, LatencyMs: durationMs, Error: err.Error()}
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		return ServiceStatusReport{Name: name, Status: "UP", Latency: elapsed, LatencyMs: durationMs, HTTPStatus: resp.StatusCode}
-	}
-
-	if resp.StatusCode >= 500 {
-		return ServiceStatusReport{
-			Name:       name,
-			Status:     "DOWN",
-			Latency:    elapsed,
-			LatencyMs:  durationMs,
-			HTTPStatus: resp.StatusCode,
-			Error:      fmt.Sprintf("service reported outage (HTTP %d)", resp.StatusCode),
-		}
-	}
-
-	return ServiceStatusReport{
-		Name:       name,
-		Status:     "DEGRADED",
-		Latency:    elapsed,
-		LatencyMs:  durationMs,
-		HTTPStatus: resp.StatusCode,
-		Error:      fmt.Sprintf("service reported degradation (HTTP %d)", resp.StatusCode),
-	}
-}
-
-func classifyFailureReason(rep ServiceStatusReport) string {
-	if rep.Status == "TIMEOUT" || strings.Contains(strings.ToLower(rep.Error), "timeout") {
-		return "timeout"
-	}
-	if rep.HTTPStatus == http.StatusServiceUnavailable {
-		return "http_503"
-	}
-	if rep.HTTPStatus >= 500 {
-		return "http_5xx"
-	}
-	if strings.Contains(strings.ToLower(rep.Error), "connection refused") ||
-		strings.Contains(strings.ToLower(rep.Error), "no such host") ||
-		strings.Contains(strings.ToLower(rep.Error), "dial") {
-		return "connection_error"
-	}
-	if strings.Contains(strings.ToLower(rep.Error), "grpc") {
-		return "grpc_error"
-	}
-	return "unknown"
 }

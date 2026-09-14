@@ -67,6 +67,8 @@ func main() {
 	opsRepo := postgresRepo.NewOperationsRepo(dbPool)
 	outboxRepo := postgresRepo.NewOutboxRepo(dbPool)
 	sagaRepo := postgresRepo.NewSagaRepo(dbPool)
+	incidentRepo := postgresRepo.NewIncidentRepo(dbPool)
+	auditRepo := postgresRepo.NewAuditRepo(dbPool)
 
 	// 7. gRPC Clients (Fail-fast: verify client creation succeeds)
 	authCli, err := client.NewAuthClient(cfg.AuthGRPCAddr)
@@ -81,6 +83,12 @@ func main() {
 
 	// 8. Services
 	adminSvc := service.NewAdminService(txMgr, opsRepo, authCli, walletCli, log)
+	if err := adminSvc.ReconstructMarketState(ctx); err != nil {
+		log.Fatal("Could not reconstruct market halt state from persistent operations; halting startup", zap.Error(err))
+	}
+	topologyEng := service.NewTopologyEngine()
+	incidentSvc := service.NewIncidentService(incidentRepo, auditRepo, topologyEng, log)
+	analyticsSvc := service.NewAnalyticsService(opsRepo, auditRepo, log)
 
 	// 9. Background Workers
 	outboxPub := service.NewOutboxPublisher(outboxRepo, cfg.KafkaBrokers, log, cfg.OutboxInterval)
@@ -99,6 +107,8 @@ func main() {
 		KafkaBrokers:   cfg.SplitKafkaBrokers(),
 	}
 	healthWorker := service.NewHealthWorker(dbPool, authCli, walletCli, outboxRepo, sagaRepo, healthWorkerCfg, log, cfg.HealthInterval)
+	healthWorker.SetIncidentRepo(incidentRepo)
+	topologyEng.SetHealthWorker(healthWorker)
 	healthWorker.Start(ctx)
 
 	// 10. HTTP Layer
@@ -114,9 +124,20 @@ func main() {
 	healthHdr := handler.NewHealthHandler(dbPool, authCli, walletCli, outboxRepo, sagaRepo, healthCfg, log)
 	healthHdr.SetHealthWorker(healthWorker)
 	adminHdr := handler.NewAdminHandler(adminSvc, log)
+	incidentHdr := handler.NewIncidentHandler(incidentSvc, log)
+	analyticsHdr := handler.NewAnalyticsHandler(analyticsSvc, log)
+	topologyHdr := handler.NewTopologyHandler(topologyEng, log)
 	jwtValidator := platformjwt.NewHMACValidator([]byte(cfg.JWTSecret))
 
-	router := handler.NewRouter(adminHdr, healthHdr, jwtValidator, log)
+	router := handler.NewRouter(
+		adminHdr,
+		healthHdr,
+		jwtValidator,
+		log,
+		handler.WithIncidentHandler(incidentHdr),
+		handler.WithAnalyticsHandler(analyticsHdr),
+		handler.WithTopologyHandler(topologyHdr),
+	)
 
 	srv := &http.Server{
 		Addr:         fmt.Sprintf(":%s", cfg.Port),

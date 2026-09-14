@@ -150,6 +150,12 @@ func main() {
 		"/tradedrift.auth.v1.AuthService/RefreshToken":           true,
 		"/tradedrift.auth.v1.AuthService/ForgotPassword":         true,
 		"/tradedrift.auth.v1.AuthService/ResetPassword":          true,
+
+		// Internal RPCs (called service-to-service by Admin)
+		"/tradedrift.auth.v1.AuthService/InvalidateUserSessions": true,
+		"/tradedrift.auth.v1.AuthService/SuspendUser":            true,
+		"/tradedrift.auth.v1.AuthService/UnsuspendUser":          true,
+		"/tradedrift.auth.v1.AuthService/ListSuspendedUsers":     true,
 	}
 
 	authInterceptor := platformgrpc.UnaryAuthInterceptor(redisValidator, publicMethods)

@@ -186,3 +186,61 @@ func (r *UserRepository) UpdatePassword(ctx context.Context, id string, password
 	}
 	return nil
 }
+
+func (r *UserRepository) UpdateStatus(ctx context.Context, id string, status string) error {
+	query := `
+		UPDATE users
+		SET status = $1, updated_at = NOW()
+		WHERE id = $2
+	`
+	res, err := r.db.Exec(ctx, query, status, id)
+	if err != nil {
+		return fmt.Errorf("failed to update user status: %w", err)
+	}
+	if res.RowsAffected() == 0 {
+		return fmt.Errorf("user not found")
+	}
+	return nil
+}
+
+func (r *UserRepository) ListSuspendedUserIDs(ctx context.Context, limit, offset int) ([]string, int, error) {
+	if limit <= 0 {
+		limit = 1000
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var total int
+	countQuery := `SELECT COUNT(*) FROM users WHERE status = 'SUSPENDED'`
+	if err := r.db.QueryRow(ctx, countQuery).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("failed to count suspended users: %w", err)
+	}
+
+	query := `
+		SELECT id FROM users
+		WHERE status = 'SUSPENDED'
+		ORDER BY id
+		LIMIT $1 OFFSET $2
+	`
+	rows, err := r.db.Query(ctx, query, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to query suspended users: %w", err)
+	}
+	defer rows.Close()
+
+	userIDs := make([]string, 0)
+	for rows.Next() {
+		var uid string
+		if err := rows.Scan(&uid); err != nil {
+			return nil, 0, fmt.Errorf("failed to scan suspended user id: %w", err)
+		}
+		userIDs = append(userIDs, uid)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("row iteration error: %w", err)
+	}
+
+	return userIDs, total, nil
+}
+

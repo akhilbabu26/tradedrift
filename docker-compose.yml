@@ -119,6 +119,8 @@ services:
       OUTBOX_INTERVAL: 1s
       SAGA_INTERVAL: 5s
       HEALTH_INTERVAL: 15s
+      REDIS_ADDR: redis:6379
+      RECONCILIATION_INTERVAL: 15s
     ports:
       - "8085:8085"
     depends_on:
@@ -128,6 +130,8 @@ services:
         condition: service_started
       wallet:
         condition: service_started
+      redis:
+        condition: service_healthy
 
   order:
     build:

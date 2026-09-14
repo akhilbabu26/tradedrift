@@ -39,14 +39,19 @@ type orderService struct {
 	repo        repository.OrderRepository
 	wallet      *wallet.Client
 	priceFilter PriceFilter
+	marketGuard MarketGuard
 	logger      *zap.Logger
 }
 
-func NewService(repo repository.OrderRepository, walletClient *wallet.Client, priceFilter PriceFilter, logger *zap.Logger) Service {
+func NewService(repo repository.OrderRepository, walletClient *wallet.Client, priceFilter PriceFilter, marketGuard MarketGuard, logger *zap.Logger) Service {
+	if marketGuard == nil {
+		panic("marketGuard cannot be nil")
+	}
 	return &orderService{
 		repo:        repo,
 		wallet:      walletClient,
 		priceFilter: priceFilter,
+		marketGuard: marketGuard,
 		logger:      logger,
 	}
 }
@@ -84,6 +89,26 @@ func (s *orderService) CreateOrder(ctx context.Context, p *CreateOrderParams) (*
 	baseAsset, quoteAsset, err := parseMarketID(p.MarketID)
 	if err != nil {
 		return nil, ErrInvalidMarket
+	}
+
+	// 3b. Market Halt Check (Real-time Redis Circuit Breaker with Fail-Closed Readiness)
+	halted, err := s.marketGuard.IsHalted(ctx, p.MarketID)
+	if err != nil {
+		s.logger.Error("Market halt verification failed, failing closed",
+			zap.String("market", p.MarketID),
+			zap.Error(err),
+		)
+		if errors.Is(err, ErrMarketEnforcementNotReady) {
+			return nil, ErrMarketEnforcementNotReady
+		}
+		return nil, ErrMarketStateUnavailable
+	}
+	if halted {
+		s.logger.Warn("CreateOrder rejected: market is currently halted",
+			zap.String("market", p.MarketID),
+			zap.String("user_id", p.UserID),
+		)
+		return nil, ErrMarketHalted
 	}
 
 	// 4. Decimal Financial Validation: Quantity ALWAYS represents base asset quantity

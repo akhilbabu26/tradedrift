@@ -196,3 +196,57 @@ func (h *GRPCHandler) InvalidateUserSessions(ctx context.Context, req *authv1.In
 	return &authv1.InvalidateUserSessionsResponse{Success: true}, nil
 }
 
+func (h *GRPCHandler) SuspendUser(ctx context.Context, req *authv1.SuspendUserRequest) (*authv1.SuspendUserResponse, error) {
+	if req.UserId == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	}
+
+	if err := h.svc.SuspendUser(ctx, req.UserId, req.Reason); err != nil {
+		h.log.Error("SuspendUser failed",
+			zap.String("user_id", req.UserId),
+			zap.String("reason", req.Reason),
+			zap.Error(err),
+		)
+		return nil, mapToGRPCError(err)
+	}
+
+	return &authv1.SuspendUserResponse{Success: true}, nil
+}
+
+func (h *GRPCHandler) UnsuspendUser(ctx context.Context, req *authv1.UnsuspendUserRequest) (*authv1.UnsuspendUserResponse, error) {
+	if req.UserId == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	}
+
+	if err := h.svc.UnsuspendUser(ctx, req.UserId, req.Reason); err != nil {
+		h.log.Error("UnsuspendUser failed",
+			zap.String("user_id", req.UserId),
+			zap.String("reason", req.Reason),
+			zap.Error(err),
+		)
+		return nil, mapToGRPCError(err)
+	}
+
+	return &authv1.UnsuspendUserResponse{Success: true}, nil
+}
+
+func (h *GRPCHandler) ListSuspendedUsers(ctx context.Context, req *authv1.ListSuspendedUsersRequest) (*authv1.ListSuspendedUsersResponse, error) {
+	limit := int(req.Limit)
+	offset := int(req.Offset)
+	if limit <= 0 {
+		limit = 1000
+	}
+
+	userIDs, total, err := h.svc.ListSuspendedUsers(ctx, limit, offset)
+	if err != nil {
+		h.log.Error("ListSuspendedUsers failed", zap.Error(err))
+		return nil, mapToGRPCError(err)
+	}
+
+	return &authv1.ListSuspendedUsersResponse{
+		UserIds: userIDs,
+		Total:   int32(total),
+	}, nil
+}
+
+

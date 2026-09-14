@@ -129,7 +129,7 @@ func TestAdminService_HaltMarket_Idempotent(t *testing.T) {
 		},
 	}
 
-	svc := service.NewAdminService(txMgr, opsRepo, nil, nil, zap.NewNop())
+	svc := service.NewAdminService(txMgr, opsRepo, nil, nil, nil, zap.NewNop())
 	ctx := context.Background()
 
 	req := service.HaltMarketRequest{
@@ -168,7 +168,7 @@ func TestAdminService_ResumeMarket_Idempotent(t *testing.T) {
 		},
 	}
 
-	svc := service.NewAdminService(txMgr, opsRepo, nil, nil, zap.NewNop())
+	svc := service.NewAdminService(txMgr, opsRepo, nil, nil, nil, zap.NewNop())
 	ctx := context.Background()
 
 	req := service.ResumeMarketRequest{
@@ -206,7 +206,7 @@ func TestAdminService_UnsuspendUser_Idempotent(t *testing.T) {
 		},
 	}
 
-	svc := service.NewAdminService(txMgr, opsRepo, nil, nil, zap.NewNop())
+	svc := service.NewAdminService(txMgr, opsRepo, nil, nil, nil, zap.NewNop())
 	ctx := context.Background()
 
 	req := service.UnsuspendUserRequest{
@@ -260,7 +260,7 @@ func TestAdminService_ConcurrentConflictRecovery(t *testing.T) {
 		},
 	}
 
-	svc := service.NewAdminService(txMgr, opsRepo, nil, nil, zap.NewNop())
+	svc := service.NewAdminService(txMgr, opsRepo, nil, nil, nil, zap.NewNop())
 	ctx := context.Background()
 
 	req := service.HaltMarketRequest{
@@ -301,7 +301,7 @@ func TestAdminService_SuspendUser_AuthFailure_RemainsProcessing(t *testing.T) {
 	}
 
 	// nil authCli will cause immediate Auth invalidation to fail
-	svc := service.NewAdminService(txMgr, opsRepo, nil, nil, zap.NewNop())
+	svc := service.NewAdminService(txMgr, opsRepo, nil, nil, nil, zap.NewNop())
 	ctx := context.Background()
 
 	req := service.SuspendUserRequest{
@@ -346,7 +346,7 @@ func TestAdminService_FreezeWallet_FailureRecordsDiagnosticState(t *testing.T) {
 	}
 
 	// nil walletCli will cause immediate downstream FreezeWallet RPC to fail
-	svc := service.NewAdminService(txMgr, opsRepo, nil, nil, zap.NewNop())
+	svc := service.NewAdminService(txMgr, opsRepo, nil, nil, nil, zap.NewNop())
 	ctx := context.Background()
 
 	req := service.FreezeWalletRequest{

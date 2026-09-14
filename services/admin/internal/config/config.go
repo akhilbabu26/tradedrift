@@ -23,6 +23,9 @@ type Config struct {
 	LiqHealthURL   string
 	NotifHealthURL string
 
+	RedisAddr              string
+	ReconciliationInterval time.Duration
+
 	OutboxInterval time.Duration
 	SagaInterval   time.Duration
 	HealthInterval time.Duration
@@ -71,6 +74,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("config: %w", err)
 	}
 
+	reconcileInterval, err := parseBoundedDuration("ADMIN_RECONCILIATION_INTERVAL", "RECONCILIATION_INTERVAL", 15*time.Second, 1*time.Second, 5*time.Minute)
+	if err != nil {
+		return nil, fmt.Errorf("config: %w", err)
+	}
+
 	return &Config{
 		Port:           platformconfig.GetEnv("PORT", "8085"),
 		LogLevel:       logLevel,
@@ -84,6 +92,9 @@ func Load() (*Config, error) {
 		PortHealthURL:  platformconfig.GetEnv("PORTFOLIO_HEALTH_URL", "http://localhost:9091/ready"),
 		LiqHealthURL:   platformconfig.GetEnv("LIQUIDITY_HEALTH_URL", "http://localhost:8080/readyz"),
 		NotifHealthURL: platformconfig.GetEnv("NOTIFICATION_HEALTH_URL", "http://localhost:9095/ready"),
+
+		RedisAddr:              platformconfig.GetEnv("REDIS_ADDR", "localhost:6379"),
+		ReconciliationInterval: reconcileInterval,
 
 		OutboxInterval: outboxInterval,
 		SagaInterval:   sagaInterval,

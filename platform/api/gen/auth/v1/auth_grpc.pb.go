@@ -30,6 +30,9 @@ const (
 	AuthService_LogoutAll_FullMethodName              = "/tradedrift.auth.v1.AuthService/LogoutAll"
 	AuthService_ChangePassword_FullMethodName         = "/tradedrift.auth.v1.AuthService/ChangePassword"
 	AuthService_InvalidateUserSessions_FullMethodName = "/tradedrift.auth.v1.AuthService/InvalidateUserSessions"
+	AuthService_SuspendUser_FullMethodName            = "/tradedrift.auth.v1.AuthService/SuspendUser"
+	AuthService_UnsuspendUser_FullMethodName          = "/tradedrift.auth.v1.AuthService/UnsuspendUser"
+	AuthService_ListSuspendedUsers_FullMethodName     = "/tradedrift.auth.v1.AuthService/ListSuspendedUsers"
 )
 
 // AuthServiceClient is the client API for AuthService service.
@@ -67,6 +70,12 @@ type AuthServiceClient interface {
 	// Revokes all active sessions for the specified user by user_id.
 	// Called by the Admin service during user suspension. Idempotent.
 	InvalidateUserSessions(ctx context.Context, in *InvalidateUserSessionsRequest, opts ...grpc.CallOption) (*InvalidateUserSessionsResponse, error)
+	// Suspends a user account and invalidates all active sessions.
+	SuspendUser(ctx context.Context, in *SuspendUserRequest, opts ...grpc.CallOption) (*SuspendUserResponse, error)
+	// Unsuspends a user account, restoring VERIFIED status.
+	UnsuspendUser(ctx context.Context, in *UnsuspendUserRequest, opts ...grpc.CallOption) (*UnsuspendUserResponse, error)
+	// Lists suspended user IDs with bounded pagination for anti-drift reconciliation.
+	ListSuspendedUsers(ctx context.Context, in *ListSuspendedUsersRequest, opts ...grpc.CallOption) (*ListSuspendedUsersResponse, error)
 }
 
 type authServiceClient struct {
@@ -187,6 +196,36 @@ func (c *authServiceClient) InvalidateUserSessions(ctx context.Context, in *Inva
 	return out, nil
 }
 
+func (c *authServiceClient) SuspendUser(ctx context.Context, in *SuspendUserRequest, opts ...grpc.CallOption) (*SuspendUserResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SuspendUserResponse)
+	err := c.cc.Invoke(ctx, AuthService_SuspendUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) UnsuspendUser(ctx context.Context, in *UnsuspendUserRequest, opts ...grpc.CallOption) (*UnsuspendUserResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UnsuspendUserResponse)
+	err := c.cc.Invoke(ctx, AuthService_UnsuspendUser_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) ListSuspendedUsers(ctx context.Context, in *ListSuspendedUsersRequest, opts ...grpc.CallOption) (*ListSuspendedUsersResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSuspendedUsersResponse)
+	err := c.cc.Invoke(ctx, AuthService_ListSuspendedUsers_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AuthServiceServer is the server API for AuthService service.
 // All implementations must embed UnimplementedAuthServiceServer
 // for forward compatibility.
@@ -222,6 +261,12 @@ type AuthServiceServer interface {
 	// Revokes all active sessions for the specified user by user_id.
 	// Called by the Admin service during user suspension. Idempotent.
 	InvalidateUserSessions(context.Context, *InvalidateUserSessionsRequest) (*InvalidateUserSessionsResponse, error)
+	// Suspends a user account and invalidates all active sessions.
+	SuspendUser(context.Context, *SuspendUserRequest) (*SuspendUserResponse, error)
+	// Unsuspends a user account, restoring VERIFIED status.
+	UnsuspendUser(context.Context, *UnsuspendUserRequest) (*UnsuspendUserResponse, error)
+	// Lists suspended user IDs with bounded pagination for anti-drift reconciliation.
+	ListSuspendedUsers(context.Context, *ListSuspendedUsersRequest) (*ListSuspendedUsersResponse, error)
 	mustEmbedUnimplementedAuthServiceServer()
 }
 
@@ -264,6 +309,15 @@ func (UnimplementedAuthServiceServer) ChangePassword(context.Context, *ChangePas
 }
 func (UnimplementedAuthServiceServer) InvalidateUserSessions(context.Context, *InvalidateUserSessionsRequest) (*InvalidateUserSessionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method InvalidateUserSessions not implemented")
+}
+func (UnimplementedAuthServiceServer) SuspendUser(context.Context, *SuspendUserRequest) (*SuspendUserResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method SuspendUser not implemented")
+}
+func (UnimplementedAuthServiceServer) UnsuspendUser(context.Context, *UnsuspendUserRequest) (*UnsuspendUserResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UnsuspendUser not implemented")
+}
+func (UnimplementedAuthServiceServer) ListSuspendedUsers(context.Context, *ListSuspendedUsersRequest) (*ListSuspendedUsersResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListSuspendedUsers not implemented")
 }
 func (UnimplementedAuthServiceServer) mustEmbedUnimplementedAuthServiceServer() {}
 func (UnimplementedAuthServiceServer) testEmbeddedByValue()                     {}
@@ -484,6 +538,60 @@ func _AuthService_InvalidateUserSessions_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuthService_SuspendUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SuspendUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).SuspendUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_SuspendUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).SuspendUser(ctx, req.(*SuspendUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AuthService_UnsuspendUser_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UnsuspendUserRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).UnsuspendUser(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_UnsuspendUser_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).UnsuspendUser(ctx, req.(*UnsuspendUserRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AuthService_ListSuspendedUsers_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSuspendedUsersRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).ListSuspendedUsers(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_ListSuspendedUsers_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).ListSuspendedUsers(ctx, req.(*ListSuspendedUsersRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AuthService_ServiceDesc is the grpc.ServiceDesc for AuthService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -534,6 +642,18 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "InvalidateUserSessions",
 			Handler:    _AuthService_InvalidateUserSessions_Handler,
+		},
+		{
+			MethodName: "SuspendUser",
+			Handler:    _AuthService_SuspendUser_Handler,
+		},
+		{
+			MethodName: "UnsuspendUser",
+			Handler:    _AuthService_UnsuspendUser_Handler,
+		},
+		{
+			MethodName: "ListSuspendedUsers",
+			Handler:    _AuthService_ListSuspendedUsers_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

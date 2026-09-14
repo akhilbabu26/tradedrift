@@ -118,6 +118,21 @@ func (s *AdminService) HaltMarket(ctx context.Context, req HaltMarketRequest) (o
 		return nil, err
 	}
 
+	// Synchronous Redis write with 3 retries (50ms, 150ms, 300ms)
+	redisKey := "market:halted:" + req.MarketID
+	if setErr := s.SetRedisWithRetry(ctx, redisKey, "1", 3); setErr != nil {
+		s.log.Error("HaltMarket: synchronous Redis write failed after retries; reconciler will restore",
+			zap.String("operation_id", opID),
+			zap.String("market_id", req.MarketID),
+			zap.Error(setErr),
+		)
+	} else {
+		s.log.Info("HaltMarket: synchronous Redis write succeeded",
+			zap.String("key", redisKey),
+			zap.String("operation_id", opID),
+		)
+	}
+
 	// Phase 3 Metric: Record stateful market halt and start timestamp
 	metrics.RecordMarketHalted(req.MarketID, now)
 
@@ -207,6 +222,21 @@ func (s *AdminService) ResumeMarket(ctx context.Context, req ResumeMarketRequest
 		}
 		err = fmt.Errorf("ResumeMarket: transaction failed: %w", txErr)
 		return nil, err
+	}
+
+	// Synchronous Redis DEL with 3 retries (50ms, 150ms, 300ms)
+	redisKey := "market:halted:" + req.MarketID
+	if delErr := s.DelRedisWithRetry(ctx, redisKey, 3); delErr != nil {
+		s.log.Error("ResumeMarket: synchronous Redis DEL failed after retries; reconciler will heal",
+			zap.String("operation_id", opID),
+			zap.String("market_id", req.MarketID),
+			zap.Error(delErr),
+		)
+	} else {
+		s.log.Info("ResumeMarket: synchronous Redis DEL succeeded",
+			zap.String("key", redisKey),
+			zap.String("operation_id", opID),
+		)
 	}
 
 	// Phase 3 Metric: Reset stateful market halt gauges

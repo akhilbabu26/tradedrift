@@ -137,6 +137,14 @@ func main() {
 	})
 	defer redisClient.Close()
 
+	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := redisClient.Ping(pingCtx).Err(); err != nil {
+		pingCancel()
+		appLogger.Fatal("Failed to connect to Redis", zap.String("addr", redisAddr), zap.Error(err))
+	}
+	pingCancel()
+	appLogger.Info("Connected to Redis successfully", zap.String("addr", redisAddr))
+
 	kafkaBrokersStr := config.GetEnv("KAFKA_BROKERS", "localhost:9092")
 	var kafkaBrokers []string
 	for _, b := range strings.Split(kafkaBrokersStr, ",") {
@@ -161,7 +169,7 @@ func main() {
 
 	jwtValidator := platformjwt.NewHMACValidator([]byte(jwtSecretStr))
 	rateLimiter  := middleware.NewRateLimiter(ctx, rate.Every(time.Second), 20)
-	authMW       := middleware.Auth(jwtValidator)
+	authMW       := middleware.Auth(jwtValidator, redisClient, appLogger)
 
 	protected := func(h http.Handler) http.Handler {
 		return authMW(h)

@@ -627,7 +627,7 @@ func TestPhase3_MarketHaltStateMetrics(t *testing.T) {
 func TestPhase3_MarketStateReconstructionOnStartup(t *testing.T) {
 	opsRepo := newMockOpsRepo()
 	log := zap.NewNop()
-	svc := service.NewAdminService(nil, opsRepo, nil, nil, log)
+	svc := service.NewAdminService(nil, opsRepo, nil, nil, nil, log)
 	ctx := context.Background()
 
 	marketBTC := "BTC-USDT"

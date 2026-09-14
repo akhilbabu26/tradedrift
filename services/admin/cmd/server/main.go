@@ -12,6 +12,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/redis/go-redis/v9"
 	platformconfig "tradedrift/platform/config"
 	platformjwt "tradedrift/platform/jwt"
 	platformlogger "tradedrift/platform/logger"
@@ -81,11 +82,34 @@ func main() {
 		log.Fatal("Failed to initialize Wallet gRPC client", zap.String("addr", cfg.WalletGRPCAddr), zap.Error(err))
 	}
 
+	// 7b. Redis Client (Circuit Breaker Cache & Enforcement State)
+	redisClient := redis.NewClient(&redis.Options{
+		Addr: cfg.RedisAddr,
+	})
+	pingCtx, pingCancel := context.WithTimeout(ctx, 5*time.Second)
+	if err := redisClient.Ping(pingCtx).Err(); err != nil {
+		pingCancel()
+		log.Fatal("Failed to connect to Redis", zap.String("addr", cfg.RedisAddr), zap.Error(err))
+	}
+	pingCancel()
+	log.Info("Connected to Redis successfully", zap.String("addr", cfg.RedisAddr))
+
 	// 8. Services
-	adminSvc := service.NewAdminService(txMgr, opsRepo, authCli, walletCli, log)
+	adminSvc := service.NewAdminService(txMgr, opsRepo, authCli, walletCli, redisClient, log)
 	if err := adminSvc.ReconstructMarketState(ctx); err != nil {
 		log.Fatal("Could not reconstruct market halt state from persistent operations; halting startup", zap.Error(err))
 	}
+
+	// 8b. Anti-Drift State Reconciler (SCAN-based, bi-directional self-healing)
+	reconciler := service.NewStateReconciler(opsRepo, authCli, redisClient, cfg.ReconciliationInterval, log)
+	reconcileCtx, reconcileCancel := context.WithTimeout(ctx, 15*time.Second)
+	if err := reconciler.ReconcileOnce(reconcileCtx); err != nil {
+		log.Warn("Admin Service: startup anti-drift reconciliation warning (will self-heal in background)", zap.Error(err))
+	} else {
+		log.Info("Admin Service: startup anti-drift reconciliation completed successfully")
+	}
+	reconcileCancel()
+
 	topologyEng := service.NewTopologyEngine()
 	incidentSvc := service.NewIncidentService(incidentRepo, auditRepo, topologyEng, log)
 	analyticsSvc := service.NewAnalyticsService(opsRepo, auditRepo, log)
@@ -96,6 +120,8 @@ func main() {
 
 	sagaWorker := service.NewSagaWorker(txMgr, sagaRepo, opsRepo, authCli, log, cfg.SagaInterval)
 	sagaWorker.Start(ctx)
+
+	reconciler.Start(ctx)
 
 	healthWorkerCfg := service.HealthWorkerConfig{
 		AuthGRPCAddr:   cfg.AuthGRPCAddr,
@@ -172,6 +198,8 @@ func main() {
 
 	// Step C: Stop background workers and wait for active batches to finish
 	log.Info("Stopping background workers...")
+	reconciler.Stop()
+	log.Info("State reconciler stopped cleanly")
 	healthWorker.Stop()
 	log.Info("Health worker stopped cleanly")
 	sagaWorker.Stop()
@@ -179,9 +207,10 @@ func main() {
 	outboxPub.Stop()
 	log.Info("Outbox publisher stopped and flushed")
 
-	// Step D: Close downstream gRPC clients
+	// Step D: Close downstream gRPC clients and Redis
 	_ = authCli.Close()
 	_ = walletCli.Close()
+	_ = redisClient.Close()
 
 	// Step E: Close PostgreSQL connection pool
 	dbPool.Close()

@@ -1,43 +1,53 @@
 package middleware
 
 import (
+	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/redis/go-redis/v9"
+	"go.uber.org/zap"
 
 	platformjwt "tradedrift/platform/jwt"
 	"tradedrift/services/gateway/internal/response"
 )
 
-// Auth validates the Bearer token using the shared platform validator.
-// Inject a jwt.Validator so the middleware doesn't know HOW validation works —
-// only that it either succeeds or fails.
-func Auth(validator platformjwt.Validator) func(http.Handler) http.Handler {
+// Auth validates the Bearer token and verifies the user is not suspended in real time.
+func Auth(validator platformjwt.Validator, rdb redis.Cmdable, log *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// === DEBUG: dump ALL headers ===
-			println("[AUTH DEBUG] All headers:")
-			for k, v := range r.Header {
-				println("  ", k, ":", strings.Join(v, "||"))
-			}
-			// === END DEBUG ===
-
 			authHeader := r.Header.Get("Authorization")
-			println("[AUTH RAW] authHeader len:", len(authHeader), "| val:", authHeader)
 			if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
 				response.WriteError(w, http.StatusUnauthorized, "AUTH_INVALID_TOKEN", "missing or invalid authorization header")
 				return
 			}
 
 			tokenStr := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-			tokenStr = strings.TrimSpace(strings.TrimPrefix(tokenStr, "Bearer "))
 			tokenStr = strings.Trim(tokenStr, "\"")
-			println("[AUTH TOKEN] len:", len(tokenStr), "| dots:", strings.Count(tokenStr, "."), "| full:", tokenStr)
 
 			claims, err := validator.Validate(r.Context(), tokenStr)
 			if err != nil {
-				println("[AUTH REJECTED]", err.Error())
 				response.WriteError(w, http.StatusUnauthorized, "AUTH_INVALID_TOKEN", "token is invalid or expired")
 				return
+			}
+
+			// Real-time user suspension enforcement check (fail-closed)
+			if rdb != nil {
+				val, err := rdb.Get(r.Context(), "user:suspended:"+claims.UserID).Result()
+				if err == nil && val == "1" {
+					if log != nil {
+						log.Warn("Request rejected: user is suspended", zap.String("user_id", claims.UserID))
+					}
+					response.WriteError(w, http.StatusForbidden, "AUTH_USER_SUSPENDED", "account has been suspended")
+					return
+				}
+				if err != nil && !errors.Is(err, redis.Nil) {
+					if log != nil {
+						log.Error("Redis suspension lookup failed, failing closed", zap.String("user_id", claims.UserID), zap.Error(err))
+					}
+					response.WriteError(w, http.StatusServiceUnavailable, "AUTH_SERVICE_UNAVAILABLE", "authentication verification unavailable")
+					return
+				}
 			}
 
 			// Store full claims in context using the platform's existing helper

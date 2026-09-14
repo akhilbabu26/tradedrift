@@ -74,9 +74,19 @@ func main() {
 		Addr: cfg.RedisAddr,
 	})
 	defer redisClient.Close()
-	priceFilter := service.NewPriceFilter(redisClient, cfg.MaxPriceDeviation, appLogger)
 
-	orderSvc := service.NewService(orderRepo, walletClient, priceFilter, appLogger)
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := redisClient.Ping(pingCtx).Err(); err != nil {
+		pingCancel()
+		appLogger.Fatal("Failed to connect to Redis", zap.String("addr", cfg.RedisAddr), zap.Error(err))
+	}
+	pingCancel()
+	appLogger.Info("Connected to Redis successfully", zap.String("addr", cfg.RedisAddr))
+
+	priceFilter := service.NewPriceFilter(redisClient, cfg.MaxPriceDeviation, appLogger)
+	marketGuard := service.NewRedisMarketGuard(redisClient)
+
+	orderSvc := service.NewService(orderRepo, walletClient, priceFilter, marketGuard, appLogger)
 	grpcHandler := handler.NewGRPCHandler(orderSvc, appLogger)
 	kafkaProducer, err := publisher.NewKafkaProducer(cfg.KafkaBrokers, appLogger)
 	if err != nil {

@@ -58,6 +58,13 @@ func mapServiceError(err error) error {
 		errors.Is(err, repository.ErrOrderNotCancellable):
 		return status.Error(codes.FailedPrecondition, err.Error())
 
+	case errors.Is(err, service.ErrMarketHalted):
+		return status.Error(codes.FailedPrecondition, "market is currently halted for trading")
+
+	case errors.Is(err, service.ErrMarketStateUnavailable),
+		errors.Is(err, service.ErrMarketEnforcementNotReady):
+		return status.Error(codes.Unavailable, "market status verification service is temporarily unavailable")
+
 	default:
 		return status.Error(codes.Internal, "failed to process order request")
 	}

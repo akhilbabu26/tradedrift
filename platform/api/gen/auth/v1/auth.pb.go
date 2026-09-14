@@ -1225,6 +1225,306 @@ func (x *ChangePasswordResponse) GetSuccess() bool {
 	return false
 }
 
+type SuspendUserRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. UUID of the user to suspend.
+	UserId string `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// Optional. Reason for suspension.
+	Reason        string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SuspendUserRequest) Reset() {
+	*x = SuspendUserRequest{}
+	mi := &file_auth_v1_auth_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SuspendUserRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SuspendUserRequest) ProtoMessage() {}
+
+func (x *SuspendUserRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SuspendUserRequest.ProtoReflect.Descriptor instead.
+func (*SuspendUserRequest) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *SuspendUserRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *SuspendUserRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type SuspendUserResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SuspendUserResponse) Reset() {
+	*x = SuspendUserResponse{}
+	mi := &file_auth_v1_auth_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SuspendUserResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SuspendUserResponse) ProtoMessage() {}
+
+func (x *SuspendUserResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SuspendUserResponse.ProtoReflect.Descriptor instead.
+func (*SuspendUserResponse) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *SuspendUserResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+type UnsuspendUserRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. UUID of the user to unsuspend.
+	UserId string `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// Optional. Reason for unsuspension.
+	Reason        string `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnsuspendUserRequest) Reset() {
+	*x = UnsuspendUserRequest{}
+	mi := &file_auth_v1_auth_proto_msgTypes[25]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnsuspendUserRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnsuspendUserRequest) ProtoMessage() {}
+
+func (x *UnsuspendUserRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[25]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnsuspendUserRequest.ProtoReflect.Descriptor instead.
+func (*UnsuspendUserRequest) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{25}
+}
+
+func (x *UnsuspendUserRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *UnsuspendUserRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type UnsuspendUserResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnsuspendUserResponse) Reset() {
+	*x = UnsuspendUserResponse{}
+	mi := &file_auth_v1_auth_proto_msgTypes[26]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnsuspendUserResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnsuspendUserResponse) ProtoMessage() {}
+
+func (x *UnsuspendUserResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[26]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnsuspendUserResponse.ProtoReflect.Descriptor instead.
+func (*UnsuspendUserResponse) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *UnsuspendUserResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+type ListSuspendedUsersRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Limit         int32                  `protobuf:"varint,1,opt,name=limit,proto3" json:"limit,omitempty"`
+	Offset        int32                  `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListSuspendedUsersRequest) Reset() {
+	*x = ListSuspendedUsersRequest{}
+	mi := &file_auth_v1_auth_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListSuspendedUsersRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListSuspendedUsersRequest) ProtoMessage() {}
+
+func (x *ListSuspendedUsersRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListSuspendedUsersRequest.ProtoReflect.Descriptor instead.
+func (*ListSuspendedUsersRequest) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *ListSuspendedUsersRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+func (x *ListSuspendedUsersRequest) GetOffset() int32 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+type ListSuspendedUsersResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserIds       []string               `protobuf:"bytes,1,rep,name=user_ids,json=userIds,proto3" json:"user_ids,omitempty"`
+	Total         int32                  `protobuf:"varint,2,opt,name=total,proto3" json:"total,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListSuspendedUsersResponse) Reset() {
+	*x = ListSuspendedUsersResponse{}
+	mi := &file_auth_v1_auth_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListSuspendedUsersResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListSuspendedUsersResponse) ProtoMessage() {}
+
+func (x *ListSuspendedUsersResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListSuspendedUsersResponse.ProtoReflect.Descriptor instead.
+func (*ListSuspendedUsersResponse) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *ListSuspendedUsersResponse) GetUserIds() []string {
+	if x != nil {
+		return x.UserIds
+	}
+	return nil
+}
+
+func (x *ListSuspendedUsersResponse) GetTotal() int32 {
+	if x != nil {
+		return x.Total
+	}
+	return 0
+}
+
 var File_auth_v1_auth_proto protoreflect.FileDescriptor
 
 const file_auth_v1_auth_proto_rawDesc = "" +
@@ -1298,7 +1598,23 @@ const file_auth_v1_auth_proto_rawDesc = "" +
 	"\fold_password\x18\x01 \x01(\tR\voldPassword\x12!\n" +
 	"\fnew_password\x18\x02 \x01(\tR\vnewPassword\"2\n" +
 	"\x16ChangePasswordResponse\x12\x18\n" +
-	"\asuccess\x18\x01 \x01(\bR\asuccess2\xda\b\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"E\n" +
+	"\x12SuspendUserRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"/\n" +
+	"\x13SuspendUserResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"G\n" +
+	"\x14UnsuspendUserRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"1\n" +
+	"\x15UnsuspendUserResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\"I\n" +
+	"\x19ListSuspendedUsersRequest\x12\x14\n" +
+	"\x05limit\x18\x01 \x01(\x05R\x05limit\x12\x16\n" +
+	"\x06offset\x18\x02 \x01(\x05R\x06offset\"M\n" +
+	"\x1aListSuspendedUsersResponse\x12\x19\n" +
+	"\buser_ids\x18\x01 \x03(\tR\auserIds\x12\x14\n" +
+	"\x05total\x18\x02 \x01(\x05R\x05total2\x95\v\n" +
 	"\vAuthService\x12U\n" +
 	"\bRegister\x12#.tradedrift.auth.v1.RegisterRequest\x1a$.tradedrift.auth.v1.RegisterResponse\x12^\n" +
 	"\vVerifyEmail\x12&.tradedrift.auth.v1.VerifyEmailRequest\x1a'.tradedrift.auth.v1.VerifyEmailResponse\x12\x7f\n" +
@@ -1310,7 +1626,10 @@ const file_auth_v1_auth_proto_rawDesc = "" +
 	"\x06Logout\x12!.tradedrift.auth.v1.LogoutRequest\x1a\".tradedrift.auth.v1.LogoutResponse\x12X\n" +
 	"\tLogoutAll\x12$.tradedrift.auth.v1.LogoutAllRequest\x1a%.tradedrift.auth.v1.LogoutAllResponse\x12g\n" +
 	"\x0eChangePassword\x12).tradedrift.auth.v1.ChangePasswordRequest\x1a*.tradedrift.auth.v1.ChangePasswordResponse\x12\x7f\n" +
-	"\x16InvalidateUserSessions\x121.tradedrift.auth.v1.InvalidateUserSessionsRequest\x1a2.tradedrift.auth.v1.InvalidateUserSessionsResponseB(Z&tradedrift/platform/api/auth/v1;authv1b\x06proto3"
+	"\x16InvalidateUserSessions\x121.tradedrift.auth.v1.InvalidateUserSessionsRequest\x1a2.tradedrift.auth.v1.InvalidateUserSessionsResponse\x12^\n" +
+	"\vSuspendUser\x12&.tradedrift.auth.v1.SuspendUserRequest\x1a'.tradedrift.auth.v1.SuspendUserResponse\x12d\n" +
+	"\rUnsuspendUser\x12(.tradedrift.auth.v1.UnsuspendUserRequest\x1a).tradedrift.auth.v1.UnsuspendUserResponse\x12s\n" +
+	"\x12ListSuspendedUsers\x12-.tradedrift.auth.v1.ListSuspendedUsersRequest\x1a..tradedrift.auth.v1.ListSuspendedUsersResponseB(Z&tradedrift/platform/api/auth/v1;authv1b\x06proto3"
 
 var (
 	file_auth_v1_auth_proto_rawDescOnce sync.Once
@@ -1324,7 +1643,7 @@ func file_auth_v1_auth_proto_rawDescGZIP() []byte {
 	return file_auth_v1_auth_proto_rawDescData
 }
 
-var file_auth_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_auth_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_auth_v1_auth_proto_goTypes = []any{
 	(*User)(nil),                           // 0: tradedrift.auth.v1.User
 	(*RegisterRequest)(nil),                // 1: tradedrift.auth.v1.RegisterRequest
@@ -1349,17 +1668,23 @@ var file_auth_v1_auth_proto_goTypes = []any{
 	(*InvalidateUserSessionsResponse)(nil), // 20: tradedrift.auth.v1.InvalidateUserSessionsResponse
 	(*ChangePasswordRequest)(nil),          // 21: tradedrift.auth.v1.ChangePasswordRequest
 	(*ChangePasswordResponse)(nil),         // 22: tradedrift.auth.v1.ChangePasswordResponse
-	(*timestamppb.Timestamp)(nil),          // 23: google.protobuf.Timestamp
+	(*SuspendUserRequest)(nil),             // 23: tradedrift.auth.v1.SuspendUserRequest
+	(*SuspendUserResponse)(nil),            // 24: tradedrift.auth.v1.SuspendUserResponse
+	(*UnsuspendUserRequest)(nil),           // 25: tradedrift.auth.v1.UnsuspendUserRequest
+	(*UnsuspendUserResponse)(nil),          // 26: tradedrift.auth.v1.UnsuspendUserResponse
+	(*ListSuspendedUsersRequest)(nil),      // 27: tradedrift.auth.v1.ListSuspendedUsersRequest
+	(*ListSuspendedUsersResponse)(nil),     // 28: tradedrift.auth.v1.ListSuspendedUsersResponse
+	(*timestamppb.Timestamp)(nil),          // 29: google.protobuf.Timestamp
 }
 var file_auth_v1_auth_proto_depIdxs = []int32{
 	0,  // 0: tradedrift.auth.v1.VerifyEmailResponse.user:type_name -> tradedrift.auth.v1.User
-	23, // 1: tradedrift.auth.v1.VerifyEmailResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
-	23, // 2: tradedrift.auth.v1.VerifyEmailResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
+	29, // 1: tradedrift.auth.v1.VerifyEmailResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
+	29, // 2: tradedrift.auth.v1.VerifyEmailResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
 	0,  // 3: tradedrift.auth.v1.LoginResponse.user:type_name -> tradedrift.auth.v1.User
-	23, // 4: tradedrift.auth.v1.LoginResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
-	23, // 5: tradedrift.auth.v1.LoginResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
-	23, // 6: tradedrift.auth.v1.RefreshTokenResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
-	23, // 7: tradedrift.auth.v1.RefreshTokenResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
+	29, // 4: tradedrift.auth.v1.LoginResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
+	29, // 5: tradedrift.auth.v1.LoginResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
+	29, // 6: tradedrift.auth.v1.RefreshTokenResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
+	29, // 7: tradedrift.auth.v1.RefreshTokenResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
 	1,  // 8: tradedrift.auth.v1.AuthService.Register:input_type -> tradedrift.auth.v1.RegisterRequest
 	3,  // 9: tradedrift.auth.v1.AuthService.VerifyEmail:input_type -> tradedrift.auth.v1.VerifyEmailRequest
 	5,  // 10: tradedrift.auth.v1.AuthService.ResendVerificationCode:input_type -> tradedrift.auth.v1.ResendVerificationCodeRequest
@@ -1371,19 +1696,25 @@ var file_auth_v1_auth_proto_depIdxs = []int32{
 	17, // 16: tradedrift.auth.v1.AuthService.LogoutAll:input_type -> tradedrift.auth.v1.LogoutAllRequest
 	21, // 17: tradedrift.auth.v1.AuthService.ChangePassword:input_type -> tradedrift.auth.v1.ChangePasswordRequest
 	19, // 18: tradedrift.auth.v1.AuthService.InvalidateUserSessions:input_type -> tradedrift.auth.v1.InvalidateUserSessionsRequest
-	2,  // 19: tradedrift.auth.v1.AuthService.Register:output_type -> tradedrift.auth.v1.RegisterResponse
-	4,  // 20: tradedrift.auth.v1.AuthService.VerifyEmail:output_type -> tradedrift.auth.v1.VerifyEmailResponse
-	6,  // 21: tradedrift.auth.v1.AuthService.ResendVerificationCode:output_type -> tradedrift.auth.v1.ResendVerificationCodeResponse
-	8,  // 22: tradedrift.auth.v1.AuthService.Login:output_type -> tradedrift.auth.v1.LoginResponse
-	10, // 23: tradedrift.auth.v1.AuthService.RefreshToken:output_type -> tradedrift.auth.v1.RefreshTokenResponse
-	12, // 24: tradedrift.auth.v1.AuthService.ForgotPassword:output_type -> tradedrift.auth.v1.ForgotPasswordResponse
-	14, // 25: tradedrift.auth.v1.AuthService.ResetPassword:output_type -> tradedrift.auth.v1.ResetPasswordResponse
-	16, // 26: tradedrift.auth.v1.AuthService.Logout:output_type -> tradedrift.auth.v1.LogoutResponse
-	18, // 27: tradedrift.auth.v1.AuthService.LogoutAll:output_type -> tradedrift.auth.v1.LogoutAllResponse
-	22, // 28: tradedrift.auth.v1.AuthService.ChangePassword:output_type -> tradedrift.auth.v1.ChangePasswordResponse
-	20, // 29: tradedrift.auth.v1.AuthService.InvalidateUserSessions:output_type -> tradedrift.auth.v1.InvalidateUserSessionsResponse
-	19, // [19:30] is the sub-list for method output_type
-	8,  // [8:19] is the sub-list for method input_type
+	23, // 19: tradedrift.auth.v1.AuthService.SuspendUser:input_type -> tradedrift.auth.v1.SuspendUserRequest
+	25, // 20: tradedrift.auth.v1.AuthService.UnsuspendUser:input_type -> tradedrift.auth.v1.UnsuspendUserRequest
+	27, // 21: tradedrift.auth.v1.AuthService.ListSuspendedUsers:input_type -> tradedrift.auth.v1.ListSuspendedUsersRequest
+	2,  // 22: tradedrift.auth.v1.AuthService.Register:output_type -> tradedrift.auth.v1.RegisterResponse
+	4,  // 23: tradedrift.auth.v1.AuthService.VerifyEmail:output_type -> tradedrift.auth.v1.VerifyEmailResponse
+	6,  // 24: tradedrift.auth.v1.AuthService.ResendVerificationCode:output_type -> tradedrift.auth.v1.ResendVerificationCodeResponse
+	8,  // 25: tradedrift.auth.v1.AuthService.Login:output_type -> tradedrift.auth.v1.LoginResponse
+	10, // 26: tradedrift.auth.v1.AuthService.RefreshToken:output_type -> tradedrift.auth.v1.RefreshTokenResponse
+	12, // 27: tradedrift.auth.v1.AuthService.ForgotPassword:output_type -> tradedrift.auth.v1.ForgotPasswordResponse
+	14, // 28: tradedrift.auth.v1.AuthService.ResetPassword:output_type -> tradedrift.auth.v1.ResetPasswordResponse
+	16, // 29: tradedrift.auth.v1.AuthService.Logout:output_type -> tradedrift.auth.v1.LogoutResponse
+	18, // 30: tradedrift.auth.v1.AuthService.LogoutAll:output_type -> tradedrift.auth.v1.LogoutAllResponse
+	22, // 31: tradedrift.auth.v1.AuthService.ChangePassword:output_type -> tradedrift.auth.v1.ChangePasswordResponse
+	20, // 32: tradedrift.auth.v1.AuthService.InvalidateUserSessions:output_type -> tradedrift.auth.v1.InvalidateUserSessionsResponse
+	24, // 33: tradedrift.auth.v1.AuthService.SuspendUser:output_type -> tradedrift.auth.v1.SuspendUserResponse
+	26, // 34: tradedrift.auth.v1.AuthService.UnsuspendUser:output_type -> tradedrift.auth.v1.UnsuspendUserResponse
+	28, // 35: tradedrift.auth.v1.AuthService.ListSuspendedUsers:output_type -> tradedrift.auth.v1.ListSuspendedUsersResponse
+	22, // [22:36] is the sub-list for method output_type
+	8,  // [8:22] is the sub-list for method input_type
 	8,  // [8:8] is the sub-list for extension type_name
 	8,  // [8:8] is the sub-list for extension extendee
 	0,  // [0:8] is the sub-list for field type_name
@@ -1400,7 +1731,7 @@ func file_auth_v1_auth_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_auth_v1_auth_proto_rawDesc), len(file_auth_v1_auth_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   23,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

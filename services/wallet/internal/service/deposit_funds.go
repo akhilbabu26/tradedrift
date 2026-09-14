@@ -83,7 +83,9 @@ func (s *Service) DepositFunds(ctx context.Context, userID, asset, amount, refer
 			repository.ErrWalletNotFound, userID, asset)
 	}
 
-	// Note: Frozen wallets permit incoming credits (deposits/refunds). Outgoing debits are blocked by ReserveFunds.
+	if wallet.IsFrozen {
+		return nil, repository.ErrWalletFrozen
+	}
 
 	// ── 4. Layer 1: Fast Upfront Wallet-Scoped Idempotency Check ────────────────
 	existingTxn, err := s.txnRepo.GetByWalletAndReference(ctx, wallet.ID, referenceID, referenceType)
@@ -116,8 +118,12 @@ func (s *Service) DepositFunds(ctx context.Context, userID, asset, amount, refer
 	txnRepo := s.txnRepo.WithTx(tx)
 
 	// Acquire row lock on wallet
-	if _, err := walletRepo.LockByIDs(ctx, []string{wallet.ID}); err != nil {
+	lockedWallets, err := walletRepo.LockByIDs(ctx, []string{wallet.ID})
+	if err != nil {
 		return nil, fmt.Errorf("failed to lock wallet row: %w", err)
+	}
+	if len(lockedWallets) > 0 && lockedWallets[0].IsFrozen {
+		return nil, repository.ErrWalletFrozen
 	}
 
 	// Re-check idempotency under lock

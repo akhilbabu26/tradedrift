@@ -44,6 +44,8 @@ func WriteGRPCError(w http.ResponseWriter, err error) {
 			}
 		}
 		response.WriteError(w, http.StatusUnprocessableEntity, "FAILED_PRECONDITION", st.Message())
+	case codes.Unavailable:
+		response.WriteError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", st.Message())
 	default:
 		response.WriteError(w, http.StatusInternalServerError, "INTERNAL_ERROR", st.Message())
 	}

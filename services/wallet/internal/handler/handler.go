@@ -178,3 +178,26 @@ func (h *GRPCHandler) GetSupportedAssets(ctx context.Context, req *walletv1.GetS
 func (h *GRPCHandler) Health(ctx context.Context, _ *walletv1.HealthRequest) (*walletv1.HealthResponse, error) {
 	return &walletv1.HealthResponse{Ok: true}, nil
 }
+
+func (h *GRPCHandler) FreezeWallet(ctx context.Context, req *walletv1.FreezeWalletRequest) (*walletv1.FreezeWalletResponse, error) {
+	if req.UserId == "" || req.Asset == "" {
+		return nil, status.Error(codes.InvalidArgument, "user_id and asset are required")
+	}
+
+	isFrozen, err := h.svc.FreezeWallet(ctx, req.UserId, req.Asset, req.Freeze, req.Reason)
+	if err != nil {
+		h.log.Error("FreezeWallet failed",
+			zap.String("user_id", req.UserId),
+			zap.String("asset", req.Asset),
+			zap.Bool("freeze", req.Freeze),
+			zap.Error(err),
+		)
+		return nil, mapToGRPCError(err)
+	}
+
+	return &walletv1.FreezeWalletResponse{
+		Success:  true,
+		IsFrozen: isFrozen,
+	}, nil
+}
+

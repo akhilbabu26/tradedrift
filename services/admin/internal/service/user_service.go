@@ -140,10 +140,10 @@ func (s *AdminService) SuspendUser(ctx context.Context, req SuspendUserRequest) 
 		return nil, fmt.Errorf("SuspendUser: transaction failed: %w", err)
 	}
 
-	// Synchronous Auth invalidation attempt
-	authErr := s.authCli.InvalidateUserSessions(ctx, req.TargetUserID, req.Reason, req.RequestID, opID)
+	// Synchronous Auth suspension attempt
+	authErr := s.authCli.SuspendUser(ctx, req.TargetUserID, req.Reason, req.RequestID, opID)
 	if authErr != nil {
-		s.log.Warn("SuspendUser: immediate auth session invalidation failed; saga will retry",
+		s.log.Warn("SuspendUser: immediate auth suspension failed; saga will retry",
 			zap.String("operation_id", opID),
 			zap.String("user_id", req.TargetUserID),
 			zap.Error(authErr),
@@ -164,6 +164,21 @@ func (s *AdminService) SuspendUser(ctx context.Context, req SuspendUserRequest) 
 	}
 	result.Operation.Status = domain.OperationStatusCompleted
 	result.Operation.ResponseBody = responseBody
+
+	// Synchronous Redis write with retries
+	redisKey := "user:suspended:" + req.TargetUserID
+	if setErr := s.SetRedisWithRetry(ctx, redisKey, "1", 3); setErr != nil {
+		s.log.Error("SuspendUser: synchronous Redis write failed after retries; reconciler will restore",
+			zap.String("operation_id", opID),
+			zap.String("user_id", req.TargetUserID),
+			zap.Error(setErr),
+		)
+	} else {
+		s.log.Info("SuspendUser: synchronous Redis write succeeded",
+			zap.String("key", redisKey),
+			zap.String("user_id", req.TargetUserID),
+		)
+	}
 
 	s.log.Info("SuspendUser: completed successfully",
 		zap.String("operation_id", opID),
@@ -252,6 +267,30 @@ func (s *AdminService) UnsuspendUser(ctx context.Context, req UnsuspendUserReque
 		}
 		err = fmt.Errorf("UnsuspendUser: transaction failed: %w", txErr)
 		return nil, err
+	}
+
+	// Synchronous Auth unsuspension call
+	if authErr := s.authCli.UnsuspendUser(ctx, req.TargetUserID, req.Reason, req.RequestID, opID); authErr != nil {
+		s.log.Error("UnsuspendUser: auth service unsuspend call failed",
+			zap.String("operation_id", opID),
+			zap.String("user_id", req.TargetUserID),
+			zap.Error(authErr),
+		)
+	}
+
+	// Synchronous Redis DEL with retries
+	redisKey := "user:suspended:" + req.TargetUserID
+	if delErr := s.DelRedisWithRetry(ctx, redisKey, 3); delErr != nil {
+		s.log.Error("UnsuspendUser: synchronous Redis DEL failed after retries; reconciler will heal",
+			zap.String("operation_id", opID),
+			zap.String("user_id", req.TargetUserID),
+			zap.Error(delErr),
+		)
+	} else {
+		s.log.Info("UnsuspendUser: synchronous Redis DEL succeeded",
+			zap.String("key", redisKey),
+			zap.String("user_id", req.TargetUserID),
+		)
 	}
 
 	s.log.Info("UnsuspendUser: completed successfully",

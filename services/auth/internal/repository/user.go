@@ -48,4 +48,10 @@ type UserRepository interface{
 
 	// UpdatePassword updates the password hash and increments token_version in an atomic operation.
 	UpdatePassword(ctx context.Context, id string, passwordHash string) error
+
+	// UpdateStatus updates the user's status (e.g. SUSPENDED, VERIFIED).
+	UpdateStatus(ctx context.Context, id string, status string) error
+
+	// ListSuspendedUserIDs retrieves paginated user IDs with status = 'SUSPENDED'.
+	ListSuspendedUserIDs(ctx context.Context, limit, offset int) ([]string, int, error)
 }

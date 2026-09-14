@@ -95,6 +95,82 @@ func (c *AuthClient) InvalidateUserSessions(ctx context.Context, userID, reason,
 	return nil
 }
 
+// SuspendUser calls Auth service's SuspendUser RPC.
+func (c *AuthClient) SuspendUser(ctx context.Context, userID, reason, requestID, operationID string) error {
+	if c == nil || c.client == nil {
+		return fmt.Errorf("auth_client: client is nil")
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	md := metadata.Pairs(
+		"x-request-id", requestID,
+		"x-operation-id", operationID,
+	)
+	callCtx = metadata.NewOutgoingContext(callCtx, md)
+
+	resp, err := c.client.SuspendUser(callCtx, &authv1.SuspendUserRequest{
+		UserId: userID,
+		Reason: reason,
+	})
+	if err != nil {
+		return fmt.Errorf("auth_client: SuspendUser: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("auth_client: SuspendUser returned success=false")
+	}
+	return nil
+}
+
+// UnsuspendUser calls Auth service's UnsuspendUser RPC.
+func (c *AuthClient) UnsuspendUser(ctx context.Context, userID, reason, requestID, operationID string) error {
+	if c == nil || c.client == nil {
+		return fmt.Errorf("auth_client: client is nil")
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	md := metadata.Pairs(
+		"x-request-id", requestID,
+		"x-operation-id", operationID,
+	)
+	callCtx = metadata.NewOutgoingContext(callCtx, md)
+
+	resp, err := c.client.UnsuspendUser(callCtx, &authv1.UnsuspendUserRequest{
+		UserId: userID,
+		Reason: reason,
+	})
+	if err != nil {
+		return fmt.Errorf("auth_client: UnsuspendUser: %w", err)
+	}
+	if !resp.Success {
+		return fmt.Errorf("auth_client: UnsuspendUser returned success=false")
+	}
+	return nil
+}
+
+// ListSuspendedUsers calls Auth service's ListSuspendedUsers RPC.
+func (c *AuthClient) ListSuspendedUsers(ctx context.Context, limit, offset int32) ([]string, int32, error) {
+	if c == nil || c.client == nil {
+		return nil, 0, fmt.Errorf("auth_client: client is nil")
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	resp, err := c.client.ListSuspendedUsers(callCtx, &authv1.ListSuspendedUsersRequest{
+		Limit:  limit,
+		Offset: offset,
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("auth_client: ListSuspendedUsers: %w", err)
+	}
+	return resp.UserIds, resp.Total, nil
+}
+
+
 // IsRetryableGRPCError evaluates whether a gRPC error is transient and safe to retry.
 // Non-retryable client errors (InvalidArgument, NotFound, PermissionDenied, etc.) return false.
 func IsRetryableGRPCError(err error) bool {

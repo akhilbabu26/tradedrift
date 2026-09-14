@@ -60,6 +60,15 @@ service AuthService {
     // Revokes all active sessions for the specified user by user_id.
     // Called by the Admin service during user suspension. Idempotent.
     rpc InvalidateUserSessions(InvalidateUserSessionsRequest) returns (InvalidateUserSessionsResponse);
+
+    // Suspends a user account and invalidates all active sessions.
+    rpc SuspendUser(SuspendUserRequest) returns (SuspendUserResponse);
+
+    // Unsuspends a user account, restoring VERIFIED status.
+    rpc UnsuspendUser(UnsuspendUserRequest) returns (UnsuspendUserResponse);
+
+    // Lists suspended user IDs with bounded pagination for anti-drift reconciliation.
+    rpc ListSuspendedUsers(ListSuspendedUsersRequest) returns (ListSuspendedUsersResponse);
 }
 
 // ==========================================
@@ -227,4 +236,40 @@ message ChangePasswordRequest {
 
 message ChangePasswordResponse {
     bool success = 1;
+}
+
+// ==========================================
+// User Suspension (Internal — Admin only)
+// ==========================================
+
+message SuspendUserRequest {
+    // Required. UUID of the user to suspend.
+    string user_id = 1;
+    // Optional. Reason for suspension.
+    string reason  = 2;
+}
+
+message SuspendUserResponse {
+    bool success = 1;
+}
+
+message UnsuspendUserRequest {
+    // Required. UUID of the user to unsuspend.
+    string user_id = 1;
+    // Optional. Reason for unsuspension.
+    string reason  = 2;
+}
+
+message UnsuspendUserResponse {
+    bool success = 1;
+}
+
+message ListSuspendedUsersRequest {
+    int32 limit  = 1;
+    int32 offset = 2;
+}
+
+message ListSuspendedUsersResponse {
+    repeated string user_ids = 1;
+    int32 total              = 2;
 }

@@ -147,46 +147,60 @@ services/market/
 
 ---
 
-### 📄 5. `internal/repository/postgres/market_repository.go`
+### 📄 5. `internal/repository/postgres/market_repository.go` & `market_overview.go`
 * **Purpose:** Implements SQL queries using `jackc/pgx/v5` connection pool:
   * `GetTicker24h`: Uses an optimized **Common Table Expression (CTE)** query to calculate 24h high, 24h low, total volume, quote volume, last trade price, and price change percentage dynamically from `market_trades` within `NOW() - INTERVAL '24 hours'`.
-  * `InsertTrade`: Inserts trades using `ON CONFLICT (id) DO NOTHING` returning an `inserted` boolean for deduplication tracking.
+  * `GetMarketsOverview`: Single-query CTE that joins active market rules, rolling 24h ticker metrics, and a window-partitioned trend slice (`ROW_NUMBER() OVER (PARTITION BY market_id ORDER BY start_time DESC)`) returning lightweight close-price trends.
+  * `ProcessTrade`: Atomically inserts trade records and upserts OHLC bars across all 6 supported resolutions.
+  * `HasRecentTrades`: Checks if trades exist for a market within a rolling duration window (e.g. 24h) using `idx_market_trades_rolling`.
+  * `BulkInsertSeedTrades`: Inserts deterministic baseline trades with `ON CONFLICT (id) DO NOTHING`.
 
 ---
 
 ### 📄 6. `internal/repository/postgres/candle_repository.go`
-* **Purpose:** Upserts OHLC candlestick bars across 5 resolutions (`1m`, `5m`, `15m`, `1h`, `1d`) inside a single atomic transaction.
+* **Purpose:** Queries and seeds OHLC candlestick bars across 6 resolutions (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`) inside atomic transactions.
 * **Out-of-Order Trade Protection:**
   When network delays deliver trade events out of sequence:
   ```sql
-  open = CASE WHEN EXCLUDED.open_trade_at < ohlc_candles.open_trade_at THEN EXCLUDED.open ELSE ohlc_candles.open END,
-  close = CASE WHEN EXCLUDED.close_trade_at >= ohlc_candles.close_trade_at THEN EXCLUDED.close ELSE ohlc_candles.close END,
-  high = GREATEST(ohlc_candles.high, EXCLUDED.high),
-  low = LEAST(ohlc_candles.low, EXCLUDED.low),
-  volume = ohlc_candles.volume + EXCLUDED.volume,
+  open_price   = CASE WHEN EXCLUDED.open_trade_at < ohlc_candles.open_trade_at THEN EXCLUDED.open_price ELSE ohlc_candles.open_price END,
+  close_price  = CASE WHEN EXCLUDED.close_trade_at >= ohlc_candles.close_trade_at THEN EXCLUDED.close_price ELSE ohlc_candles.close_price END,
+  high_price   = GREATEST(ohlc_candles.high_price, EXCLUDED.high_price),
+  low_price    = LEAST(ohlc_candles.low_price, EXCLUDED.low_price),
+  volume       = ohlc_candles.volume + EXCLUDED.volume,
   quote_volume = ohlc_candles.quote_volume + EXCLUDED.quote_volume
   ```
   This guarantees that Open and Close prices always reflect the earliest and latest trades chronologically, never the arrival order.
 
 ---
 
-### 📄 7. `internal/service/service.go` & `errors.go`
-* **Purpose:** Core business orchestration:
-  * `ProcessTradeEvent`: Validates market existence, starts a PostgreSQL transaction (`pgx.Tx`), inserts the trade record, computes timestamps for all 5 candle resolutions, upserts the candles, and commits atomically.
-  * `GetCandles`: Validates requested limit (defaults `100`, max `500`), checks market existence, and returns chronological candlestick bars.
-  * `GetTicker`: Validates market existence and returns live 24h rolling price statistics.
+### 📄 7. `internal/service/seeder.go` & `seeder_test.go`
+* **Purpose:** Idempotent historical data initialization during service startup.
+* **Key Policies & Architecture:**
+  1. **Completed-Bucket Anchoring:** Generates historical candles and baseline trades anchored strictly to the **latest completed** time bucket (`t.Truncate(dur).Add(-dur)`). In-flight buckets remain reserved for live trading; no future timestamps are ever written.
+  2. **Deterministic PRNG:** Fixed-seed random walks keyed by `(marketID, resolution)` generate reproducible OHLC history across fresh cold starts.
+  3. **Rolling 24h Synthetic Seeding Policy:** Synthetic trades are seeded only when the market has zero trades in the rolling 24-hour window (`HasRecentTrades(ctx, m.ID, 24*time.Hour) == false`). Once live trading has started, synthetic seeding is completely bypassed.
+  4. **Partial History Limitation:** The seeder initializes empty resolutions only (`count == 0`). If partial history exists (`0 < count < expected`), records are preserved without regeneration to prevent mixing shifted timestamp windows.
 
 ---
 
-### 📄 8. `internal/handler/grpc.go` & `mapper.go`
+### 📄 8. `internal/service/service.go` & `errors.go`
+* **Purpose:** Core business orchestration:
+  * `ProcessTradeEvent`: Validates market existence, starts a PostgreSQL transaction (`pgx.Tx`), inserts the trade record, computes timestamps for all 6 candle resolutions (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`), upserts the candles, and commits atomically.
+  * `GetCandles`: Validates requested resolution and limit (defaults `100`, max `500`), checks market existence, and returns chronological candlestick bars.
+  * `GetTicker`: Validates market existence and returns live 24h rolling price statistics.
+  * `GetMarketsOverview`: Validates candle resolution (defaults to `1h`), clamps limits (`168` default, max `500`), and returns active market overviews with trend slices.
+
+---
+
+### 📄 9. `internal/handler/grpc.go` & `mapper.go`
 * **Purpose:** Implements the `marketv1.MarketServiceServer` Protobuf interface:
-  * Handles `ListMarkets`, `GetMarket`, `GetTicker`, and `GetCandles`.
-  * `mapper.go` transforms internal domain structs into Protobuf messages (`marketv1.Market`, `marketv1.Ticker24H`, `marketv1.Candle`).
+  * Handles `ListMarkets`, `GetMarket`, `GetTicker`, `GetCandles`, and `GetMarketsOverview`.
+  * `mapper.go` transforms internal domain structs into Protobuf messages (`marketv1.Market`, `marketv1.Ticker24H`, `marketv1.Candle`, `marketv1.MarketOverviewItem`). Formats `Symbol` as `"BASE/QUOTE"`.
   * Maps internal errors to standard gRPC status codes (`codes.NotFound`, `codes.InvalidArgument`, `codes.Internal`).
 
 ---
 
-### 📄 9. `internal/kafka/consumer.go`
+### 📄 10. `internal/kafka/consumer.go`
 * **Purpose:** Reliable, high-throughput consumer for `trades.executed` events.
 * **Key Reliability Features:**
   1. **Explicit Data Type Validation:** Parses UUIDs and Decimals explicitly. Malformed data is logged as an error and skipped.
@@ -213,7 +227,7 @@ services/market/
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
 | `MARKET_GRPC_PORT` | `:50054` | Port on which the Market gRPC server listens |
-| `MARKET_DB_URL` | `postgres://user:pass@localhost:5432/tradedrift_market?sslmode=disable` | PostgreSQL connection string |
+| `MARKET_POSTGRES_DSN` | `postgres://user:pass@localhost:5432/tradedrift_market?sslmode=disable` | PostgreSQL connection string |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated list of Apache Kafka brokers |
 | `KAFKA_GROUP_ID` | `market-service-group` | Kafka consumer group ID |
 | `KAFKA_TOPIC_TRADE_EXECUTED` | `trades.executed` | Kafka topic for executed trades |

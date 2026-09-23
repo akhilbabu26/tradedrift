@@ -115,3 +115,34 @@ func (h *GRPCHandler) GetCandles(ctx context.Context, req *marketv1.GetCandlesRe
 		Candles: protoCandles,
 	}, nil
 }
+
+func (h *GRPCHandler) GetMarketsOverview(ctx context.Context, req *marketv1.GetMarketsOverviewRequest) (*marketv1.GetMarketsOverviewResponse, error) {
+	resStr := "1h"
+	if req.GetResolution() != marketv1.CandleResolution_CANDLE_RESOLUTION_UNSPECIFIED {
+		var err error
+		resStr, err = mapProtoResolutionToString(req.GetResolution())
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	items, err := h.svc.GetMarketsOverview(ctx, resStr, int(req.GetLimit()))
+	if err != nil {
+		h.log.Error("GetMarketsOverview failed",
+			zap.String("resolution", resStr),
+			zap.Int32("limit", req.GetLimit()),
+			zap.Error(err),
+		)
+		return nil, mapToGRPCError(err)
+	}
+
+	protoMarkets := make([]*marketv1.MarketOverviewItem, 0, len(items))
+	for _, item := range items {
+		protoMarkets = append(protoMarkets, mapDomainMarketOverviewItemToProto(item))
+	}
+
+	return &marketv1.GetMarketsOverviewResponse{
+		Markets: protoMarkets,
+	}, nil
+}
+

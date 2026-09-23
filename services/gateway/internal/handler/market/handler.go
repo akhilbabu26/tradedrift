@@ -127,6 +127,45 @@ func (h *Handler) GetCandles(w http.ResponseWriter, r *http.Request) {
 	response.WriteJSON(w, http.StatusOK, map[string]any{"candles": candles})
 }
 
+// GetMarketsOverview — GET /api/v1/markets/overview
+func (h *Handler) GetMarketsOverview(w http.ResponseWriter, r *http.Request) {
+	resolutionStr := r.URL.Query().Get("resolution")
+	limitStr := r.URL.Query().Get("limit")
+
+	resolution := marketv1.CandleResolution_CANDLE_RESOLUTION_1H
+	if resolutionStr != "" {
+		resolution = parseResolution(resolutionStr)
+	}
+
+	var limit int32 = 168
+	if limitStr != "" {
+		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
+			limit = int32(l)
+		}
+	}
+
+	ctx, cancel := common.OutgoingCtx(r, 5*time.Second)
+	defer cancel()
+
+	req := &marketv1.GetMarketsOverviewRequest{
+		Resolution: resolution,
+		Limit:      limit,
+	}
+
+	res, err := h.client.GetMarketsOverview(ctx, req)
+	if err != nil {
+		common.WriteGRPCError(w, err)
+		return
+	}
+
+	markets := make([]MarketOverviewItemDTO, 0, len(res.GetMarkets()))
+	for _, m := range res.GetMarkets() {
+		markets = append(markets, marketOverviewItemDTO(m))
+	}
+
+	response.WriteJSON(w, http.StatusOK, map[string]any{"markets": markets})
+}
+
 func parseResolution(res string) marketv1.CandleResolution {
 	switch res {
 	case "1m", "1M":
@@ -135,11 +174,14 @@ func parseResolution(res string) marketv1.CandleResolution {
 		return marketv1.CandleResolution_CANDLE_RESOLUTION_5M
 	case "15m", "15M":
 		return marketv1.CandleResolution_CANDLE_RESOLUTION_15M
-	case "1h", "1H", "4h", "4H":
+	case "1h", "1H":
 		return marketv1.CandleResolution_CANDLE_RESOLUTION_1H
+	case "4h", "4H":
+		return marketv1.CandleResolution_CANDLE_RESOLUTION_4H
 	case "1d", "1D":
 		return marketv1.CandleResolution_CANDLE_RESOLUTION_1D
 	default:
 		return marketv1.CandleResolution_CANDLE_RESOLUTION_1H
 	}
 }
+

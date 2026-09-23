@@ -24,6 +24,7 @@ enum CandleResolution {
   CANDLE_RESOLUTION_15M = 3;
   CANDLE_RESOLUTION_1H = 4;
   CANDLE_RESOLUTION_1D = 5;
+  CANDLE_RESOLUTION_4H = 6;            // 4-hour candle resolution
 }
 
 // ─────────────────────────────────────────────
@@ -71,7 +72,7 @@ message Ticker24h {
   string low_24h = 4;                   // Decimal string
   string volume_24h = 5;                // Base asset traded volume
   string quote_volume_24h = 6;          // Quote asset traded volume
-  string price_change_24h_percent = 7; // e.g. "2.45"
+  string price_change_24h_percent = 7;  // e.g. "2.45"
 }
 
 message GetTickerRequest {
@@ -106,13 +107,45 @@ message GetCandlesResponse {
   repeated Candle candles = 1;
 }
 
+// MarketOverviewItem is a lightweight snapshot for market listing pages.
+// trend contains only close prices (decimal strings), ordered oldest → newest.
+// For full OHLCV data, use GetCandles.
+message MarketOverviewItem {
+  string market_id                = 1;
+  string symbol                   = 2;  // e.g. "BTC/USDT"
+  string base_asset               = 3;
+  string quote_asset              = 4;
+  string last_price               = 5;
+  string high_24h                 = 6;
+  string low_24h                  = 7;
+  string volume_24h               = 8;
+  string quote_volume_24h         = 9;
+  string price_change_24h_percent = 10;
+  repeated string trend           = 11; // Close prices only, oldest → newest
+}
+
+message GetMarketsOverviewRequest {
+  // resolution controls the candle resolution used for the trend series.
+  // Default: CANDLE_RESOLUTION_1H
+  CandleResolution resolution = 1;
+
+  // limit is the number of trend data points per market.
+  // Default: 168, min: 1, max: 500.
+  int32 limit = 2;
+}
+
+message GetMarketsOverviewResponse {
+  repeated MarketOverviewItem markets = 1;
+}
+
 // ─────────────────────────────────────────────
 // Service Interface
 // ─────────────────────────────────────────────
 
 service MarketService {
-  rpc GetMarket(GetMarketRequest) returns (GetMarketResponse);
-  rpc ListMarkets(ListMarketsRequest) returns (ListMarketsResponse);
-  rpc GetTicker(GetTickerRequest) returns (GetTickerResponse);
-  rpc GetCandles(GetCandlesRequest) returns (GetCandlesResponse);
+  rpc GetMarket(GetMarketRequest)                   returns (GetMarketResponse);
+  rpc ListMarkets(ListMarketsRequest)               returns (ListMarketsResponse);
+  rpc GetTicker(GetTickerRequest)                   returns (GetTickerResponse);
+  rpc GetCandles(GetCandlesRequest)                 returns (GetCandlesResponse);
+  rpc GetMarketsOverview(GetMarketsOverviewRequest) returns (GetMarketsOverviewResponse);
 }

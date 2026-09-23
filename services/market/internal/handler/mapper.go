@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -108,9 +109,35 @@ func mapProtoResolutionToString(res marketv1.CandleResolution) (string, error) {
 		return "15m", nil
 	case marketv1.CandleResolution_CANDLE_RESOLUTION_1H:
 		return "1h", nil
+	case marketv1.CandleResolution_CANDLE_RESOLUTION_4H:
+		return "4h", nil
 	case marketv1.CandleResolution_CANDLE_RESOLUTION_1D:
 		return "1d", nil
 	default:
 		return "", status.Error(codes.InvalidArgument, "invalid or unspecified candle resolution")
 	}
 }
+
+func mapDomainMarketOverviewItemToProto(item *repository.MarketOverviewItem) *marketv1.MarketOverviewItem {
+	if item == nil {
+		return nil
+	}
+	trend := item.Trend
+	if trend == nil {
+		trend = []string{}
+	}
+	return &marketv1.MarketOverviewItem{
+		MarketId:               item.MarketID,
+		Symbol:                 fmt.Sprintf("%s/%s", item.BaseAsset, item.QuoteAsset),
+		BaseAsset:              item.BaseAsset,
+		QuoteAsset:             item.QuoteAsset,
+		LastPrice:              item.LastPrice.String(),
+		High_24H:               item.High24h.String(),
+		Low_24H:                item.Low24h.String(),
+		Volume_24H:             item.Volume24h.String(),
+		QuoteVolume_24H:        item.QuoteVolume24h.String(),
+		PriceChange_24HPercent: item.PriceChange24hPercent.String(),
+		Trend:                  trend,
+	}
+}
+

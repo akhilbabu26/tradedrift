@@ -19,10 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	MarketService_GetMarket_FullMethodName   = "/tradedrift.market.v1.MarketService/GetMarket"
-	MarketService_ListMarkets_FullMethodName = "/tradedrift.market.v1.MarketService/ListMarkets"
-	MarketService_GetTicker_FullMethodName   = "/tradedrift.market.v1.MarketService/GetTicker"
-	MarketService_GetCandles_FullMethodName  = "/tradedrift.market.v1.MarketService/GetCandles"
+	MarketService_GetMarket_FullMethodName          = "/tradedrift.market.v1.MarketService/GetMarket"
+	MarketService_ListMarkets_FullMethodName        = "/tradedrift.market.v1.MarketService/ListMarkets"
+	MarketService_GetTicker_FullMethodName          = "/tradedrift.market.v1.MarketService/GetTicker"
+	MarketService_GetCandles_FullMethodName         = "/tradedrift.market.v1.MarketService/GetCandles"
+	MarketService_GetMarketsOverview_FullMethodName = "/tradedrift.market.v1.MarketService/GetMarketsOverview"
 )
 
 // MarketServiceClient is the client API for MarketService service.
@@ -33,6 +34,7 @@ type MarketServiceClient interface {
 	ListMarkets(ctx context.Context, in *ListMarketsRequest, opts ...grpc.CallOption) (*ListMarketsResponse, error)
 	GetTicker(ctx context.Context, in *GetTickerRequest, opts ...grpc.CallOption) (*GetTickerResponse, error)
 	GetCandles(ctx context.Context, in *GetCandlesRequest, opts ...grpc.CallOption) (*GetCandlesResponse, error)
+	GetMarketsOverview(ctx context.Context, in *GetMarketsOverviewRequest, opts ...grpc.CallOption) (*GetMarketsOverviewResponse, error)
 }
 
 type marketServiceClient struct {
@@ -83,6 +85,16 @@ func (c *marketServiceClient) GetCandles(ctx context.Context, in *GetCandlesRequ
 	return out, nil
 }
 
+func (c *marketServiceClient) GetMarketsOverview(ctx context.Context, in *GetMarketsOverviewRequest, opts ...grpc.CallOption) (*GetMarketsOverviewResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetMarketsOverviewResponse)
+	err := c.cc.Invoke(ctx, MarketService_GetMarketsOverview_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // MarketServiceServer is the server API for MarketService service.
 // All implementations must embed UnimplementedMarketServiceServer
 // for forward compatibility.
@@ -91,6 +103,7 @@ type MarketServiceServer interface {
 	ListMarkets(context.Context, *ListMarketsRequest) (*ListMarketsResponse, error)
 	GetTicker(context.Context, *GetTickerRequest) (*GetTickerResponse, error)
 	GetCandles(context.Context, *GetCandlesRequest) (*GetCandlesResponse, error)
+	GetMarketsOverview(context.Context, *GetMarketsOverviewRequest) (*GetMarketsOverviewResponse, error)
 	mustEmbedUnimplementedMarketServiceServer()
 }
 
@@ -112,6 +125,9 @@ func (UnimplementedMarketServiceServer) GetTicker(context.Context, *GetTickerReq
 }
 func (UnimplementedMarketServiceServer) GetCandles(context.Context, *GetCandlesRequest) (*GetCandlesResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetCandles not implemented")
+}
+func (UnimplementedMarketServiceServer) GetMarketsOverview(context.Context, *GetMarketsOverviewRequest) (*GetMarketsOverviewResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetMarketsOverview not implemented")
 }
 func (UnimplementedMarketServiceServer) mustEmbedUnimplementedMarketServiceServer() {}
 func (UnimplementedMarketServiceServer) testEmbeddedByValue()                       {}
@@ -206,6 +222,24 @@ func _MarketService_GetCandles_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _MarketService_GetMarketsOverview_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMarketsOverviewRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(MarketServiceServer).GetMarketsOverview(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: MarketService_GetMarketsOverview_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(MarketServiceServer).GetMarketsOverview(ctx, req.(*GetMarketsOverviewRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // MarketService_ServiceDesc is the grpc.ServiceDesc for MarketService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -228,6 +262,10 @@ var MarketService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetCandles",
 			Handler:    _MarketService_GetCandles_Handler,
+		},
+		{
+			MethodName: "GetMarketsOverview",
+			Handler:    _MarketService_GetMarketsOverview_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -18,6 +18,7 @@ var validCandleResolutions = map[string]struct{}{
 	"5m":  {},
 	"15m": {},
 	"1h":  {},
+	"4h":  {},
 	"1d":  {},
 }
 
@@ -35,6 +36,7 @@ type MarketService interface {
 	GetTicker(ctx context.Context, marketID string) (*repository.Ticker24h, error)
 	GetCandles(ctx context.Context, marketID string, resolution string, from, to *time.Time, limit int) ([]*repository.OHLCCandle, error)
 	ProcessTradeEvent(ctx context.Context, payload *TradeEventPayload) (bool, error)
+	GetMarketsOverview(ctx context.Context, resolution string, limit int) ([]*repository.MarketOverviewItem, error)
 }
 
 type marketService struct {
@@ -154,4 +156,22 @@ func (s *marketService) ProcessTradeEvent(ctx context.Context, payload *TradeEve
 
 	return processed, nil
 }
+
+func (s *marketService) GetMarketsOverview(ctx context.Context, resolution string, limit int) ([]*repository.MarketOverviewItem, error) {
+	resolution = strings.TrimSpace(resolution)
+	if resolution == "" {
+		resolution = "1h"
+	}
+	if _, ok := validCandleResolutions[resolution]; !ok {
+		return nil, ErrInvalidResolution
+	}
+	if limit <= 0 {
+		limit = 168
+	} else if limit > 500 {
+		limit = 500
+	}
+
+	return s.marketRepo.GetMarketsOverview(ctx, resolution, limit)
+}
+
 

@@ -60,6 +60,15 @@ func main() {
 	candleRepo := postgresrepo.NewCandleRepository(dbPool)
 	marketSvc := service.NewMarketService(marketRepo, candleRepo)
 
+	// 4a. Ensure deterministic historical market data (idempotent)
+	appLogger.Info("Verifying market seed history (SeedVersion=1)...")
+	seeder := service.NewHistorySeeder(marketRepo, candleRepo, appLogger)
+	if err := seeder.EnsureSeedHistory(ctx); err != nil {
+		appLogger.Fatal("Failed to ensure market seed history", zap.Error(err))
+	}
+	appLogger.Info("Market seed history verified")
+
+
 	// 5. Start Kafka Consumer for TradeExecuted Events
 	rawBrokers := strings.Split(cfg.KafkaBrokers, ",")
 	brokers := make([]string, 0, len(rawBrokers))

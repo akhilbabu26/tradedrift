@@ -218,6 +218,7 @@ func main() {
 	mux.Handle("POST /api/v1/orders/{id}/cancel",   protected(http.HandlerFunc(orderH.CancelOrder)))
 
 	// Market — public
+	mux.HandleFunc("GET /api/v1/markets/overview",     marketH.GetMarketsOverview)
 	mux.HandleFunc("GET /api/v1/markets",              marketH.ListMarkets)
 	mux.HandleFunc("GET /api/v1/markets/{id}",         marketH.GetMarket)
 	mux.HandleFunc("GET /api/v1/markets/{id}/ticker",  marketH.GetTicker)

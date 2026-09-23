@@ -112,7 +112,7 @@ In a financial exchange, the market database must support two opposing workloads
 | Column | Data Type | Constraints | Purpose |
 | :--- | :--- | :--- | :--- |
 | `market_id` | `VARCHAR(20)` | `PRIMARY KEY (Col 1)` | Market symbol (`BTC-USDT`). |
-| `resolution` | `VARCHAR(5)` | `PRIMARY KEY (Col 2), CHECK IN ('1m','5m','15m','1h','1d')` | Timeframe bar bucket resolution. |
+| `resolution` | `VARCHAR(5)` | `PRIMARY KEY (Col 2), CHECK IN ('1m','5m','15m','1h','4h','1d')` | Timeframe bar bucket resolution. |
 | `start_time` | `TIMESTAMPTZ` | `PRIMARY KEY (Col 3)` | Normalized bucket start boundary (e.g. `12:00:00`, `12:05:00`). |
 | `open_price` | `DECIMAL(30,10)` | `CHECK (open_price > 0)` | First trade price in the time window. |
 | `high_price` | `DECIMAL(30,10)` | `CHECK (high_price > 0)` | Highest trade price in the time window. |
@@ -160,10 +160,10 @@ The migrations are automatically executed at application boot time via `postgres
 To run or rollback manually via goose:
 ```powershell
 # Apply all pending migrations
-goose -dir services/market/migration postgres "$MARKET_DB_URL" up
+goose -dir services/market/migration postgres "$MARKET_POSTGRES_DSN" up
 
 # Rollback latest migration
-goose -dir services/market/migration postgres "$MARKET_DB_URL" down
+goose -dir services/market/migration postgres "$MARKET_POSTGRES_DSN" down
 ```
 
 ---

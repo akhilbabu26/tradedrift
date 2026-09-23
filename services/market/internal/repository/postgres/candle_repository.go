@@ -73,3 +73,56 @@ func (r *CandleRepository) GetCandles(
 
 	return candles, nil
 }
+
+// GetCandleCount returns the number of candles for a given market and resolution.
+// Used by the seeder for per-(market, resolution) idempotency checks.
+func (r *CandleRepository) GetCandleCount(ctx context.Context, marketID, resolution string) (int, error) {
+	var count int
+	err := r.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM ohlc_candles WHERE market_id = $1 AND resolution = $2`,
+		marketID, resolution,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("get candle count (%s/%s): %w", marketID, resolution, err)
+	}
+	return count, nil
+}
+
+// BulkInsertSeedCandles inserts historical seed candle rows in a single transaction.
+// Uses ON CONFLICT DO NOTHING so it is safe to call on every service startup.
+func (r *CandleRepository) BulkInsertSeedCandles(ctx context.Context, candles []*repository.OHLCCandle) error {
+	if len(candles) == 0 {
+		return nil
+	}
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin seed candles tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	query := `
+		INSERT INTO ohlc_candles (
+			market_id, resolution, start_time,
+			open_price, high_price, low_price, close_price,
+			volume, quote_volume,
+			open_trade_at, close_trade_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (market_id, resolution, start_time) DO NOTHING
+	`
+	for _, c := range candles {
+		if _, err := tx.Exec(ctx, query,
+			c.MarketID, c.Resolution, c.StartTime,
+			c.OpenPrice, c.HighPrice, c.LowPrice, c.ClosePrice,
+			c.Volume, c.QuoteVolume,
+			c.OpenTradeAt, c.CloseTradeAt,
+		); err != nil {
+			return fmt.Errorf("insert seed candle (%s %s %s): %w", c.MarketID, c.Resolution, c.StartTime, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit seed candles tx: %w", err)
+	}
+	return nil
+}
+

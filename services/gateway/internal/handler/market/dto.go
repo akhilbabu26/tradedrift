@@ -75,3 +75,38 @@ func candleDTO(c *marketv1.Candle) CandleDTO {
 		QuoteVolume: c.GetQuoteVolume(),
 	}
 }
+
+type MarketOverviewItemDTO struct {
+	MarketID              string   `json:"market_id"`
+	Symbol                string   `json:"symbol"`
+	BaseAsset             string   `json:"base_asset"`
+	QuoteAsset            string   `json:"quote_asset"`
+	LastPrice             string   `json:"last_price"`
+	High24h               string   `json:"high_24h"`
+	Low24h                string   `json:"low_24h"`
+	Volume24h             string   `json:"volume_24h"`
+	QuoteVolume24h        string   `json:"quote_volume_24h"`
+	PriceChange24hPercent string   `json:"price_change_24h_percent"`
+	Trend                 []string `json:"trend"`
+}
+
+func marketOverviewItemDTO(item *marketv1.MarketOverviewItem) MarketOverviewItemDTO {
+	trend := item.GetTrend()
+	if trend == nil {
+		trend = []string{}
+	}
+	return MarketOverviewItemDTO{
+		MarketID:              item.GetMarketId(),
+		Symbol:                item.GetSymbol(),
+		BaseAsset:             item.GetBaseAsset(),
+		QuoteAsset:            item.GetQuoteAsset(),
+		LastPrice:             item.GetLastPrice(),
+		High24h:               item.GetHigh_24H(),
+		Low24h:                item.GetLow_24H(),
+		Volume24h:             item.GetVolume_24H(),
+		QuoteVolume24h:        item.GetQuoteVolume_24H(),
+		PriceChange24hPercent: item.GetPriceChange_24HPercent(),
+		Trend:                 trend,
+	}
+}
+

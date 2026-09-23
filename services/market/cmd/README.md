@@ -163,7 +163,7 @@ if err := consumer.Close(); err != nil {
 | Variable | Default Value | Description |
 | :--- | :--- | :--- |
 | `MARKET_GRPC_PORT` | `:50054` | TCP port for gRPC listener |
-| `MARKET_DB_URL` | `postgres://.../tradedrift_market` | PostgreSQL connection DSN |
+| `MARKET_POSTGRES_DSN` | `postgres://.../tradedrift_market` | PostgreSQL connection DSN |
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated list of Kafka broker endpoints |
 | `KAFKA_GROUP_ID` | `market-service-group` | Consumer group identifier |
 | `KAFKA_TOPIC_TRADE_EXECUTED` | `trades.executed` | Kafka topic name for trade execution events |

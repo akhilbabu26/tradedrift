@@ -83,6 +83,7 @@ const (
 	CandleResolution_CANDLE_RESOLUTION_15M         CandleResolution = 3
 	CandleResolution_CANDLE_RESOLUTION_1H          CandleResolution = 4
 	CandleResolution_CANDLE_RESOLUTION_1D          CandleResolution = 5
+	CandleResolution_CANDLE_RESOLUTION_4H          CandleResolution = 6 // 4-hour candle resolution
 )
 
 // Enum value maps for CandleResolution.
@@ -94,6 +95,7 @@ var (
 		3: "CANDLE_RESOLUTION_15M",
 		4: "CANDLE_RESOLUTION_1H",
 		5: "CANDLE_RESOLUTION_1D",
+		6: "CANDLE_RESOLUTION_4H",
 	}
 	CandleResolution_value = map[string]int32{
 		"CANDLE_RESOLUTION_UNSPECIFIED": 0,
@@ -102,6 +104,7 @@ var (
 		"CANDLE_RESOLUTION_15M":         3,
 		"CANDLE_RESOLUTION_1H":          4,
 		"CANDLE_RESOLUTION_1D":          5,
+		"CANDLE_RESOLUTION_4H":          6,
 	}
 )
 
@@ -803,6 +806,233 @@ func (x *GetCandlesResponse) GetCandles() []*Candle {
 	return nil
 }
 
+// MarketOverviewItem is a lightweight snapshot for market listing pages.
+// trend contains only close prices (decimal strings), ordered oldest → newest.
+// For full OHLCV data, use GetCandles.
+type MarketOverviewItem struct {
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	MarketId               string                 `protobuf:"bytes,1,opt,name=market_id,json=marketId,proto3" json:"market_id,omitempty"`
+	Symbol                 string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"` // e.g. "BTC/USDT"
+	BaseAsset              string                 `protobuf:"bytes,3,opt,name=base_asset,json=baseAsset,proto3" json:"base_asset,omitempty"`
+	QuoteAsset             string                 `protobuf:"bytes,4,opt,name=quote_asset,json=quoteAsset,proto3" json:"quote_asset,omitempty"`
+	LastPrice              string                 `protobuf:"bytes,5,opt,name=last_price,json=lastPrice,proto3" json:"last_price,omitempty"`
+	High_24H               string                 `protobuf:"bytes,6,opt,name=high_24h,json=high24h,proto3" json:"high_24h,omitempty"`
+	Low_24H                string                 `protobuf:"bytes,7,opt,name=low_24h,json=low24h,proto3" json:"low_24h,omitempty"`
+	Volume_24H             string                 `protobuf:"bytes,8,opt,name=volume_24h,json=volume24h,proto3" json:"volume_24h,omitempty"`
+	QuoteVolume_24H        string                 `protobuf:"bytes,9,opt,name=quote_volume_24h,json=quoteVolume24h,proto3" json:"quote_volume_24h,omitempty"`
+	PriceChange_24HPercent string                 `protobuf:"bytes,10,opt,name=price_change_24h_percent,json=priceChange24hPercent,proto3" json:"price_change_24h_percent,omitempty"`
+	Trend                  []string               `protobuf:"bytes,11,rep,name=trend,proto3" json:"trend,omitempty"` // Close prices only, oldest → newest
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
+}
+
+func (x *MarketOverviewItem) Reset() {
+	*x = MarketOverviewItem{}
+	mi := &file_market_v1_market_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MarketOverviewItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MarketOverviewItem) ProtoMessage() {}
+
+func (x *MarketOverviewItem) ProtoReflect() protoreflect.Message {
+	mi := &file_market_v1_market_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MarketOverviewItem.ProtoReflect.Descriptor instead.
+func (*MarketOverviewItem) Descriptor() ([]byte, []int) {
+	return file_market_v1_market_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *MarketOverviewItem) GetMarketId() string {
+	if x != nil {
+		return x.MarketId
+	}
+	return ""
+}
+
+func (x *MarketOverviewItem) GetSymbol() string {
+	if x != nil {
+		return x.Symbol
+	}
+	return ""
+}
+
+func (x *MarketOverviewItem) GetBaseAsset() string {
+	if x != nil {
+		return x.BaseAsset
+	}
+	return ""
+}
+
+func (x *MarketOverviewItem) GetQuoteAsset() string {
+	if x != nil {
+		return x.QuoteAsset
+	}
+	return ""
+}
+
+func (x *MarketOverviewItem) GetLastPrice() string {
+	if x != nil {
+		return x.LastPrice
+	}
+	return ""
+}
+
+func (x *MarketOverviewItem) GetHigh_24H() string {
+	if x != nil {
+		return x.High_24H
+	}
+	return ""
+}
+
+func (x *MarketOverviewItem) GetLow_24H() string {
+	if x != nil {
+		return x.Low_24H
+	}
+	return ""
+}
+
+func (x *MarketOverviewItem) GetVolume_24H() string {
+	if x != nil {
+		return x.Volume_24H
+	}
+	return ""
+}
+
+func (x *MarketOverviewItem) GetQuoteVolume_24H() string {
+	if x != nil {
+		return x.QuoteVolume_24H
+	}
+	return ""
+}
+
+func (x *MarketOverviewItem) GetPriceChange_24HPercent() string {
+	if x != nil {
+		return x.PriceChange_24HPercent
+	}
+	return ""
+}
+
+func (x *MarketOverviewItem) GetTrend() []string {
+	if x != nil {
+		return x.Trend
+	}
+	return nil
+}
+
+type GetMarketsOverviewRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// resolution controls the candle resolution used for the trend series.
+	// Default: CANDLE_RESOLUTION_1H
+	Resolution CandleResolution `protobuf:"varint,1,opt,name=resolution,proto3,enum=tradedrift.market.v1.CandleResolution" json:"resolution,omitempty"`
+	// limit is the number of trend data points per market.
+	// Default: 168, min: 1, max: 500.
+	Limit         int32 `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMarketsOverviewRequest) Reset() {
+	*x = GetMarketsOverviewRequest{}
+	mi := &file_market_v1_market_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMarketsOverviewRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMarketsOverviewRequest) ProtoMessage() {}
+
+func (x *GetMarketsOverviewRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_market_v1_market_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMarketsOverviewRequest.ProtoReflect.Descriptor instead.
+func (*GetMarketsOverviewRequest) Descriptor() ([]byte, []int) {
+	return file_market_v1_market_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *GetMarketsOverviewRequest) GetResolution() CandleResolution {
+	if x != nil {
+		return x.Resolution
+	}
+	return CandleResolution_CANDLE_RESOLUTION_UNSPECIFIED
+}
+
+func (x *GetMarketsOverviewRequest) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type GetMarketsOverviewResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Markets       []*MarketOverviewItem  `protobuf:"bytes,1,rep,name=markets,proto3" json:"markets,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetMarketsOverviewResponse) Reset() {
+	*x = GetMarketsOverviewResponse{}
+	mi := &file_market_v1_market_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetMarketsOverviewResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetMarketsOverviewResponse) ProtoMessage() {}
+
+func (x *GetMarketsOverviewResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_market_v1_market_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetMarketsOverviewResponse.ProtoReflect.Descriptor instead.
+func (*GetMarketsOverviewResponse) Descriptor() ([]byte, []int) {
+	return file_market_v1_market_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *GetMarketsOverviewResponse) GetMarkets() []*MarketOverviewItem {
+	if x != nil {
+		return x.Markets
+	}
+	return nil
+}
+
 var File_market_v1_market_proto protoreflect.FileDescriptor
 
 const file_market_v1_market_proto_rawDesc = "" +
@@ -861,25 +1091,51 @@ const file_market_v1_market_proto_rawDesc = "" +
 	"\x02to\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x02to\x12\x14\n" +
 	"\x05limit\x18\x05 \x01(\x05R\x05limit\"L\n" +
 	"\x12GetCandlesResponse\x126\n" +
-	"\acandles\x18\x01 \x03(\v2\x1c.tradedrift.market.v1.CandleR\acandles*\x80\x01\n" +
+	"\acandles\x18\x01 \x03(\v2\x1c.tradedrift.market.v1.CandleR\acandles\"\xf4\x02\n" +
+	"\x12MarketOverviewItem\x12\x1b\n" +
+	"\tmarket_id\x18\x01 \x01(\tR\bmarketId\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x1d\n" +
+	"\n" +
+	"base_asset\x18\x03 \x01(\tR\tbaseAsset\x12\x1f\n" +
+	"\vquote_asset\x18\x04 \x01(\tR\n" +
+	"quoteAsset\x12\x1d\n" +
+	"\n" +
+	"last_price\x18\x05 \x01(\tR\tlastPrice\x12\x19\n" +
+	"\bhigh_24h\x18\x06 \x01(\tR\ahigh24h\x12\x17\n" +
+	"\alow_24h\x18\a \x01(\tR\x06low24h\x12\x1d\n" +
+	"\n" +
+	"volume_24h\x18\b \x01(\tR\tvolume24h\x12(\n" +
+	"\x10quote_volume_24h\x18\t \x01(\tR\x0equoteVolume24h\x127\n" +
+	"\x18price_change_24h_percent\x18\n" +
+	" \x01(\tR\x15priceChange24hPercent\x12\x14\n" +
+	"\x05trend\x18\v \x03(\tR\x05trend\"y\n" +
+	"\x19GetMarketsOverviewRequest\x12F\n" +
+	"\n" +
+	"resolution\x18\x01 \x01(\x0e2&.tradedrift.market.v1.CandleResolutionR\n" +
+	"resolution\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\"`\n" +
+	"\x1aGetMarketsOverviewResponse\x12B\n" +
+	"\amarkets\x18\x01 \x03(\v2(.tradedrift.market.v1.MarketOverviewItemR\amarkets*\x80\x01\n" +
 	"\fMarketStatus\x12\x1d\n" +
 	"\x19MARKET_STATUS_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14MARKET_STATUS_ACTIVE\x10\x01\x12\x18\n" +
 	"\x14MARKET_STATUS_HALTED\x10\x02\x12\x1d\n" +
-	"\x19MARKET_STATUS_MAINTENANCE\x10\x03*\xb8\x01\n" +
+	"\x19MARKET_STATUS_MAINTENANCE\x10\x03*\xd2\x01\n" +
 	"\x10CandleResolution\x12!\n" +
 	"\x1dCANDLE_RESOLUTION_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14CANDLE_RESOLUTION_1M\x10\x01\x12\x18\n" +
 	"\x14CANDLE_RESOLUTION_5M\x10\x02\x12\x19\n" +
 	"\x15CANDLE_RESOLUTION_15M\x10\x03\x12\x18\n" +
 	"\x14CANDLE_RESOLUTION_1H\x10\x04\x12\x18\n" +
-	"\x14CANDLE_RESOLUTION_1D\x10\x052\x90\x03\n" +
+	"\x14CANDLE_RESOLUTION_1D\x10\x05\x12\x18\n" +
+	"\x14CANDLE_RESOLUTION_4H\x10\x062\x89\x04\n" +
 	"\rMarketService\x12\\\n" +
 	"\tGetMarket\x12&.tradedrift.market.v1.GetMarketRequest\x1a'.tradedrift.market.v1.GetMarketResponse\x12b\n" +
 	"\vListMarkets\x12(.tradedrift.market.v1.ListMarketsRequest\x1a).tradedrift.market.v1.ListMarketsResponse\x12\\\n" +
 	"\tGetTicker\x12&.tradedrift.market.v1.GetTickerRequest\x1a'.tradedrift.market.v1.GetTickerResponse\x12_\n" +
 	"\n" +
-	"GetCandles\x12'.tradedrift.market.v1.GetCandlesRequest\x1a(.tradedrift.market.v1.GetCandlesResponseB0Z.tradedrift/platform/api/gen/market/v1;marketv1b\x06proto3"
+	"GetCandles\x12'.tradedrift.market.v1.GetCandlesRequest\x1a(.tradedrift.market.v1.GetCandlesResponse\x12w\n" +
+	"\x12GetMarketsOverview\x12/.tradedrift.market.v1.GetMarketsOverviewRequest\x1a0.tradedrift.market.v1.GetMarketsOverviewResponseB0Z.tradedrift/platform/api/gen/market/v1;marketv1b\x06proto3"
 
 var (
 	file_market_v1_market_proto_rawDescOnce sync.Once
@@ -894,48 +1150,55 @@ func file_market_v1_market_proto_rawDescGZIP() []byte {
 }
 
 var file_market_v1_market_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_market_v1_market_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_market_v1_market_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_market_v1_market_proto_goTypes = []any{
-	(MarketStatus)(0),             // 0: tradedrift.market.v1.MarketStatus
-	(CandleResolution)(0),         // 1: tradedrift.market.v1.CandleResolution
-	(*Market)(nil),                // 2: tradedrift.market.v1.Market
-	(*GetMarketRequest)(nil),      // 3: tradedrift.market.v1.GetMarketRequest
-	(*GetMarketResponse)(nil),     // 4: tradedrift.market.v1.GetMarketResponse
-	(*ListMarketsRequest)(nil),    // 5: tradedrift.market.v1.ListMarketsRequest
-	(*ListMarketsResponse)(nil),   // 6: tradedrift.market.v1.ListMarketsResponse
-	(*Ticker24H)(nil),             // 7: tradedrift.market.v1.Ticker24h
-	(*GetTickerRequest)(nil),      // 8: tradedrift.market.v1.GetTickerRequest
-	(*GetTickerResponse)(nil),     // 9: tradedrift.market.v1.GetTickerResponse
-	(*Candle)(nil),                // 10: tradedrift.market.v1.Candle
-	(*GetCandlesRequest)(nil),     // 11: tradedrift.market.v1.GetCandlesRequest
-	(*GetCandlesResponse)(nil),    // 12: tradedrift.market.v1.GetCandlesResponse
-	(*timestamppb.Timestamp)(nil), // 13: google.protobuf.Timestamp
+	(MarketStatus)(0),                  // 0: tradedrift.market.v1.MarketStatus
+	(CandleResolution)(0),              // 1: tradedrift.market.v1.CandleResolution
+	(*Market)(nil),                     // 2: tradedrift.market.v1.Market
+	(*GetMarketRequest)(nil),           // 3: tradedrift.market.v1.GetMarketRequest
+	(*GetMarketResponse)(nil),          // 4: tradedrift.market.v1.GetMarketResponse
+	(*ListMarketsRequest)(nil),         // 5: tradedrift.market.v1.ListMarketsRequest
+	(*ListMarketsResponse)(nil),        // 6: tradedrift.market.v1.ListMarketsResponse
+	(*Ticker24H)(nil),                  // 7: tradedrift.market.v1.Ticker24h
+	(*GetTickerRequest)(nil),           // 8: tradedrift.market.v1.GetTickerRequest
+	(*GetTickerResponse)(nil),          // 9: tradedrift.market.v1.GetTickerResponse
+	(*Candle)(nil),                     // 10: tradedrift.market.v1.Candle
+	(*GetCandlesRequest)(nil),          // 11: tradedrift.market.v1.GetCandlesRequest
+	(*GetCandlesResponse)(nil),         // 12: tradedrift.market.v1.GetCandlesResponse
+	(*MarketOverviewItem)(nil),         // 13: tradedrift.market.v1.MarketOverviewItem
+	(*GetMarketsOverviewRequest)(nil),  // 14: tradedrift.market.v1.GetMarketsOverviewRequest
+	(*GetMarketsOverviewResponse)(nil), // 15: tradedrift.market.v1.GetMarketsOverviewResponse
+	(*timestamppb.Timestamp)(nil),      // 16: google.protobuf.Timestamp
 }
 var file_market_v1_market_proto_depIdxs = []int32{
 	0,  // 0: tradedrift.market.v1.Market.status:type_name -> tradedrift.market.v1.MarketStatus
-	13, // 1: tradedrift.market.v1.Market.created_at:type_name -> google.protobuf.Timestamp
-	13, // 2: tradedrift.market.v1.Market.updated_at:type_name -> google.protobuf.Timestamp
+	16, // 1: tradedrift.market.v1.Market.created_at:type_name -> google.protobuf.Timestamp
+	16, // 2: tradedrift.market.v1.Market.updated_at:type_name -> google.protobuf.Timestamp
 	2,  // 3: tradedrift.market.v1.GetMarketResponse.market:type_name -> tradedrift.market.v1.Market
 	2,  // 4: tradedrift.market.v1.ListMarketsResponse.markets:type_name -> tradedrift.market.v1.Market
 	7,  // 5: tradedrift.market.v1.GetTickerResponse.ticker:type_name -> tradedrift.market.v1.Ticker24h
-	13, // 6: tradedrift.market.v1.Candle.start_time:type_name -> google.protobuf.Timestamp
+	16, // 6: tradedrift.market.v1.Candle.start_time:type_name -> google.protobuf.Timestamp
 	1,  // 7: tradedrift.market.v1.GetCandlesRequest.resolution:type_name -> tradedrift.market.v1.CandleResolution
-	13, // 8: tradedrift.market.v1.GetCandlesRequest.from:type_name -> google.protobuf.Timestamp
-	13, // 9: tradedrift.market.v1.GetCandlesRequest.to:type_name -> google.protobuf.Timestamp
+	16, // 8: tradedrift.market.v1.GetCandlesRequest.from:type_name -> google.protobuf.Timestamp
+	16, // 9: tradedrift.market.v1.GetCandlesRequest.to:type_name -> google.protobuf.Timestamp
 	10, // 10: tradedrift.market.v1.GetCandlesResponse.candles:type_name -> tradedrift.market.v1.Candle
-	3,  // 11: tradedrift.market.v1.MarketService.GetMarket:input_type -> tradedrift.market.v1.GetMarketRequest
-	5,  // 12: tradedrift.market.v1.MarketService.ListMarkets:input_type -> tradedrift.market.v1.ListMarketsRequest
-	8,  // 13: tradedrift.market.v1.MarketService.GetTicker:input_type -> tradedrift.market.v1.GetTickerRequest
-	11, // 14: tradedrift.market.v1.MarketService.GetCandles:input_type -> tradedrift.market.v1.GetCandlesRequest
-	4,  // 15: tradedrift.market.v1.MarketService.GetMarket:output_type -> tradedrift.market.v1.GetMarketResponse
-	6,  // 16: tradedrift.market.v1.MarketService.ListMarkets:output_type -> tradedrift.market.v1.ListMarketsResponse
-	9,  // 17: tradedrift.market.v1.MarketService.GetTicker:output_type -> tradedrift.market.v1.GetTickerResponse
-	12, // 18: tradedrift.market.v1.MarketService.GetCandles:output_type -> tradedrift.market.v1.GetCandlesResponse
-	15, // [15:19] is the sub-list for method output_type
-	11, // [11:15] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	1,  // 11: tradedrift.market.v1.GetMarketsOverviewRequest.resolution:type_name -> tradedrift.market.v1.CandleResolution
+	13, // 12: tradedrift.market.v1.GetMarketsOverviewResponse.markets:type_name -> tradedrift.market.v1.MarketOverviewItem
+	3,  // 13: tradedrift.market.v1.MarketService.GetMarket:input_type -> tradedrift.market.v1.GetMarketRequest
+	5,  // 14: tradedrift.market.v1.MarketService.ListMarkets:input_type -> tradedrift.market.v1.ListMarketsRequest
+	8,  // 15: tradedrift.market.v1.MarketService.GetTicker:input_type -> tradedrift.market.v1.GetTickerRequest
+	11, // 16: tradedrift.market.v1.MarketService.GetCandles:input_type -> tradedrift.market.v1.GetCandlesRequest
+	14, // 17: tradedrift.market.v1.MarketService.GetMarketsOverview:input_type -> tradedrift.market.v1.GetMarketsOverviewRequest
+	4,  // 18: tradedrift.market.v1.MarketService.GetMarket:output_type -> tradedrift.market.v1.GetMarketResponse
+	6,  // 19: tradedrift.market.v1.MarketService.ListMarkets:output_type -> tradedrift.market.v1.ListMarketsResponse
+	9,  // 20: tradedrift.market.v1.MarketService.GetTicker:output_type -> tradedrift.market.v1.GetTickerResponse
+	12, // 21: tradedrift.market.v1.MarketService.GetCandles:output_type -> tradedrift.market.v1.GetCandlesResponse
+	15, // 22: tradedrift.market.v1.MarketService.GetMarketsOverview:output_type -> tradedrift.market.v1.GetMarketsOverviewResponse
+	18, // [18:23] is the sub-list for method output_type
+	13, // [13:18] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_market_v1_market_proto_init() }
@@ -949,7 +1212,7 @@ func file_market_v1_market_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_market_v1_market_proto_rawDesc), len(file_market_v1_market_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   11,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

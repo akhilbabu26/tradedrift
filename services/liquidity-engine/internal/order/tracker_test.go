@@ -181,3 +181,166 @@ func TestTracker_RestingCountVsActiveCount(t *testing.T) {
 		t.Errorf("expected RestingCount to be 1, got %d", tr.RestingCount("BTC-USDT", "BUY"))
 	}
 }
+
+// ─── T24: OS Resync Generation Upgrade ───────────────────────────────────────
+
+func TestT24_OSResync_GenerationUpgrade(t *testing.T) {
+	tr := NewTracker()
+	levelID := "MM-SOL-USDT-BID-01"
+
+	// Initial state in tracker: Generation 3
+	tr.SetPending(levelID, "old-order-id", "MM-SOL-USDT-BID-01-G003", 3, pricing.PriceLevel{
+		LevelID:  levelID,
+		MarketID: "SOL-USDT",
+		Side:     "BUY",
+		Price:    decimal.RequireFromString("99.00"),
+		Quantity: decimal.RequireFromString("1.0"),
+	})
+
+	// Order Service returns Generation 4
+	osOrders := []OSOrder{
+		{
+			LevelID:       levelID,
+			Generation:    4,
+			ClientOrderID: "MM-SOL-USDT-BID-01-G004",
+			OrderID:       "new-order-id",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("99.50"),
+			OriginalQty:   decimal.RequireFromString("1.0"),
+			RemainingQty:  decimal.RequireFromString("1.0"),
+		},
+	}
+
+	tr.SyncFromOrders("SOL-USDT", osOrders)
+
+	live := tr.Get(levelID)
+	if live == nil {
+		t.Fatal("T24: expected order to exist in tracker")
+	}
+	if live.Generation != 4 {
+		t.Errorf("T24: expected Generation=4, got %d", live.Generation)
+	}
+	if live.ClientOrderID != "MM-SOL-USDT-BID-01-G004" {
+		t.Errorf("T24: expected ClientOrderID=MM-SOL-USDT-BID-01-G004, got %s", live.ClientOrderID)
+	}
+	if live.OrderID != "new-order-id" {
+		t.Errorf("T24: expected OrderID=new-order-id, got %s", live.OrderID)
+	}
+	if !live.Price.Equal(decimal.RequireFromString("99.50")) {
+		t.Errorf("T24: expected Price=99.50, got %s", live.Price)
+	}
+	if tr.generations[levelID] != 4 {
+		t.Errorf("T24: expected tr.generations=4, got %d", tr.generations[levelID])
+	}
+
+	nextGen := tr.NextGeneration(levelID)
+	if nextGen != 5 {
+		t.Errorf("T24: expected NextGeneration=5, got %d", nextGen)
+	}
+}
+
+// ─── T25: Older OS Generation Cannot Downgrade Tracker ───────────────────────
+
+func TestT25_OlderOSGeneration_CannotDowngradeTracker(t *testing.T) {
+	tr := NewTracker()
+	levelID := "MM-SOL-USDT-BID-01"
+
+	// Tracker is on Generation 4
+	tr.SetPending(levelID, "current-order-id", "MM-SOL-USDT-BID-01-G004", 4, pricing.PriceLevel{
+		LevelID:  levelID,
+		MarketID: "SOL-USDT",
+		Side:     "BUY",
+		Price:    decimal.RequireFromString("100.00"),
+		Quantity: decimal.RequireFromString("1.0"),
+	})
+
+	// Order Service returns stale record with Generation 3
+	osOrders := []OSOrder{
+		{
+			LevelID:       levelID,
+			Generation:    3,
+			ClientOrderID: "MM-SOL-USDT-BID-01-G003",
+			OrderID:       "old-stale-order-id",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("98.00"),
+			OriginalQty:   decimal.RequireFromString("1.0"),
+			RemainingQty:  decimal.RequireFromString("0.5"),
+		},
+	}
+
+	tr.SyncFromOrders("SOL-USDT", osOrders)
+
+	live := tr.Get(levelID)
+	if live == nil {
+		t.Fatal("T25: expected order to exist in tracker")
+	}
+	if live.Generation != 4 {
+		t.Errorf("T25: generation regressed! expected 4, got %d", live.Generation)
+	}
+	if live.ClientOrderID != "MM-SOL-USDT-BID-01-G004" {
+		t.Errorf("T25: ClientOrderID regressed! expected G004, got %s", live.ClientOrderID)
+	}
+	if live.OrderID != "current-order-id" {
+		t.Errorf("T25: OrderID overwritten by stale OS record! expected current-order-id, got %s", live.OrderID)
+	}
+	if !live.Price.Equal(decimal.RequireFromString("100.00")) {
+		t.Errorf("T25: Price overwritten! expected 100.00, got %s", live.Price)
+	}
+}
+
+// ─── T26: Same-Generation Execution State Refresh ────────────────────────────
+
+func TestT26_SameGeneration_ExecutionRefresh(t *testing.T) {
+	tr := NewTracker()
+	levelID := "MM-SOL-USDT-BID-01"
+
+	// Tracker has Generation 4 with old OrderID and full qty (10)
+	tr.SetPending(levelID, "old-order-id", "MM-SOL-USDT-BID-01-G004", 4, pricing.PriceLevel{
+		LevelID:  levelID,
+		MarketID: "SOL-USDT",
+		Side:     "BUY",
+		Price:    decimal.RequireFromString("100.00"),
+		Quantity: decimal.RequireFromString("10.0"),
+	})
+
+	// Order Service returns Generation 4 with confirmed new OrderID and partial fill (Remaining 7)
+	osOrders := []OSOrder{
+		{
+			LevelID:       levelID,
+			Generation:    4,
+			ClientOrderID: "MM-SOL-USDT-BID-01-G004",
+			OrderID:       "new-order-id",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("100.00"),
+			OriginalQty:   decimal.RequireFromString("10.0"),
+			RemainingQty:  decimal.RequireFromString("7.0"),
+		},
+	}
+
+	tr.SyncFromOrders("SOL-USDT", osOrders)
+
+	live := tr.Get(levelID)
+	if live == nil {
+		t.Fatal("T26: expected order to exist in tracker")
+	}
+	if live.Generation != 4 {
+		t.Errorf("T26: expected Generation=4, got %d", live.Generation)
+	}
+	if live.ClientOrderID != "MM-SOL-USDT-BID-01-G004" {
+		t.Errorf("T26: expected ClientOrderID=MM-SOL-USDT-BID-01-G004, got %s", live.ClientOrderID)
+	}
+	if live.OrderID != "new-order-id" {
+		t.Errorf("T26: expected OrderID=new-order-id, got %s", live.OrderID)
+	}
+	expectedRem := decimal.RequireFromString("7.0")
+	if !live.RemainingQty.Equal(expectedRem) {
+		t.Errorf("T26: expected RemainingQty=7.0, got %s", live.RemainingQty)
+	}
+	expectedFilled := decimal.RequireFromString("3.0")
+	if !live.FilledQty.Equal(expectedFilled) {
+		t.Errorf("T26: expected FilledQty=3.0, got %s", live.FilledQty)
+	}
+	if live.Status != StatusOSRegistered {
+		t.Errorf("T26: expected StatusOSRegistered, got %s", live.Status)
+	}
+}

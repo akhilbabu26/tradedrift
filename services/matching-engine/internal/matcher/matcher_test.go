@@ -134,8 +134,11 @@ func TestCancel_RemovesFromBook(t *testing.T) {
 
 	result := matcher.Cancel(book, node.OrderID)
 
-	if result == nil {
-		t.Fatal("expected cancelled node returned, got nil")
+	if result.Status != orderbook.CancelStatusRemovedFromBook {
+		t.Fatalf("expected REMOVED_FROM_BOOK, got %q", result.Status)
+	}
+	if result.OrderID != node.OrderID {
+		t.Fatal("expected cancelled node OrderID to match")
 	}
 	if book.OrderIndex[node.OrderID] != nil {
 		t.Fatal("expected node removed from OrderIndex")
@@ -148,11 +151,11 @@ func TestCancel_RemovesFromBook(t *testing.T) {
 	}
 }
 
-func TestCancel_NotFound_ReturnsNil(t *testing.T) {
+func TestCancel_NotFound_ReturnsAlreadyAbsent(t *testing.T) {
 	book := newBook()
 	result := matcher.Cancel(book, uuid.New())
-	if result != nil {
-		t.Fatal("expected nil for unknown order ID, got a node")
+	if result.Status != orderbook.CancelStatusAlreadyAbsent {
+		t.Fatalf("expected ALREADY_ABSENT for unknown order ID, got %q", result.Status)
 	}
 }
 
@@ -162,13 +165,13 @@ func TestCancel_Idempotent(t *testing.T) {
 	matcher.Insert(book, node)
 
 	first := matcher.Cancel(book, node.OrderID)
-	second := matcher.Cancel(book, node.OrderID) // second cancel
+	second := matcher.Cancel(book, node.OrderID) // second cancel of same order
 
-	if first == nil {
-		t.Fatal("expected first cancel to return node")
+	if first.Status != orderbook.CancelStatusRemovedFromBook {
+		t.Fatalf("expected first cancel to be REMOVED_FROM_BOOK, got %q", first.Status)
 	}
-	if second != nil {
-		t.Fatal("expected second cancel to return nil (idempotent)")
+	if second.Status != orderbook.CancelStatusAlreadyAbsent {
+		t.Fatalf("expected second cancel to be ALREADY_ABSENT (idempotent), got %q", second.Status)
 	}
 }
 

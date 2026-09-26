@@ -22,10 +22,11 @@ type TradeSettledEvent struct {
 type Consumer struct {
 	reader *kafkago.Reader
 	repo   repository.OrderRepository
+	wallet WalletClient
 	logger *zap.Logger
 }
 
-func NewConsumer(brokers []string, groupID, topic string, repo repository.OrderRepository, logger *zap.Logger) *Consumer {
+func NewConsumer(brokers []string, groupID, topic string, repo repository.OrderRepository, wallet WalletClient, logger *zap.Logger) *Consumer {
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
 		Brokers:        brokers,
 		GroupID:        groupID,
@@ -39,6 +40,7 @@ func NewConsumer(brokers []string, groupID, topic string, repo repository.OrderR
 	return &Consumer{
 		reader: reader,
 		repo:   repo,
+		wallet: wallet,
 		logger: logger,
 	}
 }
@@ -73,13 +75,31 @@ func (c *Consumer) Start(ctx context.Context) {
 		}
 
 		if ev.TradeID != "" && (ev.BuyOrderID != "" || ev.SellOrderID != "") && ev.Quantity != "" {
-			if err := c.repo.ApplyTradeFill(ctx, ev.TradeID, ev.BuyOrderID, ev.SellOrderID, ev.Quantity); err != nil {
+			filledOrderIDs, err := c.repo.ApplyTradeFill(ctx, ev.TradeID, ev.BuyOrderID, ev.SellOrderID, ev.Quantity)
+			if err != nil {
 				c.logger.Error("Failed to apply trade fill to orders — retrying",
 					zap.String("trade_id", ev.TradeID),
 					zap.Error(err),
 				)
 				// Do not commit, retry on next fetch
 				continue
+			}
+
+			// Automatically release leftover unspent reserved funds (e.g. from price improvement)
+			// for any orders that reached FILLED status.
+			if c.wallet != nil && len(filledOrderIDs) > 0 {
+				for _, filledID := range filledOrderIDs {
+					if releaseErr := c.wallet.ReleaseFunds(ctx, filledID); releaseErr != nil {
+						c.logger.Warn("Failed to release leftover funds for filled order",
+							zap.String("order_id", filledID),
+							zap.Error(releaseErr),
+						)
+					} else {
+						c.logger.Info("Leftover reserved funds released for filled order",
+							zap.String("order_id", filledID),
+						)
+					}
+				}
 			}
 		}
 

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { orderApi } from '../api/order'
 import { walletApi } from '../api/wallet'
+import { tradesApi } from '../api/trades'
 import { wsService, type ConnectionStatus } from '../api/ws'
 import {
   MOCK_ORDERS_KPIS,
@@ -116,7 +117,35 @@ export function useOrdersPageData() {
 
         setOpenOrders(liveOpen)
         setOrderHistory(liveHistory)
-        setTradeFills(MOCK_TRADE_FILLS) // Fallback for fills if dedicated trade fills API not present
+
+        // ── Fetch real trade fills via GET /api/v1/trades ──────────────────
+        try {
+          const tradesRes = await tradesApi.listTrades({ limit: 50 })
+          const fills: TradeFillItem[] = (tradesRes.trades || []).map((t) => {
+            const base = t.market_id?.split('-')[0] ?? 'BTC'
+            const qty = toDecimal(t.quantity || '0')
+            const price = toDecimal(t.price || '0')
+            const total = qty.times(price)
+            // Estimate fee as 0.1% of trade value (no fee field in docs)
+            const fee = total.times('0.001')
+            const side = (t.taker_side || 'BUY').toUpperCase() as 'BUY' | 'SELL'
+            return {
+              id: t.id,
+              tradeId: t.id.startsWith('trd_') ? t.id : `trd_${t.id.substring(0, 6)}`,
+              time: t.created_at ? formatDate(t.created_at) : 'Recent',
+              pair: t.market_id?.replace('-', '/') ?? 'BTC/USDT',
+              side,
+              executionPrice: formatPrice(t.price || '0'),
+              filledAmount: `${formatQuantity(t.quantity || '0', 4)} ${base}`,
+              totalCostUSDT: formatPrice(total.toString()),
+              feeUSDT: fee.toFixed(2),
+            }
+          })
+          setTradeFills(fills)
+        } catch {
+          // Trades API failed — show empty list (not mock data)
+          setTradeFills([])
+        }
 
         // Calculate authoritative Funds Locked from wallet reserved balance where possible
         let lockedFunds = toDecimal(0)

@@ -2,7 +2,7 @@
 
 **Package:** `kafka`  
 **Service:** Matching Engine  
-**File Covered:** `consumer.go` (and `consumer_test.go`)  
+**Files Covered:** `command.go`, `consumer.go`, `consumer_test.go`  
 **Documentation:** `02READEME.md`  
 **Last Updated:** August 2026  
 
@@ -164,12 +164,13 @@ type CommandEnvelope struct {
 #### `orderCreatedPayload` & `orderCancelPayload`
 ```go
 type orderCreatedPayload struct {
-    OrderID   string `json:"order_id"`
-    UserID    string `json:"user_id"`
-    Side      string `json:"side"`
-    OrderType string `json:"order_type"`
-    Price     string `json:"price"`
-    Quantity  string `json:"quantity"`
+    OrderID       string `json:"order_id"`
+    UserID        string `json:"user_id"`
+    Side          string `json:"side"`
+    OrderType     string `json:"order_type"`
+    Price         string `json:"price"`
+    Quantity      string `json:"quantity"`
+    ClientOrderID string `json:"client_order_id,omitempty"`
 }
 
 type orderCancelPayload struct {
@@ -178,6 +179,7 @@ type orderCancelPayload struct {
 }
 ```
 - JSON mapping structs representing individual command payload schemas.
+- `ClientOrderID` is optionally populated by algorithmic strategies (e.g. Liquidity Engine market maker levels) and forwarded into the matching loop.
 
 #### `Config`
 ```go
@@ -201,9 +203,11 @@ type Consumer struct {
     db                     dbQueryer
     discoverPartitionsFunc func(topic string) ([]int, error)
     commitMessagesFunc     func(ctx context.Context, brokers []string, topic string, groupID string, partition int, offset int64) error
+    queryLWMFunc           func(ctx context.Context, brokers []string, topic string, partition int) (int64, error)
+    queryHWMFunc           func(ctx context.Context, brokers []string, topic string, partition int) (int64, error)
 }
 ```
-- Main consumer coordinator managing the Kafka reader, routing targets, lifecycle cancellation hooks, and mockable function pointers for partition discovery and broker commits.
+- Main consumer coordinator managing the Kafka reader, routing targets, lifecycle cancellation hooks, and mockable function pointers for partition discovery, broker commits, and watermark queries.
 
 ---
 
@@ -215,6 +219,7 @@ type Consumer struct {
   - Initializes `kafkago.Reader` with `TopicOrderCommands`, configured brokers, consumer group, `MinBytes: 1`, `MaxBytes: 10MB`, and `CommitInterval: 0` (manual offset commits).
   - Instantiates default `discoverPartitionsFunc` using `kafkago.Dial` and `conn.ReadPartitions`.
   - Instantiates default `commitMessagesFunc` creating a short-lived temporary reader with a 5-second timeout to commit offsets.
+  - Instantiates default `queryHWMFunc` (`ReadLastOffset`) and `queryLWMFunc` (`ReadFirstOffset`) via `kafkago.DialLeader`.
   - Automatically registers `c.commandReader` with the `tracker` if the tracker implements `RegisterCommitter`.
 
 #### `Start(ctx context.Context, cancel context.CancelFunc)`
@@ -228,15 +233,21 @@ type Consumer struct {
 - **Purpose**: Realigns the Kafka consumer group on the broker to the authoritative PostgreSQL checkpoints.
 - **Step-by-step Execution**:
   1. Dynamically discovers all partition IDs on topic `orders.commands`.
-  2. For each partition, queries `SELECT "offset" FROM kafka_checkpoints WHERE topic = $1 AND partition = $2`.
-  3. If a checkpoint exists, commits `savedOffset` to the broker via `commitMessagesFunc`.
-  4. Subsequent `Reader.FetchMessage` calls start consuming strictly at `savedOffset + 1`.
+  2. For each partition, queries `queryHWMFunc` and `queryLWMFunc` to determine partition bounds.
+  3. **Empty Partition Check**: If `HWM == 0`, no messages have ever been produced on this partition. Committing is safely skipped to avoid out-of-range broker errors.
+  4. Queries `SELECT "offset" FROM kafka_checkpoints WHERE topic = $1 AND partition = $2`.
+  5. **No Checkpoint Handling**: If no checkpoint exists (`checkpoint < 0`), commits `earliest - 1` (or skips if `earliest == 0`) so Kafka starts consuming from the very first available message.
+  6. **Existing Checkpoint**: If a checkpoint exists, commits `savedOffset` to the broker via `commitMessagesFunc`.
+  7. Subsequent `Reader.FetchMessage` calls start consuming strictly at `savedOffset + 1`.
 
 #### `Close() error`
 - **Purpose**: Gracefully shuts down and releases the underlying Kafka connection reader.
 
 #### `OverrideDiscoveryAndCommit(...)`
 - **Purpose**: Allows unit tests to override dynamic partition discovery and broker offset commit functions without network dependencies.
+
+#### `OverrideWatermarkQueries(...)`
+- **Purpose**: Allows unit tests to inject custom Low Watermark (LWM) and High Watermark (HWM) query hooks.
 
 #### `consume(ctx context.Context, reader *kafkago.Reader, handler func(msg kafkago.Message) (bool, error))`
 - **Purpose**: Primary message fetch and processing loop.
@@ -260,7 +271,7 @@ type Consumer struct {
   4. **Schema Version Check**: Asserts `env.EventVersion == 1`.
   5. **Routing Lookup**: Calls `route(env.MarketID)`. Rejects command if market queue is nil.
   6. **Payload Branching**:
-     - **`OrderCreated`**: Parses `OrderID` (UUID), `UserID` (UUID), `Price` (decimal), `Quantity` (decimal), `Side` (`BUY`/`SELL`), and `OrderType` (`LIMIT`/`MARKET`). Dispatches `market.InputEvent` of type `EventOrderCreated`.
+     - **`OrderCreated`**: Parses `OrderID` (UUID), `UserID` (UUID), `Price` (decimal), `Quantity` (decimal), `Side` (`BUY`/`SELL`), `OrderType` (`LIMIT`/`MARKET`), and `ClientOrderID`. Dispatches `market.InputEvent` of type `EventOrderCreated`.
      - **`OrderCancelRequested`**: Parses `OrderID` (UUID) and `UserID` (UUID). Dispatches `market.InputEvent` of type `EventOrderCancel`.
      - **Unknown Event Type**: Returns error.
 
@@ -286,6 +297,9 @@ type Consumer struct {
 | `TestHandleOrderCommand_MalformedJSON` | Asserts that corrupted JSON input returns an unmarshal error. |
 | `TestConsumer_SeekToPostgresCheckpoints` | Verifies that startup partition discovery reads PostgreSQL checkpoints and commits matching broker offsets. |
 | `TestConsumer_SeekToPostgresCheckpoints_Failure` | Asserts that if broker offset positioning fails during startup, the consumer triggers fail-stop cancellation immediately. |
+| `TestConsumer_MalformedCommand_TriggersApplicationFatalShutdown` | Verifies that receiving an unparseable or corrupted payload cancels the root application context for instant fail-stop safety. |
+| `TestConsumer_SeekToPostgresCheckpoints_NoCheckpoint_PositionsEarliest` | Verifies that partitions without a PostgreSQL checkpoint seek to `earliest - 1` to consume all historical messages from the beginning. |
+| `TestConsumer_SeekToPostgresCheckpoints_EmptyPartition_SkipsCommit` | Verifies that empty partitions where `HWM == 0` safely skip committing offsets on the broker. |
 
 ---
 

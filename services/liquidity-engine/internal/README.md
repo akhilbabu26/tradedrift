@@ -42,7 +42,7 @@ services/liquidity-engine/internal/
 
 | File | Why It Is Needed |
 | :--- | :--- |
-| [`constants.go`](./account/constants.go) | Defines the canonical UUID `00000000-0000-0000-0000-000000000001` and identifier `MM-001`. Eliminates identity mismatches across gRPC requests, Kafka payloads, and PostgreSQL queries. |
+| [`identity.go`](./account/identity.go) | Defines the canonical UUID `00000000-0000-0000-0000-000000000001` and identifier `MM-001`. Eliminates identity mismatches across gRPC requests, Kafka payloads, and PostgreSQL queries. |
 
 ---
 
@@ -98,11 +98,12 @@ services/liquidity-engine/internal/
 ---
 
 ### 📁 `meclient/`
-**Purpose:** Direct HTTP client for querying Matching Engine status.
+**Purpose:** Direct HTTP client for querying Matching Engine status and atomic order book snapshots.
 
 | File | Why It Is Needed |
 | :--- | :--- |
-| [`client.go`](./meclient/client.go) | Probes `GET /status` on the Matching Engine with a 2-second timeout. Decouples liveness detection from trade activity so dead engines are detected even during zero-trade periods. |
+| [`client.go`](./meclient/client.go) | Probes `GET /status` for liveness detection and queries `GET /markets/{id}/snapshot` to retrieve point-in-time resting MM orders, remaining quantities, and sequence counters. |
+| [`client_test.go`](./meclient/client_test.go) | Unit tests verifying status parsing, snapshot decoding, and sequence regression alerts. |
 
 ---
 
@@ -120,7 +121,8 @@ services/liquidity-engine/internal/
 
 | File | Why It Is Needed |
 | :--- | :--- |
-| [`tracker.go`](./order/tracker.go) | In-memory store of all MM orders. Manages the 5-state lifecycle (`PENDING → OS_REGISTERED → RESTING → CANCELLING → STALE`), generation counters (`G007`), and committed balance aggregations. |
+| [`order.go`](./order/order.go) | Defines order domain models: `Status` enum (`PENDING`, `OS_REGISTERED`, `RESTING`, `CANCELLING`, `STALE`), `LiveOrder`, `OSOrder`, and `ClientOrderID()` formatter. |
+| [`tracker.go`](./order/tracker.go) | In-memory store of all MM orders. Manages tracker entries, monotonic generation counters (`G007`, `SetMaxGeneration`), and committed balance aggregations. |
 | [`diff.go`](./order/diff.go) | Implements two-pass diffing. Compares the desired price ladder against the tracker's known set to output minimal `DiffCreate`, `DiffCancel`, and `DiffCorrect` actions. |
 | [`tracker_test.go`](./order/tracker_test.go) | Unit tests verifying tracker state transitions, generation increments, and deduplication. |
 | [`diff_test.go`](./order/diff_test.go) | Unit tests verifying diff generation across missing, existing, partially filled, and wrong-price orders. |
@@ -128,11 +130,13 @@ services/liquidity-engine/internal/
 ---
 
 ### 📁 `orderservice/`
-**Purpose:** Read-only gRPC client for the persistent Order Service.
+**Purpose:** gRPC client for the persistent Order Service.
 
 | File | Why It Is Needed |
 | :--- | :--- |
-| [`client.go`](./orderservice/client.go) | Provides `ListMMOrders` (startup recovery and periodic sync), `CreateMMOrder` (idempotent pre-registration before Kafka publish), and `GetOrderByClientID` (pending/cancelling verification). |
+| [`client.go`](./orderservice/client.go) | Provides `ListMMOrders` (startup discovery and periodic sync), `CreateMMOrder` (idempotent pre-registration), `CancelMMOrder` (ledger cancellation sync), `RecoverHighestGenerations` (monotonic restart recovery), and `GetOrderByClientID`. |
+| [`parse.go`](./orderservice/parse.go) | Helper routines for extracting market IDs, parsing generation suffixes from `client_order_id`, and converting proto status enums. |
+| [`parse_test.go`](./orderservice/parse_test.go) | Unit tests for client order ID and market ID parsing. |
 
 ---
 
@@ -147,14 +151,16 @@ services/liquidity-engine/internal/
 ---
 
 ### 📁 `reconciler/`
-**Purpose:** Executes reconciliation diffs and resolves stuck in-flight orders.
+**Purpose:** Executes reconciliation diffs, ME snapshot synchronization, and resolves stuck in-flight orders.
 
 | File | Why It Is Needed |
 | :--- | :--- |
-| [`reconciler.go`](./reconciler/reconciler.go) | Executes `Diff()` results. Runs the 3-step creation flow (`OS Register → SetPending → Kafka Publish`) and issues cancel commands. |
-| [`sync.go`](./reconciler/sync.go) | Synchronizes the tracker with Order Service database snapshots, resolving missing orders based on their local lifecycle status. |
-| [`timeouts.go`](./reconciler/timeouts.go) | Scans for stuck orders: verifies pending orders, promotes `OS_REGISTERED` to `RESTING` when ME is healthy, and retries/escalates `CANCELLING` orders to `STALE`. |
-| [`reconciler_test.go`](./reconciler/reconciler_test.go) | Unit tests verifying execution of create/cancel commands, timeout resolution, and error handling. |
+| [`reconciler.go`](./reconciler/reconciler.go) | Executes `ReconcileMarket`. Runs ME snapshot verification (`syncWithMESnapshot`), syncs remaining quantities, cleans up orphan orders, and applies 2-cycle hysteresis for missing orders. |
+| [`dispatch.go`](./reconciler/dispatch.go) | Dispatches Diff entries: handles 3-step creation flow (`applyCreate`), cancel flow (`applyCancel`), and queued corrections (`applyEntry`). |
+| [`sync.go`](./reconciler/sync.go) | Synchronizes the tracker with Order Service database snapshots and recovers highest historical generations (`RecoverHighestGenerations`). |
+| [`timeouts.go`](./reconciler/timeouts.go) | Scans for stuck orders: verifies pending orders, promotes orders to `RESTING` via `ConfirmRestingFromSnapshot`, and retries/escalates `CANCELLING` orders to `STALE`. |
+| [`reconciler_test.go`](./reconciler/reconciler_test.go) | Unit tests verifying execution of create/cancel commands, snapshot confirmations, timeout resolution, and hysteresis. |
+| [`reconciler_invariants_test.go`](./reconciler/reconciler_invariants_test.go) | Invariant tests verifying INV-MM-01 through INV-MM-08 (order identity, remaining quantity sync, orphan cancellation, and slot locking). |
 
 ---
 
@@ -189,8 +195,10 @@ services/liquidity-engine/internal/
      ┌───────────────┐   ┌───────┴┐  │ ┌───────────────┐   Matching Engine
      │ walletservice │   │ pricing│  │ │     order     │
      └───────────────┘   └────────┘  │ └───────────────┘
-                                     ▼
-                             ┌───────────────┐
-                             │ orderservice  │
-                             └───────────────┘
+                                     │
+                       ┌─────────────┴─────────────┐
+                       ▼                           ▼
+               ┌───────────────┐           ┌───────────────┐
+               │ orderservice  │           │   meclient    │
+               └───────────────┘           └───────────────┘
 ```

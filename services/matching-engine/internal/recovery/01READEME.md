@@ -29,13 +29,20 @@ In a scaled deployment, different matching engine nodes handle different trading
 - **The Problem**: Querying all topic partitions from Kafka would cause a node to replay partitions and markets owned by other nodes, wasting CPU and corrupting local state.
 - **The Solution**: `ReplayAll` inspects only the registered engines in `manager.All()` to compute the exact subset of assigned partitions (`partitionsMap[engine.Partition()] = true`).
 
-### 2.2 Pre-Flight High Watermark (HWM) Validation (Issue #3)
-Before fetching messages, `replayPartition` queries the Kafka broker for the partition's log-end offset (`conn.ReadLastOffset()`):
-- **Safety Invariant**: Asserts that the PostgreSQL checkpoint offset is strictly less than the broker log-end offset:
+### 2.2 Pre-Flight High Watermark (HWM) & Low Watermark (LWM) Validation (Issue #3)
+Before fetching messages, `replayPartition` queries the Kafka broker for the partition's log-end offset (`conn.ReadLastOffset()`) and earliest available offset (`conn.ReadFirstOffset()`):
+- **High Watermark Invariant**: Asserts that the PostgreSQL checkpoint offset is strictly less than the broker log-end offset:
   $$\text{checkpointOffset} < \text{logEndOffset}$$
-- If the checkpoint points to a non-existent or truncated future offset, recovery aborts immediately to prevent operating on corrupted state.
+- **Low Watermark Invariant**: Asserts that the checkpoint offset and the replay start offset are not behind the earliest offset in Kafka due to message retention expiry:
+  $$\text{checkpointOffset} \ge \text{earliestOffset} \quad \text{and} \quad \text{startOffset} \ge \text{earliestOffset}$$
+- If the checkpoint points to a non-existent future offset or if historical messages were purged, recovery aborts immediately to prevent operating on corrupted or incomplete state.
 
-### 2.3 Snapshot-Accelerated Replay Window Optimization
+### 2.3 Unprocessed Partition State Protection
+If a partition has no record in `kafka_checkpoints` (`checkpointOffset < 0`), before treating it as an empty partition:
+- Queries PostgreSQL to ensure `market_snapshots` has 0 rows and `market_sequences` has sequence 0 for all markets assigned to the partition.
+- If snapshots or sequences $> 0$ exist without a checkpoint, recovery aborts with a `FATAL` error refusing to auto-wipe durable state.
+
+### 2.4 Snapshot-Accelerated Replay Window Optimization
 Replaying historical logs from Kafka offset 0 on every restart would take minutes or hours as trade volume grows.
 - **The Solution**:
   1. Loads the latest valid snapshot for each market satisfying $\text{offset} \le \text{checkpoint}$.
@@ -43,23 +50,24 @@ Replaying historical logs from Kafka offset 0 on every restart would take minute
   3. Replays Kafka logs starting from $\text{startOffset} = \min(\text{snapshot.Offset}) + 1$.
   4. If any market on the partition lacks a snapshot, safely falls back to $\text{startOffset} = 0$.
 
-### 2.4 Kafka Partition Offset Continuity Verification (Issue #5 & #9)
+### 2.5 Kafka Partition Offset Continuity Verification (Issue #5 & #9)
 If a Kafka partition suffers data loss, silent message skips, or consumer offset jumps during replay:
 - `replayPartition` enforces `msg.Offset == expectedOffset` on every single message.
 - Any detected gap immediately aborts recovery with an error:
   `"partition offset continuity gap detected on partition X: expected Y, got Z"`.
 
-### 2.5 Deadlock-Free OutputQueue Draining (Issue #1 & v9.6)
+### 2.6 Deadlock-Free OutputQueue Draining (Issue #1 & v9.6)
 Each `MarketEngine.OutputQueue` has a buffered capacity of 1,000 items. During replay of large histories (e.g. 50,000 events), if output channels were not drained, the single-threaded Event Loop would block on `m.OutputQueue <- *res`, causing a fatal engine deadlock.
-- **The Solution**: `ReplayAll` launches concurrent drain goroutines for every engine's `OutputQueue` *before* replaying partition messages, continuously discarding intermediate recovery outputs until encountering the [`EventRecoveryBarrier`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/market/engine.go#L47).
+- **The Solution**: `ReplayAll` launches concurrent drain goroutines for every engine's `OutputQueue` *before* replaying partition messages, continuously discarding intermediate recovery outputs until encountering the [`EventRecoveryBarrier`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/market/engine.go#L48).
 
-### 2.6 Recovery Barrier & Consistency Verification
+### 2.7 Recovery Barrier, Consistency Verification & Partition Fail-Stop
 1. After replaying Kafka logs up to `checkpointOffset`, the replayer pushes an `EventRecoveryBarrier` into each engine's `InputQueue`.
 2. The drain goroutines wait for `res.BarrierReached == true` with `res.BarrierOffset == checkpoint`.
 3. Asserts that `engine.GetLastAppliedOffset() == marketLastSeenOffset[marketID]`.
 4. Asserts that `engine.GetSequence() == dbSequence` from PostgreSQL `market_sequences`.
-5. Aligns the Kafka broker consumer group offset to `checkpoint`.
+5. Commits and aligns the Kafka broker consumer group offset to `checkpoint`.
 6. Calls `engine.SetLive()` to enable live order processing.
+7. If any partition encounters an error, a deferred handler triggers `engine.TriggerFatalHalt()` across all engines to fail-stop the service safely.
 
 ---
 
@@ -175,22 +183,25 @@ Each `MarketEngine.OutputQueue` has a buffered capacity of 1,000 items. During r
 
 #### Functions in `replayer.go`
 - **`NewReplayer(...) *Replayer`**:
-  - Initializes the `Replayer` with default production function pointers for `discoverPartitionsFunc`, `newReaderFunc`, and `queryHWMFunc`.
+  - Initializes the `Replayer` with default production function pointers for `discoverPartitionsFunc`, `newReaderFunc`, `queryHWMFunc` (`ReadLastOffset`), and `queryLWMFunc` (`ReadFirstOffset`).
 - **`OverrideDiscoveryAndReader(...)`**:
   - Test helper allowing unit tests to inject custom partition discovery, reader factories, and HWM query functions.
+- **`OverrideLWM(...)`**:
+  - Test helper allowing unit tests to inject custom low watermark (LWM) queries.
 - **`ReplayAll(ctx context.Context, engineWg *sync.WaitGroup) error`**:
   - **The Main Orchestration Pipeline**:
-    1. Identifies assigned partitions across registered engines.
-    2. Spawns `engine.Run(ctx)` goroutines for all engines in `ModeRecovery`.
-    3. Loads PostgreSQL checkpoints for all assigned partitions.
-    4. Launches concurrent `OutputQueue` drain goroutines waiting for recovery barriers.
-    5. Loops through partitions and executes `replayPartition()`.
-    6. Injects `EventRecoveryBarrier` into each engine's `InputQueue`.
-    7. Waits for all drain goroutines to confirm barrier receipt.
-    8. Asserts `engine.GetLastAppliedOffset() == lastSeenOffset`.
-    9. Asserts `engine.GetSequence() == dbSequence`.
-    10. Transitions engines to `ModeLive` via `engine.SetLive()`.
-    11. Commits contiguous checkpoint offsets to Kafka consumer group on the broker.
+    1. Installs a deferred fail-stop hook: if `ReplayAll` returns an error, it iterates over all registered engines and calls `engine.TriggerFatalHalt()` to prevent running on inconsistent state.
+    2. Identifies assigned partitions across registered engines.
+    3. Spawns `engine.Run(ctx)` goroutines for all engines in `ModeRecovery`.
+    4. Loads PostgreSQL checkpoints for all assigned partitions.
+    5. Launches concurrent `OutputQueue` drain goroutines waiting for recovery barriers.
+    6. Loops through partitions and executes `replayPartition()`.
+    7. Injects `EventRecoveryBarrier` into each engine's `InputQueue`.
+    8. Waits for all drain goroutines to confirm barrier receipt.
+    9. Asserts `engine.GetLastAppliedOffset() == lastSeenOffset`.
+    10. Asserts `engine.GetSequence() == dbSequence`.
+    11. Transitions engines to `ModeLive` via `engine.SetLive()`.
+    12. Commits contiguous checkpoint offsets to Kafka consumer group on the broker (skipping partitions where checkpoint $< 0$).
 
 ---
 
@@ -200,15 +211,16 @@ Each `MarketEngine.OutputQueue` has a buffered capacity of 1,000 items. During r
 - **`replayPartition(...) error`**:
   - Replays a single partition stream:
     1. Resolves all engines mapped to this partition.
-    2. If `checkpointOffset < 0`, skips replay (empty/unprocessed partition).
-    3. Queries Kafka broker for `logEndOffset` and validates $\text{checkpointOffset} < \text{logEndOffset}$.
+    2. If `checkpointOffset < 0`, checks whether existing snapshots or non-zero sequences exist in PostgreSQL. If so, fail-stops with `FATAL`. If clean, sets `marketLastSeenOffset = -1` and skips replay.
+    3. Queries Kafka broker for `logEndOffset` (HWM) and `earliestOffset` (LWM). Asserts $\text{checkpointOffset} < \text{logEndOffset}$ and $\text{checkpointOffset} \ge \text{earliestOffset}$.
     4. Inspects snapshots for all markets on partition:
        - Fails if any snapshot offset $> \text{checkpointOffset}$.
        - Calls `engine.RestoreFromSnapshot` for valid snapshots.
        - Records `minSnapshotOffset`.
     5. Computes $\text{startOffset} = \min(\text{snapshot.Offset}) + 1$ (or $0$ if any market lacks a snapshot).
-    6. Creates `KafkaReader`, seeks to `startOffset`.
-    7. Loops and fetches messages:
+    6. Asserts $\text{startOffset} \ge \text{earliestOffset}$ to prevent silent skipped history due to Kafka retention expiry.
+    7. Creates `KafkaReader`, seeks to `startOffset`.
+    8. Loops and fetches messages:
        - **Continuity Invariant**: Asserts `msg.Offset == expectedOffset++`.
        - Calls `routeMessage(msg)`.
        - Stops when `msg.Offset >= checkpointOffset`.
@@ -250,3 +262,7 @@ Each `MarketEngine.OutputQueue` has a buffered capacity of 1,000 items. During r
 | `TestRecovery_CrashAfterTradePublish` | Verifies trade ID determinism: replaying identical matching inputs after a crash generates 100% identical Trade IDs (UUID v5). |
 | `TestRecovery_MultiMarketBarrier` | Verifies that multiple concurrent engines on the same partition all drain and synchronize barriers before going LIVE. |
 | `TestRecovery_OutputQueueBackpressure` | Verifies that replaying 1,500+ messages (exceeding channel buffer 1,000) does not deadlock due to active concurrent queue draining. |
+| `TestRecovery_CheckpointAheadOfHWM_FailsClosed` | Verifies that when a checkpoint is ahead of Kafka broker High Watermark (HWM), recovery halts immediately to prevent running on inconsistent state. |
+| `TestRecovery_StartOffsetBehindLWM_FailsClosed` | Verifies that when required replay start offset is behind Kafka broker Low Watermark (LWM), recovery fails closed due to expired message retention. |
+| `TestRecovery_PartitionFailureHaltsAllEngines` | Verifies that if any partition fails during replay, all engine loops receive `TriggerFatalHalt()` to fail-stop the entire node. |
+| `TestRecovery_MissingCheckpoint_WithExistingSnapshots_FailsClosed` | Verifies that a missing checkpoint in `kafka_checkpoints` when snapshots or non-zero sequences exist in PostgreSQL fails closed to protect durable state. |

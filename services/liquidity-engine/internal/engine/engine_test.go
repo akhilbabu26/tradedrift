@@ -86,7 +86,7 @@ func TestPendingTimeoutDoesNotAffectMELiveness(t *testing.T) {
 	meCl := meclient.New(ts.URL, logger)
 	metrics := &mockEngineMetrics{}
 
-	rec := reconciler.NewReconciler(tracker, nil, nil, cfg, logger, metrics)
+	rec := reconciler.NewReconciler(tracker, nil, nil, meCl, cfg, logger, metrics)
 	eng := NewEngine(cfg, tracker, inv, rec, nil, nil, nil, nil, meCl, metrics, logger)
 
 	levelID := "MM-BTC-USDT-BID-01"
@@ -149,7 +149,7 @@ func TestMEHealthIndependentOfTrades(t *testing.T) {
 	meCl := meclient.New(ts.URL, logger)
 	metrics := &mockEngineMetrics{}
 
-	rec := reconciler.NewReconciler(tracker, nil, nil, cfg, logger, metrics)
+	rec := reconciler.NewReconciler(tracker, nil, nil, meCl, cfg, logger, metrics)
 	eng := NewEngine(cfg, tracker, inv, rec, nil, nil, nil, nil, meCl, metrics, logger)
 
 	// Probe #1 fails: consecutiveMETimeouts = 1, marketPaused = FALSE (sub-threshold)
@@ -268,7 +268,7 @@ func TestEngine_ConcurrentHTTPReads_NoDataRace(t *testing.T) {
 	meCl := meclient.New(ts.URL, logger)
 	metrics := &mockEngineMetrics{}
 
-	rec := reconciler.NewReconciler(tracker, nil, nil, cfg, logger, metrics)
+	rec := reconciler.NewReconciler(tracker, nil, nil, meCl, cfg, logger, metrics)
 	eng := NewEngine(cfg, tracker, inv, rec, nil, nil, nil, nil, meCl, metrics, logger)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

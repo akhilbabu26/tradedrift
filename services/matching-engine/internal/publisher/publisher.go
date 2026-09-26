@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/redis/go-redis/v9"
 	kafkago "github.com/segmentio/kafka-go"
@@ -18,7 +19,10 @@ import (
 	"tradedrift/services/matching-engine/internal/orderbook"
 )
 
-const TopicTradeExecuted = "trades.executed"
+const (
+	TopicTradeExecuted   = "trades.executed"
+	TopicOrdersCancelled = "orders.cancelled.v1"
+)
 
 type dbWriter interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
@@ -44,36 +48,9 @@ func (r *redisClientAdapter) Set(ctx context.Context, key string, value []byte, 
 	return r.client.Set(ctx, key, value, expiration).Err()
 }
 
-type tradeExecutedMessage struct {
-	TradeID      string `json:"trade_id"`
-	MarketID     string `json:"market_id"`
-	Sequence     uint64 `json:"sequence"`
-	MakerOrderID string `json:"maker_order_id"`
-	TakerOrderID string `json:"taker_order_id"`
-	BuyOrderID   string `json:"buy_order_id"`
-	SellOrderID  string `json:"sell_order_id"`
-	BuyerUserID  string `json:"buyer_user_id"`
-	SellerUserID string `json:"seller_user_id"`
-	Price        string `json:"price"`
-	Quantity     string `json:"quantity"`
-	ExecutedAt   string `json:"executed_at"`
-}
-
-type depthSnapshotMessage struct {
-	MarketID   string       `json:"market_id"`
-	Sequence   uint64       `json:"sequence"`
-	Bids       []depthLevel `json:"bids"`
-	Asks       []depthLevel `json:"asks"`
-	SnapshotAt string       `json:"snapshot_at"`
-}
-
-type depthLevel struct {
-	Price    string `json:"price"`
-	Quantity string `json:"quantity"`
-}
-
 type Publisher struct {
 	writer          kafkaWriter
+	cancelWriter    kafkaWriter
 	redis           redisWriter
 	coord           checkpointCoordinator
 	db              dbWriter
@@ -104,6 +81,13 @@ func NewPublisher(brokers []string, rdb *redis.Client, coord checkpointCoordinat
 			Async:                  false,
 			AllowAutoTopicCreation: true,
 		},
+		cancelWriter: &kafkago.Writer{
+			Addr:                   kafkago.TCP(brokers...),
+			Balancer:               &kafkago.LeastBytes{},
+			RequiredAcks:           kafkago.RequireOne,
+			Async:                  false,
+			AllowAutoTopicCreation: true,
+		},
 	}
 	if db != nil {
 		go p.startRetentionJob(retCtx)
@@ -111,53 +95,16 @@ func NewPublisher(brokers []string, rdb *redis.Client, coord checkpointCoordinat
 	return p
 }
 
-func (p *Publisher) startRetentionJob(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Hour)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			if err := p.runRetention(ctx); err != nil {
-				log.Printf("[publisher] snapshot retention job failed: %v", err)
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-func (p *Publisher) runRetention(ctx context.Context) error {
-	const query = `
-		WITH ranked AS (
-			SELECT market_id, sequence,
-			       ROW_NUMBER() OVER (PARTITION BY market_id ORDER BY sequence DESC) as rn
-			FROM market_snapshots
-		),
-		anchors AS (
-			SELECT DISTINCT ON (ms.market_id) ms.market_id, ms.sequence
-			FROM market_snapshots ms
-			JOIN kafka_checkpoints kc ON kc.partition = ms.partition AND kc.topic = 'orders.commands'
-			WHERE ms.offset <= kc.offset
-			ORDER BY ms.market_id, ms.offset DESC
-		)
-		DELETE FROM market_snapshots ms
-		WHERE NOT EXISTS (
-			SELECT 1 FROM ranked r
-			WHERE r.market_id = ms.market_id AND r.sequence = ms.sequence AND r.rn <= 3
-		)
-		AND NOT EXISTS (
-			SELECT 1 FROM anchors a
-			WHERE a.market_id = ms.market_id AND a.sequence = ms.sequence
-		)`
-	_, err := p.db.Exec(ctx, query)
-	return err
-}
-
 func (p *Publisher) Run(ctx context.Context, engine *market.MarketEngine) {
 	retryTicker := time.NewTicker(500 * time.Millisecond)
 	defer retryTicker.Stop()
 
 	for {
+		if engine.IsFatalHalt() || atomic.LoadInt32(&p.drainFailed) != 0 {
+			log.Printf("[publisher] fatal halt: stopping publisher loop immediately for market=%s", engine.MarketID)
+			return
+		}
+
 		select {
 		case result, ok := <-engine.OutputQueue:
 			if !ok {
@@ -183,6 +130,10 @@ func (p *Publisher) Run(ctx context.Context, engine *market.MarketEngine) {
 		case <-retryTicker.C:
 			p.flushPendingDepthRetries(ctx, engine.MarketID)
 		case <-ctx.Done():
+			if engine.IsFatalHalt() || atomic.LoadInt32(&p.drainFailed) != 0 {
+				log.Printf("[publisher] fatal halt: skipping drain for market=%s", engine.MarketID)
+				return
+			}
 			drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			for {
@@ -241,9 +192,24 @@ func (p *Publisher) process(ctx context.Context, result orderbook.MatchResult) e
 				f.BuyOrderID.String()[:8], f.SellOrderID.String()[:8],
 			)
 		}
-	} else {
+	} else if result.CancelResult == nil {
 		log.Printf("[book]  📋 RESTED market=%s  offset=%d",
 			result.DepthSnapshot.MarketID, result.SourcePosition.Offset,
+		)
+	}
+
+	// Step 1b: Publish OrderCancelOutcome if CancelResult is present.
+	// CancelResult is non-nil for both REMOVED_FROM_BOOK and ALREADY_ABSENT —
+	// the Order Service always receives an authoritative outcome.
+	if result.CancelResult != nil {
+		if err := p.publishCancel(ctx, result.CancelResult); err != nil {
+			return fmt.Errorf("publish cancel: %w", err)
+		}
+		log.Printf("[cancel] market=%s order=%s status=%s reason=%s",
+			result.CancelResult.MarketID,
+			result.CancelResult.OrderID.String()[:8],
+			string(result.CancelResult.CancelStatus),
+			result.CancelResult.Reason,
 		)
 	}
 
@@ -344,14 +310,65 @@ func (p *Publisher) pushDepth(ctx context.Context, snap orderbook.DepthSnapshot)
 	return p.redis.Set(ctx, "depth:"+snap.MarketID, b, 0)
 }
 
+func (p *Publisher) publishCancel(ctx context.Context, cancel *orderbook.CancelledOrder) error {
+	if cancel.CancelStatus != orderbook.CancelStatusRemovedFromBook &&
+		cancel.CancelStatus != orderbook.CancelStatusAlreadyAbsent {
+		// Safety guard: non-user-cancel paths (ioc_expired, invalid_order_parameters)
+		// do not set CancelStatus. Publish them with the legacy single-event approach
+		// using REMOVED_FROM_BOOK semantics so the consumer can release funds.
+		// These orders were never CANCELLING in the DB, so MarkOrderCancelled is used.
+		cancel.CancelStatus = orderbook.CancelStatusRemovedFromBook
+	}
+
+	eventID := uuid.NewSHA1(
+		uuid.NameSpaceDNS,
+		[]byte(fmt.Sprintf("cancel:%s:%d", cancel.OrderID, cancel.SourceOffset)),
+	).String()
+
+	payload := orderCancelOutcomeMessage{
+		EventType: "OrderCancelOutcome",
+		EventID:   eventID,
+		OrderID:   cancel.OrderID.String(),
+		UserID:    cancel.UserID.String(),
+		MarketID:  cancel.MarketID,
+		Status:    string(cancel.CancelStatus),
+		Reason:    cancel.Reason,
+		Timestamp: cancel.CancelledAt.UTC().Format(time.RFC3339Nano),
+	}
+
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal cancel %s: %w", cancel.OrderID, err)
+	}
+
+	w := p.cancelWriter
+	if w == nil {
+		w = p.writer
+	}
+
+	return w.WriteMessages(ctx, kafkago.Message{
+		Topic: TopicOrdersCancelled,
+		Key:   []byte(cancel.MarketID),
+		Value: b,
+	})
+}
+
 func (p *Publisher) Close() error {
 	if p.retentionCancel != nil {
 		p.retentionCancel()
 	}
+	var firstErr error
 	if wc, ok := p.writer.(interface{ Close() error }); ok {
-		return wc.Close()
+		firstErr = wc.Close()
 	}
-	return nil
+	if p.cancelWriter != nil && p.cancelWriter != p.writer {
+		if cc, ok := p.cancelWriter.(interface{ Close() error }); ok {
+			if err := cc.Close(); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 type TestablePublisher struct {
@@ -361,14 +378,19 @@ type TestablePublisher struct {
 func NewTestable(w kafkaWriter, r redisWriter, coord checkpointCoordinator) *TestablePublisher {
 	return &TestablePublisher{
 		p: &Publisher{
-			writer:      w,
-			redis:       r,
-			coord:       coord,
-			latestDepth: make(map[string]orderbook.DepthSnapshot),
+			writer:       w,
+			cancelWriter: w,
+			redis:        r,
+			coord:        coord,
+			latestDepth:  make(map[string]orderbook.DepthSnapshot),
 		},
 	}
 }
 
 func (tp *TestablePublisher) Process(ctx context.Context, result orderbook.MatchResult) error {
 	return tp.p.process(ctx, result)
+}
+
+func (tp *TestablePublisher) Run(ctx context.Context, engine *market.MarketEngine) {
+	tp.p.Run(ctx, engine)
 }

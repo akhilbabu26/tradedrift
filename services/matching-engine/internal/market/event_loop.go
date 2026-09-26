@@ -29,6 +29,12 @@ func (m *MarketEngine) Run(ctx context.Context) {
 	}
 
 	for {
+		if m.isFatalHalt.Load() {
+			log.Printf("[market] fatal halt: stopping event loop immediately for market=%s", m.MarketID)
+			close(m.OutputQueue)
+			return
+		}
+
 		select {
 		case event, ok := <-m.InputQueue:
 			if !ok {
@@ -62,9 +68,7 @@ func (m *MarketEngine) Run(ctx context.Context) {
 				if m.processedEvents[event.EventID] {
 					log.Printf("[market] FATAL: duplicate logical event_id detected (market=%s event_id=%s offset=%d) — fail-closed triggered",
 						m.MarketID, event.EventID, event.Offset)
-					if m.HaltCallback != nil {
-						m.HaltCallback()
-					}
+					m.TriggerFatalHalt()
 					return
 				}
 			}
@@ -72,9 +76,7 @@ func (m *MarketEngine) Run(ctx context.Context) {
 			res, err := m.applyEvent(event)
 			if err != nil {
 				log.Printf("[market] FATAL mutation failure: %v", err)
-				if m.HaltCallback != nil {
-					m.HaltCallback()
-				}
+				m.TriggerFatalHalt()
 				return
 			}
 
@@ -103,9 +105,21 @@ func (m *MarketEngine) Run(ctx context.Context) {
 				log.Printf("[market] snapshot generated for market=%s seq=%d offset=%d", m.MarketID, snap.Sequence, snap.Offset)
 			}
 
+			if m.mode == ModeLive {
+				m.PublishAtomicSnapshot()
+			}
+
 			m.OutputQueue <- *res
 
 		case <-ctx.Done():
+			if m.isFatalHalt.Load() {
+				// FATAL halt path: do NOT drain. Stop immediately.
+				// Book state beyond the failure boundary must not be mutated.
+				// The checkpoint will be replayed from the last durable position on restart.
+				log.Printf("[market] fatal halt: skipping drain for market=%s", m.MarketID)
+				close(m.OutputQueue)
+				return
+			}
 			for {
 				select {
 				case event, ok := <-m.InputQueue:
@@ -122,18 +136,14 @@ func (m *MarketEngine) Run(ctx context.Context) {
 					if event.EventID != uuid.Nil && m.processedEvents[event.EventID] {
 						log.Printf("[market] FATAL: duplicate logical event_id detected during shutdown (market=%s event_id=%s offset=%d)",
 							m.MarketID, event.EventID, event.Offset)
-						if m.HaltCallback != nil {
-							m.HaltCallback()
-						}
+						m.TriggerFatalHalt()
 						return
 					}
 
 					res, err := m.applyEvent(event)
 					if err != nil {
 						log.Printf("[market] FATAL mutation failure during shutdown: %v", err)
-						if m.HaltCallback != nil {
-							m.HaltCallback()
-						}
+						m.TriggerFatalHalt()
 						return
 					}
 
@@ -182,20 +192,25 @@ func (m *MarketEngine) applyEvent(event InputEvent) (*orderbook.MatchResult, err
 	case EventOrderCreated:
 		p := event.OrderCreated
 		node := &orderbook.OrderNode{
-			OrderID:      p.OrderID,
-			UserID:       p.UserID,
-			MarketID:     p.MarketID,
-			Side:         p.Side,
-			OrderType:    p.OrderType,
-			Price:        p.Price,
-			OriginalQty:  p.Quantity,
-			RemainingQty: p.Quantity,
-			Timestamp:    time.Now(),
+			OrderID:       p.OrderID,
+			UserID:        p.UserID,
+			MarketID:      p.MarketID,
+			Side:          p.Side,
+			OrderType:     p.OrderType,
+			Price:         p.Price,
+			OriginalQty:   p.Quantity,
+			RemainingQty:  p.Quantity,
+			Timestamp:     time.Now(),
+			ClientOrderID: p.ClientOrderID,
 		}
 
 		if m.book.OrderIndex[node.OrderID] != nil {
-			log.Printf("[market] duplicate order_id detected (market=%s order_id=%s) — skipping without state mutation",
-				m.MarketID, node.OrderID)
+			dupType := "live-duplicate"
+			if m.mode == ModeRecovery {
+				dupType = "replay-duplicate"
+			}
+			log.Printf("[market] [%s] duplicate order_id detected (market=%s order_id=%s) — skipping without state mutation",
+				dupType, m.MarketID, node.OrderID)
 			return &orderbook.MatchResult{
 				DepthSnapshot: matcher.GetDepth(m.book, 20),
 				SourcePosition: orderbook.KafkaPosition{
@@ -215,6 +230,7 @@ func (m *MarketEngine) applyEvent(event InputEvent) (*orderbook.MatchResult, err
 					RemainingQuantity: node.OriginalQty,
 					Reason:            "invalid_order_parameters",
 					CancelledAt:       time.Now(),
+					SourceOffset:      event.Offset,
 				},
 				DepthSnapshot: matcher.GetDepth(m.book, 20),
 				SourcePosition: orderbook.KafkaPosition{
@@ -237,6 +253,7 @@ func (m *MarketEngine) applyEvent(event InputEvent) (*orderbook.MatchResult, err
 				RemainingQuantity: node.RemainingQty,
 				Reason:            "ioc_expired",
 				CancelledAt:       time.Now(),
+				SourceOffset:      event.Offset,
 			}
 		}
 
@@ -253,23 +270,36 @@ func (m *MarketEngine) applyEvent(event InputEvent) (*orderbook.MatchResult, err
 
 	case EventOrderCancel:
 		p := event.OrderCancel
-		node := matcher.Cancel(m.book, p.OrderID)
+		outcome := matcher.Cancel(m.book, p.OrderID)
 
-		var cancel *orderbook.CancelledOrder
-		if node != nil {
+		if outcome.Status == orderbook.CancelStatusRemovedFromBook {
+			// Order found and removed. Increment sequence to maintain monotonic book state.
 			m.book.Sequence++
-			cancel = &orderbook.CancelledOrder{
-				OrderID:           node.OrderID,
-				UserID:            node.UserID,
-				MarketID:          node.MarketID,
-				RemainingQuantity: node.RemainingQty,
-				Reason:            "user_requested",
-				CancelledAt:       time.Now(),
-			}
+			log.Printf("[cancel] REMOVED_FROM_BOOK market=%s order=%s remaining=%s",
+				p.MarketID, outcome.OrderID, outcome.RemainingQuantity.String())
+		} else {
+			// ALREADY_ABSENT: matcher.Cancel() cannot recover identity
+			// because the order is no longer in the book.
+			outcome.UserID = p.UserID
+			outcome.MarketID = p.MarketID
+
+			log.Printf("[cancel] ALREADY_ABSENT market=%s order=%s user=%s — forwarding for DB resolution",
+				p.MarketID, outcome.OrderID, p.UserID)
 		}
 
+		// CancelResult is ALWAYS non-nil. The publisher emits OrderCancelOutcome
+		// for both statuses so Order Service always receives an authoritative answer.
 		return &orderbook.MatchResult{
-			CancelResult:  cancel,
+			CancelResult: &orderbook.CancelledOrder{
+				OrderID:           outcome.OrderID,
+				UserID:            outcome.UserID,
+				MarketID:          outcome.MarketID,
+				RemainingQuantity: outcome.RemainingQuantity,
+				Reason:            "user_requested",
+				CancelStatus:      outcome.Status,
+				CancelledAt:       time.Now(),
+				SourceOffset:      event.Offset,
+			},
 			DepthSnapshot: matcher.GetDepth(m.book, 20),
 			SourcePosition: orderbook.KafkaPosition{
 				Topic:     event.Topic,

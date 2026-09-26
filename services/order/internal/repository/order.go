@@ -69,5 +69,9 @@ type OrderRepository interface {
 	ListOrders(ctx context.Context, userID, marketID, cursor string, side OrderSide, status OrderStatus, fromTime, toTime *time.Time, limit int32) ([]*Order, error)
 
 	// ApplyTradeFill idempotently updates buy and sell orders with fill quantity and status.
-	ApplyTradeFill(ctx context.Context, tradeID, buyOrderID, sellOrderID, fillQty string) error
+	// Returns a slice of order IDs that transitioned to FILLED status as a result of this fill.
+	ApplyTradeFill(ctx context.Context, tradeID, buyOrderID, sellOrderID, fillQty string) ([]string, error)
+
+	// MarkOrderCancelled updates the order status to CANCELLED.
+	MarkOrderCancelled(ctx context.Context, orderID string) (*Order, error)
 }

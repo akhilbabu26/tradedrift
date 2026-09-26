@@ -97,11 +97,13 @@ func main() {
 	// 5. Background Workers Lifecycle Context with WaitGroup Sync
 	workerCtx, cancelWorkers := context.WithCancel(context.Background())
 	outboxPublisher := publisher.NewOutboxPublisher(orderRepo, kafkaProducer, appLogger, 200*time.Millisecond)
-	tradeConsumer := orderconsumer.NewConsumer(cfg.KafkaBrokers, cfg.KafkaGroupID, cfg.TopicTradesSettled, orderRepo, appLogger)
+	tradeConsumer := orderconsumer.NewConsumer(cfg.KafkaBrokers, cfg.KafkaGroupID, cfg.TopicTradesSettled, orderRepo, walletClient, appLogger)
 	defer tradeConsumer.Close()
+	cancelConsumer := orderconsumer.NewCancelConsumer(cfg.KafkaBrokers, cfg.KafkaGroupID+"-cancel", cfg.TopicOrdersCancelled, orderRepo, walletClient, appLogger)
+	defer cancelConsumer.Close()
 
 	var wg sync.WaitGroup
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		outboxPublisher.Start(workerCtx)
@@ -109,6 +111,10 @@ func main() {
 	go func() {
 		defer wg.Done()
 		tradeConsumer.Start(workerCtx)
+	}()
+	go func() {
+		defer wg.Done()
+		cancelConsumer.Start(workerCtx)
 	}()
 
 	// 6. Start gRPC Server

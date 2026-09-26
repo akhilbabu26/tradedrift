@@ -9,7 +9,9 @@ import (
 
 // Fill represents one individual trade produced during matching.
 // A single incoming order can produce multiple Fills in one sweep (multi-level).
-// Each Fill gets its own TradeID (UUIDv7 generated in-memory at match time).
+// Each Fill gets its own TradeID — a deterministic UUIDv5 derived from
+// eventID + makerID + takerID + fillIndex. The same inputs always produce
+// the same TradeID, making fills safe to replay without duplicate detection.
 type Fill struct {
 	TradeID      uuid.UUID
 	MarketID     string          // market this trade occurred in (e.g. "BTC-USDT")
@@ -24,11 +26,39 @@ type Fill struct {
 	Quantity     decimal.Decimal // min(incoming.RemainingQty, best.RemainingQty)
 }
 
+// CancelStatus is the explicit outcome of a cancel attempt in the Matching Engine.
+// Every user-requested cancel produces exactly one CancelStatus — never an implicit nil.
+// Zero value is intentionally invalid; always set via a named constant.
+type CancelStatus string
+
+const (
+	// CancelStatusRemovedFromBook — order was found in the book and removed.
+	// Authoritative. Order Service MUST transition CANCELLING → CANCELLED and release funds.
+	// This is the ONLY value that authorizes a wallet fund release downstream.
+	CancelStatusRemovedFromBook CancelStatus = "REMOVED_FROM_BOOK"
+
+	// CancelStatusAlreadyAbsent — order was not found in the book.
+	// The ME cannot determine why: filled, previously cancelled, recovery
+	// inconsistency, or ordering gap. The Order Service MUST consult its own DB
+	// to decide the correct action. Funds MUST NOT be released on this value alone.
+	CancelStatusAlreadyAbsent CancelStatus = "ALREADY_ABSENT"
+)
+
+// CancelOutcome is the typed return value of matcher.Cancel — never nil.
+// Zero value is invalid — always construct with a named CancelStatus.
+type CancelOutcome struct {
+	Status            CancelStatus
+	OrderID           uuid.UUID
+	UserID            uuid.UUID       // populated when Status == CancelStatusRemovedFromBook
+	MarketID          string          // populated when Status == CancelStatusRemovedFromBook
+	RemainingQuantity decimal.Decimal // populated when Status == CancelStatusRemovedFromBook
+}
+
 // CancelledOrder is produced when an order is removed from the book.
 // reason values:
 //
-//	"user_requested"          — explicit user cancel
-//	"ioc_expired"             — MARKET order unfilled remainder
+//	"user_requested"           — explicit user cancel via cancel pipeline
+//	"ioc_expired"              — MARKET order unfilled remainder
 //	"invalid_order_parameters" — tick/lot size violation (defensive)
 type CancelledOrder struct {
 	OrderID           uuid.UUID
@@ -36,7 +66,13 @@ type CancelledOrder struct {
 	MarketID          string
 	RemainingQuantity decimal.Decimal
 	Reason            string
-	CancelledAt       time.Time
+	// CancelStatus carries the explicit ME outcome for user-requested cancels.
+	// Always set when Reason == "user_requested".
+	// Zero value for "ioc_expired" and "invalid_order_parameters" — those use
+	// the non-conditional MarkOrderCancelled DB path, not the cancel pipeline.
+	CancelStatus CancelStatus
+	CancelledAt  time.Time
+	SourceOffset int64 // Kafka offset that initiated this cancellation
 }
 
 // DepthLevel is one price level in a depth snapshot.
@@ -68,7 +104,7 @@ type MatchResult struct {
 	Fills          []Fill
 	CancelResult   *CancelledOrder
 	DepthSnapshot  DepthSnapshot
-	SourcePosition KafkaPosition // ← replaces SourceOffset int64
+	SourcePosition KafkaPosition
 	Snapshot       *BookSnapshot // optional serialized order book state
 	BarrierReached bool          // true when EventRecoveryBarrier is processed
 	BarrierOffset  int64         // offset of the checkpoint watermark triggering the barrier

@@ -267,7 +267,9 @@ func TestConsumer_SeekToPostgresCheckpoints(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	consumer.Start(ctx, func() {})
+	if err := consumer.Start(ctx, func() {}); err != nil {
+		t.Fatalf("unexpected error from consumer.Start: %v", err)
+	}
 
 	if len(committedOffset) != 2 {
 		t.Fatalf("expected 2 offset commits, got %d", len(committedOffset))
@@ -315,10 +317,150 @@ func TestConsumer_SeekToPostgresCheckpoints_Failure(t *testing.T) {
 		cancel()
 	}
 
-	consumer.Start(ctx, cancelTracker)
+	err := consumer.Start(ctx, cancelTracker)
+	if err == nil {
+		t.Fatal("expected error from consumer.Start on positioning failure, got nil")
+	}
 
 	if !cancelCalled {
 		t.Fatal("expected fail-stop cancellation on dynamic offset committed positioning failure")
 	}
 }
+
+func TestConsumer_MalformedCommand_TriggersApplicationFatalShutdown(t *testing.T) {
+	manager := market.NewMarketManager()
+	tracker := &mockOffsetTracker{}
+	consumer := kafkapkg.NewConsumer(kafkapkg.Config{
+		Brokers: []string{"localhost:9092"},
+		GroupID: "test-group",
+	}, manager, tracker)
+
+	var cancelConsumerCalled bool
+	var fatalShutdownCalled bool
+
+	consumerCtx, cancelConsumer := context.WithCancel(context.Background())
+	defer cancelConsumer()
+
+	cancelTracker := func() {
+		cancelConsumerCalled = true
+		cancelConsumer()
+	}
+
+	consumer.FatalCallback = func() {
+		fatalShutdownCalled = true
+	}
+
+	// Start consumer without DB (no seek attempt)
+	if err := consumer.Start(consumerCtx, cancelTracker); err != nil {
+		t.Fatalf("unexpected Start error: %v", err)
+	}
+
+	// Malformed message payload (invalid JSON)
+	msg := kafka.Message{
+		Topic:     kafkapkg.TopicOrderCommands,
+		Partition: 0,
+		Offset:    500,
+		Value:     []byte("{invalid-json-payload"),
+	}
+
+	_, err := consumer.ProcessMessageForTest(msg, func(m kafka.Message) (bool, error) {
+		return consumer.HandleOrderCommand(m)
+	})
+	if err == nil {
+		t.Fatal("expected error on malformed message, got nil")
+	}
+
+	if !cancelConsumerCalled {
+		t.Fatal("expected consumer intake context cancellation to be triggered")
+	}
+	if !fatalShutdownCalled {
+		t.Fatal("expected application-wide fatal shutdown callback to be triggered")
+	}
+}
+
+func TestConsumer_SeekToPostgresCheckpoints_NoCheckpoint_PositionsEarliest(t *testing.T) {
+	// DB has no checkpoint for partition 0, but partition has messages (LWM=10, HWM=50)
+	db := &mockConsumerDB{
+		checkpoints: map[string]int64{},
+	}
+
+	manager := market.NewMarketManager()
+	tracker := &mockOffsetTracker{}
+	consumer := kafkapkg.NewConsumer(kafkapkg.Config{
+		Brokers: []string{"localhost:9092"},
+		GroupID: "test-group",
+		DB:      db,
+	}, manager, tracker)
+
+	var committedPartition []int
+	var committedOffset []int64
+	consumer.OverrideDiscoveryAndCommit(
+		func(topic string) ([]int, error) {
+			return []int{0}, nil
+		},
+		func(ctx context.Context, brokers []string, topic string, groupID string, partition int, offset int64) error {
+			committedPartition = append(committedPartition, partition)
+			committedOffset = append(committedOffset, offset)
+			return nil
+		},
+	)
+	consumer.OverrideQueryWatermarks(func(ctx context.Context, topic string, partition int) (int64, int64, error) {
+		return 10, 50, nil // LWM=10, HWM=50
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := consumer.Start(ctx, func() {}); err != nil {
+		t.Fatalf("unexpected Start error: %v", err)
+	}
+
+	if len(committedOffset) != 1 {
+		t.Fatalf("expected 1 offset commit, got %d", len(committedOffset))
+	}
+	if committedPartition[0] != 0 || committedOffset[0] != 9 {
+		t.Errorf("expected partition 0 to seek to LWM-1 (9), got partition %d at %d", committedPartition[0], committedOffset[0])
+	}
+}
+
+func TestConsumer_SeekToPostgresCheckpoints_EmptyPartition_SkipsCommit(t *testing.T) {
+	// DB has no checkpoint and partition is empty (HWM=0)
+	db := &mockConsumerDB{
+		checkpoints: map[string]int64{},
+	}
+
+	manager := market.NewMarketManager()
+	tracker := &mockOffsetTracker{}
+	consumer := kafkapkg.NewConsumer(kafkapkg.Config{
+		Brokers: []string{"localhost:9092"},
+		GroupID: "test-group",
+		DB:      db,
+	}, manager, tracker)
+
+	var committedOffset []int64
+	consumer.OverrideDiscoveryAndCommit(
+		func(topic string) ([]int, error) {
+			return []int{0}, nil
+		},
+		func(ctx context.Context, brokers []string, topic string, groupID string, partition int, offset int64) error {
+			committedOffset = append(committedOffset, offset)
+			return nil
+		},
+	)
+	consumer.OverrideQueryWatermarks(func(ctx context.Context, topic string, partition int) (int64, int64, error) {
+		return 0, 0, nil // LWM=0, HWM=0 (empty)
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := consumer.Start(ctx, func() {}); err != nil {
+		t.Fatalf("unexpected Start error: %v", err)
+	}
+
+	if len(committedOffset) != 0 {
+		t.Fatalf("expected 0 offset commits for empty partition, got %d", len(committedOffset))
+	}
+}
+
 

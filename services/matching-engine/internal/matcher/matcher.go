@@ -54,13 +54,32 @@ func Insert(book *orderbook.OrderBook, node *orderbook.OrderNode) {
 }
 
 // Cancel removes an order from the book by its ID.
-// Returns the cancelled node so the caller can build an OrderCancelled payload.
-// Returns nil if the order is not in the book (already filled, or unknown ID).
-// Cancel is idempotent — calling it twice is safe.
-func Cancel(book *orderbook.OrderBook, orderID uuid.UUID) *orderbook.OrderNode {
+// Returns an explicit CancelOutcome — never nil.
+//
+// SERIALIZATION INVARIANT:
+// The ME processes events from a single Kafka partition per market in strict
+// offset order inside a single goroutine. Cancellation outcomes are deterministic
+// within the same market partition:
+//
+//	offset N = OrderCancelRequested, offset N+1 = Trade
+//		→ Cancel wins. Order removed before trade arrives.
+//		→ CancelStatus = REMOVED_FROM_BOOK.
+//
+//	offset N = Trade, offset N+1 = OrderCancelRequested
+//		→ Trade wins. Order consumed. Cancel finds nothing.
+//		→ CancelStatus = ALREADY_ABSENT.
+//
+// This invariant holds per-market-partition only. There is no ordering
+// relationship between events on different partitions (different markets).
+func Cancel(book *orderbook.OrderBook, orderID uuid.UUID) orderbook.CancelOutcome {
 	node := book.OrderIndex[orderID]
 	if node == nil {
-		return nil // not in book — silent no-op
+		// Not in book. Cannot determine why without a post-removal tracking ring.
+		// Order Service must consult its authoritative DB to decide next action.
+		return orderbook.CancelOutcome{
+			Status:  orderbook.CancelStatusAlreadyAbsent,
+			OrderID: orderID,
+		}
 	}
 
 	side := getSide(book, node.Side)
@@ -78,7 +97,13 @@ func Cancel(book *orderbook.OrderBook, orderID uuid.UUID) *orderbook.OrderNode {
 		side.SortedPrices = removeAt(side.SortedPrices, idx)
 	}
 
-	return node
+	return orderbook.CancelOutcome{
+		Status:            orderbook.CancelStatusRemovedFromBook,
+		OrderID:           node.OrderID,
+		UserID:            node.UserID,
+		MarketID:          node.MarketID,
+		RemainingQuantity: node.RemainingQty,
+	}
 }
 
 // ExecuteBest returns the front (oldest) order from the best price level.

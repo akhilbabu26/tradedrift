@@ -2,15 +2,12 @@ package kafka
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	kafkago "github.com/segmentio/kafka-go"
-	"github.com/shopspring/decimal"
 
 	"tradedrift/services/matching-engine/internal/market"
 	"tradedrift/services/matching-engine/internal/orderbook"
@@ -20,32 +17,6 @@ import (
 const (
 	TopicOrderCommands = "orders.commands"
 )
-
-// CommandEnvelope represents the standard envelope for all messages on orders.commands.
-type CommandEnvelope struct {
-	EventID      string          `json:"event_id"`
-	EventType    string          `json:"event_type"`
-	EventVersion int             `json:"event_version"`
-	MarketID     string          `json:"market_id"`
-	OccurredAt   time.Time       `json:"occurred_at"`
-	Payload      json.RawMessage `json:"payload"`
-}
-
-type orderCreatedPayload struct {
-	OrderID   string `json:"order_id"`
-	UserID    string `json:"user_id"`
-	Side      string `json:"side"`
-	OrderType string `json:"order_type"`
-	Price     string `json:"price"`
-	Quantity  string `json:"quantity"`
-}
-
-type orderCancelPayload struct {
-	OrderID string `json:"order_id"`
-	UserID  string `json:"user_id"`
-}
-
-type routeFunc func(marketID string) chan market.InputEvent
 
 type dbQueryer interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
@@ -66,11 +37,13 @@ type Consumer struct {
 	manager                *market.MarketManager
 	tracker                offsetTracker
 	cancelCtx              context.CancelFunc // context cancel func to fail closed gracefully (Issue #10)
+	FatalCallback          func()             // fail-stop callback on unrecoverable command corruption
 	brokers                []string
 	groupID                string
 	db                     dbQueryer
 	discoverPartitionsFunc func(topic string) ([]int, error)
 	commitMessagesFunc     func(ctx context.Context, brokers []string, topic string, groupID string, partition int, offset int64) error
+	queryWatermarksFunc    func(ctx context.Context, topic string, partition int) (lwm, hwm int64, err error)
 }
 
 type Config struct {
@@ -127,6 +100,22 @@ func NewConsumer(cfg Config, manager *market.MarketManager, tracker offsetTracke
 			Offset:    offset,
 		})
 	}
+	c.queryWatermarksFunc = func(ctx context.Context, topic string, partition int) (int64, int64, error) {
+		conn, err := kafkago.DialLeader(ctx, "tcp", c.brokers[0], topic, partition)
+		if err != nil {
+			return 0, 0, err
+		}
+		defer conn.Close()
+		lwm, err := conn.ReadFirstOffset()
+		if err != nil {
+			return 0, 0, err
+		}
+		hwm, err := conn.ReadLastOffset()
+		if err != nil {
+			return 0, 0, err
+		}
+		return lwm, hwm, nil
+	}
 
 	if committerReg, ok := tracker.(interface {
 		RegisterCommitter(topic string, committer kafkaCommitter)
@@ -138,14 +127,15 @@ func NewConsumer(cfg Config, manager *market.MarketManager, tracker offsetTracke
 }
 
 // Start launches the consumer read loop.
-func (c *Consumer) Start(ctx context.Context, cancel context.CancelFunc) {
+func (c *Consumer) Start(ctx context.Context, cancel context.CancelFunc) error {
 	c.cancelCtx = cancel
 	if err := c.seekToPostgresCheckpoints(ctx); err != nil {
 		log.Printf("[kafka] FATAL positioning error: %v", err)
 		cancel()
-		return
+		return fmt.Errorf("position consumer to postgres checkpoint: %w", err)
 	}
 	go c.consume(ctx, c.commandReader, c.handleOrderCommand)
+	return nil
 }
 
 func (c *Consumer) seekToPostgresCheckpoints(ctx context.Context) error {
@@ -167,7 +157,31 @@ func (c *Consumer) seekToPostgresCheckpoints(ctx context.Context) error {
 			TopicOrderCommands, pID,
 		).Scan(&savedOffset)
 		if err != nil {
-			continue // No checkpoint, start offset defaults to earliest/latest depending on config
+			// No PostgreSQL checkpoint for this partition.
+			// Clean state bootstrap: establish authoritative baseline on Kafka broker.
+			if c.queryWatermarksFunc != nil {
+				lwm, hwm, wErr := c.queryWatermarksFunc(ctx, TopicOrderCommands, pID)
+				if wErr != nil {
+					log.Printf("[kafka] warning: failed to query watermarks for partition %d: %v — relying on consumer group default", pID, wErr)
+					continue
+				}
+				if hwm == 0 {
+					// Empty partition — no messages exist.
+					log.Printf("[kafka] partition %d is empty (HWM=0), skipping offset commit", pID)
+					continue
+				}
+				// Partition contains messages, but Postgres has no checkpoint.
+				// Explicitly position the Kafka group to start consuming from the earliest offset (LWM).
+				targetOffset := lwm - 1
+				if targetOffset < -1 {
+					targetOffset = -1
+				}
+				if err := c.commitMessagesFunc(ctx, c.brokers, TopicOrderCommands, c.groupID, pID, targetOffset); err != nil {
+					return fmt.Errorf("reset Kafka group offset for partition %d to earliest (%d): %w", pID, targetOffset, err)
+				}
+				log.Printf("[kafka] partition %d has no PostgreSQL checkpoint — positioned broker group offset to %d (LIVE will consume from %d)", pID, targetOffset, targetOffset+1)
+			}
+			continue
 		}
 
 		err = c.commitMessagesFunc(ctx, c.brokers, TopicOrderCommands, c.groupID, pID, savedOffset)
@@ -192,6 +206,11 @@ func (c *Consumer) OverrideDiscoveryAndCommit(
 	c.commitMessagesFunc = commit
 }
 
+// OverrideQueryWatermarks overrides watermark queries for unit tests.
+func (c *Consumer) OverrideQueryWatermarks(fn func(ctx context.Context, topic string, partition int) (int64, int64, error)) {
+	c.queryWatermarksFunc = fn
+}
+
 func (c *Consumer) consume(
 	ctx context.Context,
 	reader *kafkago.Reader,
@@ -208,29 +227,43 @@ func (c *Consumer) consume(
 			continue
 		}
 
-		pos := orderbook.KafkaPosition{
-			Topic:     msg.Topic,
-			Partition: msg.Partition,
-			Offset:    msg.Offset,
-		}
-
-		if c.tracker != nil {
-			c.tracker.Track(pos)
-		}
-
-		_, err = handler(msg)
-		if err != nil {
-			// INVARIANT (Issue #10): Fail-Closed policy on live malformed command.
-			// Trigger graceful shutdown immediately to prevent divergence or CPU spin loops.
-			log.Printf("[kafka] FATAL: malformed command (topic=%s partition=%d offset=%d): %v — initiating fail-closed graceful shutdown",
-				msg.Topic, msg.Partition, msg.Offset, err)
-			if c.cancelCtx != nil {
-				c.cancelCtx()
-			}
+		if _, err := c.processMessage(msg, handler); err != nil {
 			return
 		}
-
 	}
+}
+
+func (c *Consumer) processMessage(msg kafkago.Message, handler func(msg kafkago.Message) (bool, error)) (bool, error) {
+	pos := orderbook.KafkaPosition{
+		Topic:     msg.Topic,
+		Partition: msg.Partition,
+		Offset:    msg.Offset,
+	}
+
+	if c.tracker != nil {
+		c.tracker.Track(pos)
+	}
+
+	routed, err := handler(msg)
+	if err != nil {
+		// INVARIANT (Issue #10): Fail-Closed policy on live malformed command.
+		// Trigger application-wide fail-stop shutdown immediately to prevent divergence or CPU spin loops.
+		log.Printf("[kafka] FATAL: malformed command (topic=%s partition=%d offset=%d): %v — initiating fail-closed shutdown",
+			msg.Topic, msg.Partition, msg.Offset, err)
+		if c.cancelCtx != nil {
+			c.cancelCtx()
+		}
+		if c.FatalCallback != nil {
+			c.FatalCallback()
+		}
+		return false, err
+	}
+	return routed, nil
+}
+
+// ProcessMessageForTest exposes single-message processing logic for unit testing fatal shutdown wiring.
+func (c *Consumer) ProcessMessageForTest(msg kafkago.Message, handler func(msg kafkago.Message) (bool, error)) (bool, error) {
+	return c.processMessage(msg, handler)
 }
 
 func (c *Consumer) handleOrderCommand(msg kafkago.Message) (bool, error) {
@@ -243,150 +276,7 @@ func (c *Consumer) handleOrderCommand(msg kafkago.Message) (bool, error) {
 	})
 }
 
-func HandleOrderCommand(msg kafkago.Message, route routeFunc) (bool, error) {
-	var env CommandEnvelope
-	if err := json.Unmarshal(msg.Value, &env); err != nil {
-		return false, fmt.Errorf("unmarshal CommandEnvelope: %w", err)
-	}
-
-	// 1. Partition key invariant:
-	if len(msg.Key) == 0 {
-		return false, fmt.Errorf("missing partition key: all orders.commands messages must carry key=market_id")
-	}
-	if string(msg.Key) != env.MarketID {
-		return false, fmt.Errorf("partition key mismatch: key=%q envelope.market_id=%q", string(msg.Key), env.MarketID)
-	}
-
-	// 2. Event ID validation
-	eventUUID, err := uuid.Parse(env.EventID)
-	if err != nil || env.EventID == "" {
-		return false, fmt.Errorf("invalid event_id %q: %w", env.EventID, err)
-	}
-
-	// 3. Schema version check
-	if env.EventVersion != 1 {
-		return false, fmt.Errorf("unsupported event_version %d (expected 1)", env.EventVersion)
-	}
-
-	queue := route(env.MarketID)
-	if queue == nil {
-		return false, fmt.Errorf("unknown market_id %q — command rejected", env.MarketID)
-	}
-
-	switch env.EventType {
-	case "OrderCreated":
-		var p orderCreatedPayload
-		if err := json.Unmarshal(env.Payload, &p); err != nil {
-			return false, fmt.Errorf("unmarshal OrderCreated payload: %w", err)
-		}
-
-		orderID, err := uuid.Parse(p.OrderID)
-		if err != nil {
-			return false, fmt.Errorf("invalid order_id %q: %w", p.OrderID, err)
-		}
-		userID, err := uuid.Parse(p.UserID)
-		if err != nil {
-			return false, fmt.Errorf("invalid user_id %q: %w", p.UserID, err)
-		}
-		price, err := decimal.NewFromString(p.Price)
-		if err != nil {
-			return false, fmt.Errorf("invalid price %q: %w", p.Price, err)
-		}
-		quantity, err := decimal.NewFromString(p.Quantity)
-		if err != nil {
-			return false, fmt.Errorf("invalid quantity %q: %w", p.Quantity, err)
-		}
-		side, err := parseSide(p.Side)
-		if err != nil {
-			return false, err
-		}
-		orderType, err := parseOrderType(p.OrderType)
-		if err != nil {
-			return false, err
-		}
-
-		queue <- market.InputEvent{
-			EventID: eventUUID,
-			Type:    market.EventOrderCreated,
-			OrderCreated: &market.OrderCreatedPayload{
-				OrderID:   orderID,
-				UserID:    userID,
-				MarketID:  env.MarketID,
-				Side:      side,
-				OrderType: orderType,
-				Price:     price,
-				Quantity:  quantity,
-			},
-			Topic:     msg.Topic,
-			Partition: msg.Partition,
-			Offset:    msg.Offset,
-		}
-		return true, nil
-
-	case "OrderCancelRequested":
-		var p orderCancelPayload
-		if err := json.Unmarshal(env.Payload, &p); err != nil {
-			return false, fmt.Errorf("unmarshal OrderCancelRequested payload: %w", err)
-		}
-
-		orderID, err := uuid.Parse(p.OrderID)
-		if err != nil {
-			return false, fmt.Errorf("invalid order_id %q: %w", p.OrderID, err)
-		}
-		userID, err := uuid.Parse(p.UserID)
-		if err != nil {
-			return false, fmt.Errorf("invalid user_id %q: %w", p.UserID, err)
-		}
-
-		queue <- market.InputEvent{
-			EventID: eventUUID,
-			Type:    market.EventOrderCancel,
-			OrderCancel: &market.OrderCancelPayload{
-				OrderID:  orderID,
-				UserID:   userID,
-				MarketID: env.MarketID,
-			},
-			Topic:     msg.Topic,
-			Partition: msg.Partition,
-			Offset:    msg.Offset,
-		}
-		return true, nil
-
-	default:
-		return false, fmt.Errorf("unknown event_type %q", env.EventType)
-	}
-}
-
-func parseSide(s string) (orderbook.SideType, error) {
-	switch s {
-	case "BUY":
-		return orderbook.SideBuy, nil
-	case "SELL":
-		return orderbook.SideSell, nil
-	default:
-		return "", fmt.Errorf("unknown side %q", s)
-	}
-}
-
-func parseOrderType(s string) (orderbook.OrderType, error) {
-	switch s {
-	case "LIMIT":
-		return orderbook.OrderTypeLimit, nil
-	case "MARKET":
-		return orderbook.OrderTypeMarket, nil
-	default:
-		return "", fmt.Errorf("unknown order_type %q", s)
-	}
-}
-
-type TestableConsumer struct {
-	route routeFunc
-}
-
-func NewTestableConsumer(route routeFunc) *TestableConsumer {
-	return &TestableConsumer{route: route}
-}
-
-func (c *TestableConsumer) HandleOrderCommand(msg kafkago.Message) (bool, error) {
-	return HandleOrderCommand(msg, c.route)
+// HandleOrderCommand routes and validates an incoming order command message.
+func (c *Consumer) HandleOrderCommand(msg kafkago.Message) (bool, error) {
+	return c.handleOrderCommand(msg)
 }

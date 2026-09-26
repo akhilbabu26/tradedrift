@@ -24,7 +24,8 @@ export interface Order {
 
 export interface ListOrdersParams {
   market_id?: string
-  status?: string
+  // NOTE: `status` query param is NOT supported by the backend — passing it returns 422.
+  // Filter by status client-side after fetching all orders.
   limit?: number
 }
 

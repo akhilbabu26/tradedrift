@@ -57,6 +57,7 @@ type Config struct {
 	CancelRetryLimit          int
 	MELivenessThreshold       int
 	TargetedReconcileDebounce time.Duration
+	OrphanCancelCooldown      time.Duration
 
 	// Health
 	HealthPort  string
@@ -147,6 +148,10 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("TARGETED_RECONCILE_DEBOUNCE: %w", err)
 	}
+	orphanCooldown, err := platformconfig.GetEnvAsDuration("LE_ORPHAN_CANCEL_COOLDOWN", 5*time.Second)
+	if err != nil {
+		return Config{}, fmt.Errorf("LE_ORPHAN_CANCEL_COOLDOWN: %w", err)
+	}
 
 	cfg := Config{
 		KafkaBrokers:   brokers,
@@ -164,6 +169,7 @@ func Load() (Config, error) {
 		CancelRetryLimit:          cancelRetry,
 		MELivenessThreshold:       meThreshold,
 		TargetedReconcileDebounce: debounce,
+		OrphanCancelCooldown:      orphanCooldown,
 
 		HealthPort:   platformconfig.GetEnv("HEALTH_PORT", "8080"),
 		MetricsPort:  platformconfig.GetEnv("METRICS_PORT", "9090"),

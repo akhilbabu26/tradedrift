@@ -1,6 +1,7 @@
 package market
 
 import (
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -49,13 +50,14 @@ const (
 
 // OrderCreatedPayload is the deserialized form of the Kafka OrderCreated event.
 type OrderCreatedPayload struct {
-	OrderID   uuid.UUID
-	UserID    uuid.UUID
-	MarketID  string
-	Side      orderbook.SideType
-	OrderType orderbook.OrderType
-	Price     decimal.Decimal // zero for MARKET orders
-	Quantity  decimal.Decimal
+	OrderID       uuid.UUID
+	UserID        uuid.UUID
+	MarketID      string
+	Side          orderbook.SideType
+	OrderType     orderbook.OrderType
+	Price         decimal.Decimal // zero for MARKET orders
+	Quantity      decimal.Decimal
+	ClientOrderID string
 }
 
 // OrderCancelPayload is the deserialized form of the Kafka OrderCancelRequested event.
@@ -63,32 +65,6 @@ type OrderCancelPayload struct {
 	OrderID  uuid.UUID
 	UserID   uuid.UUID
 	MarketID string
-}
-
-// eventRingBuffer is a fixed-capacity FIFO ring buffer of UUIDs for O(1) deduplication eviction.
-// When the buffer is full, the oldest entry is evicted in O(1) without any slice shifts.
-const ringBufferCapacity = 50_000
-
-type eventRingBuffer struct {
-	slots [ringBufferCapacity]uuid.UUID
-	head  int // next write position (oldest entry)
-	count int // number of live entries
-}
-
-// add inserts an event ID, returning the evicted UUID (or uuid.Nil if not yet full).
-func (r *eventRingBuffer) add(id uuid.UUID) (evicted uuid.UUID) {
-	if r.count == ringBufferCapacity {
-		// Buffer full — evict the oldest entry at head.
-		evicted = r.slots[r.head]
-		r.slots[r.head] = id
-		r.head = (r.head + 1) % ringBufferCapacity
-	} else {
-		// Buffer not yet full — write at (head + count) % capacity.
-		pos := (r.head + r.count) % ringBufferCapacity
-		r.slots[pos] = id
-		r.count++
-	}
-	return evicted
 }
 
 // MarketEngine owns one OrderBook for one market.
@@ -108,12 +84,30 @@ type MarketEngine struct {
 	processedEvents   map[uuid.UUID]bool          // in-memory fast deduplication cache
 	eventRing         eventRingBuffer             // O-1 eviction ring
 	lastAppliedOffset int64                       // tracks in-memory application position (Issue #1)
+	isFatalHalt       atomic.Bool                 // set on fatal failure; prevents drain on ctx.Done()
 	HaltCallback      func()                      // callback to fail-stop process on corruption/failure
+	snapshot          atomic.Pointer[MarketSnapshot] // lock-free coherent point-in-time state
+}
+
+// TriggerFatalHalt marks this engine as fatally halted and fires HaltCallback.
+// The event loop will skip draining on ctx.Done() when this is set.
+func (m *MarketEngine) TriggerFatalHalt() {
+	if m.isFatalHalt.Swap(true) {
+		return // already fatally halted
+	}
+	if m.HaltCallback != nil {
+		m.HaltCallback()
+	}
+}
+
+// IsFatalHalt returns whether this engine has undergone a fatal halt.
+func (m *MarketEngine) IsFatalHalt() bool {
+	return m.isFatalHalt.Load()
 }
 
 // NewMarketEngine creates a ready-to-run MarketEngine in RECOVERY mode.
 func NewMarketEngine(config MarketConfig) *MarketEngine {
-	return &MarketEngine{
+	m := &MarketEngine{
 		MarketID:          config.MarketID,
 		InputQueue:        make(chan InputEvent, 1000),
 		OutputQueue:       make(chan orderbook.MatchResult, 1000),
@@ -123,12 +117,21 @@ func NewMarketEngine(config MarketConfig) *MarketEngine {
 		processedEvents:   make(map[uuid.UUID]bool, ringBufferCapacity),
 		lastAppliedOffset: -1, // default to no offset applied
 	}
+	m.snapshot.Store(&MarketSnapshot{
+		MarketID:   config.MarketID,
+		State:      "RECOVERING",
+		Sequence:   0,
+		SnapshotAt: time.Now().UTC(),
+		Orders:     nil,
+	})
+	return m
 }
 
 // SetLive transitions the engine from RECOVERY to LIVE mode.
 // Called by the recovery package after replay reaches the checkpoint offset.
 func (m *MarketEngine) SetLive() {
 	m.mode = ModeLive
+	m.PublishAtomicSnapshot()
 }
 
 // GetDepth returns the current Top-N depth snapshot from the in-memory book.

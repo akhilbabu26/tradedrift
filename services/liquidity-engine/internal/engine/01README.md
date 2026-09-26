@@ -102,7 +102,7 @@ Market-level pauses (ME liveness failures) cause `DEGRADED` but do NOT stop the 
 | `scheduleTargetedReconcile()` | Debounces rapid fills (200ms window) into a single `evTargetedReconcile` event to prevent reconcile storms. |
 | `handleWalletRefresh(ctx)` | Fetches MM-001 balances. Transitions to DEGRADED on stale balances; recovers to RUNNING when fresh. |
 | `refreshWalletBalances(ctx)` | Calls `walletSvc.GetMMBalances` with a 5s timeout. Caller logs and continues on error. |
-| `handlePendingCheck(ctx)` | Single ME probe per tick → evaluates consecutive timeout counter per market → pauses markets at threshold. Calls `CheckPendingTimeouts` and `CheckOSRegisteredTimeouts`. |
+| `handlePendingCheck(ctx)` | Single ME probe per tick → evaluates consecutive timeout counter per market → pauses markets at threshold. Calls `CheckPendingTimeouts` and `CheckOSRegisteredTimeouts` (which queries ME snapshot to confirm RESTING orders). |
 | `handleCancellingCheck(ctx)` | Re-queries OS for CANCELLING orders. Retries cancel or escalates to STALE. |
 
 ---
@@ -111,9 +111,9 @@ Market-level pauses (ME liveness failures) cause `DEGRADED` but do NOT stop the 
 
 | Function | Problem It Solves |
 |:---|:---|
-| `runReconcileAll(ctx)` | Full reconcile across all 3 markets. Skips paused/stale markets. Computes skew per market → calls `ReconcileMarket` → updates engine state. |
+| `runReconcileAll(ctx)` | Full reconcile across all 3 markets. Skips paused/stale markets. Computes skew per market → calls `ReconcileMarket` (verifying ME snapshot first) → updates engine state. |
 | `runReconcileMarket(ctx, marketID)` | Targeted single-market reconcile triggered after a fill. Same safety gates as full reconcile. |
-| `syncAllMarkets(ctx)` | Queries Order Service for all active MM orders and updates the tracker. Called at startup and on `evResyncTick`. |
+| `syncAllMarkets(ctx)` | Queries Order Service for all active MM orders and recovers highest historical generations (INV-MM-07). Updates the tracker. Called at startup and on `evResyncTick`. |
 
 ---
 

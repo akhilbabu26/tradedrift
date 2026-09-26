@@ -1,7 +1,10 @@
 package market_test
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -139,10 +142,14 @@ func TestSequence_ComprehensiveLifecycle(t *testing.T) {
 	}
 
 	res4 := <-engine.OutputQueue
-	if res4.CancelResult != nil {
-		t.Fatal("Test 4: expected nil CancelResult for non-existent order")
+	// Cancel on non-existent order returns ALREADY_ABSENT (never nil)
+	if res4.CancelResult == nil {
+		t.Fatal("Test 4: expected non-nil CancelResult with ALREADY_ABSENT for non-existent order")
 	}
-	// Critical rule: no-op cancel must NOT increment sequence
+	if res4.CancelResult.CancelStatus != orderbook.CancelStatusAlreadyAbsent {
+		t.Fatalf("Test 4: expected ALREADY_ABSENT, got %q", res4.CancelResult.CancelStatus)
+	}
+	// Critical rule: ALREADY_ABSENT cancel must NOT increment sequence
 	if res4.DepthSnapshot.Sequence != 2 {
 		t.Fatalf("Test 4: non-existent cancel must not advance sequence: expected 2, got %d", res4.DepthSnapshot.Sequence)
 	}
@@ -457,8 +464,12 @@ func TestOrdersCommands_CreateMatchThenCancel(t *testing.T) {
 		Offset: 102,
 	}
 	resCancel := <-engine.OutputQueue
-	if resCancel.CancelResult != nil {
-		t.Fatal("expected nil CancelResult for already filled order")
+	// Cancel on already-filled order returns ALREADY_ABSENT (never nil)
+	if resCancel.CancelResult == nil {
+		t.Fatal("expected non-nil CancelResult with ALREADY_ABSENT for already filled order")
+	}
+	if resCancel.CancelResult.CancelStatus != orderbook.CancelStatusAlreadyAbsent {
+		t.Fatalf("expected ALREADY_ABSENT for filled order cancel, got %q", resCancel.CancelResult.CancelStatus)
 	}
 	// Sequence must remain 2
 	if resCancel.DepthSnapshot.Sequence != 2 {
@@ -642,3 +653,219 @@ func TestOrdersCommands_SameOrderDifferentEventID(t *testing.T) {
 		t.Fatalf("expected Sequence=2, got %d", res2.DepthSnapshot.Sequence)
 	}
 }
+
+func TestOrdersCommands_FatalHaltSkipsDrain(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	engine := newTestEngine("BTC-USDT")
+	haltCalled := false
+	engine.HaltCallback = func() {
+		haltCalled = true
+	}
+
+	// Push 3 events before starting engine
+	for i := 0; i < 3; i++ {
+		engine.InputQueue <- market.InputEvent{
+			EventID: uuid.New(),
+			Type:    market.EventOrderCreated,
+			OrderCreated: &market.OrderCreatedPayload{
+				OrderID:   uuid.New(),
+				UserID:    uuid.New(),
+				MarketID:  "BTC-USDT",
+				Side:      orderbook.SideBuy,
+				OrderType: orderbook.OrderTypeLimit,
+				Price:     decimal.RequireFromString("50000.00"),
+				Quantity:  decimal.RequireFromString("1.000"),
+			},
+			Topic:  "orders.commands",
+			Offset: int64(100 + i),
+		}
+	}
+
+	// Trigger fatal halt and cancel context
+	engine.TriggerFatalHalt()
+	if !haltCalled {
+		t.Fatal("expected HaltCallback to be called by TriggerFatalHalt")
+	}
+	cancel()
+
+	// Run engine in goroutine
+	done := make(chan struct{})
+	go func() {
+		engine.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for engine.Run to exit")
+	}
+
+	// Assert OutputQueue receives 0 events and is closed
+	count := 0
+	for range engine.OutputQueue {
+		count++
+	}
+	if count != 0 {
+		t.Fatalf("expected 0 events in OutputQueue after fatal halt, got %d", count)
+	}
+	if engine.GetSequence() != 0 {
+		t.Fatalf("expected engine sequence to remain 0, got %d", engine.GetSequence())
+	}
+}
+
+func TestOrdersCommands_GracefulShutdownDrains(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	engine := newTestEngine("BTC-USDT")
+
+	// Push 3 events before starting engine
+	for i := 0; i < 3; i++ {
+		engine.InputQueue <- market.InputEvent{
+			EventID: uuid.New(),
+			Type:    market.EventOrderCreated,
+			OrderCreated: &market.OrderCreatedPayload{
+				OrderID:   uuid.New(),
+				UserID:    uuid.New(),
+				MarketID:  "BTC-USDT",
+				Side:      orderbook.SideBuy,
+				OrderType: orderbook.OrderTypeLimit,
+				Price:     decimal.RequireFromString("50000.00"),
+				Quantity:  decimal.RequireFromString("1.000"),
+			},
+			Topic:  "orders.commands",
+			Offset: int64(100 + i),
+		}
+	}
+
+	// Cancel context directly for graceful shutdown (NO fatal halt)
+	cancel()
+
+	// Run engine in goroutine
+	done := make(chan struct{})
+	go func() {
+		engine.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for engine.Run to exit")
+	}
+
+	// Assert OutputQueue receives all 3 drained events + 1 final shutdown snapshot
+	var results []orderbook.MatchResult
+	for res := range engine.OutputQueue {
+		results = append(results, res)
+	}
+	if len(results) != 4 {
+		t.Fatalf("expected 4 results in OutputQueue (3 events + 1 shutdown snapshot), got %d", len(results))
+	}
+	if engine.GetSequence() != 3 {
+		t.Fatalf("expected engine sequence to be 3 after drain, got %d", engine.GetSequence())
+	}
+}
+
+func TestCancel_AlreadyAbsent_PreservesIdentity(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	engine := newTestEngine("SOL-USDT")
+	go engine.Run(ctx)
+
+	absentOrderID := uuid.New()
+	userID := uuid.New()
+	marketID := "SOL-USDT"
+
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCancel,
+		OrderCancel: &market.OrderCancelPayload{
+			OrderID:  absentOrderID,
+			UserID:   userID,
+			MarketID: marketID,
+		},
+		Topic:  "orders.commands",
+		Offset: 42,
+	}
+
+	res := <-engine.OutputQueue
+	if res.CancelResult == nil {
+		t.Fatal("expected non-nil CancelResult")
+	}
+	if res.CancelResult.CancelStatus != orderbook.CancelStatusAlreadyAbsent {
+		t.Fatalf("expected CancelStatusAlreadyAbsent, got %v", res.CancelResult.CancelStatus)
+	}
+	if res.CancelResult.OrderID != absentOrderID {
+		t.Fatalf("expected OrderID %s, got %s", absentOrderID, res.CancelResult.OrderID)
+	}
+	if res.CancelResult.UserID != userID {
+		t.Fatalf("expected UserID %s, got %s", userID, res.CancelResult.UserID)
+	}
+	if res.CancelResult.MarketID != marketID {
+		t.Fatalf("expected MarketID %s, got %s", marketID, res.CancelResult.MarketID)
+	}
+}
+
+func TestSnapshot_DeterministicSerialization(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	engine := newTestEngine("SOL-USDT")
+	go engine.Run(ctx)
+
+	// Insert 3 MM orders out of order
+	levels := []struct {
+		coid  string
+		price string
+	}{
+		{"MM-SOL-USDT-BID-05-G001", "140.00"},
+		{"MM-SOL-USDT-ASK-01-G002", "150.00"},
+		{"MM-SOL-USDT-BID-01-G003", "145.00"},
+	}
+
+	for i, l := range levels {
+		engine.InputQueue <- market.InputEvent{
+			Type: market.EventOrderCreated,
+			OrderCreated: &market.OrderCreatedPayload{
+				OrderID:       uuid.New(),
+				UserID:        market.MMUserID,
+				MarketID:      "SOL-USDT",
+				Side:          orderbook.SideBuy,
+				OrderType:     orderbook.OrderTypeLimit,
+				Price:         decimal.RequireFromString(l.price),
+				Quantity:      decimal.RequireFromString("1.000"),
+				ClientOrderID: l.coid,
+			},
+			Topic:  "orders.commands",
+			Offset: int64(i + 1),
+		}
+		<-engine.OutputQueue
+	}
+
+	engine.PublishAtomicSnapshot()
+	snap1 := engine.GetSnapshot()
+	bytes1, err := json.Marshal(snap1.Orders)
+	if err != nil {
+		t.Fatalf("failed to marshal snap1.Orders: %v", err)
+	}
+	hash1 := sha256.Sum256(bytes1)
+
+	engine.PublishAtomicSnapshot()
+	snap2 := engine.GetSnapshot()
+	bytes2, err := json.Marshal(snap2.Orders)
+	if err != nil {
+		t.Fatalf("failed to marshal snap2.Orders: %v", err)
+	}
+	hash2 := sha256.Sum256(bytes2)
+
+	if !bytes.Equal(bytes1, bytes2) {
+		t.Fatalf("expected identical serialized bytes across snapshots, got:\n%s\nvs\n%s", string(bytes1), string(bytes2))
+	}
+	if hash1 != hash2 {
+		t.Fatalf("expected identical SHA256 checksums across snapshots, got %x vs %x", hash1, hash2)
+	}
+}
+
+

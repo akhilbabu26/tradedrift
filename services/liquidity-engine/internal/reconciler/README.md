@@ -14,10 +14,11 @@ Diff() tells us *what* needs to change. The reconciler answers *how* to make tha
 
 ## How It Solves It
 
-The reconciler is split into three files:
-- **`reconciler.go`**: Runs the reconcile cycle and applies Diff entries.
-- **`sync.go`**: Pulls authoritative state from the Order Service.
-- **`timeouts.go`**: Handles stuck PENDING, OS_REGISTERED, and CANCELLING orders.
+The reconciler is split into four files:
+- **`reconciler.go`**: Runs the reconcile cycle, executes ME snapshot verification, and manages missing order hysteresis.
+- **`dispatch.go`**: Applies Diff entries (`applyEntry`, `applyCreate`, `applyCancel`) to the tracker and Kafka/Order Service.
+- **`sync.go`**: Pulls authoritative state from the Order Service and recovers highest historical generations.
+- **`timeouts.go`**: Handles stuck PENDING, OS_REGISTERED, and CANCELLING orders, and snapshot-based RESTING confirmations.
 
 ---
 
@@ -29,21 +30,32 @@ engine.runReconcileAll()
          ▼
   reconciler.ReconcileMarket(ctx, marketID, bidCount, askCount)
          │
+         ├── meClient.FetchSnapshot(ctx, marketID)
+         │     │
+         │     ├── ME state != "LIVE"? → Pause cycle, skip diff/apply
+         │     │
+         │     └── syncWithMESnapshot(ctx, marketID, snap, mc)
+         │           ├── Confirm matched orders as RESTING & sync RemainingQty (INV-MM-08)
+         │           ├── Cancel orphan orders in ME (stale gen / untracked) (INV-MM-05)
+         │           └── Missing order check with 10s grace period & 2-cycle hysteresis:
+         │                 missing >= 2 → handleMissingRestingOrder() (lock slot as CANCELLING)
+         │
          ├── pricing.GenerateLadder(mc, bidCount, askCount) → desired []PriceLevel
          │
          ├── order.Diff(desired, tracker, marketID, cfg) → []DiffEntry
          │
          └── for each DiffEntry:
                │
-               ├─ DiffCreate ──→ applyCreate()
+               ├─ DiffCreate ──→ applyCreate() [in dispatch.go]
                │                  1. orderSvc.CreateMMOrder() → get orderID
-               │                  2. tracker.SetPending()
+               │                  2. tracker.SetPending() + record inFlightSince
                │                  3. producer.PublishCreate() → Kafka
                │                  4. tracker.SetKafkaPublished(true)
                │
-               ├─ DiffCancel ──→ applyCancel()
-               │                  1. producer.PublishCancel() → Kafka
-               │                  2. tracker.SetCancelling()
+               ├─ DiffCancel ──→ applyCancel() [in dispatch.go]
+               │                  1. orderSvc.CancelMMOrder() (optional ledger sync)
+               │                  2. producer.PublishCancel() → Kafka
+               │                  3. tracker.SetCancelling() + record inFlightSince
                │
                └─ DiffCorrect → applyCancel() + tracker.QueueCorrection()
                                   (replacement created after cancel confirmed)
@@ -75,16 +87,21 @@ handlePendingCheck() [every PendingTimeout/2]
 
 ---
 
-## Flow: OS_REGISTERED Timeout
+## Flow: OS_REGISTERED Timeout & Snapshot Confirmation
 
 ```
 CheckOSRegisteredTimeouts(marketID, meConfirmationTimeout, meHealthy)
          │
          ├── meHealthy == false? → hold all OS_REGISTERED, do nothing
          │
-         └── for each OS_REGISTERED older than meConfirmationTimeout:
-               → SetResting()
-               (ME assumed accepted after sufficient time with healthy ME probe)
+         ├── meClient != nil?
+         │     → meClient.FetchSnapshot(ctx, marketID)
+         │     → ConfirmRestingFromSnapshot(marketID, snap)
+         │         (promotes to RESTING only when confirmed present in ME snapshot)
+         │
+         └── fallback (unit test mode without ME client):
+               for each OS_REGISTERED older than meConfirmationTimeout:
+                 → SetResting()
 ```
 
 ---
@@ -113,13 +130,15 @@ CheckCancellingTimeouts(ctx, marketID) [every CancellingTimeout/2]
 
 ---
 
-## Flow: OS Resync
+## Flow: OS Resync & Generation Recovery
 
 ```
 syncAllMarkets() [startup + every MaxOrderStateStaleness/2]
          │
          ▼
   SyncFromOrderService(ctx, marketID)
+         │
+         ├── orderSvc.RecoverHighestGenerations() → tracker.SetMaxGeneration() (INV-MM-07)
          │
          ├── orderSvc.ListMMOrders() → []OSOrder (OPEN + PARTIALLY_FILLED)
          ├── tracker.SyncFromOrders() → add new, update existing
@@ -139,12 +158,21 @@ syncAllMarkets() [startup + every MaxOrderStateStaleness/2]
 
 | Symbol | Kind | Purpose |
 |:---|:---|:---|
-| `Reconciler` | `struct` | Holds tracker, producer, orderSvc, config, logger, metrics, and per-level NOT_FOUND counters. |
-| `NewReconciler(...)` | `func` | Wires all dependencies. |
-| `ReconcileMarket(ctx, marketID, bidCount, askCount)` | `func` | Full reconcile: generate ladder → diff → apply entries. Returns commands published. |
+| `Reconciler` | `struct` | Holds tracker, producer, orderSvc, meClient, config, logger, metrics, and hysteresis/in-flight maps. |
+| `NewReconciler(...)` | `func` | Wires all dependencies including ME client. |
+| `ReconcileMarket(ctx, marketID, bidCount, askCount)` | `func` | Full reconcile: queries ME snapshot → `syncWithMESnapshot` → generate ladder → diff → apply entries. |
+| `syncWithMESnapshot(ctx, marketID, snap, mc)` | `func` (internal) | Verifies ME snapshot: matches identity, syncs `RemainingQty`, cancels orphans, and detects missing orders with 2-cycle hysteresis. |
+| `handleMissingRestingOrder(ctx, o, mc)` | `func` (internal) | Resolves order confirmed missing from ME: checks OS; if OPEN/PARTIALLY_FILLED, cancels in OS and locks slot as CANCELLING without removing. |
+
+---
+
+### [`dispatch.go`](./dispatch.go)
+
+| Symbol | Kind | Purpose |
+|:---|:---|:---|
 | `applyEntry(ctx, e, mc)` | `func` (internal) | Routes DiffEntry to `applyCreate`, `applyCancel`, or cancel + QueueCorrection. |
-| `applyCreate(ctx, e, mc)` | `func` (internal) | 3-step: OS register → SetPending → Kafka publish. Idempotent on retry (same orderID, same COID). |
-| `applyCancel(ctx, e, mc)` | `func` (internal) | Publishes `OrderCancelRequested` with the ME-assigned UUID. Sets tracker to CANCELLING. |
+| `applyCreate(ctx, e, mc)` | `func` (internal) | 3-step: OS register → SetPending + record inFlightSince → Kafka publish. Idempotent on retry (same orderID, same COID). |
+| `applyCancel(ctx, e, mc)` | `func` (internal) | Cancels in OS (optional ledger sync) and publishes `OrderCancelRequested` with ME UUID to Kafka. Sets tracker to CANCELLING. |
 
 ---
 
@@ -152,7 +180,7 @@ syncAllMarkets() [startup + every MaxOrderStateStaleness/2]
 
 | Symbol | Kind | Purpose |
 |:---|:---|:---|
-| `SyncFromOrderService(ctx, marketID)` | `func` | Authoritative OS resync. Resolves missing orders: remove RESTING/OS_REGISTERED/STALE, handle CANCELLING with queued corrections, retain PENDING. |
+| `SyncFromOrderService(ctx, marketID)` | `func` | Authoritative OS resync. Recovers highest generations (INV-MM-07), pulls OPEN/PARTIALLY_FILLED orders, and resolves missing orders. |
 
 ---
 
@@ -161,7 +189,8 @@ syncAllMarkets() [startup + every MaxOrderStateStaleness/2]
 | Symbol | Kind | Purpose |
 |:---|:---|:---|
 | `CheckPendingTimeouts(ctx, marketID)` | `func` | Examines PENDING orders past `PendingTimeout`. Retries Kafka publish if not confirmed. Queries OS and transitions state or counts NOT_FOUND toward liveness threshold. |
-| `CheckOSRegisteredTimeouts(marketID, timeout, meHealthy)` | `func` | Promotes OS_REGISTERED → RESTING after timeout elapses, only if ME is currently healthy. V1 proxy for a direct ME confirmation event. |
+| `ConfirmRestingFromSnapshot(marketID, snap)` | `func` | Promotes tracked orders to RESTING if and only if confirmed present in ME atomic snapshot. |
+| `CheckOSRegisteredTimeouts(marketID, timeout, meHealthy)` | `func` | Verifies OS_REGISTERED orders against ME snapshot via `ConfirmRestingFromSnapshot` (blind auto-promotion removed). |
 | `CheckCancellingTimeouts(ctx, marketID)` | `func` | Examines CANCELLING orders past `CancellingTimeout`. Resolves via `handleCancellingTimeout`. |
 | `handleCancellingTimeout(ctx, o, mc)` | `func` (internal) | Queries OS for cancel status. Confirms, handles fills, or calls `retryCancelOrStale`. |
 | `retryCancelOrStale(ctx, o, mc)` | `func` (internal) | Retries cancel command under the limit; transitions to STALE at the limit. |

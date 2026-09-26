@@ -69,7 +69,7 @@ When an existing MM level needs a price update or replacement (e.g., after being
    $$\text{ClientOrderID} = \text{LevelID} + \text{"-G"} + \text{Generation (3-digit zero-padded)}$$
    *Example:* `MM-BTC-USDT-BID-01-G004`
 2. **Persistent Monotonicity (`tracker.NextGeneration`):** Generation counters are tracked in a dedicated map (`generations map[string]int`). The counter is **never reset on order removal**.
-3. **Recovery Discovery:** On startup, the highest active generation found in the Order Service database is loaded as the baseline.
+3. **Historical Generation Recovery (`RecoverHighestGenerations`):** On startup, `orderSvc.RecoverHighestGenerations()` queries recent orders across all statuses (including filled and cancelled) and calls `tracker.SetMaxGeneration()` to guarantee monotonic client order IDs across restarts (INV-MM-07).
 
 ---
 
@@ -236,14 +236,15 @@ When reference prices move, existing ladder orders must be moved to new prices. 
 ## 14. RESTING vs OS_REGISTERED Semantics for Readiness
 
 ### The Challenge
-The Order Service persists an order before the Matching Engine processes the Kafka message into the active order book. If the Kubernetes `/readyz` probe reports ready based on `OS_REGISTERED` orders, incoming taker traffic will hit an empty Matching Engine book and fail to match.
+The Order Service persists an order before the Matching Engine processes the Kafka message into the active order book. If the Kubernetes `/readyz` probe reports ready based on `OS_REGISTERED` orders, incoming taker traffic will hit an empty Matching Engine book and fail to match. Furthermore, relying purely on timeouts to promote orders can leave phantom orders marked as resting.
 
 ### How We Fixed It
 1. **Explicit Status Separation:**
-   - `OS_REGISTERED`: Order exists in the database.
+   - `OS_REGISTERED`: Order exists in the database / Kafka ingress pipeline.
    - `RESTING`: Order is confirmed active in the live order book.
-2. **Confirmation Window Promotion (`CheckOSRegisteredTimeouts`):** Orders in `OS_REGISTERED` promote to `RESTING` only after `meConfirmationTimeout` (500ms) has elapsed while the Matching Engine is healthy.
-3. **Strict Readiness Gate:** `/readyz` queries `snapshot.ReadyBids()` and `snapshot.ReadyAsks()`, which count **only strictly `RESTING` orders**.
+2. **Snapshot Confirmation Promotion (`ConfirmRestingFromSnapshot`):** Blind timeout-based promotion was removed. Orders in `OS_REGISTERED` promote to `RESTING` only when confirmed present in the Matching Engine's atomic snapshot (`/markets/{market_id}/snapshot`).
+3. **Exact Identity & Remaining Qty Sync:** Verification requires exact `OrderID` or `ClientOrderID` matching and synchronizes `RemainingQty` directly from the snapshot to ensure committed capital accounting is exact.
+4. **Strict Readiness Gate:** `/readyz` queries `snapshot.ReadyBids()` and `snapshot.ReadyAsks()`, which count **only strictly `RESTING` orders**.
 
 ---
 

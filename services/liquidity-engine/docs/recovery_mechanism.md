@@ -103,18 +103,23 @@ The Liquidity Engine intentionally maintains **zero database tables** of its own
    • Seeds inventory.Manager with base projected balances.
    │
    ▼
-2. Authoritative Order Discovery (StateSyncing)
+2. Authoritative Order & Generation Discovery (StateSyncing)
+   • Calls orderSvc.RecoverHighestGenerations(marketID) across all historical orders:
+     - Sets tracker.SetMaxGeneration(levelID, maxGen) to guarantee monotonicity (INV-MM-07).
    • Calls orderSvc.ListMMOrders(marketID) for OPEN and PARTIALLY_FILLED orders.
    • For each persistent order, parses the idempotency key:
      "MM-BTC-USDT-ASK-01-G007" ──> LevelID: "MM-BTC-USDT-ASK-01", Gen: 7
    • tracker.SyncFromOrders():
      - Populates tracker in OS_REGISTERED state.
-     - Sets generations["MM-BTC-USDT-ASK-01"] = 7 (ensures next replacement is G008).
+     - Preserves generation counters (ensures next replacement is G008).
    │
    ▼
-3. Matching Engine Liveness Handshake
+3. Matching Engine Liveness & Snapshot Handshake
    • HTTP meclient.CheckAllMarkets(ctx) probes /status.
    • Confirms ME is live and ready before placing any orders.
+   • HTTP meclient.FetchSnapshot(ctx, marketID) verifies ME resting state:
+     - Confirms matching orders to RESTING and syncs RemainingQty (INV-MM-08).
+     - Cancels orphan orders lingering in ME book (INV-MM-05).
    │
    ▼
 4. Transition to StateRunning & Active Reconcile

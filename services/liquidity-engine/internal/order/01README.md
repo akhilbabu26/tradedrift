@@ -36,11 +36,11 @@ The tracker stores every MM order by its stable `LevelID` (e.g., `MM-BTC-USDT-AS
     │            ▼                                             │
     │       OS_REGISTERED ←── SetOSRegistered()               │
     │            │                                             │
-    │            │ CheckOSRegisteredTimeouts()                 │
-    │            │  (ME healthy + confirmation window elapsed) │
+    │            │ syncWithMESnapshot() / ConfirmResting()     │
+    │            │  (ME snapshot confirms order in book)       │
     │            ▼                                             │
     │         RESTING ←── SetResting()                        │
-    │            │                                             │
+    │            │        (RemainingQty synced from snapshot) │
     │       ┌────┴─────────────────┐                          │
     │  DiffCancel             DiffCorrect                      │
     │       │                      │                          │
@@ -65,24 +65,35 @@ The tracker stores every MM order by its stable `LevelID` (e.g., `MM-BTC-USDT-AS
 
 ## Files
 
-### [`tracker.go`](./tracker.go)
+### [`order.go`](./order.go)
 
 | Symbol | Kind | Purpose |
 |:---|:---|:---|
 | `Status` | `type string` | Lifecycle states: `PENDING`, `OS_REGISTERED`, `RESTING`, `CANCELLING`, `STALE` |
 | `LiveOrder` | `struct` | One tracker entry: level identity, order details (market/side/price/qty), status, and timing fields. |
+| `IncrementCancelRetry()` | `func` | Increments cancel retry counter and resets timer on `LiveOrder`. |
+| `OSOrder` | `struct` | Minimal order representation received from the Order Service (with LevelID and Generation extracted). |
+| `ClientOrderID(levelID, gen)` | `func` | Constructs `"MM-BTC-USDT-ASK-01-G003"`. Idempotency key for OS and ME. |
+
+---
+
+### [`tracker.go`](./tracker.go)
+
+| Symbol | Kind | Purpose |
+|:---|:---|:---|
 | `Tracker` | `struct` | Holds `orders`, `generations`, and `lastSync` maps. |
 | `NewTracker()` | `func` | Creates an empty tracker. |
 | `SetPending(...)` | `func` | Adds a new entry in PENDING state after OS registration and Kafka publish. |
 | `SetKafkaPublished(levelID, bool)` | `func` | Marks Kafka dispatch confirmed. If `false`, `CheckPendingTimeouts` retries the publish. |
 | `SetOSRegistered(levelID, orderID, ...)` | `func` | PENDING → OS_REGISTERED. OS has the order; ME confirmation window starts. |
-| `SetResting(levelID, orderID, ...)` | `func` | OS_REGISTERED → RESTING. ME has accepted the order into the live book. |
+| `SetResting(levelID, orderID, ...)` | `func` | Promotes order to RESTING and syncs RemainingQty directly from ME snapshot (INV-MM-08). |
 | `SetCancelling(levelID)` | `func` | RESTING → CANCELLING. Cancel command published to Kafka. |
 | `QueueCorrection(levelID, desired)` | `func` | Stores the replacement level on a CANCELLING order. Applied once cancel is confirmed. |
 | `SetStale(levelID)` | `func` | CANCELLING → STALE. Cancel retry limit exceeded; frozen until OS resync. |
 | `Remove(levelID)` | `func` | Deletes the tracker entry. Generation counter is preserved for monotonicity. |
 | `NextGeneration(levelID)` | `func` | Increments and returns the generation counter. Persists across `Remove()`. |
 | `CurrentGeneration(levelID)` | `func` | Returns the current generation without incrementing. |
+| `SetMaxGeneration(levelID, gen)` | `func` | Updates generation counter to highest observed generation during recovery (INV-MM-07). |
 | `Get(levelID)` | `func` | Returns the `LiveOrder` for a level, or nil. |
 | `All(marketID)` | `func` | Returns all tracked orders for one market. Used by Diff and timeout handlers. |
 | `AllMarkets()` | `func` | Returns all tracked orders across all markets. |
@@ -95,7 +106,6 @@ The tracker stores every MM order by its stable `LevelID` (e.g., `MM-BTC-USDT-AS
 | `RecordSync(marketID)` | `func` | Records a successful `ListMMOrders` sync timestamp. |
 | `LastSuccessfulSync(marketID)` | `func` | Returns the last sync time. Stale sync blocks new order creation. |
 | `SyncFromOrders(marketID, orders)` | `func` | Populates tracker from OS response. Deduplicates by LevelID (highest generation wins). New entries enter OS_REGISTERED. Returns `(added, duplicates)`. |
-| `ClientOrderID(levelID, gen)` | `func` | Constructs `"MM-BTC-USDT-ASK-01-G003"`. Idempotency key for OS and ME. |
 
 ---
 

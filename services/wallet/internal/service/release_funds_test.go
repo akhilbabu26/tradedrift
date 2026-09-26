@@ -184,3 +184,103 @@ func TestReleaseFunds_Concurrent(t *testing.T) {
 
 	t.Logf("Verified: %d concurrent ReleaseFunds calls produced exactly 1 release, 1 ledger entry, and exact balances", concurrency)
 }
+
+func TestReleaseFunds_PartiallyConsumedReturnsRemaining(t *testing.T) {
+	pool, cleanup := getWalletServiceTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	svc := service.NewService(pool, zap.NewNop())
+
+	userID, _ := platformuuid.New()
+	orderID, _ := platformuuid.New()
+	walletID, _ := platformuuid.New()
+	resID, _ := platformuuid.New()
+
+	// Setup wallet: 9035.11 available, 0.01 reserved (representing 964.88 consumed out of 964.89)
+	_, err := pool.Exec(ctx, `
+		INSERT INTO wallets (id, user_id, asset, available_balance, reserved_balance, total_balance)
+		VALUES ($1, $2, 'USDT', 9035.11, 0.01, 9035.12)
+	`, walletID, userID)
+	if err != nil {
+		t.Fatalf("failed to insert wallet: %v", err)
+	}
+
+	// Setup PARTIALLY_CONSUMED reservation with remaining=0.01
+	_, err = pool.Exec(ctx, `
+		INSERT INTO wallet_reservations (id, order_id, user_id, asset, reserved_amount, consumed_amount, remaining_amount, status)
+		VALUES ($1, $2, $3, 'USDT', 964.89, 964.88, 0.01, 'PARTIALLY_CONSUMED')
+	`, resID, orderID, userID)
+	if err != nil {
+		t.Fatalf("failed to insert reservation: %v", err)
+	}
+
+	if err := svc.ReleaseFunds(ctx, orderID); err != nil {
+		t.Fatalf("ReleaseFunds on PARTIALLY_CONSUMED failed: %v", err)
+	}
+
+	// Verify wallet balance: available = 9035.12, reserved = 0
+	var avail, res decimal.Decimal
+	err = pool.QueryRow(ctx, `SELECT available_balance, reserved_balance FROM wallets WHERE id = $1`, walletID).Scan(&avail, &res)
+	if err != nil {
+		t.Fatalf("query wallet: %v", err)
+	}
+	expectedAvail := decimal.RequireFromString("9035.1200000000")
+	expectedRes := decimal.RequireFromString("0.0000000000")
+	if !avail.Equal(expectedAvail) {
+		t.Fatalf("expected available %s, got %s", expectedAvail, avail)
+	}
+	if !res.Equal(expectedRes) {
+		t.Fatalf("expected reserved %s, got %s", expectedRes, res)
+	}
+}
+
+func TestReleaseFunds_ZeroRemainingNoOp(t *testing.T) {
+	pool, cleanup := getWalletServiceTestPool(t)
+	if pool == nil {
+		return
+	}
+	defer cleanup()
+
+	ctx := context.Background()
+	svc := service.NewService(pool, zap.NewNop())
+
+	userID, _ := platformuuid.New()
+	orderID, _ := platformuuid.New()
+	walletID, _ := platformuuid.New()
+	resID, _ := platformuuid.New()
+
+	// Setup wallet: 1000 available, 0 reserved
+	_, err := pool.Exec(ctx, `
+		INSERT INTO wallets (id, user_id, asset, available_balance, reserved_balance, total_balance)
+		VALUES ($1, $2, 'USDT', 1000, 0, 1000)
+	`, walletID, userID)
+	if err != nil {
+		t.Fatalf("failed to insert wallet: %v", err)
+	}
+
+	// Setup reservation with remaining=0
+	_, err = pool.Exec(ctx, `
+		INSERT INTO wallet_reservations (id, order_id, user_id, asset, reserved_amount, consumed_amount, remaining_amount, status)
+		VALUES ($1, $2, $3, 'USDT', 100, 100, 0, 'ACTIVE')
+	`, resID, orderID, userID)
+	if err != nil {
+		t.Fatalf("failed to insert reservation: %v", err)
+	}
+
+	if err := svc.ReleaseFunds(ctx, orderID); err != nil {
+		t.Fatalf("ReleaseFunds on zero remaining failed: %v", err)
+	}
+
+	var status string
+	err = pool.QueryRow(ctx, `SELECT status FROM wallet_reservations WHERE id = $1`, resID).Scan(&status)
+	if err != nil {
+		t.Fatalf("query status: %v", err)
+	}
+	if status != repository.ReservationReleased {
+		t.Fatalf("expected status %s, got %s", repository.ReservationReleased, status)
+	}
+}

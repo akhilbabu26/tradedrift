@@ -2,7 +2,7 @@
 
 **Package:** `publisher`  
 **Service:** Matching Engine  
-**Files Covered:** `publisher.go`, `publisher_test.go`, `retention_test.go`  
+**Files Covered:** `messages.go`, `publisher.go`, `retention.go`, `publisher_test.go`, `retention_test.go`  
 **Documentation:** `02READEME.md`  
 **Last Updated:** August 2026  
 
@@ -12,11 +12,12 @@
 
 The `internal/publisher` package serves as the **downstream egress, broadcast, and durability layer** of the Matching Engine.
 
-Positioned immediately after the in-memory matching loops ([`internal/market`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/market/02READEME.md)), the `Publisher` consumes matching results ([`orderbook.MatchResult`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/orderbook/result.go#L67-L75)) from each engine's `OutputQueue` and coordinates writes across three critical infrastructure destinations:
-1. **Kafka (`trades.executed`)**: Publishes individual matched trade events with deterministic trade IDs, buyer/seller IDs, prices, quantities, and authoritative sequence numbers.
-2. **Redis (`depth:{market_id}`)**: Pushes real-time Level-2 Top-20 depth snapshots for low-latency market data consumption by API gateways and WebSockets.
-3. **PostgreSQL Checkpoint Coordinator (`internal/checkpoint`)**: Submits completed events (sequences, optional snapshots with SHA-256 checksums, and source Kafka positions) to advance the contiguous durability watermark in `kafka_checkpoints`, `market_sequences`, and `market_snapshots`.
-4. **Automated Snapshot Retention**: Runs a background maintenance job that prunes historical snapshots from PostgreSQL while strictly preserving the recovery anchor snapshot.
+Positioned immediately after the in-memory matching loops ([`internal/market`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/market/02READEME.md)), the `Publisher` consumes matching results ([`orderbook.MatchResult`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/orderbook/result.go#L67-L75)) from each engine's `OutputQueue` and coordinates writes across four critical infrastructure destinations:
+1. **Kafka (`trades.executed.v1`)**: Publishes individual matched trade events with deterministic trade IDs, buyer/seller IDs, prices, quantities, and authoritative sequence numbers.
+2. **Kafka (`orders.cancelled.v1`)**: Publishes authoritative order cancellation feedback carrying `CancelStatus` (`REMOVED_FROM_BOOK` vs `ALREADY_ABSENT`), remaining quantities, and deterministic UUID v5 event IDs to inform the Order Service.
+3. **Redis (`depth:{market_id}`)**: Pushes real-time Level-2 Top-20 depth snapshots for low-latency market data consumption by API gateways and WebSockets.
+4. **PostgreSQL Checkpoint Coordinator (`internal/checkpoint`)**: Submits completed events (sequences, optional snapshots with SHA-256 checksums, and source Kafka positions) to advance the contiguous durability watermark in `kafka_checkpoints`, `market_sequences`, and `market_snapshots`.
+5. **Automated Snapshot Retention**: Runs a background maintenance job (`retention.go`) that prunes historical snapshots from PostgreSQL while strictly preserving the recovery anchor snapshot.
 
 ---
 
@@ -66,15 +67,15 @@ When the service receives a termination signal (`ctx.Done()`):
                                   ▼
                         Publisher.process()
                                   │
-     ┌────────────────────────────┼────────────────────────────┐
-     │ Step 1                     │ Step 2                     │ Step 3
-     ▼                            ▼                            ▼
-[Kafka: trades.executed]   [Redis: depth:{id}]      [Checkpoint Coordinator]
-- Key = MarketID           - Key = depth:BTC-USDT   - Sequence upsert
-- Payload = Trade Details  - Payload = Top-20 JSON  - Snapshot + Checksum upsert
-- Sequence included        - Sequence included      - Contiguous offset commit
-     │                            │                            │
-     └────────────────────────────┼────────────────────────────┘
+     ┌────────────────────────────┼────────────────────────────┬────────────────────────────┐
+     │ Step 1A                    │ Step 1B                    │ Step 2                     │ Step 3
+     ▼                            ▼                            ▼                            ▼
+[Kafka: trades.executed.v1]  [Kafka: orders.cancelled.v1] [Redis: depth:{id}]      [Checkpoint Coordinator]
+- Key = MarketID             - Key = MarketID             - Key = depth:BTC-USDT   - Sequence upsert
+- Deterministic Trade ID     - Status (REMOVED / ABSENT)  - Top-20 depth JSON      - Snapshot + Checksum
+- Authoritative Sequence     - Deterministic UUID v5 ID   - Authoritative Sequence - Contiguous offset commit
+     │                            │                            │                            │
+     └────────────────────────────┴────────────────────────────┴────────────────────────────┘
                                   │ (All Steps Succeeded)
                                   ▼
                          Continue Next Event
@@ -87,17 +88,18 @@ When the service receives a termination signal (`ctx.Done()`):
 | Package | Purpose & Justification |
 | :--- | :--- |
 | `context` | Manages request lifecycles, cancellation propagation during graceful shutdown, and 5-second drain timeouts. |
-| `encoding/json` | Marshals trade execution messages (`tradeExecutedMessage`) and depth messages (`depthSnapshotMessage`) into canonical JSON. |
+| `encoding/json` | Marshals trade execution messages (`tradeExecutedMessage`), cancel messages (`OrderCancelledMessage`), and depth messages (`depthSnapshotMessage`) into canonical JSON. |
 | `fmt` | Error formatting and wrapping (`%w`). |
 | `log` | Operational logging of matches, rested orders, periodic retention status, and fatal fail-closed alerts. |
 | `sync` & `sync/atomic` | Mutex locking for depth retry buffers (`retryMu`) and thread-safe atomic flags for shutdown tracking (`atomic.StoreInt32`, `atomic.LoadInt32`). |
 | `time` | Timestamping trade executions, depth snapshots (RFC3339Nano), retry tickers (500ms), and hourly retention job tickers (1h). |
+| `github.com/google/uuid` | Generating deterministic RFC 4122 UUID v5 identifiers for cancellation outcome events. |
 | `github.com/jackc/pgx/v5/pgconn` | Low-level PostgreSQL execution tag model (`pgconn.CommandTag`). |
 | `github.com/redis/go-redis/v9` | Redis client adapter for publishing Level-2 depth keys (`SET depth:{market_id}`). |
-| `github.com/segmentio/kafka-go` | High-throughput Kafka writer (`kafkago.Writer`) configured for `TopicTradeExecuted`, partitioned by `MarketID`. |
+| `github.com/segmentio/kafka-go` | High-throughput Kafka writer (`kafkago.Writer`) configured for `TopicTradeExecuted` and `TopicOrderCancelled`, partitioned by `MarketID`. |
 | `tradedrift/.../checkpoint` | Coordinator interface for atomic multi-event contiguous watermark commits. |
 | `tradedrift/.../market` | Internal domain engine and lifecycle callbacks. |
-| `tradedrift/.../orderbook` | Domain models (`MatchResult`, `Fill`, `DepthSnapshot`, `KafkaPosition`, `Checksum`). |
+| `tradedrift/.../orderbook` | Domain models (`MatchResult`, `Fill`, `CancelledOrder`, `CancelStatus`, `DepthSnapshot`, `KafkaPosition`, `Checksum`). |
 
 ---
 
@@ -119,7 +121,7 @@ When the service receives a termination signal (`ctx.Done()`):
        WriteMessages(ctx context.Context, msgs ...kafkago.Message) error
    }
    ```
-   - Abstracts publishing trade execution messages to Kafka.
+   - Abstracts publishing trade execution and order cancellation messages to Kafka.
 
 3. **`redisWriter`**:
    ```go
@@ -139,9 +141,9 @@ When the service receives a termination signal (`ctx.Done()`):
 
 ---
 
-### 5.2 Wire Format Payloads
+### 5.2 Wire Format Payloads (`messages.go`)
 
-#### `tradeExecutedMessage` (`trades.executed`)
+#### `tradeExecutedMessage` (`trades.executed.v1`)
 ```json
 {
   "trade_id": "019163f5-93b6-710b-b187-2c93b6710bb1",
@@ -156,6 +158,27 @@ When the service receives a termination signal (`ctx.Done()`):
   "price": "65000.00",
   "quantity": "0.5000",
   "executed_at": "2026-08-25T11:00:00.123456789Z"
+}
+```
+
+#### `OrderCancelledMessage` (`orders.cancelled.v1`)
+```json
+{
+  "event_id": "019163f5-93b6-710b-b187-2c93b6710cc1",
+  "event_type": "OrderCancelled",
+  "event_version": 1,
+  "market_id": "BTC-USDT",
+  "occurred_at": "2026-08-25T11:00:00.123456789Z",
+  "payload": {
+    "order_id": "019163f5-93b6-710b-b187-2c93b6710bb2",
+    "user_id": "019163f5-93b6-710b-b187-2c93b6710bb4",
+    "market_id": "BTC-USDT",
+    "remaining_quantity": "0.5000",
+    "reason": "user_requested",
+    "cancel_status": "REMOVED_FROM_BOOK",
+    "cancelled_at": "2026-08-25T11:00:00.123456789Z",
+    "source_offset": 1042
+  }
 }
 ```
 
@@ -181,9 +204,52 @@ When the service receives a termination signal (`ctx.Done()`):
   - Instantiates `redisClientAdapter` wrapping Redis connection.
   - Spawns background goroutine for `startRetentionJob` if `db != nil`.
 
-#### `startRetentionJob(ctx context.Context)` & `runRetention(ctx context.Context) error`
-- **Purpose**: Runs periodic background snapshot pruning every 1 hour.
-- **Retention SQL Logic**:
+#### `Run(ctx context.Context, engine *market.MarketEngine)`
+- **Purpose**: Dedicated per-market output consumer loop.
+- **Workflow**:
+  1. Pulls `result` from `engine.OutputQueue`.
+  2. Executes `p.process(ctx, result)`.
+  3. If error occurs, logs a fatal message and calls `p.HaltCallback()` / `engine.HaltCallback()`.
+  4. On 500ms ticker, calls `flushPendingDepthRetries`.
+  5. On `ctx.Done()`, if `engine.IsFatalHalt()` is true, stops immediately without draining. Otherwise, initiates a 5-second timeout drain loop, setting `p.drainFailed = 1` if drain fails.
+
+#### `process(ctx context.Context, result orderbook.MatchResult) error`
+- **Purpose**: The core egress pipeline.
+- **Workflow**:
+  1. **Publish Fills**: If `len(result.Fills) > 0`, calls `p.publishFills(ctx, result.Fills)`.
+  2. **Publish Cancel Outcome**: If `result.CancelResult != nil`, calls `p.publishCancelledOrder(ctx, result.CancelResult)`.
+  3. **Push Depth**: Calls `p.pushDepth(ctx, result.DepthSnapshot)`.
+  4. **Coordinator Checkpoint**: Calculates snapshot SHA-256 checksum (if snapshot is non-nil), constructs `checkpoint.CompletedEvent`, and invokes `p.coord.MarkDoneWithSequence(ctx, ev)`.
+
+#### `publishFills(ctx context.Context, fills []orderbook.Fill) error`
+- **Purpose**: Encodes and batches trade execution messages to Kafka `trades.executed.v1`.
+- **Partition Key**: Sets `kafkago.Message.Key = []byte(fill.MarketID)` to ensure all trades for a given market preserve ordering on the same partition.
+
+#### `publishCancelledOrder(ctx context.Context, cancel *orderbook.CancelledOrder) error`
+- **Purpose**: Constructs and publishes `OrderCancelledMessage` to `orders.cancelled.v1`.
+- **Deterministic ID**: Generates a deterministic RFC 4122 UUID v5 identifier using namespace UUID, order ID, cancel status, and source offset (`uuid.NewSHA1(...)`).
+- **Partition Key**: Sets `kafkago.Message.Key = []byte(cancel.MarketID)`.
+
+#### `pushDepth(ctx context.Context, snap orderbook.DepthSnapshot) error`
+- **Purpose**: Serializes Top-20 depth to JSON and sets Redis key `depth:{market_id}` with TTL = 0 (infinite).
+
+#### `Close() error`
+- **Purpose**: Cancels retention context and closes Kafka writer.
+
+#### `HasDrainFailed() bool`
+- **Purpose**: Thread-safe atomic reader verifying whether shutdown drain succeeded or failed.
+
+#### `NewTestable(...)` & `(tp *TestablePublisher) Process(...)`
+- **Purpose**: Helper wrapper exposing `process` for unit tests with mock writers.
+
+---
+
+### 5.4 Snapshot Retention Worker (`retention.go`)
+
+- **`StartSnapshotRetentionWorker(ctx context.Context, db dbWriter, interval time.Duration, maxAge time.Duration)`**:
+  - Launches background maintenance worker running periodic pruning queries on the specified `interval` (default: 1 hour).
+- **`PruneSnapshots(ctx context.Context, db dbWriter, maxAge time.Duration) (int64, error)`**:
+  - Executes authoritative SQL pruning query:
   ```sql
   WITH ranked AS (
       SELECT market_id, sequence,
@@ -207,39 +273,7 @@ When the service receives a termination signal (`ctx.Done()`):
       WHERE a.market_id = ms.market_id AND a.sequence = ms.sequence
   );
   ```
-- **Guarantees**: Always retains the latest 3 snapshots per market **AND** the recovery anchor snapshot.
-
-#### `Run(ctx context.Context, engine *market.MarketEngine)`
-- **Purpose**: Dedicated per-market output consumer loop.
-- **Workflow**:
-  1. Pulls `result` from `engine.OutputQueue`.
-  2. Executes `p.process(ctx, result)`.
-  3. If error occurs, logs a fatal message and calls `p.HaltCallback()` / `engine.HaltCallback()`.
-  4. On 500ms ticker, calls `flushPendingDepthRetries`.
-  5. On `ctx.Done()`, initiates a 5-second timeout drain loop, setting `p.drainFailed = 1` if drain fails.
-
-#### `process(ctx context.Context, result orderbook.MatchResult) error`
-- **Purpose**: The core 3-step egress pipeline.
-- **Workflow**:
-  1. **Publish Fills**: Calls `p.publishFills(ctx, result.Fills)`.
-  2. **Push Depth**: Calls `p.pushDepth(ctx, result.DepthSnapshot)`.
-  3. **Coordinator Checkpoint**: Calculates snapshot SHA-256 checksum (if snapshot is non-nil), constructs `checkpoint.CompletedEvent`, and invokes `p.coord.MarkDoneWithSequence(ctx, ev)`.
-
-#### `publishFills(ctx context.Context, fills []orderbook.Fill) error`
-- **Purpose**: Encodes and batches trade execution messages to Kafka.
-- **Partition Key**: Sets `kafkago.Message.Key = []byte(fill.MarketID)` to ensure all trades for a given market preserve ordering on the same partition.
-
-#### `pushDepth(ctx context.Context, snap orderbook.DepthSnapshot) error`
-- **Purpose**: Serializes Top-20 depth to JSON and sets Redis key `depth:{market_id}` with TTL = 0 (infinite).
-
-#### `Close() error`
-- **Purpose**: Cancels retention context and closes Kafka writer.
-
-#### `HasDrainFailed() bool`
-- **Purpose**: Thread-safe atomic reader verifying whether shutdown drain succeeded or failed.
-
-#### `NewTestable(...)` & `(tp *TestablePublisher) Process(...)`
-- **Purpose**: Helper wrapper exposing `process` for unit tests with mock writers.
+  - **Invariant Protected**: Never deletes the 3 most recent snapshots per market or the recovery anchor snapshot satisfying `offset <= checkpoint.offset`.
 
 ---
 
@@ -248,15 +282,18 @@ When the service receives a termination signal (`ctx.Done()`):
 ### 6.1 `publisher_test.go`
 | Test Function | Verification / Invariant Tested |
 | :--- | :--- |
-| `TestProcess_OneFill_OneKafkaMessage` | Asserts a single trade fill produces exactly 1 Kafka message on `trades.executed`. |
+| `TestProcess_OneFill_OneKafkaMessage` | Asserts a single trade fill produces exactly 1 Kafka message on `trades.executed.v1`. |
+| `TestProcess_CancelResult_PublishesOrderCancelled` | Asserts non-nil cancellation outcomes are published to `orders.cancelled.v1` with proper cancel status and remaining quantity. |
 | `TestProcess_MultipleFills_MultipleKafkaMessages` | Asserts multi-level sweeps produce $N$ distinct Kafka messages. |
-| `TestProcess_MarketID_UsedAsPartitionKey` | Asserts Kafka message key matches `fill.MarketID`. |
+| `TestProcess_MarketID_UsedAsPartitionKey` | Asserts Kafka message key matches `fill.MarketID` or `cancel.MarketID`. |
 | `TestProcess_DepthSnapshot_WrittenToRedis` | Asserts depth snapshots are written to `depth:{market_id}` in Redis. |
 | `TestProcess_CheckpointCoordinator_MarkDoneCalled` | Asserts successful processing notifies checkpoint coordinator with exact source position. |
 | `TestProcess_KafkaFailure_CoordinatorNotCalled` | Asserts that Kafka failures halt the pipeline and prevent checkpoint advancement. |
 | `TestProcess_RedisFailure_FailsCheckpoint` | Asserts that Redis failures return an error and prevent checkpoint advancement. |
 | `TestPublisher_EmitsAuthoritativeSequenceToKafkaAndRedis` | Asserts sequence numbers from match results are included in both Kafka and Redis payloads. |
 | `TestPublisher_IntegratedWithCoordinator_PreventsGapCheckpoints` | Verifies cross-market gap prevention (ETH offset 101 finishes before BTC offset 100, holding checkpoint at 99 until 100 finishes, then leaping to 101). |
+| `TestPublisher_DeterministicEventID_ForCancelOutcome` | Asserts that duplicate cancellation publications produce identical UUID v5 event IDs. |
+| `TestPublisher_FatalHaltDoesNotDrain` | Asserts that when `engine.IsFatalHalt()` is true, shutdown draining is skipped to prevent corrupt state progression. |
 
 ### 6.2 `retention_test.go`
 | Test Function | Invariant Tested |

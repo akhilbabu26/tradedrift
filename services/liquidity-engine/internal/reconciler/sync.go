@@ -20,6 +20,22 @@ func (r *Reconciler) SyncFromOrderService(ctx context.Context, marketID string) 
 		return fmt.Errorf("unknown market %s", marketID)
 	}
 
+	// Recover maximum observed generation across all historical orders (including filled/cancelled)
+	// to guarantee generation monotonicity across restarts (INV-MM-07).
+	if recov, ok := r.orderSvc.(interface {
+		RecoverHighestGenerations(ctx context.Context, marketID string) (map[string]int, error)
+	}); ok {
+		if maxGens, err := recov.RecoverHighestGenerations(ctx, marketID); err == nil {
+			for lvl, gen := range maxGens {
+				r.tracker.SetMaxGeneration(lvl, gen)
+			}
+		} else {
+			r.logger.Warn("failed to recover highest generations from order history",
+				zap.String("market_id", marketID),
+				zap.Error(err))
+		}
+	}
+
 	osOrders, err := r.orderSvc.ListMMOrders(ctx, marketID)
 	if err != nil {
 		return fmt.Errorf("ListMMOrders for %s: %w", marketID, err)

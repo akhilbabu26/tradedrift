@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 
-	"tradedrift/services/wallet/internal/repository"
 	platformuuid "tradedrift/platform/uuid"
+	"tradedrift/services/wallet/internal/repository"
 )
 
-// ReleaseFunds returns reserved funds to available balance when an order is cancelled.
+// ReleaseFunds returns reserved funds to available balance when an order is cancelled or completed.
 // Idempotent: if the reservation is already RELEASED or CONSUMED, returns success immediately.
 // All operations are executed inside an atomic PostgreSQL transaction with deterministic locking.
 func (s *Service) ReleaseFunds(ctx context.Context, orderID string) error {
@@ -47,6 +48,23 @@ func (s *Service) ReleaseFunds(ctx context.Context, orderID string) error {
 
 	// ── Step 4: Only return what's still remaining (partial fills may have consumed some) ─────────
 	amountToReturn := reservation.RemainingAmount
+	decAmount, err := decimal.NewFromString(amountToReturn)
+	if err != nil {
+		return fmt.Errorf("invalid remaining amount %q: %w", amountToReturn, err)
+	}
+
+	if decAmount.LessThanOrEqual(decimal.Zero) {
+		// No surplus funds remaining (order was 100% consumed with exact price match).
+		// Finalize reservation status and commit.
+		if err := reservRepo.UpdateStatus(ctx, reservation.ID, repository.ReservationReleased); err != nil {
+			return fmt.Errorf("failed to update reservation status: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("failed to commit release transaction: %w", err)
+		}
+		s.log.Debug("zero remaining reservation finalized", zap.String("orderID", orderID))
+		return nil
+	}
 
 	// ── Step 5: Fetch the wallet to locate wallet.ID ───────────────────────────────────────────────
 	wallet, err := walletRepo.GetByUserAndAsset(ctx, reservation.UserID, reservation.Asset)

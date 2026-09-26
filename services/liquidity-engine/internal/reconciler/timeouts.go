@@ -7,6 +7,7 @@ import (
 	"go.uber.org/zap"
 
 	"tradedrift/services/liquidity-engine/internal/config"
+	"tradedrift/services/liquidity-engine/internal/meclient"
 	"tradedrift/services/liquidity-engine/internal/order"
 	"tradedrift/services/liquidity-engine/internal/orderservice"
 )
@@ -133,32 +134,66 @@ func (r *Reconciler) CheckPendingTimeouts(ctx context.Context, marketID string) 
 	return r.consecutivePendingTimeouts[marketID]
 }
 
-// CheckOSRegisteredTimeouts promotes OS_REGISTERED orders to RESTING after MEConfirmationTimeout,
-// provided the Matching Engine is currently healthy (no consecutive ME timeouts).
-// This is the V1 proxy for ME confirmation: if OS has the order and ME is healthy,
-// we assume ME has accepted it after sufficient time has elapsed.
-// V2 should replace this with a direct OrderRested event from the ME.
-func (r *Reconciler) CheckOSRegisteredTimeouts(marketID string, meConfirmationTimeout time.Duration, meHealthy bool) {
+// ConfirmRestingFromSnapshot promotes tracked orders to RESTING if and only if
+// they are confirmed present in the Matching Engine's atomic snapshot.
+// INVARIANT: CANCELLING and STALE are locked states. Presence in ME snapshot must NEVER promote them back to RESTING.
+func (r *Reconciler) ConfirmRestingFromSnapshot(marketID string, snap *meclient.MarketSnapshot) {
+	if snap == nil || snap.State != "LIVE" {
+		return
+	}
+
+	snapOrders := make(map[string]meclient.MMOrderSummary, len(snap.Orders))
+	for _, o := range snap.Orders {
+		snapOrders[o.LevelID] = o
+	}
+
+	for _, o := range r.tracker.All(marketID) {
+		// Only unconfirmed orders (OS_REGISTERED or PENDING) can be promoted to RESTING.
+		// Crucially, CANCELLING and STALE orders must NEVER be promoted back to RESTING.
+		if o.Status != order.StatusOSRegistered && o.Status != order.StatusPending {
+			continue
+		}
+		if meOrder, found := snapOrders[o.LevelID]; found {
+			if meOrder.ClientOrderID == o.ClientOrderID || meOrder.OrderID == o.OrderID {
+				r.logger.Info("order confirmed RESTING via ME snapshot",
+					zap.String("level_id", o.LevelID),
+					zap.String("order_id", meOrder.OrderID),
+					zap.String("client_order_id", o.ClientOrderID),
+					zap.String("prev_status", string(o.Status)))
+				r.tracker.SetResting(o.LevelID, meOrder.OrderID, o.OriginalQty, o.RemainingQty)
+				delete(r.notFoundCount, o.LevelID)
+			}
+		}
+	}
+}
+
+// ConfirmOSRegisteredOrders verifies OS_REGISTERED orders against the Matching Engine snapshot.
+// Blind auto-promotion has been REMOVED — orders are promoted to RESTING
+// only when confirmed present in the ME snapshot.
+// When meClient == nil or ME is unhealthy, this check is FAIL-CLOSED: orders remain OS_REGISTERED.
+func (r *Reconciler) ConfirmOSRegisteredOrders(marketID string, meHealthy bool) {
 	if !meHealthy {
 		r.logger.Warn("ME is unhealthy — holding OS_REGISTERED orders without promoting to RESTING",
 			zap.String("market_id", marketID))
 		return
 	}
 
-	allOrders := r.tracker.All(marketID)
-	for _, o := range allOrders {
-		if o.Status != order.StatusOSRegistered {
-			continue
-		}
-		if time.Since(o.OSRegisteredSince) < meConfirmationTimeout {
-			continue
-		}
-		r.logger.Info("OS_REGISTERED order promoted to RESTING (ME healthy & confirmation timeout elapsed)",
-			zap.String("level_id", o.LevelID),
-			zap.String("order_id", o.OrderID),
-			zap.Duration("elapsed", time.Since(o.OSRegisteredSince)))
-		r.tracker.SetResting(o.LevelID, o.OrderID, o.OriginalQty, o.RemainingQty)
+	if r.meClient == nil {
+		r.logger.Warn("ME client is nil — holding OS_REGISTERED orders without promoting (fail-closed)",
+			zap.String("market_id", marketID))
+		return
 	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	snap, err := r.meClient.FetchSnapshot(ctx, marketID)
+	if err != nil {
+		r.logger.Warn("failed to fetch ME snapshot during unconfirmed orders check",
+			zap.String("market_id", marketID),
+			zap.Error(err))
+		return
+	}
+	r.ConfirmRestingFromSnapshot(marketID, snap)
 }
 
 // CheckCancellingTimeouts examines all CANCELLING orders for a market.

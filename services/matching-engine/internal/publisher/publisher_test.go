@@ -13,6 +13,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"tradedrift/services/matching-engine/internal/checkpoint"
+	"tradedrift/services/matching-engine/internal/market"
 	"tradedrift/services/matching-engine/internal/orderbook"
 	"tradedrift/services/matching-engine/internal/publisher"
 )
@@ -154,6 +155,40 @@ func TestProcess_OneFill_OneKafkaMessage(t *testing.T) {
 	}
 	if len(k.published) != 1 {
 		t.Fatalf("expected 1 Kafka message, got %d", len(k.published))
+	}
+}
+
+func TestProcess_CancelResult_PublishesOrderCancelled(t *testing.T) {
+	k, r, coord := &fakeKafka{}, &fakeRedis{}, &fakeCoordinator{}
+	p := newTestPublisher(k, r, coord)
+
+	orderID := uuid.New()
+	userID := uuid.New()
+	result := orderbook.MatchResult{
+		CancelResult: &orderbook.CancelledOrder{
+			OrderID:           orderID,
+			UserID:            userID,
+			MarketID:          "BTC-USDT",
+			RemainingQuantity: decimal.RequireFromString("0.5"),
+			Reason:            "user_requested",
+			CancelledAt:       time.Now(),
+		},
+		DepthSnapshot: orderbook.DepthSnapshot{MarketID: "BTC-USDT", Sequence: 1},
+		SourcePosition: orderbook.KafkaPosition{Topic: "orders.commands", Partition: 0, Offset: 10},
+	}
+
+	if err := p.Process(context.Background(), result); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(k.published) != 1 {
+		t.Fatalf("expected 1 Kafka message, got %d", len(k.published))
+	}
+	msg := k.published[0]
+	if msg.Topic != publisher.TopicOrdersCancelled {
+		t.Fatalf("expected topic %s, got %s", publisher.TopicOrdersCancelled, msg.Topic)
+	}
+	if string(msg.Key) != "BTC-USDT" {
+		t.Fatalf("expected key BTC-USDT, got %s", string(msg.Key))
 	}
 }
 
@@ -369,3 +404,138 @@ func TestPublisher_IntegratedWithCoordinator_PreventsGapCheckpoints(t *testing.T
 		t.Fatalf("expected DB commit with offset 101, got %+v", db.commits)
 	}
 }
+
+func TestPublisher_DeterministicEventID_ForCancelOutcome(t *testing.T) {
+	k := &fakeKafka{}
+	r := &fakeRedis{}
+	p := publisher.NewTestable(k, r, nil)
+	ctx := context.Background()
+
+	orderID := uuid.New()
+	userID := uuid.New()
+	const offset = int64(1042)
+
+	cancel := &orderbook.CancelledOrder{
+		OrderID:           orderID,
+		UserID:            userID,
+		MarketID:          "BTC-USDT",
+		RemainingQuantity: decimal.RequireFromString("1.5"),
+		Reason:            "user_requested",
+		CancelStatus:      orderbook.CancelStatusRemovedFromBook,
+		CancelledAt:       time.Now(),
+		SourceOffset:      offset,
+	}
+
+	res := orderbook.MatchResult{
+		CancelResult:  cancel,
+		DepthSnapshot: makeDepth("BTC-USDT"),
+		SourcePosition: orderbook.KafkaPosition{
+			Topic:     "orders.commands",
+			Partition: 0,
+			Offset:    offset,
+		},
+	}
+
+	// First publish
+	if err := p.Process(ctx, res); err != nil {
+		t.Fatalf("process cancel 1: %v", err)
+	}
+
+	// Second publish with same OrderID and SourceOffset
+	if err := p.Process(ctx, res); err != nil {
+		t.Fatalf("process cancel 2: %v", err)
+	}
+
+	if len(k.published) != 2 {
+		t.Fatalf("expected 2 published messages, got %d", len(k.published))
+	}
+
+	var msg1, msg2 struct {
+		EventID   string `json:"event_id"`
+		EventType string `json:"event_type"`
+		OrderID   string `json:"order_id"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(k.published[0].Value, &msg1); err != nil {
+		t.Fatalf("unmarshal msg1: %v", err)
+	}
+	if err := json.Unmarshal(k.published[1].Value, &msg2); err != nil {
+		t.Fatalf("unmarshal msg2: %v", err)
+	}
+
+	if msg1.EventID == "" {
+		t.Fatal("expected non-empty event_id")
+	}
+	if msg1.EventID != msg2.EventID {
+		t.Fatalf("expected deterministic event_id across publishes, got %s != %s", msg1.EventID, msg2.EventID)
+	}
+	if msg1.EventType != "OrderCancelOutcome" {
+		t.Fatalf("expected event_type OrderCancelOutcome, got %s", msg1.EventType)
+	}
+}
+
+func TestPublisher_FatalHaltDoesNotDrain(t *testing.T) {
+	k := &fakeKafka{}
+	r := &fakeRedis{}
+	coord := &fakeCoordinator{}
+	p := publisher.NewTestable(k, r, coord)
+
+	engine := market.NewMarketEngine(market.MarketConfig{
+		MarketID:  "BTC-USDT",
+		Partition: 0,
+		TickSize:  decimal.RequireFromString("0.01"),
+		LotSize:   decimal.RequireFromString("0.0001"),
+	})
+
+	// Put 2 items in engine.OutputQueue
+	res1 := orderbook.MatchResult{
+		Fills:         []orderbook.Fill{makeFill("BTC-USDT")},
+		DepthSnapshot: makeDepth("BTC-USDT"),
+		SourcePosition: orderbook.KafkaPosition{
+			Topic:     "orders.commands",
+			Partition: 0,
+			Offset:    100,
+		},
+	}
+	res2 := orderbook.MatchResult{
+		Fills:         []orderbook.Fill{makeFill("BTC-USDT")},
+		DepthSnapshot: makeDepth("BTC-USDT"),
+		SourcePosition: orderbook.KafkaPosition{
+			Topic:     "orders.commands",
+			Partition: 0,
+			Offset:    101,
+		},
+	}
+	engine.OutputQueue <- res1
+	engine.OutputQueue <- res2
+
+	// Trigger fatal halt on engine
+	engine.TriggerFatalHalt()
+
+	// Cancel context so publisher enters ctx.Done()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan struct{})
+	go func() {
+		p.Run(ctx, engine)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timeout waiting for publisher to exit")
+	}
+
+	// In fatal halt, publisher must skip drain.
+	// Therefore 0 messages should be published to Kafka from OutputQueue.
+	if len(k.published) != 0 {
+		t.Fatalf("expected 0 published messages due to fatal halt drain skip, got %d", len(k.published))
+	}
+	if len(coord.completedEvents) != 0 {
+		t.Fatalf("expected 0 coordinator completions due to fatal halt drain skip, got %d", len(coord.completedEvents))
+	}
+}
+
+

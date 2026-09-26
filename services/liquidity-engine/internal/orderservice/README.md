@@ -82,17 +82,26 @@ CheckPendingTimeouts() finds a PENDING order past timeout
 | `NewClient(addr, logger)` | `func` | Dials the Order Service (insecure). Returns error if dial fails. |
 | `Close()` | `func` | Closes the gRPC connection. |
 | `CreateMMOrder(ctx, ...)` | `func` | Registers an MM order in OS idempotently using `clientOrderID` as `IdempotencyKey`. Returns OS-assigned `OrderID`. Safe to retry with the same `clientOrderID`. |
+| `CancelMMOrder(ctx, orderID)` | `func` | Cancels an MM order in the Order Service via gRPC to update ledger state. |
 | `ListMMOrders(ctx, marketID)` | `func` | Fetches all OPEN + PARTIALLY_FILLED MM-001 orders. Parses `idempotency_key` to extract `LevelID`/`Generation`. Skips orders with missing or unparseable keys. Returns `[]order.OSOrder`. |
+| `RecoverHighestGenerations(ctx, marketID)` | `func` | Queries recent orders across all statuses to recover the highest generation ever assigned to each level, guaranteeing monotonicity across restarts (INV-MM-07). |
 | `GetOrderByClientID(ctx, clientOrderID)` | `func` | Looks up a single order by `client_order_id`. Extracts `marketID` from the level ID for a targeted query. Returns `ErrOrderNotFound` if absent. |
 | `IsAvailable(ctx)` | `func` | Lightweight reachability check. Returns `false` on any error. |
-| `parseLevelFromClientOrderID(id)` | `func` (internal) | Splits `"MM-BTC-USDT-ASK-01-G003"` into `levelID` and `gen`. Searches for the last `-G` suffix. |
+
+---
+
+### [`parse.go`](./parse.go)
+
+| Symbol | Kind | Purpose |
+|:---|:---|:---|
 | `parseMarketFromLevelID(levelID)` | `func` (internal) | Extracts `"BTC-USDT"` from `"MM-BTC-USDT-ASK-01"`. |
+| `parseLevelFromClientOrderID(id)` | `func` (internal) | Splits `"MM-BTC-USDT-ASK-01-G003"` into `levelID` and `gen`. Searches for the last `-G` suffix. |
 | `protoStatusToString(s)` | `func` (internal) | Converts Order Service proto `OrderStatus` enum to string. |
 
 ---
 
 ## Important Notes
 
-- The LE **never calls CancelOrder via gRPC** — cancels are sent as Kafka commands only.
+- Order cancellations trigger both `CancelMMOrder` (gRPC ledger update) and `PublishCancel` (Kafka command directly to ME partition).
 - All OS queries use `account.WalletUUIDStr` (UUID format). The string `"MM-001"` is only used in Kafka payloads.
 - `CreateMMOrder` bypasses the Wallet Service `ReserveFunds` path — MM orders are exempt from balance reservation inside the Order Service.

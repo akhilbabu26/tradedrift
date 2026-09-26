@@ -112,7 +112,8 @@ To achieve high throughput without compromising data integrity, the LE and ME in
 | **Command Ingress** | Kafka `orders.commands` | LE publishes `OrderCreated` and `OrderCancelRequested` | Market partition keying, deterministic ordering. |
 | **Fill Notifications** | Kafka `trades.executed` | ME publishes trade execution fills back to LE | Synchronous `TradeEnvelope` Ack + ring buffer deduplication. |
 | **Health Handshake** | HTTP `/status` | LE probes ME health every 5s | Direct probe independent of trade volume; 3-failure threshold. |
-| **Recovery Ingress** | gRPC `OrderService` | LE queries persistent state on startup | Reconstructs in-memory tracker without maintaining an LE database. |
+| **Order Book Snapshot** | HTTP `/markets/{id}/snapshot` | LE pulls authoritative resting MM orders every cycle | Exact identity match, remaining quantity sync, orphan cancellation, sequence validation. |
+| **Recovery Ingress** | gRPC `OrderService` | LE queries persistent state and max generations on startup | Reconstructs in-memory tracker and enforces monotonic generation counters without an LE DB. |
 
 ---
 

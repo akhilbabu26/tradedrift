@@ -38,7 +38,8 @@ type OrderNode struct {
 	OrderType    OrderType
 	Price        decimal.Decimal // zero for MARKET orders
 	OriginalQty  decimal.Decimal // never changes
-	RemainingQty decimal.Decimal // reduced on every partial fill
-	Timestamp    time.Time       // ME arrival time — determines time priority
-	Element      *list.Element   // back-pointer: list.Remove(node.Element) = O(1)
+	RemainingQty  decimal.Decimal // reduced on every partial fill
+	Timestamp     time.Time       // ME arrival time — determines time priority
+	Element       *list.Element   // back-pointer: list.Remove(node.Element) = O(1)
+	ClientOrderID string          // client/level order ID (e.g. MM-SOL-USDT-BID-01-G008)
 }

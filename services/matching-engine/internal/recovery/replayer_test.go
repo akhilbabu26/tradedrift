@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -31,6 +32,7 @@ type mockDB struct {
 	snapshots       map[string][]byte
 	snapshotsOffset map[string]int64
 	snapshotsCheck  map[string][]byte
+	deleteCalls     []string
 }
 
 func newMockDB() *mockDB {
@@ -44,6 +46,9 @@ func newMockDB() *mockDB {
 }
 
 func (m *mockDB) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
+	if strings.Contains(strings.ToUpper(sql), "DELETE") {
+		m.deleteCalls = append(m.deleteCalls, sql)
+	}
 	return pgconn.CommandTag{}, nil
 }
 
@@ -99,6 +104,15 @@ func (m *mockDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row 
 		return &customRow{vals: []any{uint64(0)}}
 	}
 
+	// E. COUNT(*) check for missing checkpoint validation
+	if sql == "SELECT COUNT(*) FROM market_snapshots WHERE market_id = $1" {
+		marketID := args[0].(string)
+		if _, ok := m.snapshots[marketID]; ok {
+			return &customRow{vals: []any{int64(1)}}
+		}
+		return &customRow{vals: []any{int64(0)}}
+	}
+
 	return &customRow{err: fmt.Errorf("unmocked query: %s", sql)}
 }
 
@@ -146,17 +160,25 @@ func (r *mockRedis) Set(ctx context.Context, key string, value any, expiration t
 }
 
 type mockKafkaReader struct {
-	offset   int64
-	messages []kafkago.Message
-	msgIndex int
+	offset       int64
+	messages     []kafkago.Message
+	msgIndex     int
+	setOffsetErr error
+	fetchErr     error
 }
 
 func (m *mockKafkaReader) SetOffset(offset int64) error {
+	if m.setOffsetErr != nil {
+		return m.setOffsetErr
+	}
 	m.offset = offset
 	return nil
 }
 
 func (m *mockKafkaReader) FetchMessage(ctx context.Context) (kafkago.Message, error) {
+	if m.fetchErr != nil {
+		return kafkago.Message{}, m.fetchErr
+	}
 	if m.msgIndex >= len(m.messages) {
 		return kafkago.Message{}, errors.New("EOF")
 	}
@@ -569,6 +591,202 @@ func TestRecovery_OutputQueueBackpressure(t *testing.T) {
 		t.Errorf("expected engine mode LIVE, got %v", engine.Mode())
 	}
 }
+
+func TestRecovery_CheckpointAheadOfHWM_FailsClosed(t *testing.T) {
+	manager := market.NewMarketManager()
+	_ = manager.Add(market.MarketConfig{
+		MarketID:  "MARKET-A",
+		Partition: 0,
+		TickSize:  decimal.NewFromInt(1),
+		LotSize:   decimal.NewFromInt(1),
+	})
+
+	db := newMockDB()
+	db.checkpoints["orders.commands/0"] = 100 // Postgres checkpoint = 100
+	db.marketSequences["MARKET-A"] = 10
+
+	replayer := recovery.NewReplayer([]string{"localhost:9092"}, "", db, newMockRedis(), manager)
+	replayer.OverrideDiscoveryAndReader(
+		func(topic string) ([]int, error) {
+			return []int{0}, nil
+		},
+		func(brokers []string, topic string, partition int) recovery.KafkaReader {
+			return &mockKafkaReader{}
+		},
+		func(ctx context.Context, topic string, partition int) (int64, error) {
+			return 90, nil // Kafka HWM = 90 (checkpoint 100 >= HWM 90!)
+		},
+	)
+
+	var engineWg sync.WaitGroup
+	err := replayer.ReplayAll(context.Background(), &engineWg)
+	if err == nil {
+		t.Fatal("expected fatal error when checkpoint >= HWM, got nil")
+	}
+	if !strings.Contains(err.Error(), "FATAL") {
+		t.Fatalf("expected error to contain 'FATAL', got: %v", err)
+	}
+
+	// Assert DB state was NOT deleted
+	if len(db.deleteCalls) > 0 {
+		t.Fatalf("expected no DELETE calls on DB, got: %v", db.deleteCalls)
+	}
+	if db.checkpoints["orders.commands/0"] != 100 {
+		t.Fatalf("expected checkpoint to remain preserved, got %d", db.checkpoints["orders.commands/0"])
+	}
+	engine := manager.Get("MARKET-A")
+	if engine.Mode() == market.ModeLive {
+		t.Fatal("engine must not transition to LIVE mode on fatal recovery error")
+	}
+}
+
+func TestRecovery_StartOffsetBehindLWM_FailsClosed(t *testing.T) {
+	manager := market.NewMarketManager()
+	_ = manager.Add(market.MarketConfig{
+		MarketID:  "MARKET-A",
+		Partition: 0,
+		TickSize:  decimal.NewFromInt(1),
+		LotSize:   decimal.NewFromInt(1),
+	})
+
+	db := newMockDB()
+	db.checkpoints["orders.commands/0"] = 1000
+	db.marketSequences["MARKET-A"] = 1001
+
+	// No snapshot exists, so startOffset = 0
+	replayer := recovery.NewReplayer([]string{"localhost:9092"}, "", db, newMockRedis(), manager)
+	replayer.OverrideDiscoveryAndReader(
+		func(topic string) ([]int, error) {
+			return []int{0}, nil
+		},
+		func(brokers []string, topic string, partition int) recovery.KafkaReader {
+			return &mockKafkaReader{}
+		},
+		func(ctx context.Context, topic string, partition int) (int64, error) {
+			return 2000, nil // HWM = 2000
+		},
+	)
+	replayer.OverrideLWM(func(ctx context.Context, topic string, partition int) (int64, error) {
+		return 900, nil // earliest = 900, startOffset = 0 < 900
+	})
+
+	var engineWg sync.WaitGroup
+	err := replayer.ReplayAll(context.Background(), &engineWg)
+	if err == nil {
+		t.Fatal("expected fatal error when startOffset < LWM, got nil")
+	}
+	if !strings.Contains(err.Error(), "FATAL") {
+		t.Fatalf("expected error to contain 'FATAL', got: %v", err)
+	}
+
+	// Assert DB state was NOT deleted
+	if len(db.deleteCalls) > 0 {
+		t.Fatalf("expected no DELETE calls on DB, got: %v", db.deleteCalls)
+	}
+	engine := manager.Get("MARKET-A")
+	if engine.Mode() == market.ModeLive {
+		t.Fatal("engine must not transition to LIVE mode on fatal recovery error")
+	}
+}
+
+func TestRecovery_PartitionFailureHaltsAllEngines(t *testing.T) {
+	manager := market.NewMarketManager()
+	engineA := manager.Add(market.MarketConfig{
+		MarketID:  "MARKET-A",
+		Partition: 0,
+		TickSize:  decimal.NewFromInt(1),
+		LotSize:   decimal.NewFromInt(1),
+	})
+	engineB := manager.Add(market.MarketConfig{
+		MarketID:  "MARKET-B",
+		Partition: 1,
+		TickSize:  decimal.NewFromInt(1),
+		LotSize:   decimal.NewFromInt(1),
+	})
+
+	db := newMockDB()
+	db.checkpoints["orders.commands/0"] = 10
+	db.checkpoints["orders.commands/1"] = 100
+
+	replayer := recovery.NewReplayer([]string{"localhost:9092"}, "", db, newMockRedis(), manager)
+	replayer.OverrideDiscoveryAndReader(
+		func(topic string) ([]int, error) {
+			return []int{0, 1}, nil
+		},
+		func(brokers []string, topic string, partition int) recovery.KafkaReader {
+			if partition == 1 {
+				return &mockKafkaReader{setOffsetErr: errors.New("kafka partition read error")}
+			}
+			return &mockKafkaReader{}
+		},
+		func(ctx context.Context, topic string, partition int) (int64, error) {
+			return 200, nil
+		},
+	)
+
+	var engineWg sync.WaitGroup
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := replayer.ReplayAll(ctx, &engineWg)
+	if err == nil {
+		t.Fatal("expected ReplayAll to fail when partition 1 fails, got nil")
+	}
+
+	engineWg.Wait() // all engines must exit without deadlocking
+
+	if engineA.Mode() != market.ModeRecovery {
+		t.Errorf("expected engine A mode Recovery, got %v", engineA.Mode())
+	}
+	if engineB.Mode() != market.ModeRecovery {
+		t.Errorf("expected engine B mode Recovery, got %v", engineB.Mode())
+	}
+}
+
+func TestRecovery_MissingCheckpoint_WithExistingSnapshots_FailsClosed(t *testing.T) {
+	manager := market.NewMarketManager()
+	_ = manager.Add(market.MarketConfig{
+		MarketID:  "MARKET-A",
+		Partition: 0,
+		TickSize:  decimal.NewFromInt(1),
+		LotSize:   decimal.NewFromInt(1),
+	})
+
+	db := newMockDB()
+	// No checkpoint in db.checkpoints (checkpointOffset will be -1)
+	// But snapshots exist in DB!
+	db.snapshots["MARKET-A"] = []byte(`{"market_id":"MARKET-A","sequence":10}`)
+
+	replayer := recovery.NewReplayer([]string{"localhost:9092"}, "", db, newMockRedis(), manager)
+	replayer.OverrideDiscoveryAndReader(
+		func(topic string) ([]int, error) {
+			return []int{0}, nil
+		},
+		func(brokers []string, topic string, partition int) recovery.KafkaReader {
+			return &mockKafkaReader{}
+		},
+		func(ctx context.Context, topic string, partition int) (int64, error) {
+			return 200, nil
+		},
+	)
+
+	var engineWg sync.WaitGroup
+	err := replayer.ReplayAll(context.Background(), &engineWg)
+	if err == nil {
+		t.Fatal("expected ReplayAll to fail closed when checkpoint is missing but snapshots exist, got nil")
+	}
+	if !strings.Contains(err.Error(), "FATAL") {
+		t.Fatalf("expected error to contain 'FATAL', got: %v", err)
+	}
+
+	// Verify no DELETE queries were executed
+	if len(db.deleteCalls) > 0 {
+		t.Fatalf("expected no DELETE queries executed, got: %v", db.deleteCalls)
+	}
+}
+
+
+
 
 
 

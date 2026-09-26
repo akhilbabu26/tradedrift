@@ -28,57 +28,46 @@ func (r *Replayer) replayPartition(ctx context.Context, topic string, partition 
 	}
 
 	if checkpointOffset < 0 {
-		log.Printf("[recovery] partition=%d — no checkpoint exists, nothing to replay", partition)
-		var marketIDs []string
+		log.Printf("[recovery] partition=%d — no checkpoint exists, verifying clean state", partition)
 		for _, engine := range marketsOnPartition {
-			marketIDs = append(marketIDs, engine.MarketID)
+			var snapCount int64
+			err := r.db.QueryRow(ctx, "SELECT COUNT(*) FROM market_snapshots WHERE market_id = $1", engine.MarketID).Scan(&snapCount)
+			if err == nil && snapCount > 0 {
+				return fmt.Errorf("FATAL: partition=%d has no checkpoint in kafka_checkpoints, but market %s has %d snapshot(s). Refusing to auto-wipe durable state. Operator must investigate.",
+					partition, engine.MarketID, snapCount)
+			}
+			var seq uint64
+			err = r.db.QueryRow(ctx, "SELECT sequence FROM market_sequences WHERE market_id = $1", engine.MarketID).Scan(&seq)
+			if err == nil && seq > 0 {
+				return fmt.Errorf("FATAL: partition=%d has no checkpoint in kafka_checkpoints, but market %s has sequence %d in market_sequences. Refusing to auto-wipe durable state. Operator must investigate.",
+					partition, engine.MarketID, seq)
+			}
 			marketLastSeenOffset[engine.MarketID] = -1
-		}
-		if len(marketIDs) > 0 {
-			_, _ = r.db.Exec(ctx, `DELETE FROM market_sequences WHERE market_id = ANY($1)`, marketIDs)
-			_, _ = r.db.Exec(ctx, `DELETE FROM market_snapshots WHERE market_id = ANY($1)`, marketIDs)
 		}
 		return nil
 	}
 
-	// Pre-flight HWM validation (Issue #3)
+	// Pre-flight HWM and LWM validation (Issue #3)
 	logEndOffset, err := r.queryHWMFunc(ctx, topic, partition)
 	if err != nil {
 		return fmt.Errorf("query partition HWM (partition=%d): %w", partition, err)
 	}
-	if checkpointOffset >= logEndOffset && checkpointOffset >= 0 {
-		// The checkpoint in Postgres is ahead of Kafka's log-end offset (e.g. topic wiped or log truncated).
-		// Treat this as a clean-slate for this partition: reset the stale checkpoint and replay from scratch.
-		log.Printf("[recovery] partition=%d — checkpoint offset %d is at or beyond Kafka log-end offset %d. Clearing stale checkpoint and starting fresh.",
-			partition, checkpointOffset, logEndOffset)
-		if _, err := r.db.Exec(ctx,
-			`DELETE FROM kafka_checkpoints WHERE topic = $1 AND partition = $2`,
-			topic, partition,
-		); err != nil {
-			return fmt.Errorf("clear stale checkpoint (partition=%d): %w", partition, err)
+
+	var earliestOffset int64 = 0
+	if r.queryLWMFunc != nil {
+		if lwm, err := r.queryLWMFunc(ctx, topic, partition); err == nil {
+			earliestOffset = lwm
 		}
-		var marketIDs []string
-		for _, engine := range marketsOnPartition {
-			marketIDs = append(marketIDs, engine.MarketID)
-		}
-		if len(marketIDs) > 0 {
-			if _, err := r.db.Exec(ctx,
-				`DELETE FROM market_snapshots WHERE market_id = ANY($1)`,
-				marketIDs,
-			); err != nil {
-				return fmt.Errorf("clear stale snapshots (partition=%d): %w", partition, err)
-			}
-			if _, err := r.db.Exec(ctx,
-				`DELETE FROM market_sequences WHERE market_id = ANY($1)`,
-				marketIDs,
-			); err != nil {
-				return fmt.Errorf("clear stale sequences (partition=%d): %w", partition, err)
-			}
-		}
-		for _, engine := range marketsOnPartition {
-			marketLastSeenOffset[engine.MarketID] = -1
-		}
-		return nil
+	}
+
+	if (checkpointOffset >= logEndOffset || (checkpointOffset < earliestOffset && earliestOffset > 0)) && checkpointOffset >= 0 {
+		return fmt.Errorf(
+			"FATAL: partition=%d checkpoint offset %d is inconsistent with Kafka "+
+				"(log-end: %d, earliest: %d) — this may indicate a wrong cluster, "+
+				"wrong topic, Kafka data loss, or accidental DB restore. "+
+				"Refusing to auto-reset durable state. Operator must investigate.",
+			partition, checkpointOffset, logEndOffset, earliestOffset,
+		)
 	}
 
 	// 2. Load latest snapshots for each market
@@ -130,6 +119,17 @@ func (r *Replayer) replayPartition(ctx context.Context, topic string, partition 
 		if _, ok := marketLastSeenOffset[engine.MarketID]; !ok {
 			marketLastSeenOffset[engine.MarketID] = startOffset - 1
 		}
+	}
+
+	if startOffset < earliestOffset && earliestOffset > 0 {
+		return fmt.Errorf(
+			"FATAL: partition=%d snapshot requires replay from offset %d, "+
+				"but Kafka earliest available offset is %d (messages expired/purged). "+
+				"Cannot recover — snapshot is too old for available Kafka history. "+
+				"Operator must either restore a more recent snapshot or perform "+
+				"a controlled state reset via admin tooling.",
+			partition, startOffset, earliestOffset,
+		)
 	}
 
 	if startOffset > checkpointOffset {

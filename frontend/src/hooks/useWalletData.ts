@@ -90,12 +90,20 @@ export function useWalletData() {
     setPrices(updatedPrices)
 
     // 3. Fetch daily usage from TopUp API
+    // NOTE: /api/v1/topups/daily-usage returns 404 on some backend versions.
+    // Silently fall back to mock data when the endpoint is unavailable.
     try {
       const usage = await topupApi.getDailyUsage()
       if (usage) {
         setDailyUsage(usage)
       }
-    } catch {
+    } catch (topupErr: unknown) {
+      // 404 = endpoint not yet deployed; silently use mock defaults
+      const status = (topupErr as { response?: { status?: number } })?.response?.status
+      if (status !== 404) {
+        // Only log unexpected errors (not missing-endpoint 404s)
+        console.warn('[useWalletData] getDailyUsage failed:', status)
+      }
       setDailyUsage(MOCK_DAILY_USAGE)
     }
 

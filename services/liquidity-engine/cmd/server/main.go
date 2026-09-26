@@ -96,7 +96,7 @@ func main() {
 	consumer := kafka.NewConsumer(cfg.KafkaBrokers, cfg.KafkaGroupID, tradeEvents, logger)
 
 	// ── Reconciler ────────────────────────────────────────────────────
-	rec := reconciler.NewReconciler(tracker, producer, orderSvc, &cfg, logger, m)
+	rec := reconciler.NewReconciler(tracker, producer, orderSvc, meClient, &cfg, logger, m)
 
 	// ── Engine ────────────────────────────────────────────────────────
 	eng := engine.NewEngine(&cfg, tracker, inv, rec, producer, consumer, tradeEvents, walletSvc, meClient, m, logger)

@@ -45,6 +45,8 @@ main()
   ├─ metrics.New()                  — register all Prometheus gauges, histograms, counters
   │
   ├─ orderservice.NewClient()       — connect gRPC client to Order Service (read-only)
+  ├─ walletservice.NewClient()      — connect gRPC client to Wallet Service
+  ├─ meclient.New()                 — initialize Matching Engine HTTP client (/status & /snapshot)
   │
   ├─ order.NewTracker()             — instantiate in-memory MM order state cache
   ├─ inventory.NewManager()         — instantiate balance and effective available calculator
@@ -52,7 +54,7 @@ main()
   ├─ kafka.NewProducer()            — initialize partition-assigned Kafka writers (orders.commands)
   ├─ kafka.NewConsumer()            — initialize Kafka reader on trades.executed
   │
-  ├─ reconciler.NewReconciler()     — wire tracker, producer, orderSvc, config, metrics
+  ├─ reconciler.NewReconciler()     — wire tracker, producer, orderSvc, meClient, config, metrics
   ├─ engine.NewEngine()             — assemble orchestrator with all subsystems
   │
   ├─ signal.NotifyContext()         — trap SIGINT, SIGTERM for graceful exit
@@ -64,7 +66,7 @@ main()
   │     ├─ Set state: STARTING
   │     ├─ Spawn kafka.Consumer.Run()
   │     ├─ Set state: SYNCING
-  │     ├─ syncAllMarkets() from Order Service
+  │     ├─ syncAllMarkets() from Order Service (including generation recovery)
   │     ├─ Start tickers (reconcile, wallet, pending, cancelling, resync)
   │     ├─ Set state: RUNNING
   │     └─ Process events on loopEvent channel
@@ -73,6 +75,7 @@ main()
         ├─ eng.Run returns on ctx.Done()
         ├─ healthServer.Shutdown(10s timeout)
         ├─ metricsServer.Shutdown(10s timeout)
+        ├─ walletSvc.Close()
         ├─ orderSvc.Close()
         ├─ producer.Close()
         └─ zap.Logger.Sync()
@@ -83,31 +86,32 @@ main()
 ## 4. Subsystem Dependency Wiring
 
 ```
-                         ┌────────────────────────────────────┐
-                         │         cmd/server/main.go         │
-                         └─────────────────┬──────────────────┘
-                                           │
-          ┌────────────────────────────────┼────────────────────────────────┐
-          ▼                                ▼                                ▼
-  ┌──────────────┐                 ┌──────────────┐                 ┌──────────────┐
-  │   metrics    │                 │   orderSvc   │                 │   order.     │
-  │  (Prometheus)│                 │ (Order gRPC) │                 │   Tracker    │
-  └───────┬──────┘                 └───────┬──────┘                 └───────┬──────┘
-          │                                │                                │
-          │                                │              ┌─────────────────┴────────────────┐
-          │                                │              ▼                                  ▼
-          │                                │      ┌──────────────┐                   ┌──────────────┐
-          │                                │      │  inventory.  │                   │  reconciler. │
-          │                                │      │   Manager    │                   │  Reconciler  │
-          │                                │      └───────┬──────┘                   └───────┬──────┘
-          │                                │              │                                  │
-          │                                └──────────────┼──────────────────────────────────┤
-          │                                               │                                  │
-          ▼                                               ▼                                  ▼
-┌────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                           engine.Engine                                            │
-│   (Orchestrates Event Loop, State Machine, Skew Calculation, Reconcile Ticks, and Kafka Streams)   │
-└─────────────────────────────────┬──────────────────────────────────┬───────────────────────────────┘
+                         ┌────────────────────────────────────────────────────────┐
+                         │                   cmd/server/main.go                   │
+                         └───────────────────────────┬────────────────────────────┘
+                                                     │
+          ┌──────────────────┬───────────────────────┼───────────────────────┬──────────────────┐
+          ▼                  ▼                       ▼                       ▼                  ▼
+  ┌──────────────┐   ┌──────────────┐        ┌──────────────┐        ┌──────────────┐   ┌──────────────┐
+  │   metrics    │   │  walletSvc   │        │   orderSvc   │        │   meClient   │   │   order.     │
+  │  (Prometheus)│   │ (Wallet gRPC)│        │ (Order gRPC) │        │ (HTTP probe) │   │   Tracker    │
+  └───────┬──────┘   └───────┬──────┘        └───────┬──────┘        └───────┬──────┘   └───────┬──────┘
+          │                  │                       │                       │                  │
+          │                  │                       │              ┌────────┴────────┐         │
+          │                  │                       │              │                 │         │
+          │                  │                       │              ▼                 │  ┌──────┴──────┐
+          │                  │                       │      ┌──────────────┐          │  ▼             ▼
+          │                  │                       │      │  inventory.  │          │┌───────────┐ ┌───────────┐
+          │                  │                       │      │   Manager    │          ││  order.   │ │reconciler.│
+          │                  │                       │      └───────┬──────┘          ││  Tracker  │ │Reconciler │
+          │                  │                       │              │                 │└─────┬─────┘ └─────┬─────┘
+          │                  │                       └──────────────┼─────────────────┼──────┘             │
+          │                  │                                      │                 ▼                    │
+          ▼                  ▼                                      ▼          ┌──────────────┐            │
+┌──────────────────────────────────────────────────────────────────────────────┤  reconciler. │            │
+│                                           engine.Engine                      │  Reconciler  │◄───────────┘
+│   (Orchestrates Event Loop, State Machine, Skew Calculation, Reconcile Ticks)└──────┬───────┘
+└─────────────────────────────────┬──────────────────────────────────┬────────────────┘
                                   │                                  │
                                   ▼                                  ▼
                            ┌──────────────┐                   ┌──────────────┐

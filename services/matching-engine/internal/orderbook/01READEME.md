@@ -153,22 +153,24 @@ type PriceLevel struct {
 #### `OrderNode` Struct
 ```go
 type OrderNode struct {
-    OrderID      uuid.UUID
-    UserID       uuid.UUID
-    MarketID     string
-    Side         SideType
-    OrderType    OrderType
-    Price        decimal.Decimal // zero for MARKET orders
-    OriginalQty  decimal.Decimal // never changes
-    RemainingQty decimal.Decimal // reduced on every partial fill
-    Timestamp    time.Time       // ME arrival time — determines time priority
-    Element      *list.Element   // back-pointer: list.Remove(node.Element) = O(1)
+    OrderID       uuid.UUID
+    UserID        uuid.UUID
+    MarketID      string
+    Side          SideType
+    OrderType     OrderType
+    Price         decimal.Decimal // zero for MARKET orders
+    OriginalQty   decimal.Decimal // never changes
+    RemainingQty  decimal.Decimal // reduced on every partial fill
+    Timestamp     time.Time       // ME arrival time — determines time priority
+    Element       *list.Element   // back-pointer: list.Remove(node.Element) = O(1)
+    ClientOrderID string          // user/MM-provided client order identity
 }
 ```
 
 - **Heap Allocation Invariant**: `OrderNode` must be heap-allocated because its pointer is stored in `OrderIndex` and the doubly linked list.
 - `RemainingQty` is mutated in-place on partial fills to preserve queue position and time priority.
 - `Element` enables $O(1)$ unlinking from `PriceLevel.Orders`.
+- `ClientOrderID` stores the external or strategy identifier (e.g., `"L1_BUY-G12"`), persisted across snapshots and recovery.
 
 ---
 
@@ -178,19 +180,34 @@ type OrderNode struct {
    - Represents an individual matched trade.
    - Contains `TradeID` (deterministic UUID v5), `MarketID`, `Sequence`, `MakerOrderID`, `TakerOrderID`, `BuyOrderID`, `SellOrderID`, `BuyerUserID`, `SellerUserID`, `Price` (maker price), and `Quantity`.
 
-2. **`CancelledOrder`**:
-   - Emitted when an order is removed from the book.
-   - `Reason` values: `"user_requested"`, `"ioc_expired"`, or `"invalid_order_parameters"`.
+2. **`CancelStatus` & `CancelOutcome`**:
+   - Enums:
+     - `CancelStatusRemovedFromBook = "REMOVED_FROM_BOOK"`: Order was actively resting in the book and unlinked.
+     - `CancelStatusAlreadyAbsent = "ALREADY_ABSENT"`: Order was already completely filled or cancelled.
+   - `CancelOutcome`: Returned by `matcher.Cancel`:
+     ```go
+     type CancelOutcome struct {
+         OrderID           uuid.UUID
+         UserID            uuid.UUID
+         MarketID          string
+         RemainingQuantity decimal.Decimal
+         Status            CancelStatus
+     }
+     ```
 
-3. **`DepthLevel` & `DepthSnapshot`**:
+3. **`CancelledOrder`**:
+   - Container emitted within `MatchResult` for cancellation tracking:
+     - `OrderID`, `UserID`, `MarketID`, `RemainingQuantity`, `Reason` (`"user_requested"`, `"ioc_expired"`, `"invalid_order_parameters"`), `CancelStatus`, `CancelledAt`, `SourceOffset`.
+
+4. **`DepthLevel` & `DepthSnapshot`**:
    - `DepthLevel`: Pairs `Price` with pre-aggregated `Quantity`.
    - `DepthSnapshot`: Carries `MarketID`, `Sequence`, `Bids` slice, `Asks` slice, and `SnapshotAt` timestamp for Redis depth cache projection.
 
-4. **`KafkaPosition`**:
+5. **`KafkaPosition`**:
    - Identifies exact Kafka coordinates (`Topic`, `Partition`, `Offset`).
    - Represents the global durability checkpoint coordinate across partitions.
 
-5. **`MatchResult`**:
+6. **`MatchResult`**:
    - Container emitted for **every single** input event (one-in one-out).
    - Holds `Fills`, `CancelResult`, `DepthSnapshot`, `SourcePosition`, optional `Snapshot`, and recovery barrier markers (`BarrierReached`, `BarrierOffset`).
 
@@ -204,7 +221,7 @@ type OrderNode struct {
 
 #### Structures
 - `BookSnapshot`: Serialized snapshot containing `SchemaVersion`, `MarketID`, `Partition`, `Offset`, `Sequence`, and `Orders []SnapshotOrder`.
-- `SnapshotOrder`: String-serialized representation of an active resting order.
+- `SnapshotOrder`: String-serialized representation of an active resting order: `OrderID`, `UserID`, `Side`, `Price`, `OriginalQty`, `RemainingQty`, `Timestamp`, and `ClientOrderID`.
 
 #### Core Functions
 
@@ -214,7 +231,7 @@ type OrderNode struct {
 - **`Serialize(book *OrderBook, partition int, offset int64) BookSnapshot`**:
   - Traverses `book.Bids` (descending prices) and `book.Asks` (ascending prices).
   - Iterates through `level.Orders` in FIFO order from `Front()` to `Back()`.
-  - Serializes order fields to strings (prices, quantities, RFC3339Nano timestamps).
+  - Serializes order fields to strings (prices, quantities, RFC3339Nano timestamps, and `ClientOrderID`).
   - Returns structured `BookSnapshot`.
 
 - **`Restore(...) error`**:
@@ -224,7 +241,7 @@ type OrderNode struct {
     3. Asserts `snap.Offset <= checkpoint`.
     4. Computes SHA-256 checksum and compares against `expectedChecksum`.
     5. Resets book `Bids`, `Asks`, `OrderIndex`, and restores `book.Sequence = snap.Sequence`.
-    6. Iterates over `snap.Orders`, parses UUIDs, timestamps, and decimals.
+    6. Iterates over `snap.Orders`, parses UUIDs, timestamps, decimals, and restores `ClientOrderID`.
     7. Enforces data integrity: `Side` is BUY/SELL, `OrderType` is LIMIT, `RemainingQty > 0`, `RemainingQty <= OriginalQty`, `Price % TickSize == 0`, `RemainingQty % LotSize == 0`, and no duplicate order IDs.
     8. Calls `InsertRestoredOrder` for each valid order.
 
@@ -245,3 +262,5 @@ type OrderNode struct {
 | `TestRestore_MarketOrderResting_Fails` | Verifies that snapshots containing resting `MARKET` orders fail validation with an error (market orders must be IOC). |
 | `TestRestore_TickSizeViolation_Fails` | Verifies that resting limit orders whose prices violate the market's `TickSize` are rejected during restoration. |
 | `TestRestore_LotSizeViolation_Fails` | Verifies that resting limit orders whose quantities violate the market's `LotSize` are rejected during restoration. |
+| `TestSerialize_ClientOrderID_RoundTrip` | Verifies that serializing and restoring order book snapshots preserves `ClientOrderID` across round-trip serialization. |
+| `TestRestore_LegacySnapshot_NoClientOrderID` | Verifies backward compatibility when restoring legacy snapshots missing `ClientOrderID` fields without errors. |

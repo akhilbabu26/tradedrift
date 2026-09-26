@@ -83,15 +83,18 @@ When the Liquidity Engine boots up, it transitions through `STARTING → SYNCING
    ▼
 [State: SYNCING]
    │
-   ├── 4. Authoritative Order Discovery (reconciler.SyncFromOrderService)
+   ├── 4. Authoritative Order & Generation Discovery (reconciler.SyncFromOrderService)
+   │      - Queries orderSvc.RecoverHighestGenerations(marketID) across all history
+   │      - Calls tracker.SetMaxGeneration(levelID, maxGen) to guarantee monotonicity (INV-MM-07)
    │      - Calls orderSvc.ListMMOrders(marketID) for OPEN & PARTIALLY_FILLED orders
    │      - For each order, parses idempotency_key:
    │          "MM-BTC-USDT-ASK-01-G007" ──> LevelID: "MM-BTC-USDT-ASK-01", Gen: 7
    │      - Seeds tracker in OS_REGISTERED state
    │      - Sets generation baseline (G007) so next order becomes G008
    │
-   ├── 5. Matching Engine Liveness Verification (HTTP meclient.CheckAllMarkets)
+   ├── 5. Matching Engine Liveness & Snapshot Handshake (HTTP meclient)
    │      - Verifies ME HTTP /status endpoint is healthy
+   │      - Queries /markets/{market_id}/snapshot to confirm initial resting orders
    │
    ▼
 [State: RUNNING]
@@ -124,7 +127,15 @@ engine.runReconcileMarket(ctx, marketID)
    │   • Is Order Service sync older than MaxOrderStateStaleness (90s)? ──> SKIP
    │   • Is inventory balance older than MaxBalanceStaleness (60s)? ──> SKIP
    │
-   ├── Step 2: Compute Inventory Skew (inventory.ComputeSkew)
+   ├── Step 2: Matching Engine Snapshot Synchronization (syncWithMESnapshot)
+   │   • Fetches atomic snapshot from ME: GET /markets/{market_id}/snapshot
+   │   • ME state != "LIVE"? ──> Pause cycle, skip diff/apply
+   │   • Confirms matching orders to RESTING and syncs RemainingQty (INV-MM-08)
+   │   • Cancels orphan/stale generation orders in ME (INV-MM-05) via OS gRPC & Kafka
+   │   • Applies 10s grace period and 2-cycle hysteresis for missing orders
+   │   • If missing >= 2 cycles: handleMissingRestingOrder (locks slot as CANCELLING)
+   │
+   ├── Step 3: Compute Inventory Skew (inventory.ComputeSkew)
    │   • EffectiveBase  = projectedBase - tracker.CommittedBase(marketID)
    │   • EffectiveQuote = projectedUSDT - Σ tracker.CommittedQuote(all markets)
    │   • Decision Matrix:
@@ -132,13 +143,13 @@ engine.runReconcileMarket(ctx, marketID)
    │       Effective <= MinThreshold     ──> TierLow      (6 Bids / 6 Asks)
    │       Effective <= CriticalThreshold──> TierCritical (0 levels on that side)
    │
-   ├── Step 3: Mathematical Ladder Generation (pricing.GenerateLadder)
+   ├── Step 4: Mathematical Ladder Generation (pricing.GenerateLadder)
    │   • Computes geometric spread for i = 1..N:
    │       Bid_i = floor(RefPrice / (1 + SpreadBps * i / 10000), TickSize)
    │       Ask_i = floor(RefPrice * (1 + SpreadBps * i / 10000), TickSize)
    │   • Produces desired []PriceLevel (e.g., 24 levels for BTC-USDT)
    │
-   ├── Step 4: Two-Pass Diffing Algorithm (order.Diff)
+   ├── Step 5: Two-Pass Diffing Algorithm (order.Diff)
    │   • Pass 1 (Desired vs Known):
    │       - Missing in tracker? ──> DiffCreate
    │       - RESTING with wrong price or depleted qty? ──> DiffCorrect
@@ -146,9 +157,9 @@ engine.runReconcileMarket(ctx, marketID)
    │   • Pass 2 (Known vs Desired):
    │       - RESTING but not in desired list? ──> DiffCancel
    │
-   └── Step 5: Execute Diff Actions (reconciler.applyEntry)
-       • For each DiffCreate  ──> Crash-Safe 3-Step Creation
-       • For each DiffCancel  ──> Publish Cancel
+   └── Step 6: Execute Diff Actions (reconciler.applyEntry via dispatch.go)
+       • For each DiffCreate  ──> Crash-Safe 3-Step Creation (OS Register → Pending → Kafka)
+       • For each DiffCancel  ──> Publish Cancel (OS gRPC Cancel + Kafka Publish)
        • For each DiffCorrect ──> Cancel Old + Queue Replacement
 ```
 
@@ -290,12 +301,14 @@ To ensure orders never get permanently stuck in transient states, the engine run
            ├── CANCELLED               ──> tracker.Remove()
            └── NOT_FOUND (3x consecutive) ──> Count towards ME liveness failure
 
-2. OS_REGISTERED TIMEOUT (CheckOSRegisteredTimeouts - Every 5s):
-   For each OS_REGISTERED order where time.Since(OSRegisteredSince) > 500ms:
-   ├── ME Health Probe == Healthy?
-   │   └── tracker.SetResting() (Promoted! Order is live in book, counts toward /readyz)
-   └── ME Health Probe == Unhealthy?
-       └── Hold in OS_REGISTERED (Do not promote)
+2. OS_REGISTERED TIMEOUT & SNAPSHOT CONFIRMATION (CheckOSRegisteredTimeouts - Every 5s):
+   Queries ME atomic order book snapshot via meclient.FetchSnapshot(marketID):
+   ├── Order confirmed present in ME snapshot (ConfirmRestingFromSnapshot)?
+   │   └── tracker.SetResting() (Promoted! Order is confirmed live in book, counts toward /readyz)
+   ├── ME Health Probe Unhealthy?
+   │   └── Hold in OS_REGISTERED (Do not promote)
+   └── Unit test fallback (without ME client):
+       └── time.Since(OSRegisteredSince) > timeout ──> tracker.SetResting()
 
 3. CANCELLING TIMEOUT (CheckCancellingTimeouts - Every 15s):
    For each CANCELLING order where time.Since(CancellingSince) > 30s:

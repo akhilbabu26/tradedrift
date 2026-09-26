@@ -10,12 +10,14 @@ import {
   Bell,
   MoreVertical,
   CheckCircle,
-  Trash2,
   BellOff,
+  Loader2,
+  RefreshCw,
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useNotificationStore } from '../../store/notificationStore'
 import type { NotificationIconType } from '../../types/notifications'
+import { formatRelativeTime } from '../../utils/formatters'
 
 function getNotificationIcon(iconType: NotificationIconType) {
   switch (iconType) {
@@ -74,8 +76,12 @@ function getNotificationIcon(iconType: NotificationIconType) {
 export default function NotificationsList() {
   const notifications = useNotificationStore((s) => s.notifications)
   const activeTab = useNotificationStore((s) => s.activeTab)
-  const toggleRead = useNotificationStore((s) => s.toggleRead)
-  const deleteNotification = useNotificationStore((s) => s.deleteNotification)
+  const markAsRead = useNotificationStore((s) => s.markAsRead)
+  const loading = useNotificationStore((s) => s.loading)
+  const error = useNotificationStore((s) => s.error)
+  const hasMore = useNotificationStore((s) => s.hasMore)
+  const loadMore = useNotificationStore((s) => s.loadMore)
+  const isDemoData = useNotificationStore((s) => s.isDemoData)
 
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -95,8 +101,35 @@ export default function NotificationsList() {
     return item.category === activeTab
   })
 
+  // Loading state
+  if (loading && notifications.length === 0) {
+    return (
+      <div className="bg-[#111318] border border-[#1e2530] rounded-xl py-16 flex flex-col items-center gap-3">
+        <Loader2 size={22} className="text-[#10b981] animate-spin" />
+        <p className="text-xs text-slate-500">Loading notifications...</p>
+      </div>
+    )
+  }
+
+  // Error state
+  if (error && notifications.length === 0) {
+    return (
+      <div className="bg-[#111318] border border-[#1e2530] rounded-xl py-16 flex flex-col items-center gap-3">
+        <RefreshCw size={20} className="text-slate-500" />
+        <p className="text-sm font-semibold text-[#f5f7fa]">Unable to load notifications</p>
+        <p className="text-xs text-slate-500">{error}</p>
+      </div>
+    )
+  }
+
   return (
     <div className="bg-[#111318] border border-[#1e2530] rounded-xl overflow-hidden shadow-xs">
+      {isDemoData && (
+        <div className="px-4 py-2 bg-amber-500/10 border-b border-amber-500/20">
+          <p className="text-xs text-amber-400">⚠ Demo data — backend connection unavailable</p>
+        </div>
+      )}
+
       {filtered.length === 0 ? (
         <div className="py-16 px-4 text-center">
           <div className="w-12 h-12 rounded-xl bg-[#0a0b0e] border border-[#1e2530] flex items-center justify-center text-slate-500 mx-auto mb-3">
@@ -142,7 +175,7 @@ export default function NotificationsList() {
                 {/* Relative Timestamp */}
                 <div className="text-right flex-shrink-0">
                   <span className="text-xs text-slate-400 whitespace-nowrap">
-                    {item.timestamp}
+                    {formatRelativeTime ? formatRelativeTime(item.timestamp) : item.timestamp}
                   </span>
                 </div>
 
@@ -156,49 +189,53 @@ export default function NotificationsList() {
                 </div>
 
                 {/* Three-Dot Menu Button & Dropdown */}
-                <div className="relative flex-shrink-0" ref={isMenuOpen ? menuRef : undefined}>
-                  <button
-                    type="button"
-                    onClick={() => setMenuOpenId(isMenuOpen ? null : item.id)}
-                    className="p-1 rounded text-slate-500 hover:text-slate-200 hover:bg-white/5 transition-colors cursor-pointer"
-                    aria-label="More options"
-                  >
-                    <MoreVertical size={15} />
-                  </button>
+                {!item.isRead && (
+                  <div className="relative flex-shrink-0" ref={isMenuOpen ? menuRef : undefined}>
+                    <button
+                      type="button"
+                      onClick={() => setMenuOpenId(isMenuOpen ? null : item.id)}
+                      className="p-1 rounded text-slate-500 hover:text-slate-200 hover:bg-white/5 transition-colors cursor-pointer"
+                      aria-label="More options"
+                    >
+                      <MoreVertical size={15} />
+                    </button>
 
-                  {isMenuOpen && (
-                    <div className="absolute right-0 top-full mt-1 w-36 bg-[#111318] border border-[#1e2530] rounded-lg shadow-xl z-50 py-1 overflow-hidden">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          toggleRead(item.id)
-                          setMenuOpenId(null)
-                          toast.success(item.isRead ? 'Marked as unread' : 'Marked as read')
-                        }}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-300 hover:text-[#f5f7fa] hover:bg-white/5 transition-colors text-left"
-                      >
-                        <CheckCircle size={13} className="text-[#10b981]" />
-                        {item.isRead ? 'Mark unread' : 'Mark as read'}
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          deleteNotification(item.id)
-                          setMenuOpenId(null)
-                          toast.success('Notification removed')
-                        }}
-                        className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-[#ef4444] hover:bg-[#ef4444]/10 transition-colors text-left"
-                      >
-                        <Trash2 size={13} />
-                        Delete
-                      </button>
-                    </div>
-                  )}
-                </div>
+                    {isMenuOpen && (
+                      <div className="absolute right-0 top-full mt-1 w-36 bg-[#111318] border border-[#1e2530] rounded-lg shadow-xl z-50 py-1 overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            markAsRead(item.id)
+                            setMenuOpenId(null)
+                            toast.success('Marked as read')
+                          }}
+                          className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-slate-300 hover:text-[#f5f7fa] hover:bg-white/5 transition-colors text-left"
+                        >
+                          <CheckCircle size={13} className="text-[#10b981]" />
+                          Mark as read
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )
           })}
+        </div>
+      )}
+
+      {/* Load More */}
+      {hasMore && (
+        <div className="px-4 py-3 border-t border-[#1e2530]">
+          <button
+            type="button"
+            onClick={() => loadMore()}
+            disabled={loading}
+            className="w-full py-2 text-xs text-slate-400 hover:text-[#f5f7fa] hover:bg-white/5 rounded-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            {loading ? <Loader2 size={12} className="animate-spin" /> : null}
+            Load more notifications
+          </button>
         </div>
       )}
     </div>

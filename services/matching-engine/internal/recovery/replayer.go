@@ -47,6 +47,7 @@ type Replayer struct {
 	discoverPartitionsFunc func(topic string) ([]int, error)
 	newReaderFunc          func(brokers []string, topic string, partition int) KafkaReader
 	queryHWMFunc           func(ctx context.Context, topic string, partition int) (int64, error)
+	queryLWMFunc           func(ctx context.Context, topic string, partition int) (int64, error)
 }
 
 // NewReplayer returns a configured Replayer.
@@ -100,6 +101,19 @@ func NewReplayer(brokers []string, groupID string, db pgxConn, redis redisConn, 
 		return logEndOffset, nil
 	}
 
+	r.queryLWMFunc = func(ctx context.Context, topic string, partition int) (int64, error) {
+		conn, err := kafkago.DialLeader(ctx, "tcp", brokers[0], topic, partition)
+		if err != nil {
+			return 0, err
+		}
+		defer conn.Close()
+		firstOffset, err := conn.ReadFirstOffset()
+		if err != nil {
+			return 0, err
+		}
+		return firstOffset, nil
+	}
+
 	return r
 }
 
@@ -112,10 +126,26 @@ func (r *Replayer) OverrideDiscoveryAndReader(
 	r.discoverPartitionsFunc = discover
 	r.newReaderFunc = newReader
 	r.queryHWMFunc = queryHWM
+	r.queryLWMFunc = func(ctx context.Context, topic string, partition int) (int64, error) {
+		return 0, nil
+	}
+}
+
+// OverrideLWM allows substituting mock LWM for tests.
+func (r *Replayer) OverrideLWM(queryLWM func(ctx context.Context, topic string, partition int) (int64, error)) {
+	r.queryLWMFunc = queryLWM
 }
 
 // ReplayAll recovers all MarketEngines across all Kafka partitions up to their checkpoints.
-func (r *Replayer) ReplayAll(ctx context.Context, engineWg *sync.WaitGroup) error {
+func (r *Replayer) ReplayAll(ctx context.Context, engineWg *sync.WaitGroup) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			for _, engine := range r.manager.All() {
+				engine.TriggerFatalHalt()
+			}
+		}
+	}()
+
 	topic := intkafka.TopicOrderCommands
 	log.Printf("[recovery] starting recovery for topic=%s...", topic)
 

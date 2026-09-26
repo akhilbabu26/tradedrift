@@ -196,10 +196,10 @@ func (e *Engine) handlePendingCheck(ctx context.Context) {
 			e.marketPaused[mc.MarketID] = false
 		}
 
-		// 3. Promote OS_REGISTERED orders to RESTING after MEConfirmationTimeout,
+		// 3. Confirm OS_REGISTERED orders via ME snapshot,
 		// ONLY IF the Matching Engine is currently probed healthy for this market.
 		meHealthy := (!e.marketPaused[mc.MarketID] && e.consecutiveMETimeouts[mc.MarketID] == 0)
-		e.reconciler.CheckOSRegisteredTimeouts(mc.MarketID, e.cfg.PendingTimeout, meHealthy)
+		e.reconciler.ConfirmOSRegisteredOrders(mc.MarketID, meHealthy)
 	}
 
 	e.publishSnapshot()

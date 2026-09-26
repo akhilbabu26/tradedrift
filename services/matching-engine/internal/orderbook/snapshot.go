@@ -32,14 +32,15 @@ type BookSnapshot struct {
 }
 
 type SnapshotOrder struct {
-	OrderID      string `json:"order_id"`
-	UserID       string `json:"user_id"`
-	Side         string `json:"side"`
-	OrderType    string `json:"order_type"`
-	Price        string `json:"price"`
-	OriginalQty  string `json:"original_qty"`
-	RemainingQty string `json:"remaining_qty"`
-	Timestamp    string `json:"timestamp"` // RFC3339Nano
+	OrderID       string `json:"order_id"`
+	UserID        string `json:"user_id"`
+	ClientOrderID string `json:"client_order_id,omitempty"` // empty for non-MM orders; omitted for backward compat
+	Side          string `json:"side"`
+	OrderType     string `json:"order_type"`
+	Price         string `json:"price"`
+	OriginalQty   string `json:"original_qty"`
+	RemainingQty  string `json:"remaining_qty"`
+	Timestamp     string `json:"timestamp"` // RFC3339Nano
 }
 
 type SnapshotRecord struct {
@@ -75,14 +76,15 @@ func Serialize(book *OrderBook, partition int, offset int64) BookSnapshot {
 			for elem := level.Orders.Front(); elem != nil; elem = elem.Next() {
 				node := elem.Value.(*OrderNode)
 				snap.Orders = append(snap.Orders, SnapshotOrder{
-					OrderID:      node.OrderID.String(),
-					UserID:       node.UserID.String(),
-					Side:         string(node.Side),
-					OrderType:    string(node.OrderType),
-					Price:        node.Price.String(),
-					OriginalQty:  node.OriginalQty.String(),
-					RemainingQty: node.RemainingQty.String(),
-					Timestamp:    node.Timestamp.Format(time.RFC3339Nano),
+					OrderID:       node.OrderID.String(),
+					UserID:        node.UserID.String(),
+					ClientOrderID: node.ClientOrderID,
+					Side:          string(node.Side),
+					OrderType:     string(node.OrderType),
+					Price:         node.Price.String(),
+					OriginalQty:   node.OriginalQty.String(),
+					RemainingQty:  node.RemainingQty.String(),
+					Timestamp:     node.Timestamp.Format(time.RFC3339Nano),
 				})
 			}
 		}
@@ -95,14 +97,15 @@ func Serialize(book *OrderBook, partition int, offset int64) BookSnapshot {
 			for elem := level.Orders.Front(); elem != nil; elem = elem.Next() {
 				node := elem.Value.(*OrderNode)
 				snap.Orders = append(snap.Orders, SnapshotOrder{
-					OrderID:      node.OrderID.String(),
-					UserID:       node.UserID.String(),
-					Side:         string(node.Side),
-					OrderType:    string(node.OrderType),
-					Price:        node.Price.String(),
-					OriginalQty:  node.OriginalQty.String(),
-					RemainingQty: node.RemainingQty.String(),
-					Timestamp:    node.Timestamp.Format(time.RFC3339Nano),
+					OrderID:       node.OrderID.String(),
+					UserID:        node.UserID.String(),
+					ClientOrderID: node.ClientOrderID,
+					Side:          string(node.Side),
+					OrderType:     string(node.OrderType),
+					Price:         node.Price.String(),
+					OriginalQty:   node.OriginalQty.String(),
+					RemainingQty:  node.RemainingQty.String(),
+					Timestamp:     node.Timestamp.Format(time.RFC3339Nano),
 				})
 			}
 		}
@@ -200,10 +203,10 @@ func Restore(
 		if remQty.GreaterThan(origQty) {
 			return fmt.Errorf("invalid snapshot remaining qty %s cannot exceed original qty %s", remQty, origQty)
 		}
-		if !price.Mod(tickSize).IsZero() {
+		if tickSize.GreaterThan(decimal.Zero) && !price.Mod(tickSize).IsZero() {
 			return fmt.Errorf("invalid snapshot order price %s: does not conform to tick size %s", price, tickSize)
 		}
-		if !remQty.Mod(lotSize).IsZero() {
+		if lotSize.GreaterThan(decimal.Zero) && !remQty.Mod(lotSize).IsZero() {
 			return fmt.Errorf("invalid snapshot order remaining qty %s: does not conform to lot size %s", remQty, lotSize)
 		}
 		if OrderType(o.OrderType) == OrderTypeLimit && price.LessThanOrEqual(decimal.Zero) {
@@ -214,15 +217,16 @@ func Restore(
 		}
 
 		node := &OrderNode{
-			OrderID:      oID,
-			UserID:       uID,
-			MarketID:     marketID,
-			Side:         SideType(o.Side),
-			OrderType:    OrderType(o.OrderType),
-			Price:        price,
-			OriginalQty:  origQty,
-			RemainingQty: remQty,
-			Timestamp:    t,
+			OrderID:       oID,
+			UserID:        uID,
+			MarketID:      marketID,
+			ClientOrderID: o.ClientOrderID, // empty string for legacy snapshots — identity falls back to OrderID
+			Side:          SideType(o.Side),
+			OrderType:     OrderType(o.OrderType),
+			Price:         price,
+			OriginalQty:   origQty,
+			RemainingQty:  remQty,
+			Timestamp:     t,
 		}
 		InsertRestoredOrder(book, node)
 	}

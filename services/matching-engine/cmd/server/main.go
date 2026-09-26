@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -18,9 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	kafkago "github.com/segmentio/kafka-go"
-	"github.com/shopspring/decimal"
 
-	"tradedrift/platform/config"
 	"tradedrift/platform/postgres"
 	"tradedrift/services/matching-engine/internal/checkpoint"
 	intkafka "tradedrift/services/matching-engine/internal/kafka"
@@ -34,101 +30,6 @@ func main() {
 		log.Printf("[server] fatal: %v", err)
 		os.Exit(1)
 	}
-}
-
-type appConfig struct {
-	KafkaBrokers []string
-	KafkaGroupID string
-	PostgresDSN  string
-	RedisAddr    string
-	HTTPPort     string
-}
-
-func loadConfig() (appConfig, error) {
-	postgresDSN := os.Getenv("POSTGRES_DSN")
-	if postgresDSN == "" {
-		return appConfig{}, fmt.Errorf("POSTGRES_DSN env var is required")
-	}
-
-	kafkaBrokers := config.GetEnv("KAFKA_BROKERS", "localhost:9092")
-	brokers := strings.Split(kafkaBrokers, ",")
-	for i := range brokers {
-		brokers[i] = strings.TrimSpace(brokers[i])
-	}
-
-	httpPort := config.GetEnv("HTTP_PORT", "8082")
-	if !strings.HasPrefix(httpPort, ":") {
-		httpPort = ":" + httpPort
-	}
-
-	return appConfig{
-		KafkaBrokers: brokers,
-		KafkaGroupID: config.GetEnv("KAFKA_GROUP_ID", "matching-engine-group"),
-		PostgresDSN:  postgresDSN,
-		RedisAddr:    config.GetEnv("REDIS_ADDR", "localhost:6379"),
-		HTTPPort:     httpPort,
-	}, nil
-}
-
-func marketConfigs() ([]market.MarketConfig, error) {
-	btcPart, err := config.GetEnvAsInt("BTC_PARTITION", 0)
-	if err != nil {
-		return nil, fmt.Errorf("BTC_PARTITION: %w", err)
-	}
-
-	ethPart, err := config.GetEnvAsInt("ETH_PARTITION", 1)
-	if err != nil {
-		return nil, fmt.Errorf("ETH_PARTITION: %w", err)
-	}
-
-	solPart, err := config.GetEnvAsInt("SOL_PARTITION", 2)
-	if err != nil {
-		return nil, fmt.Errorf("SOL_PARTITION: %w", err)
-	}
-
-	return []market.MarketConfig{
-		{
-			MarketID:         "BTC-USDT",
-			TickSize:         decimal.RequireFromString("0.01"),
-			LotSize:          decimal.RequireFromString("0.00001"),
-			Partition:        btcPart,
-			SnapshotInterval: 10000,
-			SnapshotDuration: 60 * time.Second,
-		},
-		{
-			MarketID:         "ETH-USDT",
-			TickSize:         decimal.RequireFromString("0.01"),
-			LotSize:          decimal.RequireFromString("0.0001"),
-			Partition:        ethPart,
-			SnapshotInterval: 10000,
-			SnapshotDuration: 60 * time.Second,
-		},
-		{
-			MarketID:         "SOL-USDT",
-			TickSize:         decimal.RequireFromString("0.001"),
-			LotSize:          decimal.RequireFromString("0.01"),
-			Partition:        solPart,
-			SnapshotInterval: 10000,
-			SnapshotDuration: 60 * time.Second,
-		},
-	}, nil
-}
-
-func validateMarketConfigs(configs []market.MarketConfig) error {
-	seenPartitions := make(map[int]string)
-	for _, mc := range configs {
-		if mc.TickSize.LessThanOrEqual(decimal.Zero) {
-			return fmt.Errorf("market %s: TickSize must be > 0 (got %s)", mc.MarketID, mc.TickSize)
-		}
-		if mc.LotSize.LessThanOrEqual(decimal.Zero) {
-			return fmt.Errorf("market %s: LotSize must be > 0 (got %s)", mc.MarketID, mc.LotSize)
-		}
-		if existing, ok := seenPartitions[mc.Partition]; ok {
-			return fmt.Errorf("partition %d assigned to both %s and %s", mc.Partition, existing, mc.MarketID)
-		}
-		seenPartitions[mc.Partition] = mc.MarketID
-	}
-	return nil
 }
 
 func run() error {
@@ -197,9 +98,13 @@ func run() error {
 	manager := market.NewMarketManager()
 	for _, mc := range configs {
 		engine := manager.Add(mc)
+		e := engine
 		// Set fail-stop HaltCallback (Issue #1 & #10)
-		engine.HaltCallback = func() {
-			log.Printf("[server] market engine %s triggered fail-stop halt", mc.MarketID)
+		e.HaltCallback = func() {
+			log.Printf("[server] market engine %s triggered fail-stop halt", e.MarketID)
+			for _, eng := range manager.All() {
+				eng.TriggerFatalHalt()
+			}
 			opCancel()
 		}
 		log.Printf("[server] registered market: %s", mc.MarketID)
@@ -243,6 +148,9 @@ func run() error {
 	pub := publisher.NewPublisher(cfg.KafkaBrokers, rdb, coord, db)
 	pub.HaltCallback = func() {
 		log.Println("[server] publisher initiated fail-stop halt due to fatal side-effect failure")
+		for _, eng := range manager.All() {
+			eng.TriggerFatalHalt()
+		}
 		opCancel()
 	}
 	defer pub.Close()
@@ -262,40 +170,7 @@ func run() error {
 	}
 
 	var isReady atomic.Bool
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "alive"})
-	})
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if !isReady.Load() {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]string{"status": "recovering"})
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
-	})
-	mux.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		markets := make([]string, 0, len(manager.All()))
-		for _, eng := range manager.All() {
-			markets = append(markets, eng.MarketID)
-		}
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"ready":   isReady.Load(),
-			"markets": markets,
-		})
-	})
-
-	httpServer := &http.Server{
-		Addr:    cfg.HTTPPort,
-		Handler: mux,
-	}
+	httpServer := newHTTPServer(cfg.HTTPPort, manager, &isReady)
 
 	go func() {
 		log.Printf("[server] health HTTP server listening on %s", cfg.HTTPPort)
@@ -314,13 +189,22 @@ func run() error {
 		GroupID: cfg.KafkaGroupID,
 		DB:      db,
 	}, manager, coord)
+	consumer.FatalCallback = func() {
+		log.Println("[server] consumer initiated fail-stop halt due to fatal malformed command")
+		for _, eng := range manager.All() {
+			eng.TriggerFatalHalt()
+		}
+		opCancel()
+	}
 	defer consumer.Close()
 
 	consumerCtx, cancelConsumer := context.WithCancel(context.Background())
 	defer cancelConsumer()
 
 	// Consumer Start takes cancel function for fail-closed graceful shutdown (Issue #10)
-	consumer.Start(consumerCtx, cancelConsumer)
+	if err := consumer.Start(consumerCtx, cancelConsumer); err != nil {
+		return fmt.Errorf("start consumer: %w", err)
+	}
 	log.Println("[server] kafka consumer started")
 	isReady.Store(true)
 	log.Println("[server] ✓ all systems live — matching engine ready")

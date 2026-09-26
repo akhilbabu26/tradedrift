@@ -257,10 +257,10 @@ func scanOrder(row pgx.Row) (*repository.Order, error) {
 	return &o, nil
 }
 
-func (r *orderRepository) ApplyTradeFill(ctx context.Context, tradeID, buyOrderID, sellOrderID, fillQty string) error {
+func (r *orderRepository) ApplyTradeFill(ctx context.Context, tradeID, buyOrderID, sellOrderID, fillQty string) ([]string, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin tx for trade fill: %w", err)
+		return nil, fmt.Errorf("begin tx for trade fill: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
@@ -275,9 +275,9 @@ func (r *orderRepository) ApplyTradeFill(ctx context.Context, tradeID, buyOrderI
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Already processed this trade — idempotent no-op
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("record processed trade %s: %w", tradeID, err)
+		return nil, fmt.Errorf("record processed trade %s: %w", tradeID, err)
 	}
 
 	updateQuery := `
@@ -286,25 +286,39 @@ func (r *orderRepository) ApplyTradeFill(ctx context.Context, tradeID, buyOrderI
 		    remaining_quantity = GREATEST(0, remaining_quantity - $1::numeric),
 		    status = CASE 
 		        WHEN remaining_quantity - $1::numeric <= 0 THEN 'FILLED' 
+		        WHEN status = 'CANCELLING' THEN 'CANCELLING'
 		        ELSE 'PARTIALLY_FILLED' 
 		    END,
 		    updated_at = NOW()
-		WHERE id = $2 AND status IN ('OPEN', 'PARTIALLY_FILLED')`
+		WHERE id = $2 AND status IN ('OPEN', 'PARTIALLY_FILLED', 'CANCELLING')
+		RETURNING id, status`
+
+	var filledOrderIDs []string
 
 	if buyOrderID != "" {
-		if _, err := tx.Exec(ctx, updateQuery, fillQty, buyOrderID); err != nil {
-			return fmt.Errorf("update buy order %s: %w", buyOrderID, err)
+		var id, status string
+		err := tx.QueryRow(ctx, updateQuery, fillQty, buyOrderID).Scan(&id, &status)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("update buy order %s: %w", buyOrderID, err)
+		}
+		if status == string(repository.StatusFilled) {
+			filledOrderIDs = append(filledOrderIDs, id)
 		}
 	}
 
 	if sellOrderID != "" {
-		if _, err := tx.Exec(ctx, updateQuery, fillQty, sellOrderID); err != nil {
-			return fmt.Errorf("update sell order %s: %w", sellOrderID, err)
+		var id, status string
+		err := tx.QueryRow(ctx, updateQuery, fillQty, sellOrderID).Scan(&id, &status)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("update sell order %s: %w", sellOrderID, err)
+		}
+		if status == string(repository.StatusFilled) {
+			filledOrderIDs = append(filledOrderIDs, id)
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit trade fill tx: %w", err)
+		return nil, fmt.Errorf("commit trade fill tx: %w", err)
 	}
 
 	r.logger.Info("Applied trade fill to orders",
@@ -312,7 +326,29 @@ func (r *orderRepository) ApplyTradeFill(ctx context.Context, tradeID, buyOrderI
 		zap.String("buy_order_id", buyOrderID),
 		zap.String("sell_order_id", sellOrderID),
 		zap.String("fill_qty", fillQty),
+		zap.Strings("filled_orders", filledOrderIDs),
 	)
-	return nil
+	return filledOrderIDs, nil
 }
+
+func (r *orderRepository) MarkOrderCancelled(ctx context.Context, orderID string) (*repository.Order, error) {
+	query := `
+		UPDATE orders
+		SET status = 'CANCELLED', updated_at = NOW()
+		WHERE id = $1 AND status IN ('OPEN', 'PARTIALLY_FILLED', 'CANCELLING')
+		RETURNING id, user_id, market_id, side, order_type, price, quantity,
+		          filled_quantity, remaining_quantity, status, idempotency_key,
+		          created_at, updated_at`
+
+	row := r.db.QueryRow(ctx, query, orderID)
+	order, err := scanOrder(row)
+	if err != nil {
+		if errors.Is(err, repository.ErrOrderNotFound) {
+			return nil, nil // idempotent: order not in cancellable state or already cancelled
+		}
+		return nil, fmt.Errorf("mark order cancelled: %w", err)
+	}
+	return order, nil
+}
+
 

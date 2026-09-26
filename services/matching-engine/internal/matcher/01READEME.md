@@ -50,14 +50,17 @@ When an incoming taker order only partially fills a resting maker order:
 - **The Anti-Pattern**: Deleting the maker order and re-inserting the remaining quantity. This appends it to the back of the queue, unfairly penalizing the maker and violating time priority.
 - **The Solution ([`PartialFill`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/matcher/matcher.go#L110-L116))**: Subtracts `filledQty` directly from `node.RemainingQty` and `level.TotalQty` in-place. The node's `*list.Element` pointer and original arrival `Timestamp` remain completely unchanged.
 
-### 2.3 $O(1)$ Order Cancellation via Linked-List Back-Pointers
+### 2.3 $O(1)$ Order Cancellation via Linked-List Back-Pointers & Explicit Outcomes
 When a cancellation request arrives for an order ID:
 - Iterating through all price levels and list nodes to locate an order would be $O(N)$, creating a performance bottleneck.
-- **The Solution ([`Cancel`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/matcher/matcher.go#L60-L82))**: The `OrderBook.OrderIndex` map returns the `*OrderNode` in $O(1)$ time. Each `OrderNode` holds a direct `Element *list.Element` back-pointer. Calling `level.Orders.Remove(node.Element)` unlinks the node in $O(1)$ time with zero traversal.
+- **The Solution ([`Cancel`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/matcher/matcher.go#L74-L107))**: The `OrderBook.OrderIndex` map returns the `*OrderNode` in $O(1)$ time. Each `OrderNode` holds a direct `Element *list.Element` back-pointer. Calling `level.Orders.Remove(node.Element)` unlinks the node in $O(1)$ time with zero traversal.
+- **Authoritative Outcome (Never Nil)**: `Cancel` returns an explicit `orderbook.CancelOutcome`:
+  - If found: removes order, decrements level quantity, and returns `CancelStatusRemovedFromBook` with remaining quantity.
+  - If not in book: returns `CancelStatusAlreadyAbsent`, allowing Order Service to consult its database to determine whether fill won or request was redundant.
 
 ### 2.4 Deterministic Trade ID Generation Across Crash Replay (Issue #2)
 During startup recovery or audit replays, if the matching engine generated random UUIDs (`uuid.New()`), trade IDs would differ on every run, breaking reconciliation with downstream ledgers and order services.
-- **The Solution ([`TradeID`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/matcher/matcher.go#L162-L164))**: Generates deterministic RFC 4122 UUID v5 identifiers derived from:
+- **The Solution ([`TradeID`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/matching-engine/internal/matcher/matcher.go#L182-L184))**: Generates deterministic RFC 4122 UUID v5 identifiers derived from:
   $$\text{TradeID} = \text{UUIDv5}(\text{NamespaceDNS}, \text{EventID} : \text{MakerOrderID} : \text{TakerOrderID} : \text{FillIndex})$$
 - Replaying the same Kafka event produces the exact same trade ID every single time.
 
@@ -160,16 +163,19 @@ Market orders execute aggressively against available book depth. If there is ins
 
 ---
 
-### 5.2 `Cancel(book *orderbook.OrderBook, orderID uuid.UUID) *orderbook.OrderNode`
-- **Purpose**: Cancels and removes an active order by ID.
-- **Idempotency**: Safe to call multiple times. Returns `nil` if the order is already filled or not found.
+### 5.2 `Cancel(book *orderbook.OrderBook, orderID uuid.UUID) orderbook.CancelOutcome`
+- **Purpose**: Cancels and removes an active order by ID, returning an explicit outcome (never nil).
+- **Serialization Invariant**: Because a market engine processes events in strict single-threaded offset order:
+  - If cancel arrives at offset $N$ and trade at $N+1 \implies$ cancel wins (`CancelStatus = REMOVED_FROM_BOOK`).
+  - If trade arrives at offset $N$ and cancel at $N+1 \implies$ trade wins (`CancelStatus = ALREADY_ABSENT`).
 - **Logic**:
-  1. Looks up `node := book.OrderIndex[orderID]`. If `nil`, returns `nil`.
-  2. Deducts `node.RemainingQty` from `level.TotalQty`.
-  3. Unlinks node in $O(1)$: `level.Orders.Remove(node.Element)`.
-  4. Deletes entry from `book.OrderIndex`.
-  5. If `level.Orders.Len() == 0`: deletes level from `PriceLevels` map and removes price from `side.SortedPrices`.
-  6. Returns cancelled `node`.
+  1. Looks up `node := book.OrderIndex[orderID]`.
+  2. If `node == nil`: returns `CancelOutcome{Status: CancelStatusAlreadyAbsent, OrderID: orderID}`.
+  3. Deducts `node.RemainingQty` from `level.TotalQty`.
+  4. Unlinks node in $O(1)$: `level.Orders.Remove(node.Element)`.
+  5. Deletes entry from `book.OrderIndex`.
+  6. If `level.Orders.Len() == 0`: deletes level from `PriceLevels` map and removes price from `side.SortedPrices`.
+  7. Returns `CancelOutcome{Status: CancelStatusRemovedFromBook, OrderID: node.OrderID, UserID: node.UserID, MarketID: node.MarketID, RemainingQuantity: node.RemainingQty}`.
 
 ---
 
@@ -251,19 +257,24 @@ Market orders execute aggressively against available book depth. If there is ins
 | `TestInsert_BidsSortedDescending` | Confirms bids sort descending (e.g. 101, 100, 99). |
 | `TestInsert_AsksSortedAscending` | Confirms asks sort ascending (e.g. 99, 100, 101). |
 | `TestInsert_Duplicate_Ignored` | Confirms duplicate insertions of the same order ID are ignored. |
-| `TestCancel_RemovesFromBook` | Confirms cancelling an order removes it from index, level, and sorted prices. |
-| `TestCancel_NotFound_ReturnsNil` | Confirms cancelling unknown order IDs is a safe no-op returning `nil`. |
-| `TestCancel_Idempotent` | Confirms secondary cancel calls return `nil`. |
+| `TestCancel_RemovesFromBook` | Confirms cancelling an order removes it from index, level, and sorted prices with `REMOVED_FROM_BOOK`. |
+| `TestCancel_NotFound_ReturnsAlreadyAbsent` | Confirms cancelling unknown order IDs is a safe no-op returning `ALREADY_ABSENT`. |
+| `TestCancel_Idempotent` | Confirms secondary cancel calls return `ALREADY_ABSENT`. |
 | `TestCancel_LevelRetainedIfOtherOrdersExist` | Confirms price level remains active if other orders still exist at that price. |
 | `TestMatch_LimitBuyVsSellLimit_FullFill` | Tests full match between crossing limit buy and sell orders. |
+| `TestMatch_LimitSellVsBuyLimit_FullFill` | Tests full match between crossing limit sell and buy orders. |
 | `TestMatch_NoMatch_PricesDoNotOverlap` | Confirms non-crossing orders produce zero fills and rest in book. |
 | `TestMatch_PartialFill_MakerPartiallyConsumed` | Tests partial fill where maker remains in book at same queue position. |
 | `TestMatch_PartialFill_TakerPartiallyFills_RemainsRests` | Tests partial fill where taker remainder rests in book. |
 | `TestMatch_MultiLevelSweep` | Tests sweeping multiple price levels in a single aggressive order. |
+| `TestMatch_Market_FullFill` | Tests market order execution fully consuming available depth. |
 | `TestMatch_Market_IOC_PartialFill` | Tests IOC market orders where unfilled remainder is dropped without resting. |
+| `TestMatch_Market_NoLiquidity` | Tests market orders against an empty book returning zero fills. |
 | `TestMatch_RecoveryMode_ReturnsNil` | Confirms `ModeRecovery` updates book state while returning `nil` fills. |
 | `TestMatch_TimePriority_EarlierOrderFillsFirst` | Confirms orders placed earlier execute before newer orders at the same price. |
 | `TestMatch_MakerPrice_AlwaysUsed` | Confirms trades execute at the maker's price, not the taker's price. |
 | `TestMatch_FillIDs_BuyerSeller_Correct` | Confirms buyer/seller user IDs and order IDs are correctly attributed in fills. |
+| `TestGetDepth_EmptyBook` | Confirms `GetDepth` handles empty books safely with zero slices. |
 | `TestGetDepth_ReturnsTopN` | Confirms `GetDepth` returns requested top $N$ levels with correct aggregated volume. |
+| `TestGetDepth_TotalQtyCorrect` | Confirms `GetDepth` aggregates volume accurately across multiple orders at the same price level. |
 | `TestMatch_DeterministicTradeIDs` | Confirms replaying identical matching inputs produces 100% identical Trade IDs (UUID v5). |

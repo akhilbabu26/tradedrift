@@ -18,7 +18,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -104,6 +103,19 @@ func (c *Client) CreateMMOrder(ctx context.Context, marketID, side, price, quant
 		OriginalQty:   origQty,
 		RemainingQty:  remQty,
 	}, nil
+}
+
+// CancelMMOrder cancels an MM order in the Order Service via gRPC.
+// Transitions the order to CANCELLING and publishes OrderCancelRequested outbox event.
+func (c *Client) CancelMMOrder(ctx context.Context, orderID string) error {
+	_, err := c.client.CancelOrder(ctx, &orderv1.CancelOrderRequest{
+		OrderId: orderID,
+		UserId:  account.WalletUUIDStr,
+	})
+	if err != nil {
+		return fmt.Errorf("cancel MM order in Order Service: %w", err)
+	}
+	return nil
 }
 
 // ListMMOrders fetches all OPEN and PARTIALLY_FILLED orders for MM-001 on a given market.
@@ -221,15 +233,6 @@ func (c *Client) GetOrderByClientID(ctx context.Context, clientOrderID string) (
 	return nil, ErrOrderNotFound
 }
 
-func parseMarketFromLevelID(levelID string) string {
-	// Format: "MM-BTC-USDT-ASK-01" -> "BTC-USDT"
-	parts := strings.Split(levelID, "-")
-	if len(parts) >= 4 && parts[0] == "MM" {
-		return parts[1] + "-" + parts[2]
-	}
-	return ""
-}
-
 // IsAvailable performs a lightweight check to confirm the Order Service is reachable.
 // Any error (DeadlineExceeded, Internal, Unavailable, etc.) returns false.
 func (c *Client) IsAvailable(ctx context.Context) bool {
@@ -242,44 +245,27 @@ func (c *Client) IsAvailable(ctx context.Context) bool {
 	return err == nil
 }
 
-// parseLevelFromClientOrderID extracts the LevelID and generation from a client_order_id.
-// Format: "MM-BTC-USDT-ASK-01-G003" -> ("MM-BTC-USDT-ASK-01", 3, nil)
-func parseLevelFromClientOrderID(clientOrderID string) (levelID string, gen int, err error) {
-	lastG := -1
-	for i := len(clientOrderID) - 1; i >= 2; i-- {
-		if clientOrderID[i-1] == '-' && clientOrderID[i] == 'G' {
-			lastG = i - 1
-			break
+// RecoverHighestGenerations queries recent orders for the market maker across all statuses
+// to recover the highest generation ever assigned to each level, guaranteeing monotonicity across restarts (INV-MM-07).
+func (c *Client) RecoverHighestGenerations(ctx context.Context, marketID string) (map[string]int, error) {
+	resp, err := c.client.ListOrders(ctx, &orderv1.ListOrdersRequest{
+		UserId:   account.WalletUUIDStr,
+		MarketId: marketID,
+		Limit:    500,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("ListOrders for generation recovery on %s: %w", marketID, err)
+	}
+
+	maxGens := make(map[string]int)
+	for _, o := range resp.Orders {
+		if o.IdempotencyKey == "" {
+			continue
+		}
+		levelID, gen, err := parseLevelFromClientOrderID(o.IdempotencyKey)
+		if err == nil && gen > maxGens[levelID] {
+			maxGens[levelID] = gen
 		}
 	}
-	if lastG < 0 {
-		return "", 0, fmt.Errorf("no '-G' generation suffix found in %q", clientOrderID)
-	}
-
-	levelID = clientOrderID[:lastG]
-	genStr := clientOrderID[lastG+2:]
-
-	_, err = fmt.Sscanf(genStr, "%d", &gen)
-	if err != nil {
-		return "", 0, fmt.Errorf("invalid generation %q in %q: %w", genStr, clientOrderID, err)
-	}
-	return levelID, gen, nil
-}
-
-// protoStatusToString converts an Order Service proto status to string.
-func protoStatusToString(s orderv1.OrderStatus) string {
-	switch s {
-	case orderv1.OrderStatus_ORDER_STATUS_OPEN:
-		return "OPEN"
-	case orderv1.OrderStatus_ORDER_STATUS_PARTIALLY_FILLED:
-		return "PARTIALLY_FILLED"
-	case orderv1.OrderStatus_ORDER_STATUS_FILLED:
-		return "FILLED"
-	case orderv1.OrderStatus_ORDER_STATUS_CANCELLING:
-		return "CANCELLING"
-	case orderv1.OrderStatus_ORDER_STATUS_CANCELLED:
-		return "CANCELLED"
-	default:
-		return "UNKNOWN"
-	}
+	return maxGens, nil
 }

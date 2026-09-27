@@ -74,10 +74,22 @@ export default function PortfolioChart({ data }: PortfolioChartProps) {
     }
 
     const series = chart.addSeries(AreaSeries, seriesOptions)
-
     seriesRef.current = series
-    series.setData(data.map(d => ({ ...d, time: d.time as UTCTimestamp })))
-    chart.timeScale().fitContent()
+
+    if (Array.isArray(data) && data.length > 0) {
+      const validPoints = data
+        .filter((d) => d && typeof d.time === 'number' && !isNaN(d.time) && typeof d.value === 'number' && !isNaN(d.value))
+        .map((d) => ({
+          time: Math.floor(d.time) as UTCTimestamp,
+          value: d.value,
+        }))
+        .sort((a, b) => (a.time as number) - (b.time as number))
+
+      if (validPoints.length > 0) {
+        series.setData(validPoints)
+        chart.timeScale().fitContent()
+      }
+    }
 
     // ── ResizeObserver — chart responds to container size changes ──────────
     const resizeObserver = new ResizeObserver((entries) => {

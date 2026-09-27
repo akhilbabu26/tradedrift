@@ -16,6 +16,8 @@ export default {
           border: '#1e2530',
           muted: '#0d1117',
         },
+      },
+      backgroundColor: {
         base: '#0a0b0e',
       },
       fontFamily: {

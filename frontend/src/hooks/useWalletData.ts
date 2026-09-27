@@ -32,11 +32,21 @@ export interface WalletSummaryMetrics {
   lockedPct: number
 }
 
+const TOPUP_STORAGE_KEY = 'tradedrift_user_topup_history'
+
+function loadSavedTopUps(): TopUpHistoryItem[] {
+  try {
+    const raw = localStorage.getItem(TOPUP_STORAGE_KEY)
+    if (raw) return JSON.parse(raw)
+  } catch {}
+  return []
+}
+
 export function useWalletData() {
   const [rawBalances, setRawBalances] = useState<Balance[]>([])
   const [prices, setPrices] = useState<Record<string, string>>(DEFAULT_ASSET_PRICES)
   const [dailyUsage, setDailyUsage] = useState<DailyUsage>(MOCK_DAILY_USAGE)
-  const [topUpHistory] = useState<TopUpHistoryItem[]>(MOCK_TOPUP_HISTORY)
+  const [topUpHistory, setTopUpHistory] = useState<TopUpHistoryItem[]>(() => loadSavedTopUps())
   const [loading, setLoading] = useState(true)
   const [isDemoData, setIsDemoData] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -57,8 +67,14 @@ export function useWalletData() {
         loadedBalances = res
         isMock = false
       } else {
-        loadedBalances = MOCK_WALLET_BALANCES
-        isMock = true
+        // Authentic empty balances for supported assets
+        loadedBalances = [
+          { asset: 'BTC', availableBalance: '0.00000000', reservedBalance: '0.00000000' },
+          { asset: 'ETH', availableBalance: '0.00000000', reservedBalance: '0.00000000' },
+          { asset: 'SOL', availableBalance: '0.00000000', reservedBalance: '0.00000000' },
+          { asset: 'USDT', availableBalance: '0.00', reservedBalance: '0.00' },
+        ]
+        isMock = false
       }
     } catch (err) {
       console.warn('Wallet API unreachable, falling back to mock balances', err)
@@ -196,6 +212,31 @@ export function useWalletData() {
     try {
       const order = await topupApi.createTopUp({ inrAmount }, idempotencyKey)
       if (order && order.topupId) {
+        const newTx: TopUpHistoryItem = {
+          id: order.topupId,
+          inrAmount: order.inrAmount,
+          usdtAmount: String(order.usdtAmount || '0.00'),
+          status: (order.status || 'COMPLETED') as any,
+          date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+          time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
+          method: 'UPI / Simulator',
+        }
+        setTopUpHistory((prev) => {
+          const updated = [newTx, ...prev]
+          try {
+            localStorage.setItem(TOPUP_STORAGE_KEY, JSON.stringify(updated))
+          } catch {}
+          return updated
+        })
+
+        // Refresh daily usage from API to reflect updated reserved/consumed quota
+        try {
+          const freshUsage = await topupApi.getDailyUsage()
+          if (freshUsage) {
+            setDailyUsage(freshUsage)
+          }
+        } catch {}
+
         toast.success(
           `Top-up order created: ₹${order.inrAmount} for ${order.usdtAmount} USDT (${order.status}). Note: Simulation mode active.`,
           { duration: 5000 }

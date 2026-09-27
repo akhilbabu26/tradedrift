@@ -8,8 +8,8 @@ interface TopUpVirtualUSDTCardProps {
 }
 
 export default function TopUpVirtualUSDTCard({ dailyUsage, onTopUpClick }: TopUpVirtualUSDTCardProps) {
-  const consumedUsdt = dailyUsage.consumedInr * 1000
-  const dailyLimitUsdt = dailyUsage.dailyLimitInr * 1000
+  const consumedUsdt = (dailyUsage?.consumedInr ?? 0) * 1000
+  const dailyLimitUsdt = (dailyUsage?.dailyLimitInr ?? dailyUsage?.limitInr ?? 10) * 1000
   const usagePct = dailyLimitUsdt > 0
     ? Math.min(100, Math.round((consumedUsdt / dailyLimitUsdt) * 100))
     : 0

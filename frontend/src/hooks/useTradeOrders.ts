@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { orderApi, type Order, type CreateOrderRequest } from '../api/order'
-import { wsService } from '../api/ws'
+import { wsService, WsChannels } from '../api/ws'
+import { useAuthStore } from '../store/authStore'
 import toast from 'react-hot-toast'
 
 export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) {
@@ -27,10 +28,13 @@ export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) 
   useEffect(() => {
     fetchOrders()
 
-    const unsub = wsService.subscribe('orders', () => {
-      fetchOrders()
-      onBalanceRefresh?.()
-    })
+    const userId = useAuthStore.getState().user?.userId
+    const unsub = userId
+      ? wsService.subscribe(WsChannels.userNotifications(userId), () => {
+          fetchOrders()
+          onBalanceRefresh?.()
+        })
+      : () => {}
 
     return () => {
       unsub()

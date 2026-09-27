@@ -1,7 +1,7 @@
 export type OrderSide = 'BUY' | 'SELL'
 export type OrderType = 'Limit' | 'Market'
 
-export type OrderStatusUI = 'Open' | 'Filled' | 'Canceled' | 'Partially Filled' | 'Expired'
+export type OrderStatusUI = 'Open' | 'Filled' | 'Canceled' | 'Partially Filled' | 'Expired' | 'Rejected'
 
 export interface OpenOrderItem {
   id: string
@@ -36,6 +36,7 @@ export interface TradeFillItem {
   id: string
   tradeId: string          // e.g. "trd_9a1f2c"
   time: string
+  timestamp?: number       // Epoch milliseconds for exact date filtering
   pair: string
   side: OrderSide
   executionPrice: string   // e.g. "67,150.00"

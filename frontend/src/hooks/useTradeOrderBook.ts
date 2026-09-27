@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { wsService } from '../api/ws'
+import { wsService, WsChannels } from '../api/ws'
 import type { OrderBookSnapshot, OrderBookLevel } from '../types/trade'
 import { getMockOrderBook } from '../data/tradeMock'
 import { toDecimal } from '../utils/decimal'
@@ -34,17 +34,25 @@ function processLevels(rawLevels: [string, string][], reverse = false): OrderBoo
   }))
 }
 
+const EMPTY_ORDER_BOOK: OrderBookSnapshot = {
+  asks: [],
+  bids: [],
+  spread: '0.00',
+  spreadPercent: '0.000',
+  lastPrice: '0.00',
+}
+
 export function useTradeOrderBook(marketId: string) {
-  const [orderBook, setOrderBook] = useState<OrderBookSnapshot>(() => getMockOrderBook(marketId))
+  const [orderBook, setOrderBook] = useState<OrderBookSnapshot>(EMPTY_ORDER_BOOK)
   const [isDemoData, setIsDemoData] = useState(false)
   const [precision, setPrecision] = useState(2)
 
   useEffect(() => {
     let mounted = true
     setIsDemoData(false)
-    setOrderBook(getMockOrderBook(marketId))
+    setOrderBook(EMPTY_ORDER_BOOK)
 
-    const stream = `orderbook.${marketId}`
+    const stream = WsChannels.orderbook(marketId)
     const unsubscribe = wsService.subscribe(stream, (data: any) => {
       if (!mounted) return
       if (data && (data.bids || data.asks)) {

@@ -33,8 +33,8 @@ export default function OrdersPage() {
   }, [])
 
   return (
-    <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa]">
-      <div className="max-w-[1600px] mx-auto px-4 lg:px-6 py-6 flex flex-col gap-6">
+    <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa] flex flex-col justify-between">
+      <div className="max-w-[1600px] w-full mx-auto px-4 lg:px-6 py-6 flex flex-col gap-6">
         {/* Subtle Demo State Notice when running in dev without backend */}
         {isDemoData && (
           <div className="bg-[#111318] border border-amber-500/30 rounded-lg px-4 py-2.5 flex items-center justify-between text-xs text-amber-400 select-none">
@@ -64,10 +64,9 @@ export default function OrdersPage() {
 
         {/* 5. Trade Fills Section */}
         <TradeFillsSection fills={tradeFills} />
-
-        {/* 6. Page Footer */}
-        <OrdersFooter />
       </div>
+
+      <OrdersFooter />
     </div>
   )
 }

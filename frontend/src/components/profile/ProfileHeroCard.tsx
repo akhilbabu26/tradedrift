@@ -9,9 +9,9 @@ export default function ProfileHeroCard() {
   const [isEditOpen, setIsEditOpen] = useState(false)
   const [copied, setCopied] = useState(false)
 
-  const displayName = user?.username || 'Akhil Babu'
-  const email = user?.email || 'akhilbabu.go@gmail.com'
-  const fullUserId = user?.userId || 'usr_0191e4a2-7b3f-7120-9c4d-8e9a2b5c7d1e'
+  const displayName = user?.username || 'Trader'
+  const email = user?.email || 'account@tradedrift.local'
+  const fullUserId = user?.userId || 'usr_anonymous'
 
   const initials = displayName
     .split(' ')
@@ -19,7 +19,7 @@ export default function ProfileHeroCard() {
     .map((n) => n[0])
     .join('')
     .substring(0, 2)
-    .toUpperCase() || 'AB'
+    .toUpperCase() || 'TD'
 
   const displayUserId = fullUserId.length > 28
     ? `${fullUserId.substring(0, 24)}...`

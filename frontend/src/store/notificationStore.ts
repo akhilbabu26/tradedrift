@@ -25,6 +25,7 @@
 import { create } from 'zustand'
 import { notificationsApi, type BackendNotification } from '../api/notifications'
 import { wsService, WsChannels } from '../api/ws'
+import { useAuthStore } from './authStore'
 import { extractApiError } from '../utils/apiError'
 import { INITIAL_NOTIFICATIONS } from '../data/notificationsMock'
 import type { NotificationItem, NotificationCategory } from '../types/notifications'
@@ -66,10 +67,10 @@ function mapBackendNotification(n: BackendNotification): NotificationItem {
   return {
     id: n.id,
     category,
-    title: n.title,
-    description: n.message,   // backend field is "message"
-    timestamp: n.created_at,
-    isRead: n.is_read,
+    title: n.title || 'Notification',
+    description: n.message || '',
+    timestamp: n.createdAt ?? n.created_at ?? new Date().toISOString(),
+    isRead: n.isRead ?? n.is_read ?? false,
     iconType,
   }
 }
@@ -121,14 +122,17 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     try {
       const res = await notificationsApi.getNotifications({ limit: 20 })
       const mapped = (res.notifications || []).map(mapBackendNotification)
-      const unread = mapped.filter((n) => !n.isRead).length
+      const nextTime = res.nextCursorTime ?? res.next_cursor_time ?? null
+      const nextId = res.nextCursorId ?? res.next_cursor_id ?? null
+      const unread = res.unreadCount !== undefined ? res.unreadCount : mapped.filter((n) => !n.isRead).length
+      const hasMore = res.hasMore !== undefined ? res.hasMore : !!(nextTime && nextId)
 
       set({
         notifications: reset ? mapped : [...get().notifications, ...mapped],
         unreadCount: unread,
-        nextCursorTime: res.next_cursor_time ?? null,
-        nextCursorId: res.next_cursor_id ?? null,
-        hasMore: !!(res.next_cursor_time && res.next_cursor_id),
+        nextCursorTime: nextTime,
+        nextCursorId: nextId,
+        hasMore,
         loading: false,
         isDemoData: false,
         error: null,
@@ -162,14 +166,17 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       })
       const mapped = (res.notifications || []).map(mapBackendNotification)
       const combined = [...notifications, ...mapped]
-      const unread = combined.filter((n) => !n.isRead).length
+      const nextTime = res.nextCursorTime ?? res.next_cursor_time ?? null
+      const nextId = res.nextCursorId ?? res.next_cursor_id ?? null
+      const unread = res.unreadCount !== undefined ? res.unreadCount : combined.filter((n) => !n.isRead).length
+      const hasMorePages = res.hasMore !== undefined ? res.hasMore : !!(nextTime && nextId)
 
       set({
         notifications: combined,
         unreadCount: unread,
-        nextCursorTime: res.next_cursor_time ?? null,
-        nextCursorId: res.next_cursor_id ?? null,
-        hasMore: !!(res.next_cursor_time && res.next_cursor_id),
+        nextCursorTime: nextTime,
+        nextCursorId: nextId,
+        hasMore: hasMorePages,
         loading: false,
       })
     } catch (err) {
@@ -218,7 +225,8 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       wsUnsub = null
     }
 
-    const channel = WsChannels.userNotifications()
+    const user = useAuthStore.getState().user
+    const channel = WsChannels.userNotifications(user?.userId)
     const handler = (data: unknown) => {
       try {
         const n = data as BackendNotification

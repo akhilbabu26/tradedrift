@@ -140,9 +140,15 @@ export default function OrderBook({
         <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
           {/* Asks — lowest ask (closest to mid) at the bottom */}
           <div className="flex-1 min-h-0 overflow-y-auto flex flex-col justify-end">
-            {[...orderBook.asks].reverse().map((level, i) => (
-              <DepthRow key={`ask-${i}`} level={level} side="ask" />
-            ))}
+            {orderBook.asks.length === 0 ? (
+              <div className="py-6 text-center text-[10px] text-slate-600 font-mono">
+                No active asks
+              </div>
+            ) : (
+              [...orderBook.asks].reverse().map((level, i) => (
+                <DepthRow key={`ask-${i}`} level={level} side="ask" />
+              ))
+            )}
           </div>
 
           {/* Mid price / spread */}
@@ -155,9 +161,15 @@ export default function OrderBook({
 
           {/* Bids */}
           <div className="flex-1 min-h-0 overflow-y-auto">
-            {orderBook.bids.map((level, i) => (
-              <DepthRow key={`bid-${i}`} level={level} side="bid" />
-            ))}
+            {orderBook.bids.length === 0 ? (
+              <div className="py-6 text-center text-[10px] text-slate-600 font-mono">
+                No active bids
+              </div>
+            ) : (
+              orderBook.bids.map((level, i) => (
+                <DepthRow key={`bid-${i}`} level={level} side="bid" />
+              ))
+            )}
           </div>
         </div>
       ) : (

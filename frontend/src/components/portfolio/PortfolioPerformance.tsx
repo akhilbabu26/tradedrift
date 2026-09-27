@@ -23,7 +23,7 @@ export default function PortfolioPerformance({
   onToggleBtcBenchmark,
 }: Props) {
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl flex flex-col overflow-hidden">
+    <div className="bg-[#111318] border border-[#1e2530] rounded-xl flex flex-col overflow-hidden h-full">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-5 pt-5 pb-4 border-b border-[#1e2530] flex-shrink-0">
         <div>

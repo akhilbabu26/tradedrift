@@ -1,13 +1,36 @@
 import { useState } from 'react'
 import { Smartphone, Monitor, RotateCw, LogOut } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { DEMO_ACTIVE_SESSIONS } from '../../data/settingsMock'
 import SignOutAllModal from './SignOutAllModal'
+
+function getCurrentSession() {
+  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+  let device = 'Desktop Browser'
+  let isMobile = false
+
+  if (/Windows/i.test(ua)) device = 'Chrome on Windows'
+  else if (/Macintosh|Mac OS X/i.test(ua)) device = 'Chrome on macOS'
+  else if (/Linux/i.test(ua)) device = 'Browser on Linux'
+  else if (/iPhone|iPad/i.test(ua)) { device = 'Safari on iOS'; isMobile = true }
+  else if (/Android/i.test(ua)) { device = 'Chrome on Android'; isMobile = true }
+
+  return [
+    {
+      id: 'current-session',
+      device,
+      type: isMobile ? ('mobile' as const) : ('desktop' as const),
+      location: 'Local Network / Gateway :8080',
+      ip: '127.0.0.1 (Current)',
+      lastActive: 'Active now',
+      isCurrent: true,
+    },
+  ]
+}
 
 export default function ActiveSessionsCard() {
   const [isSignOutAllOpen, setIsSignOutAllOpen] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
-  const [sessions] = useState(DEMO_ACTIVE_SESSIONS)
+  const [sessions, setSessions] = useState(() => getCurrentSession())
 
   const handleRefresh = () => {
     setRefreshing(true)

@@ -45,7 +45,7 @@ export default function AssetAllocation({ allocation, totalValue }: Props) {
   })
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl flex flex-col overflow-hidden">
+    <div className="bg-[#111318] border border-[#1e2530] rounded-xl flex flex-col overflow-hidden h-full">
       {/* Header */}
       <div className="px-5 pt-4 pb-3 border-b border-[#1e2530] flex-shrink-0">
         <div className="flex items-center justify-between flex-wrap gap-2">

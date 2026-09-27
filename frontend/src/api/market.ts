@@ -47,8 +47,20 @@ export interface Candle {
 
 /** Enriched market overview entry from /api/v1/markets/overview */
 export interface MarketOverview {
-  market: Market
-  ticker: Ticker24h
+  market_id: string
+  symbol: string
+  base_asset: string
+  quote_asset: string
+  last_price: string
+  high_24h: string
+  low_24h: string
+  volume_24h: string
+  quote_volume_24h: string
+  price_change_24h_percent: string
+  trend?: string[]
+  // Legacy / fallback shape support
+  market?: Market
+  ticker?: Ticker24h
   last_candle?: Candle
 }
 
@@ -58,8 +70,11 @@ export interface MarketTrade {
   market_id: string
   price: string
   quantity: string
-  taker_side: string   // "BUY" | "SELL"
-  created_at: string
+  executed_at?: string
+  base_asset?: string
+  quote_asset?: string
+  taker_side?: string   // "BUY" | "SELL"
+  created_at?: string
 }
 
 export const marketApi = {

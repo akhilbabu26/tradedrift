@@ -1,12 +1,18 @@
 import { useState } from 'react'
 import { BarChart3, ChevronDown, Mail, TrendingUp, ShieldCheck, FileText, ArrowUp } from 'lucide-react'
-import { NOTIFICATION_STATS_MOCK } from '../../data/notificationsMock'
+import { useNotificationStore } from '../../store/notificationStore'
 
 export default function NotificationStatsCard() {
   const [range, setRange] = useState('Last 30 Days')
   const [dropdownOpen, setDropdownOpen] = useState(false)
+  const notifications = useNotificationStore((s) => s.notifications)
 
   const ranges = ['Last 7 Days', 'Last 30 Days', 'Last 90 Days']
+
+  const total = notifications.length
+  const trading = notifications.filter((n) => n.category === 'trading').length
+  const account = notifications.filter((n) => n.category === 'account').length
+  const system = notifications.filter((n) => n.category === 'system').length
 
   return (
     <div className="bg-[#111318] border border-[#1e2530] rounded-xl p-4 sm:p-5">
@@ -63,11 +69,11 @@ export default function NotificationStatsCard() {
           </div>
           <p className="text-[11px] text-slate-400">Total Notifications</p>
           <p className="text-xl font-bold text-[#f5f7fa] tracking-tight mt-0.5">
-            {NOTIFICATION_STATS_MOCK.total}
+            {total}
           </p>
           <p className="text-[10px] font-medium text-[#10b981] flex items-center gap-0.5 mt-1">
             <ArrowUp size={10} />
-            {NOTIFICATION_STATS_MOCK.totalChange}
+            Active
           </p>
         </div>
 
@@ -80,11 +86,11 @@ export default function NotificationStatsCard() {
           </div>
           <p className="text-[11px] text-slate-400">Trading Alerts</p>
           <p className="text-xl font-bold text-[#f5f7fa] tracking-tight mt-0.5">
-            {NOTIFICATION_STATS_MOCK.trading}
+            {trading}
           </p>
           <p className="text-[10px] font-medium text-[#10b981] flex items-center gap-0.5 mt-1">
             <ArrowUp size={10} />
-            {NOTIFICATION_STATS_MOCK.tradingChange}
+            Trading
           </p>
         </div>
 
@@ -97,11 +103,11 @@ export default function NotificationStatsCard() {
           </div>
           <p className="text-[11px] text-slate-400">Account Updates</p>
           <p className="text-xl font-bold text-[#f5f7fa] tracking-tight mt-0.5">
-            {NOTIFICATION_STATS_MOCK.account}
+            {account}
           </p>
           <p className="text-[10px] font-medium text-[#10b981] flex items-center gap-0.5 mt-1">
             <ArrowUp size={10} />
-            {NOTIFICATION_STATS_MOCK.accountChange}
+            Account
           </p>
         </div>
 
@@ -114,11 +120,11 @@ export default function NotificationStatsCard() {
           </div>
           <p className="text-[11px] text-slate-400">System Messages</p>
           <p className="text-xl font-bold text-[#f5f7fa] tracking-tight mt-0.5">
-            {NOTIFICATION_STATS_MOCK.system}
+            {system}
           </p>
           <p className="text-[10px] font-medium text-slate-500 flex items-center gap-0.5 mt-1">
             <ArrowUp size={10} />
-            {NOTIFICATION_STATS_MOCK.systemChange}
+            System
           </p>
         </div>
       </div>

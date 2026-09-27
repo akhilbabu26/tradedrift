@@ -26,13 +26,15 @@ export const MOCK_WALLET_BALANCES: Balance[] = [
 
 export const MOCK_DAILY_USAGE: DailyUsage = {
   userId: 'mock-user-123',
+  limitInr: 10,
   dailyLimitInr: 10,
   reservedInr: 0,
-  consumedInr: 2.5,
-  availableInr: 7.5,
+  consumedInr: 0,
+  remainingInr: 10,
+  availableInr: 10,
   timezone: 'Asia/Kolkata (IST)',
-  usageDate: '2026-09-18',
-  resetsAt: '2026-09-19T00:00:00+05:30',
+  usageDate: new Date().toISOString().split('T')[0],
+  resetsAt: '',
 }
 
 export const MOCK_TOPUP_HISTORY: TopUpHistoryItem[] = [

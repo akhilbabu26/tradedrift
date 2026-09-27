@@ -35,8 +35,8 @@ export default function WalletPage() {
   }, [])
 
   return (
-    <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa]">
-      <div className="max-w-[1600px] mx-auto px-4 lg:px-6 py-6 flex flex-col gap-6">
+    <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa] flex flex-col justify-between">
+      <div className="max-w-[1600px] w-full mx-auto px-4 lg:px-6 py-6 flex flex-col gap-6">
         {/* Demo Data Banner when offline/fallback */}
         {isDemoData && (
           <div className="bg-[#111318] border border-amber-500/30 rounded-lg px-4 py-2.5 flex items-center justify-between text-xs text-amber-400">
@@ -61,9 +61,9 @@ export default function WalletPage() {
         </div>
 
         {/* 3. Main 2-Column Section (Assets Table + Top-Up Panel) */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start lg:items-stretch">
           {/* Assets Table (approx 65% / 8 cols) */}
-          <div className="lg:col-span-8">
+          <div className="lg:col-span-8 flex flex-col">
             <WalletAssets
               assets={enrichedAssets}
               loading={loading}
@@ -72,8 +72,8 @@ export default function WalletPage() {
           </div>
 
           {/* Top-Up Panel (approx 35% / 4 cols) */}
-          <div className="lg:col-span-4" ref={topUpPanelRef}>
-            <div id="top-up-panel" className="transition-all duration-300 rounded-xl">
+          <div className="lg:col-span-4 flex flex-col" ref={topUpPanelRef}>
+            <div id="top-up-panel-wrapper" className="transition-all duration-300 rounded-xl h-full flex flex-col">
               <TopUpPanel
                 dailyUsage={dailyUsage}
                 onPay={initiateTopUp}
@@ -85,10 +85,9 @@ export default function WalletPage() {
 
         {/* 4. Top-Up Transaction Ledger */}
         <TopUpHistory history={topUpHistory} />
-
-        {/* 5. Wallet Page Footer */}
-        <WalletFooter />
       </div>
+
+      <WalletFooter />
     </div>
   )
 }

@@ -13,7 +13,7 @@ import MainNavbar from './MainNavbar'
  */
 export default function MainLayout() {
   return (
-    <div className="min-h-screen w-full flex flex-col bg-[#0a0b0e] text-[#f5f7fa] font-sans antialiased">
+    <div className="h-screen w-full flex flex-col bg-[#0a0b0e] text-[#f5f7fa] font-sans antialiased overflow-hidden">
       {/* Shared application navbar */}
       <MainNavbar />
 

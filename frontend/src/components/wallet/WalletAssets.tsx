@@ -40,7 +40,7 @@ export default function WalletAssets({ assets, loading = false, onTopUpClick }: 
   }
 
   return (
-    <div className="rounded-xl border border-[#1e2530] bg-[#111318] overflow-hidden shadow-sm flex flex-col">
+    <div className="rounded-xl border border-[#1e2530] bg-[#111318] overflow-hidden shadow-sm flex flex-col h-full">
       {/* ── Header ─────────────────────────────────────────────────────────── */}
       <div className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-[#1e2530]">
         <h2 className="text-base font-bold text-[#f5f7fa]" style={{ color: '#f5f7fa' }}>
@@ -78,7 +78,7 @@ export default function WalletAssets({ assets, loading = false, onTopUpClick }: 
       </div>
 
       {/* ── Table ──────────────────────────────────────────────────────────── */}
-      <div className="overflow-x-auto">
+      <div className="overflow-x-auto flex-1 flex flex-col">
         <table className="w-full text-left text-xs">
           <thead>
             <tr className="border-b border-[#1e2530]/80 text-slate-300 uppercase tracking-wider text-[11px] font-semibold">

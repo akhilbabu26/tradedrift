@@ -23,8 +23,8 @@ export default function PortfolioPage() {
   } = usePortfolioData()
 
   return (
-    <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa]">
-      <div className="max-w-[1600px] mx-auto px-4 lg:px-6 py-5 flex flex-col gap-4">
+    <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa] flex flex-col justify-between">
+      <div className="max-w-[1600px] w-full mx-auto px-4 lg:px-6 py-5 flex flex-col gap-4">
 
         {isDemoData && (
           <div className="bg-[#111318] border border-amber-500/30 rounded-lg px-4 py-2 flex items-center gap-2 text-xs text-amber-400">
@@ -37,7 +37,7 @@ export default function PortfolioPage() {
 
         <PortfolioMetrics metrics={metrics} loading={loading} />
 
-        <div className="grid grid-cols-1 lg:grid-cols-[1.6fr_1fr] gap-4 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-[1.6fr_1fr] gap-4 items-stretch">
           <PortfolioPerformance
             data={performanceData}
             timeframe={timeframe}
@@ -55,9 +55,9 @@ export default function PortfolioPage() {
 
         <PortfolioInsights insights={insights} />
 
-        <PortfolioFooter />
-
       </div>
+
+      <PortfolioFooter />
     </div>
   )
 }

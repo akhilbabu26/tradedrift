@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { walletApi, type Balance } from '../api/wallet'
-import { wsService } from '../api/ws'
+import { wsService, WsChannels } from '../api/ws'
+import { useAuthStore } from '../store/authStore'
 
 export function useTradeBalances() {
   const [balances, setBalances] = useState<Balance[]>([])
@@ -27,10 +28,13 @@ export function useTradeBalances() {
   useEffect(() => {
     fetchBalances()
 
-    // Listen to orders stream to auto-refresh balances on fills
-    const unsub = wsService.subscribe('orders', () => {
-      fetchBalances()
-    })
+    // Listen to user notifications stream to auto-refresh balances on fills
+    const userId = useAuthStore.getState().user?.userId
+    const unsub = userId
+      ? wsService.subscribe(WsChannels.userNotifications(userId), () => {
+          fetchBalances()
+        })
+      : () => {}
 
     return () => {
       unsub()

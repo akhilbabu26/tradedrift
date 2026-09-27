@@ -1,10 +1,15 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import type { TradeFillItem, OrderFilterState } from '../../types/orders'
 import OrderFilters from './OrderFilters'
 
 interface TradeFillsSectionProps {
   fills: TradeFillItem[]
 }
+
+const PAGE_SIZE = 10
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000
+const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000
 
 export default function TradeFillsSection({ fills }: TradeFillsSectionProps) {
   const [filters, setFilters] = useState<OrderFilterState>({
@@ -13,18 +18,46 @@ export default function TradeFillsSection({ fills }: TradeFillsSectionProps) {
     timeRange: 'Last 7 Days',
     searchQuery: '',
   })
+  const [currentPage, setCurrentPage] = useState<number>(1)
+
+  // Reset to page 1 whenever filters change
+  useEffect(() => {
+    setCurrentPage(1)
+  }, [filters.market, filters.side, filters.timeRange, filters.searchQuery])
 
   // Filter trade fills
   const filteredFills = useMemo(() => {
+    const now = Date.now()
+
     return fills.filter((item) => {
-      // Market filter
-      if (filters.market !== 'All Markets' && item.pair !== filters.market) {
-        return false
+      // Market filter (normalizes slashes and dashes e.g. "BTC/USDT" vs "BTC-USDT")
+      if (filters.market && filters.market !== 'All Markets') {
+        const itemMarket = item.pair.replace('-', '/').toUpperCase()
+        const targetMarket = filters.market.replace('-', '/').toUpperCase()
+        if (itemMarket !== targetMarket) {
+          return false
+        }
       }
+
       // Side filter
-      if (filters.side !== 'All Sides' && item.side !== filters.side) {
-        return false
+      if (filters.side && filters.side !== 'All Sides') {
+        if (item.side.toUpperCase() !== filters.side.toUpperCase()) {
+          return false
+        }
       }
+
+      // Time range filter
+      const itemTs = item.timestamp || 0
+      if (filters.timeRange === 'Last 7 Days') {
+        if (itemTs > 0 && now - itemTs > SEVEN_DAYS_MS) {
+          return false
+        }
+      } else if (filters.timeRange === 'Last 30 Days') {
+        if (itemTs > 0 && now - itemTs > THIRTY_DAYS_MS) {
+          return false
+        }
+      }
+
       // Search query (matches pair, tradeId, or amount)
       if (filters.searchQuery.trim()) {
         const q = filters.searchQuery.trim().toLowerCase()
@@ -38,6 +71,14 @@ export default function TradeFillsSection({ fills }: TradeFillsSectionProps) {
       return true
     })
   }, [fills, filters])
+
+  // Pagination calculation
+  const totalRecords = filteredFills.length
+  const totalPages = Math.max(1, Math.ceil(totalRecords / PAGE_SIZE))
+  const validCurrentPage = Math.min(currentPage, totalPages)
+  const startIndex = (validCurrentPage - 1) * PAGE_SIZE
+  const endIndex = Math.min(startIndex + PAGE_SIZE, totalRecords)
+  const paginatedFills = filteredFills.slice(startIndex, endIndex)
 
   return (
     <div
@@ -74,7 +115,7 @@ export default function TradeFillsSection({ fills }: TradeFillsSectionProps) {
             </tr>
           </thead>
           <tbody className="divide-y divide-[#1e2530]/50 font-sans">
-            {filteredFills.length === 0 ? (
+            {paginatedFills.length === 0 ? (
               <tr>
                 <td colSpan={8} className="py-10 text-center">
                   <div className="flex flex-col items-center justify-center">
@@ -88,7 +129,7 @@ export default function TradeFillsSection({ fills }: TradeFillsSectionProps) {
                 </td>
               </tr>
             ) : (
-              filteredFills.map((fill) => {
+              paginatedFills.map((fill) => {
                 const isBuy = fill.side === 'BUY'
 
                 return (
@@ -147,6 +188,60 @@ export default function TradeFillsSection({ fills }: TradeFillsSectionProps) {
           </tbody>
         </table>
       </div>
+
+      {/* ── Pagination Controls ────────────────────────────────────────────── */}
+      {totalRecords > 0 && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-[#1e2530] text-xs">
+          {/* Result Summary */}
+          <span className="text-slate-400 font-medium">
+            Showing <span className="text-[#f5f7fa] font-semibold">{startIndex + 1}</span>–
+            <span className="text-[#f5f7fa] font-semibold">{endIndex}</span> of{' '}
+            <span className="text-[#f5f7fa] font-semibold">{totalRecords}</span>
+          </span>
+
+          {/* Pagination Buttons */}
+          <div className="flex items-center gap-1.5 select-none">
+            <button
+              type="button"
+              disabled={validCurrentPage <= 1}
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-[#1e2530] bg-[#0a0b0e] text-slate-300 hover:text-[#f5f7fa] hover:border-slate-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
+            >
+              <ChevronLeft size={13} />
+              <span>Previous</span>
+            </button>
+
+            {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => {
+              const isActive = pageNum === validCurrentPage
+              return (
+                <button
+                  key={pageNum}
+                  type="button"
+                  onClick={() => setCurrentPage(pageNum)}
+                  className={`w-7 h-7 rounded-md text-xs font-mono font-semibold transition-colors cursor-pointer flex items-center justify-center ${
+                    isActive
+                      ? 'bg-[#10b981] text-[#0a0b0e] shadow-sm font-bold'
+                      : 'border border-[#1e2530] bg-[#0a0b0e] text-slate-400 hover:text-[#f5f7fa] hover:border-slate-600'
+                  }`}
+                >
+                  {pageNum}
+                </button>
+              )
+            })}
+
+            <button
+              type="button"
+              disabled={validCurrentPage >= totalPages}
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-[#1e2530] bg-[#0a0b0e] text-slate-300 hover:text-[#f5f7fa] hover:border-slate-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
+            >
+              <span>Next</span>
+              <ChevronRight size={13} />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
+

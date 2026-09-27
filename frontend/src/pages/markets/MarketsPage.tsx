@@ -31,8 +31,8 @@ export default function MarketsPage() {
   } = useMarkets()
 
   return (
-    <div className="flex-1 overflow-y-auto">
-    <div className="max-w-[1600px] mx-auto px-4 lg:px-6 py-5">
+    <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa] flex flex-col justify-between">
+      <div className="max-w-[1600px] w-full mx-auto px-4 lg:px-6 py-5">
 
       {/* ── Page Header ─────────────────────────────────────────────────────── */}
       <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 mb-5">
@@ -70,11 +70,9 @@ export default function MarketsPage() {
         filter={filter}
         hasSearch={search.trim().length > 0}
       />
+      </div>
 
-      {/* ── Footer ──────────────────────────────────────────────────────────── */}
       <MarketsFooter />
-
-    </div>
     </div>
   )
 }

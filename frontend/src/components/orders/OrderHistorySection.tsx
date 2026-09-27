@@ -207,15 +207,25 @@ export default function OrderHistorySection({ history }: OrderHistorySectionProp
 
                     {/* Status Badge */}
                     <td className="py-3 px-3 whitespace-nowrap">
-                      {isFilled ? (
+                      {item.status === 'Filled' ? (
                         <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#10b981]/10 border border-[#10b981]/25 text-[#10b981] text-[11px] font-semibold">
                           <span className="w-1.5 h-1.5 rounded-full bg-[#10b981]" />
                           Filled
                         </span>
-                      ) : isCanceled ? (
+                      ) : item.status === 'Canceled' ? (
                         <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-white/[0.04] border border-white/10 text-slate-400 text-[11px] font-semibold">
                           <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
                           Canceled
+                        </span>
+                      ) : item.status === 'Partially Filled' ? (
+                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[11px] font-semibold">
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                          Partially Filled
+                        </span>
+                      ) : item.status === 'Rejected' ? (
+                        <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-[#ef4444]/10 border border-[#ef4444]/25 text-[#ef4444] text-[11px] font-semibold">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#ef4444]" />
+                          Rejected
                         </span>
                       ) : (
                         <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 text-[11px] font-semibold">
@@ -264,48 +274,46 @@ export default function OrderHistorySection({ history }: OrderHistorySectionProp
             <span className="text-[#f5f7fa] font-semibold">{totalRecords}</span>
           </span>
 
-          {/* Pagination Buttons (if > 1 page) */}
-          {totalPages > 1 && (
-            <div className="flex items-center gap-1.5 select-none">
-              <button
-                type="button"
-                disabled={validCurrentPage <= 1}
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-[#1e2530] bg-[#0a0b0e] text-slate-300 hover:text-[#f5f7fa] hover:border-slate-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
-              >
-                <ChevronLeft size={13} />
-                <span>Previous</span>
-              </button>
+          {/* Pagination Buttons */}
+          <div className="flex items-center gap-1.5 select-none">
+            <button
+              type="button"
+              disabled={validCurrentPage <= 1}
+              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-[#1e2530] bg-[#0a0b0e] text-slate-300 hover:text-[#f5f7fa] hover:border-slate-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
+            >
+              <ChevronLeft size={13} />
+              <span>Previous</span>
+            </button>
 
-              {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => {
-                const isActive = pageNum === validCurrentPage
-                return (
-                  <button
-                    key={pageNum}
-                    type="button"
-                    onClick={() => setCurrentPage(pageNum)}
-                    className={`w-7 h-7 rounded-md text-xs font-mono font-semibold transition-colors cursor-pointer flex items-center justify-center ${
-                      isActive
-                        ? 'bg-[#10b981] text-[#0a0b0e] shadow-sm font-bold'
-                        : 'border border-[#1e2530] bg-[#0a0b0e] text-slate-400 hover:text-[#f5f7fa] hover:border-slate-600'
-                    }`}
-                  >
-                    {pageNum}
-                  </button>
-                )
-              })}
+            {Array.from({ length: totalPages }, (_, i) => i + 1).map((pageNum) => {
+              const isActive = pageNum === validCurrentPage
+              return (
+                <button
+                  key={pageNum}
+                  type="button"
+                  onClick={() => setCurrentPage(pageNum)}
+                  className={`w-7 h-7 rounded-md text-xs font-mono font-semibold transition-colors cursor-pointer flex items-center justify-center ${
+                    isActive
+                      ? 'bg-[#10b981] text-[#0a0b0e] shadow-sm font-bold'
+                      : 'border border-[#1e2530] bg-[#0a0b0e] text-slate-400 hover:text-[#f5f7fa] hover:border-slate-600'
+                  }`}
+                >
+                  {pageNum}
+                </button>
+              )
+            })}
 
-              <button
-                type="button"
-                disabled={validCurrentPage >= totalPages}
-                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-[#1e2530] bg-[#0a0b0e] text-slate-300 hover:text-[#f5f7fa] hover:border-slate-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
-              >
-                <span>Next</span>
-                <ChevronRight size={13} />
-              </button>
-            </div>
-          )}
+            <button
+              type="button"
+              disabled={validCurrentPage >= totalPages}
+              onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md border border-[#1e2530] bg-[#0a0b0e] text-slate-300 hover:text-[#f5f7fa] hover:border-slate-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors font-medium cursor-pointer"
+            >
+              <span>Next</span>
+              <ChevronRight size={13} />
+            </button>
+          </div>
         </div>
       )}
     </div>

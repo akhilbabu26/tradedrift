@@ -11,11 +11,11 @@ import VerifyEmailPage from './pages/auth/VerifyEmailPage'
 import ForgotPasswordPage from './pages/auth/ForgotPasswordPage'
 import ResetPasswordPage from './pages/auth/ResetPasswordPage'
 import DashboardPage from './pages/dashboard/DashboardPage'
-import MarketsPage from './pages/markets/MarketsPage'
 import TradePage from './pages/trade/TradePage'
+import MarketsPage from './pages/markets/MarketsPage'
+import PortfolioPage from './pages/portfolio/PortfolioPage'
 import WalletPage from './pages/wallet/WalletPage'
 import OrdersPage from './pages/orders/OrdersPage'
-import PortfolioPage from './pages/portfolio/PortfolioPage'
 import AnalyticsPage from './pages/analytics/AnalyticsPage'
 import SettingsPage from './pages/settings/SettingsPage'
 import NotificationsPage from './pages/notifications/NotificationsPage'
@@ -51,9 +51,6 @@ export default function App() {
          *
          * ProtectedRoute guards authentication. MainLayout provides the
          * shared navbar and page shell. Child routes render inside <Outlet />.
-         *
-         * Adding a new authenticated page is as simple as:
-         *   <Route path="/trade" element={<TradePage />} />
          */}
         <Route
           element={
@@ -62,13 +59,16 @@ export default function App() {
             </ProtectedRoute>
           }
         >
+          {/* Authenticated Core Routes */}
           <Route path="/dashboard" element={<DashboardPage />} />
-          <Route path="/markets" element={<MarketsPage />} />
           <Route path="/trade" element={<TradePage />} />
+          <Route path="/markets" element={<MarketsPage />} />
+          <Route path="/portfolio" element={<PortfolioPage />} />
           <Route path="/wallet" element={<WalletPage />} />
           <Route path="/orders" element={<OrdersPage />} />
-          <Route path="/portfolio" element={<PortfolioPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
+
+          {/* Dedicated Account & Setting Pages */}
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/notifications" element={<NotificationsPage />} />
           <Route path="/profile" element={<ProfilePage />} />

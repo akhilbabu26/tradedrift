@@ -22,28 +22,53 @@
 import client from './client'
 
 // ── Backend response DTOs ────────────────────────────────────────────────────
-// Field names verified against backend docs. Backend returns snake_case.
+// Backend returns camelCase (with fallback support for snake_case).
 
 export interface BackendNotification {
   id: string
-  type: string       // e.g. "ORDER_FILLED", "ORDER_CANCELLED", "WELCOME", "SYSTEM"
+  userId?: string
+  type: string       // e.g. "TRADE_FILL", "SYSTEM", "ACCOUNT", "INFO", "ORDER_FILLED"
   title: string
-  message: string    // notification body text (backend field is "message")
-  is_read: boolean
-  created_at: string // RFC3339 timestamp
+  message: string    // notification body text
+  referenceId?: string
+  referenceType?: string
+  isRead?: boolean
+  is_read?: boolean
+  readAt?: string
+  read_at?: string
+  createdAt?: string // RFC3339 timestamp
+  created_at?: string
 }
 
 export interface NotificationsListResponse {
   notifications: BackendNotification[]
-  next_cursor_time?: string  // RFC3339; present when more pages exist
-  next_cursor_id?: string    // UUID; present when more pages exist
+  nextCursorTime?: string  // RFC3339; present when more pages exist
+  next_cursor_time?: string
+  nextCursorId?: string    // UUID; present when more pages exist
+  next_cursor_id?: string
+  hasMore?: boolean
+  unreadCount?: number
 }
 
 export interface GetNotificationsParams {
   limit?: number       // default: 20, max: 100
-  cursor_time?: string // RFC3339 — from previous next_cursor_time
-  cursor_id?: string   // UUID — from previous next_cursor_id
+  cursor_time?: string // RFC3339 — from previous nextCursorTime
+  cursor_id?: string   // UUID — from previous nextCursorId
   type?: string        // filter by notification type
+}
+
+export interface MarkAsReadResponse {
+  notificationId: string
+  isRead: boolean
+  readAt: string
+}
+
+export interface MarkAllAsReadResponse {
+  markedCount: number
+}
+
+export interface UnreadCountResponse {
+  unreadCount: number
 }
 
 // ── API service ──────────────────────────────────────────────────────────────
@@ -56,8 +81,7 @@ export const notificationsApi = {
    */
   getNotifications: async (params?: GetNotificationsParams): Promise<NotificationsListResponse> => {
     const res = await client.get<NotificationsListResponse>('/api/v1/notifications', { params })
-    // Backend may wrap in { data: ... }; handle both shapes
-    const body = (res.data as unknown as { data?: NotificationsListResponse }) 
+    const body = (res.data as unknown as { data?: NotificationsListResponse })
     return body?.data ?? res.data
   },
 
@@ -66,8 +90,9 @@ export const notificationsApi = {
    * Marks a single notification as read.
    * Requires: Bearer JWT
    */
-  markAsRead: async (id: string): Promise<void> => {
-    await client.post(`/api/v1/notifications/${id}/read`)
+  markAsRead: async (id: string): Promise<MarkAsReadResponse> => {
+    const res = await client.post<MarkAsReadResponse>(`/api/v1/notifications/${id}/read`)
+    return res.data
   },
 
   /**
@@ -75,7 +100,18 @@ export const notificationsApi = {
    * Marks all notifications as read for the authenticated user.
    * Requires: Bearer JWT
    */
-  markAllAsRead: async (): Promise<void> => {
-    await client.post('/api/v1/notifications/read-all')
+  markAllAsRead: async (): Promise<MarkAllAsReadResponse> => {
+    const res = await client.post<MarkAllAsReadResponse>('/api/v1/notifications/read-all')
+    return res.data
+  },
+
+  /**
+   * GET /api/v1/notifications/unread-count
+   * Returns unread notifications count for badges.
+   * Requires: Bearer JWT
+   */
+  getUnreadCount: async (): Promise<UnreadCountResponse> => {
+    const res = await client.get<UnreadCountResponse>('/api/v1/notifications/unread-count')
+    return res.data
   },
 }

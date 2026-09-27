@@ -22,7 +22,7 @@
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { marketApi, type Market, type Ticker24h } from '../api/market'
+import { marketApi, type Market, type Ticker24h, type MarketOverview } from '../api/market'
 import { wsService, WsChannels } from '../api/ws'
 import { toDecimal } from '../utils/decimal'
 import { getAssetMetadata } from '../utils/marketMetadata'
@@ -57,6 +57,42 @@ const ASSET_META: Record<string, { iconLabel: string; iconColor: string; name: s
   SOL: { iconLabel: 'S', iconColor: '#9945ff', name: 'Solana' },
 }
 
+const FAVORITES_STORAGE_KEY = 'tradedrift_market_favorites'
+
+function loadSavedFavorites(): Set<string> {
+  try {
+    const raw = localStorage.getItem(FAVORITES_STORAGE_KEY)
+    if (raw) {
+      const arr = JSON.parse(raw)
+      if (Array.isArray(arr) && arr.length > 0) return new Set(arr)
+    }
+  } catch { /* ignore */ }
+  return new Set(['BTC/USDT'])
+}
+
+/** Normalize array of price string points into 0..1 values for Sparkline */
+function normalizeTrend(trend: string[] | undefined, targetPoints = 16): number[] {
+  if (!trend || trend.length < 2) return [0.5, 0.5]
+  const nums = trend.map((v) => parseFloat(v)).filter((v) => !isNaN(v) && v > 0)
+  if (nums.length < 2) return [0.5, 0.5]
+
+  let sampled: number[] = []
+  if (nums.length <= targetPoints) {
+    sampled = nums
+  } else {
+    const step = (nums.length - 1) / (targetPoints - 1)
+    for (let i = 0; i < targetPoints; i++) {
+      const idx = Math.min(Math.round(i * step), nums.length - 1)
+      sampled.push(nums[idx])
+    }
+  }
+
+  const min = Math.min(...sampled)
+  const max = Math.max(...sampled)
+  const range = max - min
+  if (range === 0) return sampled.map(() => 0.5)
+  return sampled.map((v) => Math.round(((v - min) / range) * 1000) / 1000)
+}
 
 /** Format raw volume number to display string */
 function formatVolume(raw: string | undefined): string {
@@ -74,7 +110,8 @@ function formatVolume(raw: string | undefined): string {
 function buildEntry(
   market: Market,
   ticker: Ticker24h | undefined,
-  rank: number
+  rank: number,
+  trendPoints?: number[]
 ): MarketEntry {
   const base = market.base_asset.toUpperCase()
   const meta = ASSET_META[base] ?? { iconLabel: base[0], iconColor: '#64748b', name: base }
@@ -88,8 +125,8 @@ function buildEntry(
   const vol  = formatVolume(ticker?.quote_volume_24h)
   const pair = `${base}/${market.quote_asset}`
 
-  // Static sparkline placeholder — no historical sparkline endpoint
-  const sparklinePoints = MARKETS_MOCK.entries?.find(e => e.asset === base)?.sparklinePoints
+  const sparklinePoints = trendPoints
+    ?? MARKETS_MOCK.entries?.find(e => e.asset === base)?.sparklinePoints
     ?? [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
 
   return {
@@ -110,61 +147,95 @@ function buildEntry(
 }
 
 /** Derive highlights from live entries */
-function deriveHighlights(entries: MarketEntry[]): MarketHighlight[] {
+function deriveHighlights(
+  entries: MarketEntry[],
+  tickers: Record<string, Ticker24h>
+): MarketHighlight[] {
   if (entries.length === 0) return MARKETS_MOCK.highlights
 
-  const sorted = [...entries].sort(
-    (a, b) => toDecimal(b.change24h).comparedTo(toDecimal(a.change24h))
-  )
-  const gainer = sorted[0]
-  const loser  = sorted[sorted.length - 1]
-  const byVol  = [...entries].sort((a, b) => {
-    const av = parseFloat(a.volume24h.replace(/[$BM,K]/g, ''))
-    const bv = parseFloat(b.volume24h.replace(/[$BM,K]/g, ''))
-    return bv - av
+  const getSignedChange = (e: MarketEntry) => {
+    const val = parseFloat(e.change24h) || 0
+    return e.positive ? val : -val
+  }
+
+  // Top Gainer: highest signed change
+  const sortedGainers = [...entries].sort((a, b) => getSignedChange(b) - getSignedChange(a))
+  const gainer = sortedGainers[0]
+
+  // Top Loser: lowest signed change
+  const sortedLosers = [...entries].sort((a, b) => getSignedChange(a) - getSignedChange(b))
+  const loser = sortedLosers.find((e) => e.pair !== gainer?.pair) || sortedLosers[0]
+
+  // 24h Volume Leader: highest quote volume from real numeric ticker data
+  const byVol = [...entries].sort((a, b) => {
+    const marketIdA = a.pair.replace('/', '-')
+    const marketIdB = b.pair.replace('/', '-')
+    const volA = toDecimal(tickers[marketIdA]?.quote_volume_24h || '0')
+    const volB = toDecimal(tickers[marketIdB]?.quote_volume_24h || '0')
+    return volB.comparedTo(volA)
   })[0]
 
   const highlights: MarketHighlight[] = []
 
-  if (gainer) highlights.push({
-    type: 'gainer', label: 'Top Gainer',
-    pair: gainer.pair, name: gainer.name,
-    price: gainer.lastPrice, change: gainer.change24h,
-    positive: gainer.positive,
-    sparklinePoints: gainer.sparklinePoints,
-    iconColor: gainer.iconColor, iconLabel: gainer.iconLabel,
-  })
+  if (gainer) {
+    const isNegative = getSignedChange(gainer) < 0
+    highlights.push({
+      type: 'gainer',
+      label: isNegative ? 'Top Performer' : 'Top Gainer',
+      pair: gainer.pair,
+      name: gainer.name,
+      price: gainer.lastPrice,
+      change: gainer.change24h,
+      positive: gainer.positive,
+      sparklinePoints: gainer.sparklinePoints,
+      iconColor: gainer.iconColor,
+      iconLabel: gainer.iconLabel,
+    })
+  }
 
-  if (loser && loser.pair !== gainer?.pair) highlights.push({
-    type: 'loser', label: 'Top Loser',
-    pair: loser.pair, name: loser.name,
-    price: loser.lastPrice, change: loser.change24h,
-    positive: loser.positive,
-    sparklinePoints: loser.sparklinePoints,
-    iconColor: loser.iconColor, iconLabel: loser.iconLabel,
-  })
+  if (loser && loser.pair !== gainer?.pair) {
+    highlights.push({
+      type: 'loser',
+      label: 'Top Loser',
+      pair: loser.pair,
+      name: loser.name,
+      price: loser.lastPrice,
+      change: loser.change24h,
+      positive: loser.positive,
+      sparklinePoints: loser.sparklinePoints,
+      iconColor: loser.iconColor,
+      iconLabel: loser.iconLabel,
+    })
+  }
 
-  if (byVol) highlights.push({
-    type: 'volume', label: '24h Volume Leader',
-    pair: byVol.pair, name: byVol.name,
-    price: byVol.lastPrice, change: byVol.change24h,
-    positive: byVol.positive,
-    extraLabel: `${byVol.volume24h} 24h Volume`,
-    sparklinePoints: byVol.sparklinePoints,
-    iconColor: byVol.iconColor, iconLabel: byVol.iconLabel,
-  })
+  if (byVol) {
+    highlights.push({
+      type: 'volume',
+      label: '24h Volume Leader',
+      pair: byVol.pair,
+      name: byVol.name,
+      price: byVol.lastPrice,
+      change: byVol.change24h,
+      positive: byVol.positive,
+      extraLabel: `${byVol.volume24h} 24h Volume`,
+      sparklinePoints: byVol.sparklinePoints,
+      iconColor: byVol.iconColor,
+      iconLabel: byVol.iconLabel,
+    })
+  }
 
   return highlights
 }
 
 export function useMarkets(): UseMarketsReturn {
-  const [favorites, setFavorites]         = useState<Set<string>>(new Set(['BTC/USDT']))
+  const [favorites, setFavorites]         = useState<Set<string>>(loadSavedFavorites)
   const [search, setSearch]               = useState('')
   const [filter, setFilter]               = useState<MarketFilter>('all')
   const [quoteCurrency, setQuoteCurrency] = useState('USDT')
 
   const [markets, setMarkets]         = useState<Market[]>([])
   const [tickers, setTickers]         = useState<Record<string, Ticker24h>>({})
+  const [trends, setTrends]           = useState<Record<string, number[]>>({})
   const [loading, setLoading]         = useState(true)
   const [error, setError]             = useState<string | null>(null)
   const [isDemoData, setIsDemoData]   = useState(false)
@@ -175,19 +246,42 @@ export function useMarkets(): UseMarketsReturn {
     setLoading(true)
     setError(null)
     try {
-      const marketList = await marketApi.getMarkets()
+      const [marketList, overviewList] = await Promise.all([
+        marketApi.getMarkets(),
+        marketApi.getMarketsOverview().catch(() => [] as MarketOverview[]),
+      ])
       setMarkets(marketList)
 
-      // Fetch all tickers in parallel
-      const tickerResults = await Promise.allSettled(
-        marketList.map((m) => marketApi.getTicker(m.id))
-      )
       const newTickers: Record<string, Ticker24h> = {}
-      marketList.forEach((m, i) => {
-        const r = tickerResults[i]
-        if (r.status === 'fulfilled') newTickers[m.id] = r.value
+      const newTrends: Record<string, number[]> = {}
+
+      overviewList.forEach((ov) => {
+        newTickers[ov.market_id] = {
+          market_id: ov.market_id,
+          last_price: ov.last_price,
+          high_24h: ov.high_24h,
+          low_24h: ov.low_24h,
+          volume_24h: ov.volume_24h,
+          quote_volume_24h: ov.quote_volume_24h,
+          price_change_24h_percent: ov.price_change_24h_percent,
+        }
+        if (ov.trend && ov.trend.length >= 2) {
+          newTrends[ov.market_id] = normalizeTrend(ov.trend)
+        }
       })
+
+      // Fallback for any market missing from overview
+      const missing = marketList.filter((m) => !newTickers[m.id])
+      if (missing.length > 0) {
+        const results = await Promise.allSettled(missing.map((m) => marketApi.getTicker(m.id)))
+        missing.forEach((m, i) => {
+          const r = results[i]
+          if (r.status === 'fulfilled') newTickers[m.id] = r.value
+        })
+      }
+
       setTickers(newTickers)
+      setTrends(newTrends)
       setIsDemoData(false)
     } catch (err) {
       const msg = extractApiError(err)
@@ -196,6 +290,7 @@ export function useMarkets(): UseMarketsReturn {
       // Fallback to mock — explicitly labelled
       setMarkets([])
       setTickers({})
+      setTrends({})
     } finally {
       setLoading(false)
     }
@@ -212,9 +307,21 @@ export function useMarkets(): UseMarketsReturn {
       const marketId = m.id
       const unsub = wsService.subscribe(channel, (payload) => {
         try {
-          const t = payload as Ticker24h
-          if (!t) return
-          setTickers((prev) => ({ ...prev, [marketId]: { ...prev[marketId], ...t } }))
+          const raw = payload as any
+          if (!raw) return
+          const normalized: Partial<Ticker24h> = {
+            market_id: marketId,
+            last_price: raw.lastPrice ?? raw.last_price,
+            high_24h: raw.high24h ?? raw.high_24h,
+            low_24h: raw.low24h ?? raw.low_24h,
+            volume_24h: raw.volume24h ?? raw.volume_24h,
+            quote_volume_24h: raw.quoteVolume24h ?? raw.quote_volume_24h,
+            price_change_24h_percent: raw.priceChange24hPercent ?? raw.price_change_24h_percent,
+          }
+          setTickers((prev) => ({
+            ...prev,
+            [marketId]: { ...prev[marketId], ...normalized },
+          }))
         } catch { /* ignore */ }
       })
       unsubs.push(unsub)
@@ -228,8 +335,8 @@ export function useMarkets(): UseMarketsReturn {
   // ── Derived UI data ───────────────────────────────────────────────────────
   const allEntries = useMemo<MarketEntry[]>(() => {
     if (isDemoData || markets.length === 0) return MARKETS_MOCK.entries ?? []
-    return markets.map((m, i) => buildEntry(m, tickers[m.id], i + 1))
-  }, [markets, tickers, isDemoData])
+    return markets.map((m, i) => buildEntry(m, tickers[m.id], i + 1, trends[m.id]))
+  }, [markets, tickers, trends, isDemoData])
 
   const stats = useMemo<MarketStats>(() => {
     if (isDemoData || markets.length === 0) return MARKETS_MOCK.stats
@@ -245,8 +352,8 @@ export function useMarkets(): UseMarketsReturn {
 
   const highlights = useMemo<MarketHighlight[]>(() => {
     if (isDemoData || allEntries.length === 0) return MARKETS_MOCK.highlights
-    return deriveHighlights(allEntries)
-  }, [allEntries, isDemoData])
+    return deriveHighlights(allEntries, tickers)
+  }, [allEntries, tickers, isDemoData])
 
   const filteredEntries = useMemo(() => {
     let rows = allEntries
@@ -270,6 +377,9 @@ export function useMarkets(): UseMarketsReturn {
       const next = new Set(prev)
       if (next.has(pair)) next.delete(pair)
       else next.add(pair)
+      try {
+        localStorage.setItem(FAVORITES_STORAGE_KEY, JSON.stringify([...next]))
+      } catch { /* ignore */ }
       return next
     })
   }

@@ -12,7 +12,6 @@ import TradingChart      from '../../components/trade/TradingChart'
 import OrderBook         from '../../components/trade/OrderBook'
 import OrderEntry        from '../../components/trade/OrderEntry'
 import OpenOrdersPanel   from '../../components/trade/OpenOrdersPanel'
-import TradeFooter       from '../../components/trade/TradeFooter'
 
 /**
  * Trade page — authenticated route at /trade.
@@ -102,7 +101,7 @@ export default function TradePage() {
      * min-h-0: critical — allows this element to shrink below its content height
      * overflow-hidden: prevents page-level scroll; each panel manages its own
      */
-    <div className="flex-1 flex flex-col min-h-0 overflow-hidden bg-[#0a0b0e]">
+    <div className="w-full flex-1 h-full min-h-[640px] flex flex-col min-h-0 overflow-hidden bg-[#0a0b0e]">
 
       {/* ── Market Header ─────────────────────────────────────────────────── */}
       {/* flex-shrink-0 keeps it at its natural h-14 height */}
@@ -181,9 +180,6 @@ export default function TradePage() {
         onCancel={cancelOrder}
         onCancelAll={cancelAll}
       />
-
-      {/* ── Footer ────────────────────────────────────────────────────────── */}
-      <TradeFooter />
     </div>
   )
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { marketApi, type Market, type Ticker24h } from '../api/market'
-import { wsService } from '../api/ws'
+import { wsService, WsChannels } from '../api/ws'
 import { MOCK_TRADE_MARKETS, getMockTicker } from '../data/tradeMock'
 import { getMarketMetadata } from '../utils/marketMetadata'
 import type { SelectedMarket } from '../types/trade'
@@ -8,7 +8,7 @@ import type { SelectedMarket } from '../types/trade'
 export function useTradeMarket(initialMarketId = 'BTC-USDT') {
   const [markets, setMarkets] = useState<Market[]>([])
   const [selectedMarketId, setSelectedMarketId] = useState<string>(initialMarketId)
-  const [ticker, setTicker] = useState<Ticker24h | null>(() => getMockTicker(initialMarketId))
+  const [ticker, setTicker] = useState<Ticker24h | null>(null)
   const [isDemoData, setIsDemoData] = useState(false)
   const [loading, setLoading] = useState(true)
 
@@ -43,9 +43,6 @@ export function useTradeMarket(initialMarketId = 'BTC-USDT') {
     let mounted = true
     setIsDemoData(false)
 
-    // Pre-populate with market-specific mock ticker immediately to avoid stale price lag
-    setTicker(getMockTicker(selectedMarketId))
-
     async function loadTicker() {
       try {
         const data = await marketApi.getTicker(selectedMarketId)
@@ -68,19 +65,19 @@ export function useTradeMarket(initialMarketId = 'BTC-USDT') {
     loadTicker()
 
     // Subscribe to WS stream
-    const stream = `ticker.${selectedMarketId}`
+    const stream = WsChannels.ticker(selectedMarketId)
     const unsubscribe = wsService.subscribe(stream, (liveData: any) => {
       if (!mounted) return
       if (liveData) {
         setTicker((prev) => ({
           market_id: selectedMarketId,
-          last_price: liveData.last_price || liveData.price || prev?.last_price || '0',
-          high_24h: liveData.high_24h || liveData.high || prev?.high_24h || '0',
-          low_24h: liveData.low_24h || liveData.low || prev?.low_24h || '0',
-          volume_24h: liveData.volume_24h || liveData.volume || prev?.volume_24h || '0',
-          quote_volume_24h: liveData.quote_volume_24h || liveData.quote_volume || prev?.quote_volume_24h || '0',
+          last_price: liveData.lastPrice ?? liveData.last_price ?? liveData.price ?? prev?.last_price ?? '0',
+          high_24h: liveData.high24h ?? liveData.high_24h ?? liveData.high ?? prev?.high_24h ?? '0',
+          low_24h: liveData.low24h ?? liveData.low_24h ?? liveData.low ?? prev?.low_24h ?? '0',
+          volume_24h: liveData.volume24h ?? liveData.volume_24h ?? liveData.volume ?? prev?.volume_24h ?? '0',
+          quote_volume_24h: liveData.quoteVolume24h ?? liveData.quote_volume_24h ?? liveData.quote_volume ?? prev?.quote_volume_24h ?? '0',
           price_change_24h_percent:
-            liveData.price_change_24h_percent || liveData.change_24h || prev?.price_change_24h_percent || '0',
+            liveData.priceChange24hPercent ?? liveData.price_change_24h_percent ?? liveData.change_24h ?? prev?.price_change_24h_percent ?? '0',
         }))
         setIsDemoData(false)
       }

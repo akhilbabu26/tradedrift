@@ -256,7 +256,7 @@ export default function TradingActivity({
               Current Portfolio Value
             </p>
             <p className="text-xs font-bold text-[#f5f7fa] font-mono mt-0.5 truncate">
-              {currentPortfolioValue} <span className="text-[10px] font-normal text-[#94a3b8]">USDT</span>
+              {currentPortfolioValue.replace(/^\$/, '')} <span className="text-[10px] font-normal text-[#94a3b8]">USDT</span>
             </p>
             <p className="text-[10px] text-[#64748b]">Realized + Unrealized</p>
           </div>

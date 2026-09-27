@@ -32,13 +32,36 @@ export const WsChannels = {
   orderbook: (marketId: string) => `market:orderbook:${marketId}`,
   ticker:    (marketId: string) => `market:ticker:${marketId}`,
   trades:    (marketId: string) => `market:trades:${marketId}`,
-  userNotifications: ()          => 'user:notifications',
+  userNotifications: (userId?: string) => userId ? `user:notifications:${userId}` : 'user:notifications',
+  userPortfolio:     (userId?: string) => userId ? `user:portfolio:${userId}` : 'user:portfolio',
 } as const
 
 // ── Dev-mode API logger (never logs tokens or sensitive data) ────────────────
 const isDev = import.meta.env.DEV
 function wsLog(msg: string) {
   if (isDev) console.debug(`[WS] ${msg}`)
+}
+
+function isTokenValid(token: string | null): boolean {
+  if (!token) return false
+  try {
+    const parts = token.split('.')
+    if (parts.length !== 3) return false
+    const base64Url = parts[1]
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/')
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split('')
+        .map((c) => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    )
+    const decoded = JSON.parse(jsonPayload)
+    if (!decoded.exp) return true
+    const now = Math.floor(Date.now() / 1000)
+    return decoded.exp > now + 10 // 10-second grace window
+  } catch {
+    return false
+  }
 }
 
 class WebSocketService {
@@ -104,11 +127,36 @@ class WebSocketService {
     
     this.notifyStatus(false, this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting')
 
-    // Pass JWT as query param for initial connection (per backend docs)
+    // Verify token validity before passing as query param.
+    // An expired token causes the Gateway to reject with 401, breaking even public market data.
     const token = localStorage.getItem('access_token')
-    const url = token ? `${WS_BASE_URL}?token=${encodeURIComponent(token)}` : WS_BASE_URL
+    const hasValidToken = isTokenValid(token)
 
-    wsLog(`Connecting to ${WS_BASE_URL}`)
+    if (token && !hasValidToken) {
+      wsLog('Stored access_token has expired. Attempting token refresh...')
+      const refreshToken = localStorage.getItem('refresh_token')
+      if (refreshToken) {
+        import('axios').then(async ({ default: axios }) => {
+          try {
+            const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
+            const { data } = await axios.post(`${apiBase}/api/v1/auth/refresh`, { refreshToken })
+            if (data?.accessToken) {
+              localStorage.setItem('access_token', data.accessToken)
+              if (data.refreshToken) localStorage.setItem('refresh_token', data.refreshToken)
+              wsLog('Token refreshed. Upgrading WebSocket with authenticated session...')
+              this.disconnect()
+              this.connect()
+            }
+          } catch {
+            wsLog('Token refresh failed. Continuing in unauthenticated public mode.')
+          }
+        })
+      }
+    }
+
+    const url = hasValidToken ? `${WS_BASE_URL}?token=${encodeURIComponent(token!)}` : WS_BASE_URL
+
+    wsLog(`Connecting to ${WS_BASE_URL} (authenticated: ${hasValidToken})`)
 
     try {
       this.socket = new WebSocket(url)
@@ -116,11 +164,6 @@ class WebSocketService {
       this.socket.onopen = () => {
         this.reconnectAttempt = 0
         this.notifyStatus(true, 'connected')
-        wsLog('Connected')
-
-        // Send auth frame for private channels (per backend protocol)
-        this.sendAuthFrame()
-
         this.measureLatency()
         this.startHeartbeat()
         this.resubscribeAll()
@@ -226,28 +269,16 @@ class WebSocketService {
     }
   }
 
-  // ── Private helpers ──────────────────────────────────────────────────────
-
-  private sendAuthFrame() {
-    const token = localStorage.getItem('access_token')
-    if (token && this.socket && this.socket.readyState === WebSocket.OPEN) {
-      // Send auth frame — NEVER log the token value
-      this.socket.send(JSON.stringify({ action: 'auth', token }))
-      
-      wsLog('Auth frame sent')
-    }
-  }
-
   private sendSubscribe(channel: string) {
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify({ action: 'subscribe', channel }))
+      this.socket.send(JSON.stringify({ event: 'subscribe', streams: [channel] }))
       wsLog(`subscribe ${channel}`)
     }
   }
 
   private sendUnsubscribe(channel: string) {
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify({ action: 'unsubscribe', channel }))
+      this.socket.send(JSON.stringify({ event: 'unsubscribe', streams: [channel] }))
       wsLog(`unsubscribe ${channel}`)
     }
   }

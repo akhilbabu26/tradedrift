@@ -160,14 +160,20 @@ export default function MarketsTable({
 
                     {/* 24h High / Low */}
                     <td className="py-3.5 pr-4 text-right">
-                      <div className="flex flex-col items-end leading-tight gap-0.5">
-                        <span className="font-mono text-slate-300 tabular-nums">
-                          ${formatPrice(row.high24h)}
-                        </span>
+                      {parseFloat(row.high24h) > 0 ? (
+                        <div className="flex flex-col items-end leading-tight gap-0.5">
+                          <span className="font-mono text-slate-300 tabular-nums">
+                            ${formatPrice(row.high24h)}
+                          </span>
+                          <span className="font-mono text-slate-500 tabular-nums">
+                            ${formatPrice(row.low24h)}
+                          </span>
+                        </div>
+                      ) : (
                         <span className="font-mono text-slate-500 tabular-nums">
-                          ${formatPrice(row.low24h)}
+                          --
                         </span>
-                      </div>
+                      )}
                     </td>
 
                     {/* 24h Volume */}

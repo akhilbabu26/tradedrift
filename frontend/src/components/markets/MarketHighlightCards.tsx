@@ -1,5 +1,6 @@
 import { TrendingUp, TrendingDown, BarChart2 } from 'lucide-react'
 import type { MarketHighlight } from '../../types/markets'
+import { formatPrice } from '../../utils/formatters'
 import Sparkline from '../dashboard/shared/Sparkline'
 
 interface MarketHighlightCardsProps {
@@ -87,8 +88,8 @@ export default function MarketHighlightCards({ highlights }: MarketHighlightCard
 
               {/* Right: price + sparkline */}
               <div className="flex flex-col items-end gap-1 flex-shrink-0">
-                <span className="text-base font-bold text-[#f5f7fa] font-mono tabular-nums">
-                  ${h.price}
+                <span className="text-[16px] font-bold text-[#f5f7fa] font-mono tabular-nums">
+                  ${formatPrice(h.price)}
                 </span>
                 <Sparkline
                   points={h.sparklinePoints}

@@ -22,11 +22,21 @@ import client from './client'
 
 export interface BackendTrade {
   id: string
+  buyer_id?: string
+  seller_id?: string
+  buy_order_id?: string
+  sell_order_id?: string
   market_id: string      // e.g. "BTC-USDT"
+  base_asset?: string
+  quote_asset?: string
   price: string          // decimal string, e.g. "67500.00"
   quantity: string       // decimal string, e.g. "0.0500"
-  taker_side: string     // "BUY" | "SELL" — the aggressor side
-  created_at: string     // RFC3339 timestamp
+  executed_at?: string   // RFC3339 timestamp from backend
+  settled_at?: string
+  /** @deprecated Fallback alias */
+  taker_side?: string
+  /** @deprecated Fallback alias */
+  created_at?: string
 }
 
 export interface TradesListResponse {

@@ -9,10 +9,13 @@ The `engine` package is the core execution orchestrator of the Controlled Taker 
 | File | Primary Responsibility |
 | :--- | :--- |
 | [`engine.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/controlled-taker/internal/engine/engine.go) | Orchestrator managing worker lifecycle, cold-start anti-burst staggering, and graceful shutdown synchronization. |
-| [`worker.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/controlled-taker/internal/engine/worker.go) | Autonomous execution loop for a single market pair; manages the 14-step cycle, idempotency recovery, detached residual cleanup, and fill recording. |
+| [`worker.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/controlled-taker/internal/engine/worker.go) | Autonomous execution loop for a single market pair; manages profile selection, jitter intervals, order dispatch, and fill recording. |
+| [`order_cleanup.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/controlled-taker/internal/engine/order_cleanup.go) | Autonomous post-submission verification and cancellation of unfilled order remainder (`awaitOrderCleanup`). |
+| [`circuit_breaker.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/controlled-taker/internal/engine/circuit_breaker.go) | Three-state (`CLOSED`/`OPEN`/`HALF_OPEN`) circuit breaker, atomic probe reservation, and fail-closed state transitions. |
+| [`errors.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/controlled-taker/internal/engine/errors.go) | Submission error classification (`classifySubmissionError`) mapping gRPC status codes to action categories. |
 | [`profile.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/controlled-taker/internal/engine/profile.go) | Mathematical dynamic order sizing engine; calculates lot-aligned quantities and conservative ceiling prices directly from live depth. |
 | [`selector.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/controlled-taker/internal/engine/selector.go) | Mean-reverting direction selector with inventory bias normalized by USDT notional exposure. |
-| [`safety.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/controlled-taker/internal/engine/safety.go) | Pre-order safety boundaries, rolling volume/rate limiters, and the three-state (`CLOSED`/`OPEN`/`HALF_OPEN`) circuit breaker. |
+| [`safety.go`](file:///c:/Users/AKHIL%20BABU/OneDrive/Desktop/tradedrift/services/controlled-taker/internal/engine/safety.go) | Pre-order safety boundaries, rolling volume/trade rate limiters, spread constraints, and 1.5x depth ratio verification. |
 
 ---
 
@@ -141,7 +144,7 @@ If CTS receives a `SIGTERM` during order submission, the worker's parent context
 
 ---
 
-## 6. Circuit Breaker (`safety.go`)
+## 6. Circuit Breaker (`circuit_breaker.go`)
 
 Each market worker possesses an isolated `CircuitBreaker`:
 

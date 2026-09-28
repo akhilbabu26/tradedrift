@@ -33,27 +33,35 @@ if ($Build) {
 
 # Always reset ME checkpoints -- Kafka topic is wiped on compose down
 Write-Host "==> Resetting Matching Engine Postgres checkpoints..." -ForegroundColor Cyan
-$ME_DSN = "postgres://postgres:123@localhost:5432/tradedrift_matching?sslmode=disable"
-psql $ME_DSN -c "TRUNCATE kafka_checkpoints, market_snapshots, market_sequences CASCADE;" | Out-Null
-Write-Host "    kafka_checkpoints, market_snapshots, market_sequences cleared." -ForegroundColor Green
+$env:PGPASSWORD = "123"
+try {
+    psql -h localhost -p 5432 -U postgres -d tradedrift_matching -c "TRUNCATE kafka_checkpoints, market_snapshots, market_sequences CASCADE;" 2>$null | Out-Null
+    Write-Host "    kafka_checkpoints, market_snapshots, market_sequences cleared." -ForegroundColor Green
+} catch {
+    Write-Host "    Matching Engine checkpoint reset skipped." -ForegroundColor DarkGray
+}
 
 if ($ResetDB) {
-    Write-Host "==> Full DB reset -- wiping all service databases..." -ForegroundColor Yellow
-    $services = @(
-        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_auth?sslmode=disable";       tables = "users, refresh_tokens" },
-        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_wallet?sslmode=disable";     tables = "wallets, transactions, outbox" },
-        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_order?sslmode=disable";      tables = "orders, outbox" },
-        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_market?sslmode=disable";     tables = "markets" },
-        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_settlement?sslmode=disable"; tables = "settled_trades" },
-        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_trade?sslmode=disable";      tables = "trades" },
-        @{ dsn = "postgres://postgres:123@localhost:5432/tradedrift_portfolio?sslmode=disable";  tables = "holdings, portfolio_outbox, processed_trades" }
+    Write-Host "==> Full DB reset -- wiping all service databases (schema reset)..." -ForegroundColor Yellow
+    $dbs = @(
+        'tradedrift_admin',
+        'tradedrift_auth',
+        'tradedrift_market',
+        'tradedrift_matching',
+        'tradedrift_notification',
+        'tradedrift_order',
+        'tradedrift_portfolio',
+        'tradedrift_settlement',
+        'tradedrift_topup',
+        'tradedrift_trade',
+        'tradedrift_wallet'
     )
-    foreach ($svc in $services) {
+    foreach ($db in $dbs) {
         try {
-            psql $svc.dsn -c "TRUNCATE $($svc.tables) CASCADE;" | Out-Null
-            Write-Host "    Cleared: $($svc.tables)" -ForegroundColor Green
+            psql -h localhost -p 5432 -U postgres -d $db -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO postgres; GRANT ALL ON SCHEMA public TO public;" 2>$null | Out-Null
+            Write-Host "    Reset schema for: $db" -ForegroundColor Green
         } catch {
-            Write-Host "    Skipped (DB may not exist yet): $($svc.dsn)" -ForegroundColor DarkGray
+            Write-Host "    Skipped (DB may not exist yet): $db" -ForegroundColor DarkGray
         }
     }
 }

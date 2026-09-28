@@ -10,8 +10,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"tradedrift/services/controlled-taker/internal/clients/orderservice"
 	"tradedrift/services/controlled-taker/internal/clients/redisdepth"
 	"tradedrift/services/controlled-taker/internal/config"
@@ -295,139 +293,8 @@ func (w *MarketWorker) ExecuteCycle(ctx context.Context, profile config.ProfileT
 	metrics.OrdersSubmitted.WithLabelValues(w.market.MarketID, side, string(profile)).Inc()
 
 	// Step 6: Autonomous Post-Submission Verification & Residual Cleanup (Option A)
-	// CRITICAL INVARIANT: Once CreateCrossingOrder succeeds, the order is active in the matching pipeline.
-	// We MUST enter an independent cleanup context detached from worker cancellation (e.g. shutdown)
-	// so that CTS guarantees any unfilled remainder is cancelled and never rests as a maker order.
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cleanupCancel()
-
-	crossingDelay := w.cfg.CrossingDelay
-	if crossingDelay <= 0 {
-		crossingDelay = 1000 * time.Millisecond
-	}
-
-	// Crossing delay gives the Matching Engine an opportunity to cross against resting MM quotes
-	select {
-	case <-cleanupCtx.Done():
-	case <-time.After(crossingDelay):
-	}
-
-	var orderState *orderservice.OrderResult
-	var cancelSent bool
-	var residualRetries int
-	const maxResidualRetries = 3
-	deadlineExceeded := false
-
-	// Bounded cleanup polling loop
-cleanupLoop:
-	for {
-		if cleanupCtx.Err() != nil {
-			deadlineExceeded = true
-			break cleanupLoop
-		}
-
-		st, err := w.ordersClient.GetOrder(cleanupCtx, res.OrderID)
-		if err != nil {
-			w.logger.Warn("Failed to fetch order status during cleanup loop",
-				zap.String("order_id", res.OrderID),
-				zap.Error(err),
-			)
-			// On read error, defensively attempt cancellation if not already sent
-			if !cancelSent {
-				if _, cancelErr := w.ordersClient.CancelOrder(cleanupCtx, res.OrderID); cancelErr == nil {
-					cancelSent = true
-					metrics.ResidualsCancelled.WithLabelValues(w.market.MarketID).Inc()
-				}
-			}
-			select {
-			case <-cleanupCtx.Done():
-				deadlineExceeded = true
-				break cleanupLoop
-			case <-time.After(50 * time.Millisecond):
-			}
-			continue
-		}
-
-		orderState = st
-
-		switch {
-		case strings.HasSuffix(orderState.Status, "FILLED") && !strings.Contains(orderState.Status, "PARTIALLY"):
-			// FILLED -> fully executed, success terminal state
-			break cleanupLoop
-
-		case strings.HasSuffix(orderState.Status, "CANCELLED"):
-			// CANCELLED -> terminal state achieved; actual filled quantity will be recorded
-			break cleanupLoop
-
-		case strings.HasSuffix(orderState.Status, "CANCELLING"):
-			// CANCELLING -> cancel is actively being processed by Order Service / Matching Engine.
-			// Mark cancelSent to avoid redundant cancels, and continue polling for terminal state.
-			cancelSent = true
-
-		case strings.HasSuffix(orderState.Status, "OPEN"), strings.Contains(orderState.Status, "PARTIALLY"):
-			// OPEN or PARTIALLY_FILLED: Provide short context-aware grace window (3 x 200ms)
-			// to allow multi-hop asynchronous trade settlement to propagate to Order Service.
-			if !cancelSent && residualRetries < maxResidualRetries {
-				residualRetries++
-				select {
-				case <-cleanupCtx.Done():
-					deadlineExceeded = true
-					break cleanupLoop
-				case <-time.After(200 * time.Millisecond):
-				}
-				continue
-			}
-
-			// Residual remains after grace period -> CancelOrder -> continue polling for terminal state
-			if !cancelSent {
-				w.logger.Info("Order not completely filled after grace period; cancelling residual to prevent maker resting",
-					zap.String("order_id", res.OrderID),
-					zap.String("status", orderState.Status),
-					zap.String("remaining_qty", orderState.RemainingQty),
-					zap.Int("grace_retries", residualRetries),
-				)
-				if _, cancelErr := w.ordersClient.CancelOrder(cleanupCtx, res.OrderID); cancelErr != nil {
-					w.logger.Warn("Failed to send CancelOrder for residual; will retry in loop",
-						zap.String("order_id", res.OrderID),
-						zap.Error(cancelErr),
-					)
-				} else {
-					cancelSent = true
-					metrics.ResidualsCancelled.WithLabelValues(w.market.MarketID).Inc()
-				}
-			}
-
-		default:
-			// UNKNOWN / unexpected -> log warning, attempt defensive cancellation, continue bounded verification
-			w.logger.Warn("Encountered unexpected or transitional order status during cleanup",
-				zap.String("order_id", res.OrderID),
-				zap.String("status", orderState.Status),
-			)
-			if !cancelSent {
-				if _, cancelErr := w.ordersClient.CancelOrder(cleanupCtx, res.OrderID); cancelErr == nil {
-					cancelSent = true
-					metrics.ResidualsCancelled.WithLabelValues(w.market.MarketID).Inc()
-				}
-			}
-		}
-
-		// Wait briefly before next status query in a context-aware manner
-		select {
-		case <-cleanupCtx.Done():
-			deadlineExceeded = true
-			break cleanupLoop
-		case <-time.After(50 * time.Millisecond):
-		}
-	}
-
-	// Fail closed if cleanup deadline expired without confirming terminal status
-	if deadlineExceeded || orderState == nil || (!strings.HasSuffix(orderState.Status, "FILLED") && !strings.HasSuffix(orderState.Status, "CANCELLED")) {
-		w.logger.Error("CRITICAL: order residual could not be verified cancelled before cleanup deadline",
-			zap.String("order_id", res.OrderID),
-			zap.Any("order_state", orderState),
-		)
-		metrics.UnresolvedResiduals.WithLabelValues(w.market.MarketID).Inc()
-		w.safetyMgr.RecordFailure() // Fail closed: trip breaker
+	orderState, ok := w.awaitOrderCleanup(res.OrderID)
+	if !ok {
 		return
 	}
 
@@ -481,70 +348,7 @@ cleanupLoop:
 	metrics.OrderLatency.WithLabelValues(w.market.MarketID, string(profile)).Observe(time.Since(startTime).Seconds())
 }
 
-// SubmissionErrorType categorizes errors resulting from Order Service CreateOrder.
-type SubmissionErrorType int
 
-const (
-	SubmissionErrorDefiniteRejection SubmissionErrorType = iota
-	SubmissionErrorCallerCancelled
-	SubmissionErrorAmbiguous
-)
-
-// classifySubmissionError categorizes an order submission error.
-// Design Note: Unknown errors are treated as ambiguous only when recognizable
-// transport/network indicators are present; otherwise they fail closed as deterministic failures.
-// This centralizes error classification in one place to allow future replacement with typed gRPC errors.
-func classifySubmissionError(parentCtx context.Context, err error) SubmissionErrorType {
-	if err == nil {
-		return SubmissionErrorDefiniteRejection
-	}
-
-	// 1. Caller Intentional Cancellation (CTS shutdown initiated)
-	// Must strictly depend on CTS's parent context being cancelled.
-	if parentCtx.Err() != nil {
-		return SubmissionErrorCallerCancelled
-	}
-
-	st, ok := status.FromError(err)
-	if !ok {
-		// Non-status errors are transport, dial, network drops, or raw context errors (ambiguous outcome)
-		return SubmissionErrorAmbiguous
-	}
-
-	switch st.Code() {
-	case codes.InvalidArgument,
-		codes.FailedPrecondition,
-		codes.NotFound,
-		codes.AlreadyExists,
-		codes.PermissionDenied,
-		codes.Unauthenticated,
-		codes.ResourceExhausted:
-		return SubmissionErrorDefiniteRejection
-
-	case codes.DeadlineExceeded,
-		codes.Unavailable,
-		codes.Canceled:
-		return SubmissionErrorAmbiguous
-
-	case codes.Unknown:
-		// Unknown errors are treated as ambiguous only when recognizable transport/network indicators
-		// are present; otherwise they fail closed as deterministic failures.
-		errMsg := strings.ToLower(st.Message())
-		if strings.Contains(errMsg, "timeout") ||
-			strings.Contains(errMsg, "connection") ||
-			strings.Contains(errMsg, "deadline") ||
-			strings.Contains(errMsg, "transport") ||
-			strings.Contains(errMsg, "eof") ||
-			strings.Contains(errMsg, "broken pipe") ||
-			strings.Contains(errMsg, "reset") {
-			return SubmissionErrorAmbiguous
-		}
-		return SubmissionErrorDefiniteRejection
-
-	default:
-		return SubmissionErrorDefiniteRejection
-	}
-}
 
 func calculateNextInterval(cfg config.IntervalConfig) time.Duration {
 	jitterPercent := (rand.Float64() * 0.50) - 0.25 // -25% to +25%

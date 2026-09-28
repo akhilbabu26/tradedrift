@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	kafkago "github.com/segmentio/kafka-go"
 
+	"tradedrift/services/matching-engine/internal/checkpoint"
 	"tradedrift/services/matching-engine/internal/market"
 	"tradedrift/services/matching-engine/internal/orderbook"
 )
@@ -117,9 +118,7 @@ func NewConsumer(cfg Config, manager *market.MarketManager, tracker offsetTracke
 		return lwm, hwm, nil
 	}
 
-	if committerReg, ok := tracker.(interface {
-		RegisterCommitter(topic string, committer kafkaCommitter)
-	}); ok {
+	if committerReg, ok := tracker.(checkpoint.CommitterRegistrar); ok {
 		committerReg.RegisterCommitter(TopicOrderCommands, c.commandReader)
 	}
 

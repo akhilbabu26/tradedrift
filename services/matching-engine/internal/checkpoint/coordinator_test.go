@@ -278,3 +278,69 @@ func TestCoordinator_PostgresFailure_PreservesInMemoryStateForRetry(t *testing.T
 		t.Fatalf("expected 1 DB commit with offset 100, got %+v", db.commits)
 	}
 }
+
+func TestCoordinator_ContiguousWatermarkKafkaCommits(t *testing.T) {
+	db := &fakeDB{}
+	coord := checkpoint.NewCoordinator(db)
+	committer := &fakeKafkaCommitter{}
+	topic := intkafka.TopicOrderCommands
+	const partition = 0
+
+	coord.RegisterCommitter(topic, committer)
+	coord.InitBaseline(topic, partition, 99)
+	ctx := context.Background()
+
+	// Track offsets 100, 101, 102
+	coord.Track(orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 100})
+	coord.Track(orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 101})
+	coord.Track(orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 102})
+
+	// Offset 100 completes -> committed to Kafka
+	if err := coord.MarkDone(ctx, orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 100}); err != nil {
+		t.Fatalf("MarkDone 100: %v", err)
+	}
+	if len(committer.committedOffsets) != 1 || committer.committedOffsets[0] != 100 {
+		t.Fatalf("expected Kafka commit [100], got %+v", committer.committedOffsets)
+	}
+
+	// Offset 102 completes out-of-order -> must NOT commit 102 to Kafka yet (gap at 101)
+	if err := coord.MarkDone(ctx, orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 102}); err != nil {
+		t.Fatalf("MarkDone 102: %v", err)
+	}
+	if len(committer.committedOffsets) != 1 {
+		t.Fatalf("expected NO new Kafka commit before gap 101 is resolved, got %+v", committer.committedOffsets)
+	}
+
+	// Offset 101 completes -> gap resolved -> commits contiguous watermark 102 to Kafka!
+	if err := coord.MarkDone(ctx, orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 101}); err != nil {
+		t.Fatalf("MarkDone 101: %v", err)
+	}
+	if len(committer.committedOffsets) != 2 || committer.committedOffsets[1] != 102 {
+		t.Fatalf("expected Kafka commit [100, 102], got %+v", committer.committedOffsets)
+	}
+}
+
+func TestCoordinator_PostgresFailure_DoesNotCommitToKafka(t *testing.T) {
+	db := &failOnceDB{failNext: true}
+	coord := checkpoint.NewCoordinator(db)
+	committer := &fakeKafkaCommitter{}
+	topic := intkafka.TopicOrderCommands
+	const partition = 0
+
+	coord.RegisterCommitter(topic, committer)
+	coord.InitBaseline(topic, partition, 99)
+	ctx := context.Background()
+
+	coord.Track(orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 100})
+
+	// DB write fails
+	err := coord.MarkDone(ctx, orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 100})
+	if err == nil {
+		t.Fatal("expected error on DB failure")
+	}
+
+	// Invariant: Kafka must NOT receive offset 100 if Postgres transaction failed!
+	if len(committer.committedOffsets) != 0 {
+		t.Fatalf("Kafka committed offset prematurely after DB failure: %+v", committer.committedOffsets)
+	}
+}

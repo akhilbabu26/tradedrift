@@ -31,6 +31,11 @@ type KafkaCommitter interface {
 	CommitMessages(ctx context.Context, msgs ...kafkago.Message) error
 }
 
+// CommitterRegistrar defines the interface for registering a KafkaCommitter for topic offset commits.
+type CommitterRegistrar interface {
+	RegisterCommitter(topic string, committer KafkaCommitter)
+}
+
 type CompletedEvent struct {
 	Pos      orderbook.KafkaPosition
 	MarketID string

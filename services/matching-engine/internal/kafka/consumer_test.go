@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/segmentio/kafka-go"
 	kafkapkg "tradedrift/services/matching-engine/internal/kafka"
+	"tradedrift/services/matching-engine/internal/checkpoint"
 	"tradedrift/services/matching-engine/internal/market"
 	"tradedrift/services/matching-engine/internal/orderbook"
 )
@@ -460,6 +461,35 @@ func TestConsumer_SeekToPostgresCheckpoints_EmptyPartition_SkipsCommit(t *testin
 
 	if len(committedOffset) != 0 {
 		t.Fatalf("expected 0 offset commits for empty partition, got %d", len(committedOffset))
+	}
+}
+
+type mockTrackerWithRegistrar struct {
+	mockOffsetTracker
+	registeredTopic     string
+	registeredCommitter checkpoint.KafkaCommitter
+}
+
+func (m *mockTrackerWithRegistrar) RegisterCommitter(topic string, committer checkpoint.KafkaCommitter) {
+	m.registeredTopic = topic
+	m.registeredCommitter = committer
+}
+
+func TestNewConsumer_RegistersCommitterWithCoordinator(t *testing.T) {
+	tracker := &mockTrackerWithRegistrar{}
+	manager := market.NewMarketManager()
+
+	consumer := kafkapkg.NewConsumer(kafkapkg.Config{
+		Brokers: []string{"localhost:9092"},
+		GroupID: "test-group",
+	}, manager, tracker)
+	defer consumer.Close()
+
+	if tracker.registeredTopic != kafkapkg.TopicOrderCommands {
+		t.Fatalf("expected registered topic %s, got %s", kafkapkg.TopicOrderCommands, tracker.registeredTopic)
+	}
+	if tracker.registeredCommitter == nil {
+		t.Fatal("expected non-nil registered committer on coordinator")
 	}
 }
 

@@ -456,7 +456,7 @@ func TestT16_TransientMEOutage_ZeroMutations(t *testing.T) {
 	}
 
 	// In ReconcileMarket, if snap.State != LIVE it returns 0, nil without calling sync or Diff
-	if recoveringSnap.State != "LIVE" {
+	if recoveringSnap.MarketID == marketID && recoveringSnap.State != "LIVE" {
 		// Verify tracker status is preserved
 		o := tracker.Get(levelID)
 		if o.Status != order.StatusResting {

@@ -43,7 +43,7 @@ func (r *Reconciler) SyncFromOrderService(ctx context.Context, marketID string) 
 
 	added, duplicates := r.tracker.SyncFromOrders(marketID, osOrders)
 	if duplicates > 0 {
-		r.logger.Warn("duplicate LevelIDs detected in Order Service active response",
+		r.logger.Info("overlapping MM order generations detected during OS sync — deduplicated by highest generation",
 			zap.String("market_id", marketID),
 			zap.Int("duplicate_count", duplicates))
 		r.metrics.IncDuplicateMMLevel(marketID)

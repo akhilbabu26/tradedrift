@@ -21,9 +21,9 @@ CTS operates as the counterpart to TradeDrift's Market Making / Liquidity Engine
 * **Three Taker Profiles:** Executes parameterized `LOW` (heartbeat), `MID` (depth exploration), and `HIGH` (multi-level sweep) profiles.
 * **Inventory Balancing:** Tracks net USDT notional exposure and shifts execution probabilities to prevent runaway base-asset accumulation or depletion (`internal/engine/selector.go`).
 * **Multi-Layer Safety Verification:** Enforces rolling hourly/daily notional caps, maximum trades per hour, max allowable spreads, and cumulative depth safety multipliers (`internal/engine/safety.go`).
-* **Fault-Isolated Circuit Breaking:** Maintains isolated per-market circuit breakers (`CLOSED`, `OPEN`, `HALF_OPEN`) with atomic probe reservation to prevent cascade failures on market disruptions.
+* **Fault-Isolated Circuit Breaking:** Maintains isolated per-market circuit breakers (`CLOSED`, `OPEN`, `HALF_OPEN`) with atomic probe reservation to prevent cascade failures on market disruptions (`internal/engine/circuit_breaker.go`).
 * **Idempotency Recovery:** Resolves ambiguous network drops or gRPC timeouts using cryptographic idempotency keys (`CTS-<market>-<uuidv7>`) before taking any action.
-* **Autonomous Residual Cancellation:** Polls and cancels any unfilled remainder within a dedicated detached cleanup loop ($\le 2.5$s) before marking an order cycle complete.
+* **Autonomous Residual Cancellation:** Polls and cancels any unfilled remainder within a dedicated detached cleanup loop ($\le 2.5$s) before marking an order cycle complete (`internal/engine/order_cleanup.go`).
 * **Graceful Shutdown Protection:** Guarantees that in-flight submitted orders finish residual cancellation before network connections are closed, even under `SIGTERM`.
 * **Enterprise Observability:** Exposes detailed per-market HTTP readiness probes (`/readyz`) and Prometheus instrumentation (`:9090/metrics`).
 
@@ -139,7 +139,7 @@ CTS uses an asymmetric conservative ceiling price to account for maximum possibl
 
 ---
 
-## 7. Residual Order Invariant & Post-Submission Cleanup
+## 7. Residual Order Invariant & Post-Submission Cleanup (`order_cleanup.go`)
 
 > **The Taker-Only Invariant:**  
 > CT-001 is strictly a taker. An unfilled order residual must **never** remain resting on the order book as a maker.

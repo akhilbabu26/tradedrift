@@ -67,6 +67,9 @@ type Config struct {
 	WarmupDelay            time.Duration
 	HighCooldown           time.Duration
 	CrossingDelay          time.Duration
+	ResidualGracePeriod    time.Duration
+	ResidualPollInterval   time.Duration
+	ResidualMaxReadRetries int
 
 	// Inventory Bias Boundaries (USDT notional exposure)
 	InventoryModerateBiasUSDT decimal.Decimal
@@ -128,7 +131,7 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("CIRCUIT_BREAKER_FAILURES: %w", err)
 	}
 
-	warmupDelay, err := platformconfig.GetEnvAsDuration("WARMUP_DELAY", 15*time.Second)
+	warmupDelay, err := platformconfig.GetEnvAsDuration("WARMUP_DELAY", 30*time.Second)
 	if err != nil {
 		return Config{}, fmt.Errorf("WARMUP_DELAY: %w", err)
 	}
@@ -141,6 +144,21 @@ func Load() (Config, error) {
 	crossingDelay, err := platformconfig.GetEnvAsDuration("CROSSING_DELAY", 1000*time.Millisecond)
 	if err != nil {
 		return Config{}, fmt.Errorf("CROSSING_DELAY: %w", err)
+	}
+
+	residualGracePeriod, err := platformconfig.GetEnvAsDuration("CTS_RESIDUAL_GRACE_PERIOD", 1500*time.Millisecond)
+	if err != nil {
+		return Config{}, fmt.Errorf("CTS_RESIDUAL_GRACE_PERIOD: %w", err)
+	}
+
+	residualPollInterval, err := platformconfig.GetEnvAsDuration("CTS_RESIDUAL_POLL_INTERVAL", 200*time.Millisecond)
+	if err != nil {
+		return Config{}, fmt.Errorf("CTS_RESIDUAL_POLL_INTERVAL: %w", err)
+	}
+
+	residualMaxReadRetries, err := platformconfig.GetEnvAsInt("CTS_RESIDUAL_MAX_READ_RETRIES", 3)
+	if err != nil {
+		return Config{}, fmt.Errorf("CTS_RESIDUAL_MAX_READ_RETRIES: %w", err)
 	}
 
 	modBias, err := getEnvDecimal("CTS_INVENTORY_MODERATE_BIAS_USDT", "5000.00")
@@ -198,6 +216,9 @@ func Load() (Config, error) {
 		WarmupDelay:               warmupDelay,
 		HighCooldown:              highCooldown,
 		CrossingDelay:             crossingDelay,
+		ResidualGracePeriod:       residualGracePeriod,
+		ResidualPollInterval:      residualPollInterval,
+		ResidualMaxReadRetries:    residualMaxReadRetries,
 		InventoryModerateBiasUSDT: modBias,
 		InventoryHeavyBiasUSDT:    heavyBias,
 		LowInterval: IntervalConfig{
@@ -264,6 +285,18 @@ func (c Config) Validate() error {
 	}
 	if c.HighCooldown < 0 {
 		return fmt.Errorf("HIGH_COOLDOWN must be >= 0, got %s", c.HighCooldown)
+	}
+	if c.ResidualGracePeriod <= 0 {
+		return fmt.Errorf("CTS_RESIDUAL_GRACE_PERIOD must be > 0, got %s", c.ResidualGracePeriod)
+	}
+	if c.ResidualPollInterval <= 0 {
+		return fmt.Errorf("CTS_RESIDUAL_POLL_INTERVAL must be > 0, got %s", c.ResidualPollInterval)
+	}
+	if c.ResidualPollInterval > c.ResidualGracePeriod {
+		return fmt.Errorf("CTS_RESIDUAL_POLL_INTERVAL (%s) cannot be greater than CTS_RESIDUAL_GRACE_PERIOD (%s)", c.ResidualPollInterval, c.ResidualGracePeriod)
+	}
+	if c.ResidualMaxReadRetries < 0 {
+		return fmt.Errorf("CTS_RESIDUAL_MAX_READ_RETRIES must be >= 0, got %d", c.ResidualMaxReadRetries)
 	}
 	if c.HealthPort == "" {
 		return errors.New("HEALTH_PORT must not be empty")

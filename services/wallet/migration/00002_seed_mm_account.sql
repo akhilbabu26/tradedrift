@@ -89,7 +89,7 @@ SELECT
 FROM wallets w
 WHERE w.user_id = mm_uuid
   AND w.initial_balance > 0
-ON CONFLICT (reference_id, reference_type, asset) DO NOTHING;
+ON CONFLICT (wallet_id, reference_id, reference_type) DO NOTHING;
 
 END $$;
 -- +goose StatementEnd

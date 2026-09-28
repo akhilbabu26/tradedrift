@@ -66,7 +66,7 @@ CTS implements an institutional-grade architecture specifically engineered to so
 
 ### Problem 2: The Resting Maker Hazard (Taker-Only Violation)
 * **The Problem:** In TradeDrift, `CT-001` is strictly authorized as a taker. If a limit crossing order partially fills and the unfilled remainder sits on the book, `CT-001` accidentally becomes a market maker, competing with real liquidity providers.
-* **What CTS Solves:** **Autonomous Detached Residual Cleanup (`worker.go`).** Every submitted order enters an independent cleanup loop ($\le 2.5$s timeout). After allowing 60ms for the Matching Engine to execute, CTS inspects the order status. If `OPEN` or `PARTIALLY_FILLED`, CTS immediately issues `CancelOrder` and polls until the residual is confirmed `CANCELLED`. CTS never leaves maker orders resting.
+* **What CTS Solves:** **Autonomous Detached Order Cleanup (`order_cleanup.go`).** Every submitted order enters an independent cleanup loop ($\le 2.5$s timeout). After allowing 60ms for the Matching Engine to execute, CTS inspects the order status. If `OPEN` or `PARTIALLY_FILLED`, CTS immediately issues `CancelOrder` and polls until the residual is confirmed `CANCELLED`. CTS never leaves maker orders resting.
 
 ---
 
@@ -87,7 +87,7 @@ CTS implements an institutional-grade architecture specifically engineered to so
 
 ### Problem 5: Cascading Market Disruption & Flash Crashes
 * **The Problem:** If market data stalls, spreads blow out, or a database experiences lock contention, an unthrottled bot will flood the matching engine with bad trades.
-* **What CTS Solves:** **Multi-Layer Safety Gates & Circuit Breakers (`safety.go`).**
+* **What CTS Solves:** **Multi-Layer Safety Gates & Circuit Breakers (`safety.go` & `circuit_breaker.go`).**
   - **Spread Check:** Halts trading if bid/ask spread exceeds `1.5%`.
   - **Volume & Rate Limits:** Enforces rolling 1-hour notional, 24-hour notional, and $\le 60$ trades/hour.
   - **Circuit Breaker:** Consecutive errors trip the market breaker (`CLOSED` $\rightarrow$ `OPEN`). After a 60s cooldown, it enters `HALF_OPEN` and atomically reserves **one** probe order. If the probe succeeds, it resets; if it fails, it trips back to `OPEN`.
@@ -146,10 +146,13 @@ services/controlled-taker/
 * **Core Execution Orchestrator:** The heart of CTS.
 * **Role:**
   - `engine.go`: Spawns and synchronizes per-market worker loops with cold-boot staggering.
-  - `worker.go`: Executes the 14-step cycle, error classification, and detached residual cleanup.
+  - `worker.go`: Orchestrates the execution cycle, profile selection, and fill recording.
+  - `order_cleanup.go`: Autonomous post-submission verification and cancellation of unfilled order remainder (`awaitOrderCleanup`).
+  - `circuit_breaker.go`: Three-state circuit breaker with atomic probe reservations and fail-closed transitions.
+  - `errors.go`: gRPC submission error classification (`classifySubmissionError`).
   - `profile.go`: Computes dynamic order quantities, lot alignment, and side-specific conservative pricing.
   - `selector.go`: Balances BUY/SELL direction using USDT-normalized inventory exposure.
-  - `safety.go`: Enforces rolling volume limits, rate limits, spread checks, and three-state circuit breaking.
+  - `safety.go`: Enforces rolling volume limits, trade rate limits, spread checks, and 1.5x depth ratio verification.
 
 ### [9] `internal/health/`
 * **HTTP Probes (`:8080`):** Exposes `/healthz` (liveness) and `/readyz` (readiness).

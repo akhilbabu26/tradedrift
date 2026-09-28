@@ -24,6 +24,9 @@ func validTestConfig() config.Config {
 		InventoryHeavyBiasUSDT:    decimal.NewFromInt(25000),
 		WarmupDelay:               1 * time.Second,
 		HighCooldown:              60 * time.Second,
+		ResidualGracePeriod:       1500 * time.Millisecond,
+		ResidualPollInterval:      200 * time.Millisecond,
+		ResidualMaxReadRetries:    3,
 		Markets: []config.MarketConfig{
 			{
 				MarketID:    "BTC-USDT",
@@ -146,6 +149,35 @@ func TestConfig_Validate(t *testing.T) {
 	cfg.LogLevel = "verbose"
 	if err := cfg.Validate(); err == nil {
 		t.Fatalf("expected error on invalid LogLevel, got nil")
+	}
+
+	// 14. Residual grace period <= 0 rejected
+	cfg = validTestConfig()
+	cfg.ResidualGracePeriod = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error when ResidualGracePeriod <= 0, got nil")
+	}
+
+	// 15. Residual poll interval <= 0 rejected
+	cfg = validTestConfig()
+	cfg.ResidualPollInterval = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error when ResidualPollInterval <= 0, got nil")
+	}
+
+	// 16. Residual poll interval > Residual grace period rejected
+	cfg = validTestConfig()
+	cfg.ResidualPollInterval = 2 * time.Second
+	cfg.ResidualGracePeriod = 1 * time.Second
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error when ResidualPollInterval > ResidualGracePeriod, got nil")
+	}
+
+	// 17. Negative max read retries rejected
+	cfg = validTestConfig()
+	cfg.ResidualMaxReadRetries = -1
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error when ResidualMaxReadRetries < 0, got nil")
 	}
 }
 

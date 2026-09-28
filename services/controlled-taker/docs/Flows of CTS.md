@@ -10,7 +10,7 @@ This document details the eight core architectural flows implemented in the Trad
 3. [Direction / Inventory-Balance Flow](#3-direction--inventory-balance-flow)
 4. [Safety Validation & Circuit-Breaker Flow](#4-safety-validation--circuit-breaker-flow)
 5. [Order Submission Flow](#5-order-submission-flow)
-6. [Execution Verification & Residual-Cleanup Flow](#6-execution-verification--residual-cleanup-flow)
+6. [Execution Verification & Order-Cleanup Flow](#6-execution-verification--order-cleanup-flow)
 7. [Ambiguous Submission / Idempotency-Recovery Flow](#7-ambiguous-submission--idempotency-recovery-flow)
 8. [Observability / Failure / Shutdown Flow](#8-observability--failure--shutdown-flow)
 
@@ -309,7 +309,7 @@ Order submission transforms internal sizing parameters into a deterministic, sig
 
 ---
 
-## 6. Execution Verification & Residual-Cleanup Flow
+## 6. Execution Verification & Order-Cleanup Flow (`internal/engine/order_cleanup.go`)
 
 > **The Taker-Only Invariant:**  
 > Once an aggressive limit order is submitted, any unfilled remainder must **never** be permitted to rest on the order book as maker liquidity. CTS autonomously verifies execution and cancels residuals.

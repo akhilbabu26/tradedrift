@@ -34,6 +34,22 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_NUM_PARTITIONS: 3
 
+  # One-shot container: creates all required Kafka topics before services start.
+  # Uses --if-not-exists so it is safe to run on every compose up (idempotent).
+  # All Kafka-dependent services depend on this via service_completed_successfully.
+  kafka-init:
+    image: apache/kafka:latest
+    container_name: tradedrift-kafka-init
+    restart: no
+    environment:
+      KAFKA_ADDR: kafka:29092
+    volumes:
+      - ./scripts/kafka-init-topics.sh:/kafka-init-topics.sh:ro
+    entrypoint: ["/bin/sh", "/kafka-init-topics.sh"]
+    depends_on:
+      kafka:
+        condition: service_started
+
   # ─── Microservices ─────────────────────────────────────────────────────────────
 
   auth:
@@ -78,8 +94,8 @@ services:
     ports:
       - "50052:50052"
     depends_on:
-      kafka:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
 
   wallet-topup:
     build:
@@ -154,8 +170,8 @@ services:
     depends_on:
       wallet:
         condition: service_started
-      kafka:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
@@ -176,8 +192,8 @@ services:
     ports:
       - "50054:50054"
     depends_on:
-      kafka:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
 
   matching-engine:
     build:
@@ -201,8 +217,8 @@ services:
     ports:
       - "8082:8082"
     depends_on:
-      kafka:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 
@@ -222,8 +238,8 @@ services:
       WALLET_GRPC_TIMEOUT: 5s
       LOG_LEVEL: info
     depends_on:
-      kafka:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
       wallet:
         condition: service_started
 
@@ -248,8 +264,8 @@ services:
       - "50057:50057"
       - "9096:9090" # Host port 9096 mapped to container 9090 (avoids collision with Prometheus's 9090)
     depends_on:
-      kafka:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
 
   portfolio:
     build:
@@ -276,8 +292,8 @@ services:
       - "50058:50058"
       - "9091:9091"
     depends_on:
-      kafka:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
       wallet:
         condition: service_started
       market:
@@ -305,8 +321,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      kafka:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
 
   gateway:
     build:
@@ -333,8 +349,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      kafka:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
       auth:
         condition: service_started
       wallet:
@@ -385,8 +401,8 @@ services:
       - "8081:8080"
       - "9094:9090" # Host port 9094 mapped to container 9090 (avoids collision with portfolio's 9091)
     depends_on:
-      kafka:
-        condition: service_started
+      kafka-init:
+        condition: service_completed_successfully
       wallet:
         condition: service_started
       order:
@@ -425,6 +441,8 @@ services:
       - "8086:8080"
       - "9097:9090"
     depends_on:
+      kafka-init:
+        condition: service_completed_successfully
       order:
         condition: service_started
       redis:

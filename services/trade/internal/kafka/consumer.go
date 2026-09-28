@@ -329,10 +329,12 @@ func (c *Consumer) sendToDLQ(ctx context.Context, original kafkago.Message, reas
 		Key:   original.Key,
 		Value: original.Value,
 		Headers: []kafkago.Header{
-			{Key: "dlq-reason", Value: []byte(reason)},
-			{Key: "dlq-topic", Value: []byte(original.Topic)},
-			{Key: "dlq-partition", Value: []byte(fmt.Sprintf("%d", original.Partition))},
-			{Key: "dlq-offset", Value: []byte(fmt.Sprintf("%d", original.Offset))},
+			{Key: "dlq-reason",       Value: []byte(reason)},
+			{Key: "dlq-service",      Value: []byte("trade")},
+			{Key: "dlq-topic",        Value: []byte(original.Topic)},
+			{Key: "dlq-partition",    Value: []byte(fmt.Sprintf("%d", original.Partition))},
+			{Key: "dlq-offset",       Value: []byte(fmt.Sprintf("%d", original.Offset))},
+			{Key: "dlq-timestamp",    Value: []byte(time.Now().UTC().Format(time.RFC3339Nano))},
 		},
 	}
 	if err := c.dlqWriter.WriteMessages(ctx, dlqMsg); err != nil {

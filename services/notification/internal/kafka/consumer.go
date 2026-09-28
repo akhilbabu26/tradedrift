@@ -319,8 +319,9 @@ func (c *Consumer) handlePoison(ctx context.Context, msg kafka.Message, topic, r
 		Value: msg.Value,
 		Headers: []kafka.Header{
 			{Key: "original-topic", Value: []byte(topic)},
-			{Key: "error-reason", Value: []byte(reason)},
-			{Key: "dlq-time", Value: []byte(time.Now().UTC().Format(time.RFC3339))},
+			{Key: "error-reason",   Value: []byte(reason)},
+			{Key: "dlq-service",    Value: []byte("notification")},
+			{Key: "dlq-time",       Value: []byte(time.Now().UTC().Format(time.RFC3339))},
 		},
 	}
 	if err := c.dlqWriter.WriteMessages(ctx, dlqMsg); err != nil {

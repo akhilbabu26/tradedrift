@@ -315,11 +315,12 @@ func (c *Consumer) sendToDLQ(ctx context.Context, original kafkago.Message, reas
 		Key:   original.Key,
 		Value: original.Value,
 		Headers: []kafkago.Header{
-			{Key: "dlq-reason", Value: []byte(reason)},
+			{Key: "dlq-reason",       Value: []byte(reason)},
+			{Key: "dlq-service",      Value: []byte("portfolio")},
 			{Key: "dlq-source-topic", Value: []byte(original.Topic)},
-			{Key: "dlq-partition", Value: []byte(strconv.Itoa(original.Partition))},
-			{Key: "dlq-offset", Value: []byte(strconv.FormatInt(original.Offset, 10))},
-			{Key: "dlq-timestamp", Value: []byte(time.Now().UTC().Format(time.RFC3339Nano))},
+			{Key: "dlq-partition",    Value: []byte(strconv.Itoa(original.Partition))},
+			{Key: "dlq-offset",       Value: []byte(strconv.FormatInt(original.Offset, 10))},
+			{Key: "dlq-timestamp",    Value: []byte(time.Now().UTC().Format(time.RFC3339Nano))},
 		},
 	}
 

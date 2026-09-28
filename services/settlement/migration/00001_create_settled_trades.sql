@@ -1,36 +1,65 @@
+
+
 -- +goose Up
 
 CREATE TABLE IF NOT EXISTS settled_trades (
+    -- Unique identifier of the executed trade from the Matching Engine
     trade_id      UUID PRIMARY KEY,
+
+    -- Participant IDs involved in the trade
     buyer_id      UUID NOT NULL,
     seller_id     UUID NOT NULL,
     buy_order_id  UUID NOT NULL,
     sell_order_id UUID NOT NULL,
+
+    -- Market and currency details (e.g. BTC-USDT, base=BTC, quote=USDT)
     market_id     VARCHAR(32) NOT NULL,
     base_asset    VARCHAR(16) NOT NULL,
     quote_asset   VARCHAR(16) NOT NULL,
+
+    -- Execution pricing and volume
     price         DECIMAL(30,10) NOT NULL,
     quantity      DECIMAL(30,10) NOT NULL,
+
+    -- Settlement lifecycle status:
+    -- PENDING: trade registered locally, awaiting confirmation from Wallet Service.
+    -- SETTLED: wallet balance transfers completed successfully.
+    -- FAILED:  unrecoverable error occurred or max retries exceeded (dead-letter state).
     status        VARCHAR(16) NOT NULL DEFAULT 'PENDING'
-                    CHECK (status IN ('PENDING', 'SETTLED')),
+                    CHECK (status IN ('PENDING', 'SETTLED', 'FAILED')),
+
+    -- Monotonic per-market sequence assigned by the Matching Engine.
+    -- Passed to Wallet.SettleTrade to ensure idempotent and strictly ordered ledger execution.
+    sequence      BIGINT NOT NULL DEFAULT 0,
+
+    -- Number of settlement attempts executed by the recovery worker
+    retry_count   INT NOT NULL DEFAULT 0,
+
+    -- Detailed error message from the last failed settlement attempt (for debugging)
+    last_error    TEXT,
+
+    -- Timestamp after which this pending trade is eligible for the next recovery attempt.
+    -- Used to implement exponential backoff rather than aggressive tight-loop retrying.
+    next_retry_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Timestamp when the trade was matched in the Matching Engine
     executed_at   TIMESTAMPTZ NOT NULL,
 
-    -- created_at records when THIS SERVICE received and registered the trade.
-    -- Used by the recovery goroutine to detect genuinely stuck settlements:
-    -- "PENDING for > 60 seconds in our system" — not "executed > 60 seconds ago".
-    -- This avoids false positives when Kafka delivers delayed (but not stuck) events.
+    -- Timestamp when THIS settlement service first received and persisted the trade event
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+    -- Timestamp when wallet transfer completed and status transitioned to SETTLED
     settled_at    TIMESTAMPTZ
 );
 
--- Support audit queries: all trades by buyer or seller
+-- Support fast audit and user trade history lookups
 CREATE INDEX IF NOT EXISTS idx_settled_trades_buyer   ON settled_trades(buyer_id);
 CREATE INDEX IF NOT EXISTS idx_settled_trades_seller  ON settled_trades(seller_id);
 
--- Recovery goroutine: fast scan for stale PENDING rows.
--- Partial index only covers PENDING rows — stays tiny even at high volume.
--- Uses created_at (not executed_at) to avoid false positives from delayed Kafka delivery.
-CREATE INDEX IF NOT EXISTS idx_settled_trades_pending ON settled_trades(created_at)
+-- Partial index for the recovery worker:
+-- Only indexes rows that are still PENDING, sorted by when they are due to be retried (next_retry_at).
+-- Stays tiny and fast even when millions of settled trades exist.
+CREATE INDEX IF NOT EXISTS idx_settled_trades_pending ON settled_trades(next_retry_at)
     WHERE status = 'PENDING';
 
 -- +goose Down

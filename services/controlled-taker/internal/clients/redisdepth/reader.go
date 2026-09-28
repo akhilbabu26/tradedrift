@@ -102,8 +102,13 @@ func (r *Reader) GetDepth(ctx context.Context, marketID string) (*DepthSnapshot,
 		return nil, fmt.Errorf("read %s from Redis: %w", key, err)
 	}
 
+	return ParseSnapshotJSON(marketID, []byte(val))
+}
+
+// ParseSnapshotJSON parses and strictly validates raw snapshot JSON bytes for marketID.
+func ParseSnapshotJSON(marketID string, raw []byte) (*DepthSnapshot, error) {
 	var dto depthSnapshotDTO
-	if err := json.Unmarshal([]byte(val), &dto); err != nil {
+	if err := json.Unmarshal(raw, &dto); err != nil {
 		metrics.DepthReadErrors.WithLabelValues(marketID, "unmarshal_error").Inc()
 		return nil, fmt.Errorf("unmarshal depth for %s: %w", marketID, err)
 	}

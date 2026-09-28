@@ -15,6 +15,7 @@ import (
 
 	"tradedrift/services/liquidity-engine/internal/config"
 	"tradedrift/services/liquidity-engine/internal/inventory"
+	"tradedrift/services/liquidity-engine/internal/kafka"
 	"tradedrift/services/liquidity-engine/internal/meclient"
 	"tradedrift/services/liquidity-engine/internal/order"
 	"tradedrift/services/liquidity-engine/internal/pricing"
@@ -339,5 +340,138 @@ func TestEngine_RunReconcileMarket_UnsynchronizedGuard(t *testing.T) {
 
 	if len(tracker.All("BTC-USDT")) != 0 {
 		t.Errorf("expected 0 orders in tracker, got %d", len(tracker.All("BTC-USDT")))
+	}
+}
+
+func TestEngine_HandleTrade_FullFill_RemovesFromTracker(t *testing.T) {
+	cfg := &config.Config{
+		Markets: []config.MarketConfig{
+			{MarketID: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT"},
+		},
+	}
+	logger := zap.NewNop()
+	tracker := order.NewTracker()
+	inv := inventory.NewManager(tracker, logger)
+	metrics := &mockEngineMetrics{}
+
+	eng := NewEngine(cfg, tracker, inv, nil, nil, nil, nil, nil, nil, metrics, logger)
+
+	levelID := "MM-BTC-USDT-ASK-01"
+	orderID := "order-full-1"
+	qty := decimal.NewFromFloat(1.5)
+	tracker.SetPending(levelID, orderID, "MM-BTC-USDT-ASK-01-G001", 1, pricing.PriceLevel{
+		LevelID:  levelID,
+		MarketID: "BTC-USDT",
+		Side:     "SELL",
+		Price:    decimal.NewFromInt(95000),
+		Quantity: qty,
+	})
+	tracker.SetResting(levelID, orderID, qty, qty)
+
+	if tracker.Get(levelID) == nil {
+		t.Fatal("expected order to be present in tracker before trade")
+	}
+
+	eng.handleTrade(kafka.TradeEnvelope{
+		Event: kafka.TradeEvent{
+			TradeID:      "trade-full-1",
+			MarketID:     "BTC-USDT",
+			MakerOrderID: orderID,
+			MMSide:       "SELL",
+			Quantity:     qty,
+		},
+	})
+
+	if ord := tracker.Get(levelID); ord != nil {
+		t.Errorf("expected level %s to be removed from tracker on full fill, but found: %+v", levelID, ord)
+	}
+}
+
+func TestEngine_HandleTrade_PartialFill_RetainsInTracker(t *testing.T) {
+	cfg := &config.Config{
+		Markets: []config.MarketConfig{
+			{MarketID: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT"},
+		},
+	}
+	logger := zap.NewNop()
+	tracker := order.NewTracker()
+	inv := inventory.NewManager(tracker, logger)
+	metrics := &mockEngineMetrics{}
+
+	eng := NewEngine(cfg, tracker, inv, nil, nil, nil, nil, nil, nil, metrics, logger)
+
+	levelID := "MM-BTC-USDT-ASK-01"
+	orderID := "order-part-1"
+	origQty := decimal.NewFromFloat(1.5)
+	tracker.SetPending(levelID, orderID, "MM-BTC-USDT-ASK-01-G001", 1, pricing.PriceLevel{
+		LevelID:  levelID,
+		MarketID: "BTC-USDT",
+		Side:     "SELL",
+		Price:    decimal.NewFromInt(95000),
+		Quantity: origQty,
+	})
+	tracker.SetResting(levelID, orderID, origQty, origQty)
+
+	fillQty := decimal.NewFromFloat(0.5)
+	eng.handleTrade(kafka.TradeEnvelope{
+		Event: kafka.TradeEvent{
+			TradeID:      "trade-part-1",
+			MarketID:     "BTC-USDT",
+			MakerOrderID: orderID,
+			MMSide:       "SELL",
+			Quantity:     fillQty,
+		},
+	})
+
+	ord := tracker.Get(levelID)
+	if ord == nil {
+		t.Fatal("expected order to remain in tracker on partial fill")
+	}
+	expectedRemaining := origQty.Sub(fillQty)
+	if !ord.RemainingQty.Equal(expectedRemaining) {
+		t.Errorf("expected remaining qty %s, got %s", expectedRemaining, ord.RemainingQty)
+	}
+	if !ord.FilledQty.Equal(fillQty) {
+		t.Errorf("expected filled qty %s, got %s", fillQty, ord.FilledQty)
+	}
+}
+
+func TestEngine_HandleTrade_Overfill_ClampsToZeroAndRemoves(t *testing.T) {
+	cfg := &config.Config{
+		Markets: []config.MarketConfig{
+			{MarketID: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT"},
+		},
+	}
+	logger := zap.NewNop()
+	tracker := order.NewTracker()
+	inv := inventory.NewManager(tracker, logger)
+	metrics := &mockEngineMetrics{}
+
+	eng := NewEngine(cfg, tracker, inv, nil, nil, nil, nil, nil, nil, metrics, logger)
+
+	levelID := "MM-BTC-USDT-BID-01"
+	orderID := "order-over-1"
+	origQty := decimal.NewFromFloat(1.0)
+	tracker.SetPending(levelID, orderID, "MM-BTC-USDT-BID-01-G001", 1, pricing.PriceLevel{
+		LevelID:  levelID,
+		MarketID: "BTC-USDT",
+		Side:     "BUY",
+		Price:    decimal.NewFromInt(95000),
+		Quantity: origQty,
+	})
+	tracker.SetResting(levelID, orderID, origQty, decimal.NewFromFloat(0.5))
+
+	eng.handleTrade(kafka.TradeEnvelope{
+		Event: kafka.TradeEvent{
+			TradeID:      "trade-over-1",
+			MarketID:     "BTC-USDT",
+			MakerOrderID: orderID,
+			MMSide:       "BUY",
+			Quantity:     decimal.NewFromFloat(0.8),
+		},
+	})
+
+	if ord := tracker.Get(levelID); ord != nil {
+		t.Errorf("expected level %s to be removed from tracker on overfill, but found: %+v", levelID, ord)
 	}
 }

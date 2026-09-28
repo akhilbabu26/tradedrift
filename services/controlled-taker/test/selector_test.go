@@ -1,13 +1,14 @@
-package engine
+package test
 
 import (
 	"testing"
 
 	"github.com/shopspring/decimal"
+	"tradedrift/services/controlled-taker/internal/engine"
 )
 
 func TestDirectionSelector_InventoryBias(t *testing.T) {
-	selector := NewDirectionSelector()
+	selector := engine.NewDirectionSelector()
 	marketID := "BTC-USDT"
 
 	// 1. Initial neutral state: roughly balanced (over 1000 trials, BUY should be ~50%)
@@ -55,7 +56,7 @@ func TestDirectionSelector_InventoryBias(t *testing.T) {
 // TestDirectionSelector_ConcurrencyStress verifies that concurrent calls to SelectSide
 // and RecordFill across multiple markets and goroutines are race-free and thread-safe.
 func TestDirectionSelector_ConcurrencyStress(t *testing.T) {
-	selector := NewDirectionSelector()
+	selector := engine.NewDirectionSelector()
 	markets := []string{"BTC-USDT", "ETH-USDT", "SOL-USDT"}
 
 	const goroutines = 30

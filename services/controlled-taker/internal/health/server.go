@@ -42,8 +42,8 @@ func NewServer(port string, redisReader RedisDepthPinger, orderClient OrderPinge
 	}
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/healthz", s.handleHealthz)
-	mux.HandleFunc("/readyz", s.handleReadyz)
+	mux.HandleFunc("/healthz", s.HandleHealthz)
+	mux.HandleFunc("/readyz", s.HandleReadyz)
 
 	s.httpServer = &http.Server{
 		Addr:         ":" + port,
@@ -70,13 +70,15 @@ func (s *Server) Stop(ctx context.Context) error {
 	return s.httpServer.Shutdown(ctx)
 }
 
-func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+// HandleHealthz handles liveness probe requests.
+func (s *Server) HandleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+// HandleReadyz handles readiness probe requests.
+func (s *Server) HandleReadyz(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 	defer cancel()
 

@@ -8,11 +8,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
 	"tradedrift/services/matching-engine/internal/market"
 )
 
-func newHTTPServer(addr string, manager *market.MarketManager, isReady *atomic.Bool) *http.Server {
+func newHTTPServer(addr string, manager *market.MarketManager, isReady *atomic.Bool, isDegraded *atomic.Bool) *http.Server {
 	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.Handler())
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -23,6 +26,11 @@ func newHTTPServer(addr string, manager *market.MarketManager, isReady *atomic.B
 		if !isReady.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]string{"status": "recovering"})
+			return
+		}
+		if isDegraded != nil && isDegraded.Load() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "degraded", "reason": "initial depth seed failed"})
 			return
 		}
 		w.WriteHeader(http.StatusOK)

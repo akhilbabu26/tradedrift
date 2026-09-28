@@ -1,16 +1,18 @@
-package engine
+package test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 	"tradedrift/services/controlled-taker/internal/clients/redisdepth"
+	"tradedrift/services/controlled-taker/internal/engine"
 )
 
 func TestCircuitBreaker_StateTransitions(t *testing.T) {
-	cb := NewCircuitBreaker(3, 50*time.Millisecond, zap.NewNop())
+	cb := engine.NewCircuitBreaker(3, 50*time.Millisecond, zap.NewNop())
 
 	// Initially CLOSED
 	if !cb.Allow() {
@@ -54,7 +56,7 @@ func TestCircuitBreaker_StateTransitions(t *testing.T) {
 }
 
 func TestCircuitBreaker_HalfOpenProbeFailureTripsToOpen(t *testing.T) {
-	cb := NewCircuitBreaker(2, 40*time.Millisecond, zap.NewNop())
+	cb := engine.NewCircuitBreaker(2, 40*time.Millisecond, zap.NewNop())
 	cb.SetMarketID("BTC-USDT")
 
 	cb.RecordFailure()
@@ -89,7 +91,7 @@ func TestCircuitBreaker_HalfOpenProbeFailureTripsToOpen(t *testing.T) {
 // passes cb.Allow() in HALF_OPEN but is subsequently rejected by a pre-order safety check
 // (without dispatching or calling ReserveProbe), the circuit breaker does NOT get stuck.
 func TestCircuitBreaker_HalfOpenPreOrderRejectionDoesNotStick(t *testing.T) {
-	cb := NewCircuitBreaker(2, 30*time.Millisecond, zap.NewNop())
+	cb := engine.NewCircuitBreaker(2, 30*time.Millisecond, zap.NewNop())
 	cb.SetMarketID("BTC-USDT")
 
 	cb.RecordFailure()
@@ -116,8 +118,8 @@ func TestCircuitBreaker_HalfOpenPreOrderRejectionDoesNotStick(t *testing.T) {
 // in HALF_OPEN results in zero fills and is cleanly cancelled, RecordOrderResolved resolves
 // the circuit breaker to CLOSED without permanently sticking in HALF_OPEN.
 func TestCircuitBreaker_HalfOpenZeroFill_TransitionsToClosed(t *testing.T) {
-	cb := NewCircuitBreaker(2, 30*time.Millisecond, zap.NewNop())
-	sm := NewSafetyManager(
+	cb := engine.NewCircuitBreaker(2, 30*time.Millisecond, zap.NewNop())
+	sm := engine.NewSafetyManager(
 		cb,
 		decimal.NewFromInt(1000000),
 		decimal.NewFromInt(5000000),
@@ -150,14 +152,14 @@ func TestCircuitBreaker_HalfOpenZeroFill_TransitionsToClosed(t *testing.T) {
 	if !cb.Allow() {
 		t.Fatalf("expected Allow() to return true after returning to CLOSED")
 	}
-	if !sm.hourlyNotional.IsZero() {
-		t.Fatalf("expected zero hourly notional for 0 fills, got %s", sm.hourlyNotional)
+	if !sm.HourlyNotional().IsZero() {
+		t.Fatalf("expected zero hourly notional for 0 fills, got %s", sm.HourlyNotional())
 	}
 }
 
 func TestSafetyManager_CumulativeDepthGuard(t *testing.T) {
-	cb := NewCircuitBreaker(5, time.Minute, zap.NewNop())
-	sm := NewSafetyManager(
+	cb := engine.NewCircuitBreaker(5, time.Minute, zap.NewNop())
+	sm := engine.NewSafetyManager(
 		cb,
 		decimal.NewFromInt(1000000), // Max hourly notional
 		decimal.NewFromInt(5000000), // Max daily notional
@@ -195,8 +197,8 @@ func TestSafetyManager_CumulativeDepthGuard(t *testing.T) {
 }
 
 func TestSafetyManager_SpreadAndVolumeLimits(t *testing.T) {
-	cb := NewCircuitBreaker(5, time.Minute, zap.NewNop())
-	sm := NewSafetyManager(
+	cb := engine.NewCircuitBreaker(5, time.Minute, zap.NewNop())
+	sm := engine.NewSafetyManager(
 		cb,
 		decimal.NewFromInt(10000),   // Max hourly notional $10,000
 		decimal.NewFromInt(50000),   // Max daily notional $50,000
@@ -249,7 +251,7 @@ func TestSafetyManager_SpreadAndVolumeLimits(t *testing.T) {
 
 	// Order 3: Exceeds max 2 trades per hour
 	err = sm.ValidatePreOrder(normalDepth, "BUY", decimal.NewFromFloat(0.01), decimal.NewFromInt(96500))
-	if err != ErrTradesPerHourExceeded {
+	if !errors.Is(err, engine.ErrTradesPerHourExceeded) {
 		t.Fatalf("expected ErrTradesPerHourExceeded, got: %v", err)
 	}
 }
@@ -257,7 +259,7 @@ func TestSafetyManager_SpreadAndVolumeLimits(t *testing.T) {
 // TestCircuitBreaker_ConcurrencyStress spins up 50 concurrent goroutines rapidly reserving,
 // releasing, and transitioning circuit breaker state to verify thread-safety and absence of deadlocks.
 func TestCircuitBreaker_ConcurrencyStress(t *testing.T) {
-	cb := NewCircuitBreaker(5, 10*time.Millisecond, zap.NewNop())
+	cb := engine.NewCircuitBreaker(5, 10*time.Millisecond, zap.NewNop())
 	cb.SetMarketID("BTC-USDT")
 
 	const goroutines = 50

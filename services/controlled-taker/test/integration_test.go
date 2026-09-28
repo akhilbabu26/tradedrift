@@ -1,10 +1,9 @@
-package engine
+package test
 
 import (
 	"context"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -13,203 +12,10 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"tradedrift/services/controlled-taker/internal/account"
-	"tradedrift/services/controlled-taker/internal/clients/orderservice"
 	"tradedrift/services/controlled-taker/internal/clients/redisdepth"
 	"tradedrift/services/controlled-taker/internal/config"
+	"tradedrift/services/controlled-taker/internal/engine"
 )
-
-type mockDepthReader struct {
-	mu       sync.Mutex
-	snapshot *redisdepth.DepthSnapshot
-	err      error
-}
-
-func (m *mockDepthReader) GetDepth(ctx context.Context, marketID string) (*redisdepth.DepthSnapshot, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.err != nil {
-		return nil, m.err
-	}
-	return m.snapshot, nil
-}
-
-type submittedOrder struct {
-	MarketID       string
-	Side           string
-	PriceCap       string
-	Quantity       string
-	IdempotencyKey string
-}
-
-type mockOrderSubmitter struct {
-	mu                             sync.Mutex
-	orders                         []submittedOrder
-	returnErr                      error
-	status                         string
-	filledQty                      string
-	remainingQty                   string
-	cancelledIDs                   []string
-	failFirstCreateWithTimeout     bool
-	failFirstCreateWithUnavailable bool
-	orderCommittedOnTimeout        bool
-	createAttempts                 int
-	findAttempts                   int
-	findOrderErr                   error
-}
-
-func (m *mockOrderSubmitter) CreateCrossingOrder(ctx context.Context, marketID, side, priceCap, quantity, idempotencyKey string) (*orderservice.OrderResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.createAttempts++
-	if m.failFirstCreateWithTimeout && m.createAttempts == 1 {
-		ord := submittedOrder{
-			MarketID:       marketID,
-			Side:           side,
-			PriceCap:       priceCap,
-			Quantity:       quantity,
-			IdempotencyKey: idempotencyKey,
-		}
-		if m.orderCommittedOnTimeout {
-			m.orders = append(m.orders, ord)
-		}
-		return nil, context.DeadlineExceeded
-	}
-
-	if m.failFirstCreateWithUnavailable && m.createAttempts == 1 {
-		ord := submittedOrder{
-			MarketID:       marketID,
-			Side:           side,
-			PriceCap:       priceCap,
-			Quantity:       quantity,
-			IdempotencyKey: idempotencyKey,
-		}
-		if m.orderCommittedOnTimeout {
-			m.orders = append(m.orders, ord)
-		}
-		return nil, status.Error(codes.Unavailable, "service unavailable")
-	}
-
-	if m.returnErr != nil {
-		return nil, m.returnErr
-	}
-	ord := submittedOrder{
-		MarketID:       marketID,
-		Side:           side,
-		PriceCap:       priceCap,
-		Quantity:       quantity,
-		IdempotencyKey: idempotencyKey,
-	}
-	m.orders = append(m.orders, ord)
-	status := m.status
-	if status == "" {
-		status = "ORDER_STATUS_FILLED"
-	}
-	filled := m.filledQty
-	if filled == "" {
-		filled = quantity
-	}
-	remaining := m.remainingQty
-	if remaining == "" {
-		remaining = "0"
-	}
-	return &orderservice.OrderResult{
-		OrderID:       "ord-" + idempotencyKey,
-		ClientOrderID: idempotencyKey,
-		Status:        status,
-		FilledQty:     filled,
-		RemainingQty:  remaining,
-	}, nil
-}
-
-func (m *mockOrderSubmitter) FindOrderByIdempotencyKey(ctx context.Context, marketID, idempotencyKey string) (*orderservice.OrderResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	m.findAttempts++
-	if m.findOrderErr != nil {
-		return nil, m.findOrderErr
-	}
-
-	for _, o := range m.orders {
-		if o.IdempotencyKey == idempotencyKey || (o.IdempotencyKey == "" && len(m.orders) == 1) {
-			status := m.status
-			if status == "" {
-				status = "ORDER_STATUS_FILLED"
-			}
-			filled := m.filledQty
-			if filled == "" {
-				filled = o.Quantity
-			}
-			remaining := m.remainingQty
-			if remaining == "" {
-				remaining = "0"
-			}
-			return &orderservice.OrderResult{
-				OrderID:       "ord-" + idempotencyKey,
-				ClientOrderID: idempotencyKey,
-				Status:        status,
-				FilledQty:     filled,
-				RemainingQty:  remaining,
-			}, nil
-		}
-	}
-
-	return nil, nil
-}
-
-func (m *mockOrderSubmitter) GetOrder(ctx context.Context, orderID string) (*orderservice.OrderResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	status := m.status
-	if status == "" {
-		status = "ORDER_STATUS_FILLED"
-	}
-	filled := m.filledQty
-	if filled == "" && len(m.orders) > 0 {
-		filled = m.orders[len(m.orders)-1].Quantity
-	}
-	remaining := m.remainingQty
-	if remaining == "" {
-		remaining = "0"
-	}
-	return &orderservice.OrderResult{
-		OrderID:      orderID,
-		Status:       status,
-		FilledQty:    filled,
-		RemainingQty: remaining,
-	}, nil
-}
-
-func (m *mockOrderSubmitter) CancelOrder(ctx context.Context, orderID string) (*orderservice.OrderResult, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.cancelledIDs = append(m.cancelledIDs, orderID)
-	m.status = "ORDER_STATUS_CANCELLED"
-	m.remainingQty = "0"
-	return &orderservice.OrderResult{
-		OrderID:      orderID,
-		Status:       "ORDER_STATUS_CANCELLED",
-		FilledQty:    m.filledQty,
-		RemainingQty: "0",
-	}, nil
-}
-
-func testDefaultConfig() config.Config {
-	return config.Config{
-		MaxOrderNotionalUSDT:   decimal.NewFromInt(10000),
-		MaxHourlyVolumeUSDT:    decimal.NewFromInt(100000),
-		MaxDailyVolumeUSDT:     decimal.NewFromInt(500000),
-		MaxTradesPerHour:       100,
-		MaxSpreadPercent:       decimal.NewFromFloat(0.01),
-		MaxSlippageBps:         15,
-		CircuitBreakerFailures: 3,
-		HighCooldown:           time.Minute,
-		LowInterval:            config.IntervalConfig{MinInterval: 10 * time.Millisecond, BaseInterval: 20 * time.Millisecond, MaxInterval: 30 * time.Millisecond},
-		MidInterval:            config.IntervalConfig{MinInterval: 10 * time.Millisecond, BaseInterval: 20 * time.Millisecond, MaxInterval: 30 * time.Millisecond},
-		HighInterval:           config.IntervalConfig{MinInterval: 10 * time.Millisecond, BaseInterval: 20 * time.Millisecond, MaxInterval: 30 * time.Millisecond},
-	}
-}
 
 // TestWorker_OrderLifecycleIntegration tests that the worker executes an order cycle cleanly
 // and obeys the identity, idempotency key, and dynamic sizing invariants.
@@ -232,15 +38,15 @@ func TestWorker_OrderLifecycleIntegration(t *testing.T) {
 
 	depthReader := &mockDepthReader{snapshot: depth}
 	orderSubmitter := &mockOrderSubmitter{}
-	selector := NewDirectionSelector()
+	selector := engine.NewDirectionSelector()
 
-	worker := NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
+	worker := engine.NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
 
 	// Execute a single cycle
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
-	worker.executeCycle(ctx, config.ProfileLow)
+	worker.ExecuteCycle(ctx, config.ProfileLow)
 
 	orderSubmitter.mu.Lock()
 	defer orderSubmitter.mu.Unlock()
@@ -296,27 +102,27 @@ func TestWorker_CircuitBreakerFailClosedIntegration(t *testing.T) {
 
 	depthReader := &mockDepthReader{snapshot: depth}
 	orderSubmitter := &mockOrderSubmitter{returnErr: errors.New("gRPC simulated network outage")}
-	selector := NewDirectionSelector()
+	selector := engine.NewDirectionSelector()
 
-	worker := NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
+	worker := engine.NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
 
 	ctx := context.Background()
 
 	// Cycle 1: fails
-	worker.executeCycle(ctx, config.ProfileLow)
-	if worker.safetyMgr.circuitBreaker.Allow() != true {
+	worker.ExecuteCycle(ctx, config.ProfileLow)
+	if worker.SafetyManager().CircuitBreaker().Allow() != true {
 		t.Errorf("circuit breaker should still allow after 1 failure (max 2)")
 	}
 
 	// Cycle 2: fails -> trips
-	worker.executeCycle(ctx, config.ProfileLow)
-	if worker.safetyMgr.circuitBreaker.Allow() != false {
+	worker.ExecuteCycle(ctx, config.ProfileLow)
+	if worker.SafetyManager().CircuitBreaker().Allow() != false {
 		t.Errorf("circuit breaker should be tripped (disallow) after 2 failures")
 	}
 
 	// Cycle 3: should be blocked by circuit breaker before submitting
 	countBefore := len(orderSubmitter.orders)
-	worker.executeCycle(ctx, config.ProfileLow)
+	worker.ExecuteCycle(ctx, config.ProfileLow)
 	countAfter := len(orderSubmitter.orders)
 
 	if countBefore != countAfter {
@@ -350,12 +156,12 @@ func TestWorker_PartialFill_ResidualCancelled_ActualFillRecorded(t *testing.T) {
 		filledQty:    "0.0300",
 		remainingQty: "0.0200",
 	}
-	selector := NewDirectionSelector()
+	selector := engine.NewDirectionSelector()
 
-	worker := NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
+	worker := engine.NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
 
 	ctx := context.Background()
-	worker.executeCycle(ctx, config.ProfileLow)
+	worker.ExecuteCycle(ctx, config.ProfileLow)
 
 	orderSubmitter.mu.Lock()
 	defer orderSubmitter.mu.Unlock()
@@ -380,10 +186,7 @@ func TestWorker_PartialFill_ResidualCancelled_ActualFillRecorded(t *testing.T) {
 	}
 
 	// Invariant: SafetyManager hourly volume must record actual fill (0.03 * priceCap)
-	worker.safetyMgr.mu.Lock()
-	recordedNotional := worker.safetyMgr.hourlyNotional
-	worker.safetyMgr.mu.Unlock()
-
+	recordedNotional := worker.SafetyManager().HourlyNotional()
 	if !recordedNotional.Equal(expectedNotional) {
 		t.Fatalf("expected recorded notional %s, got %s", expectedNotional, recordedNotional)
 	}
@@ -413,12 +216,12 @@ func TestWorker_ZeroFill_ResidualCancelled_NoInventoryUpdate(t *testing.T) {
 		filledQty:    "0.0000",
 		remainingQty: "0.0500",
 	}
-	selector := NewDirectionSelector()
+	selector := engine.NewDirectionSelector()
 
-	worker := NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
+	worker := engine.NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
 
 	ctx := context.Background()
-	worker.executeCycle(ctx, config.ProfileLow)
+	worker.ExecuteCycle(ctx, config.ProfileLow)
 
 	orderSubmitter.mu.Lock()
 	defer orderSubmitter.mu.Unlock()
@@ -435,10 +238,7 @@ func TestWorker_ZeroFill_ResidualCancelled_NoInventoryUpdate(t *testing.T) {
 	}
 
 	// Invariant: Zero hourly notional
-	worker.safetyMgr.mu.Lock()
-	recordedNotional := worker.safetyMgr.hourlyNotional
-	worker.safetyMgr.mu.Unlock()
-
+	recordedNotional := worker.SafetyManager().HourlyNotional()
 	if !recordedNotional.IsZero() {
 		t.Fatalf("expected zero notional for unfilled order, got %s", recordedNotional)
 	}
@@ -473,8 +273,8 @@ func TestWorker_ShutdownAfterSubmission_CancelsResidual(t *testing.T) {
 		remainingQty: "0.0300",
 	}
 
-	selector := NewDirectionSelector()
-	worker := NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
+	selector := engine.NewDirectionSelector()
+	worker := engine.NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
 
 	// Trigger shutdown immediately as execution starts
 	go func() {
@@ -482,7 +282,7 @@ func TestWorker_ShutdownAfterSubmission_CancelsResidual(t *testing.T) {
 		cancel() // Cancel parent context!
 	}()
 
-	worker.executeCycle(ctx, config.ProfileLow)
+	worker.ExecuteCycle(ctx, config.ProfileLow)
 
 	orderSubmitter.mu.Lock()
 	defer orderSubmitter.mu.Unlock()
@@ -539,11 +339,11 @@ func TestWorker_AmbiguousCreateOrder_IdempotencyRecovery_CancelsResidual(t *test
 		remainingQty:               "0.0250",
 	}
 
-	selector := NewDirectionSelector()
-	worker := NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
+	selector := engine.NewDirectionSelector()
+	worker := engine.NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
 
 	ctx := context.Background()
-	worker.executeCycle(ctx, config.ProfileLow)
+	worker.ExecuteCycle(ctx, config.ProfileLow)
 
 	orderSubmitter.mu.Lock()
 	defer orderSubmitter.mu.Unlock()
@@ -573,9 +373,9 @@ func TestWorker_AmbiguousCreateOrder_IdempotencyRecovery_CancelsResidual(t *test
 	}
 
 	// Invariant: Circuit breaker must NOT be tripped because the order was recovered and resolved cleanly
-	if worker.safetyMgr.circuitBreaker.State() != "CLOSED" {
+	if worker.SafetyManager().CircuitBreaker().State() != "CLOSED" {
 		t.Fatalf("expected circuit breaker to remain CLOSED after successful idempotency recovery, got %s",
-			worker.safetyMgr.circuitBreaker.State())
+			worker.SafetyManager().CircuitBreaker().State())
 	}
 }
 
@@ -609,13 +409,13 @@ func TestWorker_DuplicateOrderPrevention_RecoveryNeverCreatesSecondOrder(t *test
 		remainingQty:               "0.0300",
 	}
 
-	selector := NewDirectionSelector()
-	worker := NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
+	selector := engine.NewDirectionSelector()
+	worker := engine.NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
 
 	ctx := context.Background()
 
 	// --- Cycle 1: Ambiguous submission with recovery ---
-	worker.executeCycle(ctx, config.ProfileLow)
+	worker.ExecuteCycle(ctx, config.ProfileLow)
 
 	orderSubmitter.mu.Lock()
 	createAttemptsAfterCycle1 := orderSubmitter.createAttempts
@@ -653,7 +453,7 @@ func TestWorker_DuplicateOrderPrevention_RecoveryNeverCreatesSecondOrder(t *test
 	orderSubmitter.remainingQty = "0"
 	orderSubmitter.mu.Unlock()
 
-	worker.executeCycle(ctx, config.ProfileLow)
+	worker.ExecuteCycle(ctx, config.ProfileLow)
 
 	orderSubmitter.mu.Lock()
 	createAttemptsAfterCycle2 := orderSubmitter.createAttempts
@@ -716,11 +516,11 @@ func TestWorker_AmbiguousCreateOrder_PartialFill40Percent_ResidualCancelled_Inve
 		remainingQty:               "0.0300", // Exactly 60% residual
 	}
 
-	selector := NewDirectionSelector()
-	worker := NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
+	selector := engine.NewDirectionSelector()
+	worker := engine.NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
 
 	ctx := context.Background()
-	worker.executeCycle(ctx, config.ProfileLow)
+	worker.ExecuteCycle(ctx, config.ProfileLow)
 
 	orderSubmitter.mu.Lock()
 	defer orderSubmitter.mu.Unlock()
@@ -757,9 +557,9 @@ func TestWorker_AmbiguousCreateOrder_PartialFill40Percent_ResidualCancelled_Inve
 	}
 
 	// Invariant 5: Circuit breaker must remain CLOSED (recovery succeeded, residual resolved)
-	if worker.safetyMgr.circuitBreaker.State() != "CLOSED" {
+	if worker.SafetyManager().CircuitBreaker().State() != "CLOSED" {
 		t.Fatalf("expected circuit breaker state CLOSED, got %s",
-			worker.safetyMgr.circuitBreaker.State())
+			worker.SafetyManager().CircuitBreaker().State())
 	}
 }
 
@@ -787,11 +587,11 @@ func TestWorker_DefiniteRejection_SkipsRecoveryAndDoesNotTripBreaker(t *testing.
 		returnErr: status.Error(codes.FailedPrecondition, "insufficient funds for order placement"),
 	}
 
-	selector := NewDirectionSelector()
-	worker := NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
+	selector := engine.NewDirectionSelector()
+	worker := engine.NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
 
 	ctx := context.Background()
-	worker.executeCycle(ctx, config.ProfileLow)
+	worker.ExecuteCycle(ctx, config.ProfileLow)
 
 	orderSubmitter.mu.Lock()
 	defer orderSubmitter.mu.Unlock()
@@ -807,9 +607,9 @@ func TestWorker_DefiniteRejection_SkipsRecoveryAndDoesNotTripBreaker(t *testing.
 	}
 
 	// Invariant: Circuit breaker probe was released, so circuit breaker remains healthy CLOSED (not tripped)
-	if worker.safetyMgr.circuitBreaker.State() != "CLOSED" {
+	if worker.SafetyManager().CircuitBreaker().State() != "CLOSED" {
 		t.Fatalf("expected circuit breaker to remain CLOSED after definite rejection, got %s",
-			worker.safetyMgr.circuitBreaker.State())
+			worker.SafetyManager().CircuitBreaker().State())
 	}
 }
 
@@ -831,7 +631,7 @@ func TestWorker_SELL_ConservativePrice_UsesL1(t *testing.T) {
 		},
 	}
 
-	params, err := CalculateOrderParameters(
+	params, err := engine.CalculateOrderParameters(
 		config.ProfileLow,
 		depth,
 		"SELL",
@@ -1030,8 +830,8 @@ func TestWorker_IdempotencyRecoveryMatrix(t *testing.T) {
 			tc.setupSubmitter(orderSubmitter)
 
 			// If testing pre-existing order for shutdown commit, make sure idempotency key matches
-			selector := NewDirectionSelector()
-			worker := NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
+			selector := engine.NewDirectionSelector()
+			worker := engine.NewMarketWorker(market, cfg, orderSubmitter, depthReader, selector, logger)
 
 			ctx, cancel := context.WithCancel(context.Background())
 			if tc.cancelParentCtx {
@@ -1048,7 +848,7 @@ func TestWorker_IdempotencyRecoveryMatrix(t *testing.T) {
 			}
 			orderSubmitter.mu.Unlock()
 
-			worker.executeCycle(ctx, config.ProfileLow)
+			worker.ExecuteCycle(ctx, config.ProfileLow)
 
 			orderSubmitter.mu.Lock()
 			defer orderSubmitter.mu.Unlock()
@@ -1062,11 +862,11 @@ func TestWorker_IdempotencyRecoveryMatrix(t *testing.T) {
 			if len(orderSubmitter.cancelledIDs) != tc.expectedCancelCalls {
 				t.Errorf("expected %d cancel calls, got %d", tc.expectedCancelCalls, len(orderSubmitter.cancelledIDs))
 			}
-			if worker.safetyMgr.circuitBreaker.State() != tc.expectedBreakerState {
-				t.Errorf("expected circuit breaker state %s, got %s", tc.expectedBreakerState, worker.safetyMgr.circuitBreaker.State())
+			if worker.SafetyManager().CircuitBreaker().State() != tc.expectedBreakerState {
+				t.Errorf("expected circuit breaker state %s, got %s", tc.expectedBreakerState, worker.SafetyManager().CircuitBreaker().State())
 			}
 			// Verify probe reservation is permitted again (probe was released or resolved)
-			if !worker.safetyMgr.circuitBreaker.Allow() {
+			if !worker.SafetyManager().CircuitBreaker().Allow() {
 				t.Errorf("expected circuit breaker Allow() to be true (probe unlocked/healthy)")
 			}
 		})

@@ -325,3 +325,15 @@ func (sm *SafetyManager) ReserveProbe() bool {
 func (sm *SafetyManager) ReleaseProbe() {
 	sm.circuitBreaker.ReleaseProbe()
 }
+
+// CircuitBreaker returns the underlying circuit breaker instance.
+func (sm *SafetyManager) CircuitBreaker() *CircuitBreaker {
+	return sm.circuitBreaker
+}
+
+// HourlyNotional returns the current accumulated hourly notional volume.
+func (sm *SafetyManager) HourlyNotional() decimal.Decimal {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	return sm.hourlyNotional
+}

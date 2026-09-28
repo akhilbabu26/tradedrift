@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
@@ -21,6 +22,7 @@ type OrderCancelledEvent struct {
 	OrderID   string `json:"order_id"`
 	UserID    string `json:"user_id"`
 	MarketID  string `json:"market_id"`
+	Status    string `json:"status"`
 	Reason    string `json:"reason"`
 	Timestamp string `json:"timestamp"`
 }
@@ -86,6 +88,16 @@ func (c *CancelConsumer) Start(ctx context.Context) {
 		}
 
 		if ev.OrderID != "" {
+			if ev.Status == "ALREADY_ABSENT" {
+				c.logger.Info("Order was already absent from matching engine (already filled or settled); skipping cancel and fund release",
+					zap.String("order_id", ev.OrderID),
+				)
+				if commitErr := c.reader.CommitMessages(ctx, msg); commitErr != nil {
+					c.logger.Error("Failed to commit offset for ALREADY_ABSENT cancel message", zap.Error(commitErr))
+				}
+				continue
+			}
+
 			// 1. Mark order as CANCELLED in database
 			if _, err := c.repo.MarkOrderCancelled(ctx, ev.OrderID); err != nil {
 				c.logger.Error("Failed to mark order as cancelled — retrying",
@@ -98,11 +110,17 @@ func (c *CancelConsumer) Start(ctx context.Context) {
 			// 2. Release reserved funds in Wallet Service
 			if c.wallet != nil {
 				if err := c.wallet.ReleaseFunds(ctx, ev.OrderID); err != nil {
-					c.logger.Error("Failed to release funds for cancelled order — retrying",
-						zap.String("order_id", ev.OrderID),
-						zap.Error(err),
-					)
-					continue
+					if strings.Contains(err.Error(), "reservation not found") {
+						c.logger.Debug("No reservation found to release for cancelled order (e.g. MM order)",
+							zap.String("order_id", ev.OrderID),
+						)
+					} else {
+						c.logger.Error("Failed to release funds for cancelled order — retrying",
+							zap.String("order_id", ev.OrderID),
+							zap.Error(err),
+						)
+						continue
+					}
 				}
 			}
 

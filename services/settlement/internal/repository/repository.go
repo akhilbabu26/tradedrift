@@ -12,6 +12,7 @@ import (
 const (
 	StatusPending = "PENDING"
 	StatusSettled = "SETTLED"
+	StatusFailed  = "FAILED"
 )
 
 // ─── Domain Entity ─────────────────────────────────────────────────────────────
@@ -20,21 +21,25 @@ const (
 // It tracks both phases of settlement:
 //   - PENDING: trade registered, gRPC call to Wallet not yet confirmed
 //   - SETTLED: wallet balances atomically updated, Kafka offset acknowledged
+//   - FAILED: terminal failure after max retries or non-recoverable business error
 type SettledTrade struct {
-	TradeID      uuid.UUID
-	BuyerID      uuid.UUID
-	SellerID     uuid.UUID
-	BuyOrderID   uuid.UUID
-	SellOrderID  uuid.UUID
-	MarketID     string
-	BaseAsset    string
-	QuoteAsset   string
-	Price        string
-	Quantity     string
-	Sequence     uint64     // ME per-market monotonic counter — stored for recovery
-	Status       string
-	ExecutedAt   time.Time
-	SettledAt    *time.Time // nil until status = SETTLED
+	TradeID     uuid.UUID
+	BuyerID     uuid.UUID
+	SellerID    uuid.UUID
+	BuyOrderID  uuid.UUID
+	SellOrderID uuid.UUID
+	MarketID    string
+	BaseAsset   string
+	QuoteAsset  string
+	Price       string
+	Quantity    string
+	Sequence    uint64 // ME per-market monotonic counter — stored for recovery
+	Status      string
+	ExecutedAt  time.Time
+	SettledAt   *time.Time // nil until status = SETTLED
+	RetryCount  int
+	NextRetryAt *time.Time
+	LastError   *string
 }
 
 // ─── Repository Interface ──────────────────────────────────────────────────────
@@ -56,8 +61,12 @@ type Repository interface {
 	// This is Phase 3 of the 3-phase settlement pipeline.
 	MarkSettled(ctx context.Context, id uuid.UUID) error
 
-	// FindStalePending returns up to `limit` PENDING rows whose executed_at
-	// is older than `olderThan` duration, using FOR UPDATE SKIP LOCKED.
+	// RecordSettlementFailure atomically updates retry_count, last_error, and next_retry_at.
+	// If permanent is true, status is transitioned to FAILED.
+	RecordSettlementFailure(ctx context.Context, id uuid.UUID, lastErr string, permanent bool, nextRetry time.Time) error
+
+	// FindStalePending returns up to `limit` PENDING rows whose next_retry_at
+	// is past, using FOR UPDATE SKIP LOCKED.
 	// SKIP LOCKED ensures the recovery goroutine never races the main consumer.
 	FindStalePending(ctx context.Context, olderThan time.Duration, limit int) ([]*SettledTrade, error)
 }

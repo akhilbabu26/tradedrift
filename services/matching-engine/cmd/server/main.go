@@ -158,6 +158,22 @@ func run() error {
 	pubCtx, cancelPub := context.WithCancel(context.Background())
 	defer cancelPub()
 
+	var isReady atomic.Bool
+	var isDegraded atomic.Bool
+
+	// Seed initial depth snapshots from authoritative in-memory books to Redis before live intake.
+	// User Requirement #3: If seed fails, ME can continue matching but readiness remains degraded (503).
+	for _, eng := range manager.All() {
+		snap := eng.GetDepth(20)
+		snap.SnapshotAt = time.Now().UTC()
+		if err := pub.SeedDepth(pubCtx, snap); err != nil {
+			log.Printf("[server] error: failed to seed initial Redis depth for market=%s: %v", eng.MarketID, err)
+			isDegraded.Store(true)
+		} else {
+			log.Printf("[server] initial Redis depth seeded successfully for market=%s (seq=%d)", eng.MarketID, snap.Sequence)
+		}
+	}
+
 	var wg sync.WaitGroup
 	for _, engine := range manager.All() {
 		wg.Add(1)
@@ -169,8 +185,7 @@ func run() error {
 		log.Printf("[server] publisher started for market: %s", e.MarketID)
 	}
 
-	var isReady atomic.Bool
-	httpServer := newHTTPServer(cfg.HTTPPort, manager, &isReady)
+	httpServer := newHTTPServer(cfg.HTTPPort, manager, &isReady, &isDegraded)
 
 	go func() {
 		log.Printf("[server] health HTTP server listening on %s", cfg.HTTPPort)
@@ -207,7 +222,11 @@ func run() error {
 	}
 	log.Println("[server] kafka consumer started")
 	isReady.Store(true)
-	log.Println("[server] ✓ all systems live — matching engine ready")
+	if isDegraded.Load() {
+		log.Println("[server] ⚠ matching engine ready in DEGRADED state (initial depth seed failed)")
+	} else {
+		log.Println("[server] ✓ all systems live — matching engine ready")
+	}
 
 	<-opCtx.Done()
 	isReady.Store(false)

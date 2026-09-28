@@ -21,6 +21,7 @@ COPY services/liquidity-engine/ ./services/liquidity-engine/
 COPY services/trade/            ./services/trade/
 COPY services/portfolio/        ./services/portfolio/
 COPY services/notification/     ./services/notification/
+COPY services/controlled-taker/ ./services/controlled-taker/
 
 # Build the trade binary
 RUN --mount=type=cache,target=/go/pkg/mod \

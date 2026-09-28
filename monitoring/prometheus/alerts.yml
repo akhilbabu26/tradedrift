@@ -121,3 +121,46 @@ groups:
         annotations:
           summary: "Admin API 1-Hour SLO Burn Rate Exceeded (14.4x)"
           description: "Admin Service 5xx error budget is burning at 14.4x normal rate over 5 minutes (consuming >2% of monthly error budget in 1 hour)."
+
+  - name: tradedrift-controlled-taker-alerts
+    rules:
+      - alert: ControlledTakerServiceDown
+        expr: up{job="controlled-taker"} == 0 or absent(up{job="controlled-taker"}) == 1
+        for: 1m
+        labels:
+          severity: critical
+          service: controlled-taker
+        annotations:
+          summary: "TradeDrift Controlled Taker Service is Down"
+          description: "Prometheus cannot scrape TradeDrift Controlled Taker Service at controlled-taker:9090."
+
+      - alert: ControlledTakerUnresolvedResidual
+        expr: increase(cts_unresolved_residuals_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: controlled-taker
+        annotations:
+          summary: "Controlled Taker Unresolved Residual Order Detected"
+          description: "A partially filled or unverified taker order could not be confirmed cancelled. Potential resting maker order risk."
+
+      - alert: ControlledTakerCircuitBreakerTripped
+        expr: increase(cts_circuit_breaker_tripped_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: controlled-taker
+        annotations:
+          summary: "Controlled Taker Circuit Breaker Tripped"
+          description: "Circuit breaker has tripped for market {{ $labels.market_id }} due to consecutive order failures or depth anomalies."
+
+      - alert: ControlledTakerHighDepthReadErrors
+        expr: increase(cts_depth_read_errors_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          service: controlled-taker
+        annotations:
+          summary: "High Rate of Depth Read / Validation Errors in Controlled Taker"
+          description: "Controlled Taker Service is observing frequent depth errors for market {{ $labels.market_id }} (reason: {{ $labels.reason }})."
+

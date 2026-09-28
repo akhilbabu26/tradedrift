@@ -7,6 +7,7 @@ use (
 	./platform
 	./services/admin
 	./services/auth
+	./services/controlled-taker
 	./services/gateway
 	./services/liquidity-engine
 	./services/market
@@ -18,5 +19,4 @@ use (
 	./services/trade
 	./services/wallet
 	./services/wallet-topup
-	./services/controlled-taker
 )

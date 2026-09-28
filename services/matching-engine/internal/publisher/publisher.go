@@ -16,6 +16,7 @@ import (
 
 	"tradedrift/services/matching-engine/internal/checkpoint"
 	"tradedrift/services/matching-engine/internal/market"
+	"tradedrift/services/matching-engine/internal/metrics"
 	"tradedrift/services/matching-engine/internal/orderbook"
 )
 
@@ -95,9 +96,35 @@ func NewPublisher(brokers []string, rdb *redis.Client, coord checkpointCoordinat
 	return p
 }
 
+// SeedDepth seeds the initial order book depth snapshot to Redis and initializes the
+// cached depth snapshot for periodic heartbeat publishing. Safe to call during startup
+// recovery before live event intake begins.
+func (p *Publisher) SeedDepth(ctx context.Context, snap orderbook.DepthSnapshot) error {
+	p.retryMu.Lock()
+	p.latestDepth[snap.MarketID] = snap
+	p.retryMu.Unlock()
+
+	return p.pushDepth(ctx, snap)
+}
+
 func (p *Publisher) Run(ctx context.Context, engine *market.MarketEngine) {
 	retryTicker := time.NewTicker(500 * time.Millisecond)
 	defer retryTicker.Stop()
+
+	heartbeatTicker := time.NewTicker(1 * time.Second)
+	defer heartbeatTicker.Stop()
+
+	// Track latest authoritative depth snapshot produced by the event loop or seeded on startup.
+	// Confined exclusively to this Publisher.Run goroutine (zero race conditions).
+	var currentDepth orderbook.DepthSnapshot
+	var hasDepth bool
+
+	p.retryMu.Lock()
+	if initial, ok := p.latestDepth[engine.MarketID]; ok {
+		currentDepth = initial
+		hasDepth = true
+	}
+	p.retryMu.Unlock()
 
 	for {
 		if engine.IsFatalHalt() || atomic.LoadInt32(&p.drainFailed) != 0 {
@@ -127,6 +154,42 @@ func (p *Publisher) Run(ctx context.Context, engine *market.MarketEngine) {
 				}
 				return
 			}
+
+			// Update cached depth from authoritative event loop output
+			currentDepth = result.DepthSnapshot
+			hasDepth = true
+
+		case <-heartbeatTicker.C:
+			if !hasDepth {
+				p.retryMu.Lock()
+				if initial, ok := p.latestDepth[engine.MarketID]; ok && (len(initial.Bids) > 0 || len(initial.Asks) > 0) {
+					currentDepth = initial
+					hasDepth = true
+				}
+				p.retryMu.Unlock()
+			}
+
+			// Invariant #2: Heartbeat must NOT publish before a valid depth exists
+			if !hasDepth || (len(currentDepth.Bids) == 0 && len(currentDepth.Asks) == 0) {
+				continue
+			}
+
+			// Invariant #1 & #10: SnapshotAt represents publication/refresh freshness, NOT a book mutation.
+			// Sequence is NEVER incremented on heartbeat.
+			// Shallow copy the struct so cached state is not mutated in-place.
+			heartbeatDepth := currentDepth
+			heartbeatDepth.SnapshotAt = time.Now().UTC()
+
+			// Invariant #4: Heartbeat failure on idle book is non-fatal (logs warning, increments error metric).
+			// Actual trade outcome publish failures remain fail-stop in process().
+			if err := p.pushDepth(ctx, heartbeatDepth); err != nil {
+				log.Printf("[publisher] warning: depth heartbeat failed for market=%s: %v", engine.MarketID, err)
+				metrics.DepthHeartbeatErrorsTotal.WithLabelValues(engine.MarketID).Inc()
+			} else {
+				metrics.DepthHeartbeatTotal.WithLabelValues(engine.MarketID).Inc()
+				metrics.DepthHeartbeatLastTimestamp.WithLabelValues(engine.MarketID).Set(float64(time.Now().Unix()))
+			}
+
 		case <-retryTicker.C:
 			p.flushPendingDepthRetries(ctx, engine.MarketID)
 		case <-ctx.Done():
@@ -394,3 +457,12 @@ func (tp *TestablePublisher) Process(ctx context.Context, result orderbook.Match
 func (tp *TestablePublisher) Run(ctx context.Context, engine *market.MarketEngine) {
 	tp.p.Run(ctx, engine)
 }
+
+func (tp *TestablePublisher) SeedDepth(ctx context.Context, snap orderbook.DepthSnapshot) error {
+	return tp.p.SeedDepth(ctx, snap)
+}
+
+func (tp *TestablePublisher) SetHaltCallback(cb func()) {
+	tp.p.HaltCallback = cb
+}
+

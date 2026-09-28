@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,9 +18,9 @@ import (
 // ─── Test helpers ─────────────────────────────────────────────────────────────
 
 var (
-	tradeID   = uuid.New()
-	buyerID   = uuid.New()
-	sellerID  = uuid.New()
+	tradeID     = uuid.New()
+	buyerID     = uuid.New()
+	sellerID    = uuid.New()
 	buyOrderID  = uuid.New()
 	sellOrderID = uuid.New()
 )
@@ -97,7 +98,25 @@ func (m *mockRepo) MarkSettled(_ context.Context, id uuid.UUID) error {
 }
 
 func (m *mockRepo) FindStalePending(_ context.Context, _ time.Duration, _ int) ([]*repository.SettledTrade, error) {
-	return nil, nil
+	var result []*repository.SettledTrade
+	for _, t := range m.trades {
+		if t.Status == repository.StatusPending {
+			result = append(result, t)
+		}
+	}
+	return result, nil
+}
+
+func (m *mockRepo) RecordSettlementFailure(_ context.Context, id uuid.UUID, lastErr string, permanent bool, nextRetry time.Time) error {
+	if t, ok := m.trades[id]; ok {
+		if permanent {
+			t.Status = repository.StatusFailed
+		}
+		t.RetryCount++
+		t.LastError = &lastErr
+		t.NextRetryAt = &nextRetry
+	}
+	return nil
 }
 
 // seed puts a pre-existing trade into the mock at the given status.
@@ -356,5 +375,79 @@ func assertValidationError(t *testing.T, ev service.TradeExecutedEvent, wantCont
 	}
 	if wallet.calls != 0 {
 		t.Errorf("no wallet call should occur on validation failure, got %d", wallet.calls)
+	}
+}
+
+func TestRecoverStalePending_PermanentError_MarksFailed(t *testing.T) {
+	tradeID := uuid.New()
+	repo := newMockRepo()
+	repo.trades[tradeID] = &repository.SettledTrade{
+		TradeID:     tradeID,
+		BuyerID:     uuid.New(),
+		SellerID:    uuid.New(),
+		BuyOrderID:  uuid.New(),
+		SellOrderID: uuid.New(),
+		MarketID:    "BTC-USDT",
+		BaseAsset:   "BTC",
+		QuoteAsset:  "USDT",
+		Price:       "50000",
+		Quantity:    "0.01",
+		Status:      repository.StatusPending,
+		ExecutedAt:  time.Now(),
+	}
+
+	wallet := &mockWallet{
+		err: errors.New("wallet SettleTrade gRPC: rpc error: code = Internal desc = insufficient reservation remaining amount: buyer reservation already released for order 123"),
+	}
+
+	svc := newSvc(repo, wallet)
+	svc.RecoverStalePending(context.Background())
+
+	trade := repo.trades[tradeID]
+	if trade.Status != repository.StatusFailed {
+		t.Errorf("expected status FAILED for permanent error, got %s", trade.Status)
+	}
+	if trade.RetryCount != 1 {
+		t.Errorf("expected retry_count 1, got %d", trade.RetryCount)
+	}
+	if trade.LastError == nil || !strings.Contains(*trade.LastError, "buyer reservation already released") {
+		t.Errorf("expected LastError to contain reservation error, got %v", trade.LastError)
+	}
+}
+
+func TestRecoverStalePending_TransientError_RetriesWithBackoff(t *testing.T) {
+	tradeID := uuid.New()
+	repo := newMockRepo()
+	repo.trades[tradeID] = &repository.SettledTrade{
+		TradeID:     tradeID,
+		BuyerID:     uuid.New(),
+		SellerID:    uuid.New(),
+		BuyOrderID:  uuid.New(),
+		SellOrderID: uuid.New(),
+		MarketID:    "BTC-USDT",
+		BaseAsset:   "BTC",
+		QuoteAsset:  "USDT",
+		Price:       "50000",
+		Quantity:    "0.01",
+		Status:      repository.StatusPending,
+		ExecutedAt:  time.Now(),
+	}
+
+	wallet := &mockWallet{
+		err: errors.New("rpc error: code = Unavailable desc = connection refused"),
+	}
+
+	svc := newSvc(repo, wallet)
+	svc.RecoverStalePending(context.Background())
+
+	trade := repo.trades[tradeID]
+	if trade.Status != repository.StatusPending {
+		t.Errorf("expected status PENDING for transient error, got %s", trade.Status)
+	}
+	if trade.RetryCount != 1 {
+		t.Errorf("expected retry_count 1, got %d", trade.RetryCount)
+	}
+	if trade.NextRetryAt == nil || !trade.NextRetryAt.After(time.Now()) {
+		t.Errorf("expected NextRetryAt to be scheduled in the future, got %v", trade.NextRetryAt)
 	}
 }

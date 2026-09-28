@@ -93,16 +93,19 @@ func (w *MarketWorker) Run(ctx context.Context, startupDelay time.Duration) {
 		profile := w.chooseProfile()
 
 		// 2. Compute Next Bounded Jitter Interval
-		intervalCfg := w.cfg.LowInterval
-		if profile == config.ProfileMid {
-			intervalCfg = w.cfg.MidInterval
-		} else if profile == config.ProfileHigh {
+		var intervalCfg config.IntervalConfig
+		switch profile {
+		case config.ProfileHigh:
 			intervalCfg = w.cfg.HighInterval
+		case config.ProfileMid:
+			intervalCfg = w.cfg.MidInterval
+		default:
+			intervalCfg = w.cfg.LowInterval
 		}
 		nextWait := calculateNextInterval(intervalCfg)
 
 		// 3. Execute Order Cycle
-		w.executeCycle(ctx, profile)
+		w.ExecuteCycle(ctx, profile)
 
 		// 4. Wait for Next Interval
 		select {
@@ -112,6 +115,11 @@ func (w *MarketWorker) Run(ctx context.Context, startupDelay time.Duration) {
 		case <-time.After(nextWait):
 		}
 	}
+}
+
+// SafetyManager returns the worker's safety manager instance.
+func (w *MarketWorker) SafetyManager() *SafetyManager {
+	return w.safetyMgr
 }
 
 func (w *MarketWorker) chooseProfile() config.ProfileType {
@@ -127,7 +135,8 @@ func (w *MarketWorker) chooseProfile() config.ProfileType {
 	return config.ProfileLow // 65% baseline heartbeat
 }
 
-func (w *MarketWorker) executeCycle(ctx context.Context, profile config.ProfileType) {
+// ExecuteCycle executes an autonomous taker order cycle for this market.
+func (w *MarketWorker) ExecuteCycle(ctx context.Context, profile config.ProfileType) {
 	// Step 1: Select Direction with Balance Bias
 	side := w.selector.SelectSide(w.market.MarketID)
 
@@ -289,17 +298,24 @@ func (w *MarketWorker) executeCycle(ctx context.Context, profile config.ProfileT
 	// CRITICAL INVARIANT: Once CreateCrossingOrder succeeds, the order is active in the matching pipeline.
 	// We MUST enter an independent cleanup context detached from worker cancellation (e.g. shutdown)
 	// so that CTS guarantees any unfilled remainder is cancelled and never rests as a maker order.
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2500*time.Millisecond)
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cleanupCancel()
 
-	// Initial short delay (~60ms) gives the Matching Engine an opportunity to cross against resting MM quotes
+	crossingDelay := w.cfg.CrossingDelay
+	if crossingDelay <= 0 {
+		crossingDelay = 1000 * time.Millisecond
+	}
+
+	// Crossing delay gives the Matching Engine an opportunity to cross against resting MM quotes
 	select {
 	case <-cleanupCtx.Done():
-	case <-time.After(60 * time.Millisecond):
+	case <-time.After(crossingDelay):
 	}
 
 	var orderState *orderservice.OrderResult
 	var cancelSent bool
+	var residualRetries int
+	const maxResidualRetries = 3
 	deadlineExceeded := false
 
 	// Bounded cleanup polling loop
@@ -343,13 +359,32 @@ cleanupLoop:
 			// CANCELLED -> terminal state achieved; actual filled quantity will be recorded
 			break cleanupLoop
 
+		case strings.HasSuffix(orderState.Status, "CANCELLING"):
+			// CANCELLING -> cancel is actively being processed by Order Service / Matching Engine.
+			// Mark cancelSent to avoid redundant cancels, and continue polling for terminal state.
+			cancelSent = true
+
 		case strings.HasSuffix(orderState.Status, "OPEN"), strings.Contains(orderState.Status, "PARTIALLY"):
-			// OPEN or PARTIALLY_FILLED -> CancelOrder -> poll again
+			// OPEN or PARTIALLY_FILLED: Provide short context-aware grace window (3 x 200ms)
+			// to allow multi-hop asynchronous trade settlement to propagate to Order Service.
+			if !cancelSent && residualRetries < maxResidualRetries {
+				residualRetries++
+				select {
+				case <-cleanupCtx.Done():
+					deadlineExceeded = true
+					break cleanupLoop
+				case <-time.After(200 * time.Millisecond):
+				}
+				continue
+			}
+
+			// Residual remains after grace period -> CancelOrder -> continue polling for terminal state
 			if !cancelSent {
-				w.logger.Info("Order not completely filled; cancelling residual to prevent maker resting",
+				w.logger.Info("Order not completely filled after grace period; cancelling residual to prevent maker resting",
 					zap.String("order_id", res.OrderID),
 					zap.String("status", orderState.Status),
 					zap.String("remaining_qty", orderState.RemainingQty),
+					zap.Int("grace_retries", residualRetries),
 				)
 				if _, cancelErr := w.ordersClient.CancelOrder(cleanupCtx, res.OrderID); cancelErr != nil {
 					w.logger.Warn("Failed to send CancelOrder for residual; will retry in loop",

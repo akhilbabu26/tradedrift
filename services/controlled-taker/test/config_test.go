@@ -1,14 +1,15 @@
-package config
+package test
 
 import (
 	"testing"
 	"time"
 
 	"github.com/shopspring/decimal"
+	"tradedrift/services/controlled-taker/internal/config"
 )
 
-func validTestConfig() Config {
-	return Config{
+func validTestConfig() config.Config {
+	return config.Config{
 		HealthPort:                "8080",
 		MetricsPort:               "9090",
 		LogLevel:                  "info",
@@ -23,7 +24,7 @@ func validTestConfig() Config {
 		InventoryHeavyBiasUSDT:    decimal.NewFromInt(25000),
 		WarmupDelay:               1 * time.Second,
 		HighCooldown:              60 * time.Second,
-		Markets: []MarketConfig{
+		Markets: []config.MarketConfig{
 			{
 				MarketID:    "BTC-USDT",
 				BaseAsset:   "BTC",
@@ -34,9 +35,9 @@ func validTestConfig() Config {
 				Partition:   0,
 			},
 		},
-		LowInterval:  IntervalConfig{MinInterval: 10 * time.Second, BaseInterval: 20 * time.Second, MaxInterval: 30 * time.Second},
-		MidInterval:  IntervalConfig{MinInterval: 20 * time.Second, BaseInterval: 40 * time.Second, MaxInterval: 60 * time.Second},
-		HighInterval: IntervalConfig{MinInterval: 30 * time.Second, BaseInterval: 60 * time.Second, MaxInterval: 90 * time.Second},
+		LowInterval:  config.IntervalConfig{MinInterval: 10 * time.Second, BaseInterval: 20 * time.Second, MaxInterval: 30 * time.Second},
+		MidInterval:  config.IntervalConfig{MinInterval: 20 * time.Second, BaseInterval: 40 * time.Second, MaxInterval: 60 * time.Second},
+		HighInterval: config.IntervalConfig{MinInterval: 30 * time.Second, BaseInterval: 60 * time.Second, MaxInterval: 90 * time.Second},
 	}
 }
 
@@ -63,14 +64,14 @@ func TestConfig_Validate(t *testing.T) {
 
 	// 4. Inverted intervals rejected (MinInterval > BaseInterval)
 	cfg = validTestConfig()
-	cfg.LowInterval = IntervalConfig{MinInterval: 50 * time.Second, BaseInterval: 20 * time.Second, MaxInterval: 60 * time.Second}
+	cfg.LowInterval = config.IntervalConfig{MinInterval: 50 * time.Second, BaseInterval: 20 * time.Second, MaxInterval: 60 * time.Second}
 	if err := cfg.Validate(); err == nil {
 		t.Fatalf("expected error when MinInterval > BaseInterval, got nil")
 	}
 
 	// 5. Inverted intervals rejected (BaseInterval > MaxInterval)
 	cfg = validTestConfig()
-	cfg.LowInterval = IntervalConfig{MinInterval: 10 * time.Second, BaseInterval: 80 * time.Second, MaxInterval: 60 * time.Second}
+	cfg.LowInterval = config.IntervalConfig{MinInterval: 10 * time.Second, BaseInterval: 80 * time.Second, MaxInterval: 60 * time.Second}
 	if err := cfg.Validate(); err == nil {
 		t.Fatalf("expected error when BaseInterval > MaxInterval, got nil")
 	}
@@ -126,7 +127,7 @@ func TestConfig_Validate(t *testing.T) {
 
 	// 12. Invalid market parameters rejected (non-positive tick/lot/min qty)
 	cfg = validTestConfig()
-	cfg.Markets = []MarketConfig{
+	cfg.Markets = []config.MarketConfig{
 		{
 			MarketID:    "BTC-USDT",
 			BaseAsset:   "BTC",
@@ -150,7 +151,7 @@ func TestConfig_Validate(t *testing.T) {
 
 func TestConfig_Load(t *testing.T) {
 	// 1. Default Load succeeds
-	cfg, err := Load()
+	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("expected default config to load successfully, got: %v", err)
 	}
@@ -163,14 +164,14 @@ func TestConfig_Load(t *testing.T) {
 
 	// 2. Malformed integer env returns error
 	t.Setenv("MAX_SLIPPAGE_BPS", "not-a-number")
-	if _, err := Load(); err == nil {
+	if _, err := config.Load(); err == nil {
 		t.Fatalf("expected error when MAX_SLIPPAGE_BPS is malformed, got nil")
 	}
 
 	// 3. Malformed duration env returns error
 	t.Setenv("MAX_SLIPPAGE_BPS", "20")
 	t.Setenv("WARMUP_DELAY", "invalid-duration")
-	if _, err := Load(); err == nil {
+	if _, err := config.Load(); err == nil {
 		t.Fatalf("expected error when WARMUP_DELAY is malformed, got nil")
 	}
 }

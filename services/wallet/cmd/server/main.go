@@ -107,6 +107,14 @@ func main() {
 	outboxRepo := walletpg.NewOutboxRepository(dbPool, outboxClaimLease)
 	outboxPub := publisher.NewOutboxPublisher(outboxRepo, kafkaBrokers, kafkaTopicTradeSettled, kafkaTopicPortfolioUserTrades, appLogger)
 
+	idleInterval := 200 * time.Millisecond
+	if rawIdle := config.GetEnv("OUTBOX_IDLE_INTERVAL", "200ms"); rawIdle != "" {
+		if d, err := time.ParseDuration(rawIdle); err == nil && d > 0 {
+			idleInterval = d
+		}
+	}
+	outboxPub.SetIntervals(100*time.Millisecond, idleInterval)
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

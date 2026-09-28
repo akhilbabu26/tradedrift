@@ -55,7 +55,8 @@ func (r *Repository) FindByTradeID(ctx context.Context, id uuid.UUID) (*reposito
 	const q = `
 		SELECT trade_id, buyer_id, seller_id, buy_order_id, sell_order_id,
 		       market_id, base_asset, quote_asset, price, quantity,
-		       sequence, status, executed_at, settled_at
+		       sequence, status, executed_at, settled_at,
+		       retry_count, next_retry_at, last_error
 		FROM settled_trades
 		WHERE trade_id = $1`
 
@@ -65,6 +66,7 @@ func (r *Repository) FindByTradeID(ctx context.Context, id uuid.UUID) (*reposito
 		&t.TradeID, &t.BuyerID, &t.SellerID, &t.BuyOrderID, &t.SellOrderID,
 		&t.MarketID, &t.BaseAsset, &t.QuoteAsset, &t.Price, &t.Quantity,
 		&t.Sequence, &t.Status, &t.ExecutedAt, &t.SettledAt,
+		&t.RetryCount, &t.NextRetryAt, &t.LastError,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -113,34 +115,45 @@ func (r *Repository) MarkSettled(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
+// RecordSettlementFailure atomically updates retry_count, last_error, and next_retry_at.
+// If permanent is true, status is transitioned to FAILED.
+func (r *Repository) RecordSettlementFailure(ctx context.Context, id uuid.UUID, lastErr string, permanent bool, nextRetry time.Time) error {
+	const q = `
+		UPDATE settled_trades
+		SET    status = CASE WHEN $2 = true THEN 'FAILED' ELSE 'PENDING' END,
+		       retry_count = retry_count + 1,
+		       last_error = $3,
+		       next_retry_at = $4
+		WHERE  trade_id = $1
+		  AND  status = 'PENDING'`
+
+	_, err := r.db.Exec(ctx, q, id, permanent, lastErr, nextRetry)
+	if err != nil {
+		return fmt.Errorf("record settlement failure for trade %s: %w", id, err)
+	}
+	return nil
+}
+
 // FindStalePending returns up to limit PENDING rows whose created_at is
-// older than olderThan. Uses created_at (not executed_at) to detect records
-// that have been stuck in the Settlement Service itself — not just old trades
-// that Kafka delivered late.
+// older than olderThan and whose next_retry_at is past.
 //
 // FOR UPDATE acquires row-level locks to prevent concurrent callers from
 // selecting the same rows. SKIP LOCKED means the recovery goroutine skips any
 // row currently locked by the Kafka consumer's Phase 3 UPDATE — no blocking.
-//
-// NOTE: The row lock is held only for the duration of this query (released on
-// return). Since the gRPC call in Phase 2 happens after this function returns,
-// the lock does NOT protect against concurrent gRPC calls. Wallet-side trade_id
-// idempotency is the authoritative guard against double-settlement.
 func (r *Repository) FindStalePending(ctx context.Context, olderThan time.Duration, limit int) ([]*repository.SettledTrade, error) {
 	const q = `
 		SELECT trade_id, buyer_id, seller_id, buy_order_id, sell_order_id,
 		       market_id, base_asset, quote_asset, price, quantity,
-		       sequence, status, executed_at, settled_at
+		       sequence, status, executed_at, settled_at,
+		       retry_count, next_retry_at, last_error
 		FROM settled_trades
 		WHERE status = $1
 		  AND created_at < $2
-		ORDER BY created_at ASC
+		  AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+		ORDER BY next_retry_at ASC, created_at ASC
 		LIMIT $3
 		FOR UPDATE SKIP LOCKED`
 
-	// Compute the cutoff in Go and pass it as a TIMESTAMPTZ parameter.
-	// This avoids the ($2 || ' seconds')::INTERVAL pattern which requires pgx
-	// to encode an int as text — a type pgx cannot implicitly convert.
 	cutoff := time.Now().Add(-olderThan)
 	rows, err := r.db.Query(ctx, q, repository.StatusPending, cutoff, limit)
 	if err != nil {
@@ -155,6 +168,7 @@ func (r *Repository) FindStalePending(ctx context.Context, olderThan time.Durati
 			&t.TradeID, &t.BuyerID, &t.SellerID, &t.BuyOrderID, &t.SellOrderID,
 			&t.MarketID, &t.BaseAsset, &t.QuoteAsset, &t.Price, &t.Quantity,
 			&t.Sequence, &t.Status, &t.ExecutedAt, &t.SettledAt,
+			&t.RetryCount, &t.NextRetryAt, &t.LastError,
 		); err != nil {
 			return nil, fmt.Errorf("scan stale pending row: %w", err)
 		}

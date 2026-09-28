@@ -62,6 +62,10 @@ func (e *Engine) handleTrade(env kafka.TradeEnvelope) {
 				}
 				o.RemainingQty = newRemaining
 				o.FilledQty = o.OriginalQty.Sub(newRemaining)
+
+				if newRemaining.IsZero() {
+					e.tracker.Remove(o.LevelID)
+				}
 			}
 			break
 		}

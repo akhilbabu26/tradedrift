@@ -1,4 +1,4 @@
-package engine
+package test
 
 import (
 	"errors"
@@ -9,19 +9,8 @@ import (
 	"go.uber.org/zap"
 	"tradedrift/services/controlled-taker/internal/clients/redisdepth"
 	"tradedrift/services/controlled-taker/internal/config"
+	"tradedrift/services/controlled-taker/internal/engine"
 )
-
-func sampleMarketConfig() config.MarketConfig {
-	return config.MarketConfig{
-		MarketID:    "BTC-USDT",
-		BaseAsset:   "BTC",
-		QuoteAsset:  "USDT",
-		TickSize:    decimal.NewFromFloat(0.01),
-		LotSize:     decimal.NewFromFloat(0.0001),
-		MinQuantity: decimal.NewFromFloat(0.0001),
-		Partition:   0,
-	}
-}
 
 // TestDynamicDepthSizing_ExactRatioRequirement tests the user-specified invariant:
 // L1 = 0.20 BTC -> 10% -> 0.02 BTC
@@ -41,7 +30,7 @@ func TestDynamicDepthSizing_ExactRatioRequirement(t *testing.T) {
 			{Price: decimal.NewFromInt(96500), Quantity: decimal.NewFromFloat(0.20)},
 		},
 	}
-	params1, err := CalculateOrderParametersWithRatio(config.ProfileLow, depth1, "BUY", market, maxNotional, slippageBps, &tenPercent)
+	params1, err := engine.CalculateOrderParametersWithRatio(config.ProfileLow, depth1, "BUY", market, maxNotional, slippageBps, &tenPercent)
 	if err != nil {
 		t.Fatalf("unexpected error for depth1: %v", err)
 	}
@@ -58,7 +47,7 @@ func TestDynamicDepthSizing_ExactRatioRequirement(t *testing.T) {
 			{Price: decimal.NewFromInt(96500), Quantity: decimal.NewFromFloat(0.50)},
 		},
 	}
-	params2, err := CalculateOrderParametersWithRatio(config.ProfileLow, depth2, "BUY", market, maxNotional, slippageBps, &tenPercent)
+	params2, err := engine.CalculateOrderParametersWithRatio(config.ProfileLow, depth2, "BUY", market, maxNotional, slippageBps, &tenPercent)
 	if err != nil {
 		t.Fatalf("unexpected error for depth2: %v", err)
 	}
@@ -96,7 +85,7 @@ func TestDynamicDepthSizing_SameProfileDifferentDepthDifferentQuantity(t *testin
 				},
 			}
 
-			params, err := CalculateOrderParametersWithRatio(profile, depthSnap, "BUY", market, maxNotional, slippageBps, &ratio)
+			params, err := engine.CalculateOrderParametersWithRatio(profile, depthSnap, "BUY", market, maxNotional, slippageBps, &ratio)
 			if err != nil {
 				t.Fatalf("profile %s: unexpected error for depth %f: %v", profile, d, err)
 			}
@@ -139,7 +128,7 @@ func TestDynamicDepthSizing_HighProfileCumulativeSweep(t *testing.T) {
 		},
 	}
 
-	params, err := CalculateOrderParameters(config.ProfileHigh, depth, "BUY", market, maxNotional, slippageBps)
+	params, err := engine.CalculateOrderParameters(config.ProfileHigh, depth, "BUY", market, maxNotional, slippageBps)
 	if err != nil {
 		t.Fatalf("unexpected error for HIGH profile: %v", err)
 	}
@@ -171,8 +160,8 @@ func TestNilOrStaleDepth_FailsClosed(t *testing.T) {
 	maxNotional := decimal.NewFromInt(10000)
 
 	// Case 1: nil depth
-	_, err := CalculateOrderParameters(config.ProfileLow, nil, "BUY", market, maxNotional, 15)
-	if err != ErrNilDepth {
+	_, err := engine.CalculateOrderParameters(config.ProfileLow, nil, "BUY", market, maxNotional, 15)
+	if !errors.Is(err, engine.ErrNilDepth) {
 		t.Errorf("expected ErrNilDepth, got %v", err)
 	}
 
@@ -184,7 +173,7 @@ func TestNilOrStaleDepth_FailsClosed(t *testing.T) {
 			{Price: decimal.NewFromInt(96500), Quantity: decimal.NewFromFloat(0.20)},
 		},
 	}
-	_, err = CalculateOrderParameters(config.ProfileLow, staleDepth, "BUY", market, maxNotional, 15)
+	_, err = engine.CalculateOrderParameters(config.ProfileLow, staleDepth, "BUY", market, maxNotional, 15)
 	if err == nil {
 		t.Error("expected error for stale depth snapshot, got nil")
 	}
@@ -197,7 +186,7 @@ func TestNilOrStaleDepth_FailsClosed(t *testing.T) {
 			{Price: decimal.NewFromInt(96500), Quantity: decimal.NewFromFloat(0.20)},
 		},
 	}
-	_, err = CalculateOrderParameters(config.ProfileLow, zeroTimeDepth, "BUY", market, maxNotional, 15)
+	_, err = engine.CalculateOrderParameters(config.ProfileLow, zeroTimeDepth, "BUY", market, maxNotional, 15)
 	if err == nil {
 		t.Error("expected error for zero SnapshotAt timestamp, got nil")
 	}
@@ -210,7 +199,7 @@ func TestNilOrStaleDepth_FailsClosed(t *testing.T) {
 			{Price: decimal.NewFromInt(96500), Quantity: decimal.NewFromFloat(0.20)},
 		},
 	}
-	_, err = CalculateOrderParameters(config.ProfileLow, futureDepth, "BUY", market, maxNotional, 15)
+	_, err = engine.CalculateOrderParameters(config.ProfileLow, futureDepth, "BUY", market, maxNotional, 15)
 	if err == nil {
 		t.Error("expected error for future SnapshotAt timestamp, got nil")
 	}
@@ -224,8 +213,8 @@ func TestNilOrStaleDepth_FailsClosed(t *testing.T) {
 			{Price: decimal.NewFromInt(96490), Quantity: decimal.NewFromFloat(0.20)},
 		},
 	}
-	_, err = CalculateOrderParameters(config.ProfileLow, emptyDepth, "BUY", market, maxNotional, 15)
-	if err != ErrEmptyOppositeSide {
+	_, err = engine.CalculateOrderParameters(config.ProfileLow, emptyDepth, "BUY", market, maxNotional, 15)
+	if !errors.Is(err, engine.ErrEmptyOppositeSide) {
 		t.Errorf("expected ErrEmptyOppositeSide, got %v", err)
 	}
 }
@@ -252,7 +241,7 @@ func TestHighProfile_SafetyGuardAlignment(t *testing.T) {
 
 	// Sweep ratio 80% (which without clamp would ask for 0.10 + 0.08 = 0.18 BTC, requiring 0.27 BTC > 0.20 BTC)
 	eightyPercent := decimal.NewFromFloat(0.80)
-	params, err := CalculateOrderParametersWithRatio(
+	params, err := engine.CalculateOrderParametersWithRatio(
 		config.ProfileHigh,
 		depth,
 		"BUY",
@@ -266,8 +255,8 @@ func TestHighProfile_SafetyGuardAlignment(t *testing.T) {
 	}
 
 	// Verify that SafetyManager's 1.5x cumulative depth requirement PASSES
-	cb := NewCircuitBreaker(5, time.Minute, zap.NewNop())
-	sm := NewSafetyManager(
+	cb := engine.NewCircuitBreaker(5, time.Minute, zap.NewNop())
+	sm := engine.NewSafetyManager(
 		cb,
 		decimal.NewFromInt(1000000),
 		decimal.NewFromInt(5000000),
@@ -296,7 +285,7 @@ func TestHighProfile_MinQuantityExceedsSafeDepth_FailsClosed(t *testing.T) {
 		},
 	}
 
-	_, err := CalculateOrderParameters(config.ProfileHigh, depth, "BUY", market, decimal.NewFromInt(10000), 15)
+	_, err := engine.CalculateOrderParameters(config.ProfileHigh, depth, "BUY", market, decimal.NewFromInt(10000), 15)
 	if err == nil {
 		t.Fatalf("expected ErrInsufficientLiquidity when min_quantity * 1.5 exceeds depth, got nil")
 	}
@@ -330,11 +319,11 @@ func TestHighProfile_MaxNotionalCap_BelowMinQuantity_FailsClosed(t *testing.T) {
 	// At price $100,010, allowedQty = $50 / 100,010 ~= 0.000499 BTC, which is < MinQuantity (0.001 BTC).
 	maxNotional := decimal.NewFromInt(50)
 
-	_, err := CalculateOrderParameters(config.ProfileHigh, depth, "BUY", market, maxNotional, 15)
+	_, err := engine.CalculateOrderParameters(config.ProfileHigh, depth, "BUY", market, maxNotional, 15)
 	if err == nil {
 		t.Fatalf("expected error when max notional caps quantity below min_quantity, got nil")
 	}
-	if !errors.Is(err, ErrBelowMinQuantity) {
+	if !errors.Is(err, engine.ErrBelowMinQuantity) {
 		t.Fatalf("expected ErrBelowMinQuantity, got: %v", err)
 	}
 }

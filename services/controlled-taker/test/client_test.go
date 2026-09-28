@@ -1,4 +1,4 @@
-package orderservice
+package test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc"
 
 	orderv1 "tradedrift/platform/api/gen/order/v1"
+	"tradedrift/services/controlled-taker/internal/clients/orderservice"
 )
 
 type mockRawOrderServiceClient struct {
@@ -53,7 +54,7 @@ func TestClient_NilResponseProtection(t *testing.T) {
 		createResp: nil,
 		createErr:  nil,
 	}
-	client := NewClientWithServiceClient(mockClient, logger)
+	client := orderservice.NewClientWithServiceClient(mockClient, logger)
 
 	_, err := client.CreateCrossingOrder(context.Background(), "BTC-USDT", "BUY", "96500", "0.01", "key-1")
 	if err == nil {
@@ -104,7 +105,7 @@ func TestClient_Ping(t *testing.T) {
 		listResp: &orderv1.ListOrdersResponse{Orders: []*orderv1.Order{}},
 		listErr:  nil,
 	}
-	client := NewClientWithServiceClient(mockClient, logger)
+	client := orderservice.NewClientWithServiceClient(mockClient, logger)
 
 	if err := client.Ping(context.Background()); err != nil {
 		t.Fatalf("expected healthy ping, got: %v", err)
@@ -117,7 +118,7 @@ func TestClient_Ping(t *testing.T) {
 	}
 
 	// 3. Uninitialized client case
-	uninitClient := &Client{}
+	uninitClient := &orderservice.Client{}
 	if err := uninitClient.Ping(context.Background()); err == nil {
 		t.Fatalf("expected ping error when client is uninitialized, got nil")
 	}
@@ -140,7 +141,7 @@ func TestClient_FindOrderByIdempotencyKey_Pagination(t *testing.T) {
 			},
 		},
 	}
-	client := NewClientWithServiceClient(mockClient, logger)
+	client := orderservice.NewClientWithServiceClient(mockClient, logger)
 
 	res, err := client.FindOrderByIdempotencyKey(context.Background(), "BTC-USDT", "key-101")
 	if err != nil {
@@ -184,7 +185,7 @@ func TestClient_FindOrderByIdempotencyKey_Pagination(t *testing.T) {
 			return &orderv1.ListOrdersResponse{}, nil
 		},
 	}
-	client = NewClientWithServiceClient(mockClient, logger)
+	client = orderservice.NewClientWithServiceClient(mockClient, logger)
 
 	res, err = client.FindOrderByIdempotencyKey(context.Background(), "BTC-USDT", "target-key-p2")
 	if err != nil {

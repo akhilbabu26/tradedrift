@@ -66,6 +66,7 @@ type Config struct {
 	CircuitBreakerFailures int
 	WarmupDelay            time.Duration
 	HighCooldown           time.Duration
+	CrossingDelay          time.Duration
 
 	// Inventory Bias Boundaries (USDT notional exposure)
 	InventoryModerateBiasUSDT decimal.Decimal
@@ -137,6 +138,11 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("HIGH_COOLDOWN: %w", err)
 	}
 
+	crossingDelay, err := platformconfig.GetEnvAsDuration("CROSSING_DELAY", 1000*time.Millisecond)
+	if err != nil {
+		return Config{}, fmt.Errorf("CROSSING_DELAY: %w", err)
+	}
+
 	modBias, err := getEnvDecimal("CTS_INVENTORY_MODERATE_BIAS_USDT", "5000.00")
 	if err != nil {
 		return Config{}, fmt.Errorf("CTS_INVENTORY_MODERATE_BIAS_USDT: %w", err)
@@ -191,6 +197,7 @@ func Load() (Config, error) {
 		CircuitBreakerFailures:    cbFailures,
 		WarmupDelay:               warmupDelay,
 		HighCooldown:              highCooldown,
+		CrossingDelay:             crossingDelay,
 		InventoryModerateBiasUSDT: modBias,
 		InventoryHeavyBiasUSDT:    heavyBias,
 		LowInterval: IntervalConfig{

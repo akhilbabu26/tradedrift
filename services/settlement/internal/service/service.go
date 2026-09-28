@@ -284,10 +284,34 @@ func (s *Service) RecoverStalePending(ctx context.Context) {
 		cancel() // release resources immediately after each RPC, not at function return
 
 		if err != nil {
-			s.log.Error("recovery: wallet settle failed, will retry next cycle",
-				zap.String("trade_id", t.TradeID.String()),
-				zap.Error(err),
-			)
+			permanent := isPermanentSettlementError(err) || t.RetryCount >= 4
+			backoffMinutes := 1 << t.RetryCount // 1m, 2m, 4m, 8m, 16m...
+			if backoffMinutes > 30 {
+				backoffMinutes = 30
+			}
+			nextRetry := time.Now().Add(time.Duration(backoffMinutes) * time.Minute)
+
+			if recordErr := s.repo.RecordSettlementFailure(ctx, t.TradeID, err.Error(), permanent, nextRetry); recordErr != nil {
+				s.log.Error("recovery: failed to record settlement failure in repository",
+					zap.String("trade_id", t.TradeID.String()),
+					zap.Error(recordErr),
+				)
+			}
+
+			if permanent {
+				s.log.Error("recovery: 🚨 trade settlement permanently failed, transitioned to FAILED",
+					zap.String("trade_id", t.TradeID.String()),
+					zap.Int("retry_count", t.RetryCount+1),
+					zap.Error(err),
+				)
+			} else {
+				s.log.Warn("recovery: wallet settle failed, scheduled retry with exponential backoff",
+					zap.String("trade_id", t.TradeID.String()),
+					zap.Int("retry_count", t.RetryCount+1),
+					zap.Time("next_retry_at", nextRetry),
+					zap.Error(err),
+				)
+			}
 			continue
 		}
 
@@ -314,4 +338,16 @@ func parseMarketID(marketID string) (base, quote string, err error) {
 		return "", "", fmt.Errorf("invalid market_id format %q: expected BASE-QUOTE", marketID)
 	}
 	return parts[0], parts[1], nil
+}
+
+// isPermanentSettlementError checks if a wallet SettleTrade error is a non-recoverable business failure.
+func isPermanentSettlementError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "already released") ||
+		strings.Contains(msg, "reservation not found") ||
+		strings.Contains(msg, "insufficient reservation") ||
+		strings.Contains(msg, "invalid order")
 }

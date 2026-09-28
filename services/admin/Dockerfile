@@ -18,6 +18,7 @@ COPY services/market/ services/market/
 COPY services/portfolio/ services/portfolio/
 COPY services/notification/ services/notification/
 COPY services/liquidity-engine/ services/liquidity-engine/
+COPY services/controlled-taker/ services/controlled-taker/
 
 WORKDIR /workspace/services/admin
 

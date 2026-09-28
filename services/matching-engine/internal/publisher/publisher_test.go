@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,11 +35,14 @@ func (f *fakeKafka) WriteMessages(_ context.Context, msgs ...kafkago.Message) er
 }
 
 type fakeRedis struct {
+	mu      sync.Mutex
 	stored  map[string][]byte
 	failErr error
 }
 
 func (f *fakeRedis) Set(_ context.Context, key string, value []byte, _ time.Duration) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.failErr != nil {
 		return f.failErr
 	}
@@ -47,6 +51,16 @@ func (f *fakeRedis) Set(_ context.Context, key string, value []byte, _ time.Dura
 	}
 	f.stored[key] = value
 	return nil
+}
+
+func (f *fakeRedis) Get(key string) ([]byte, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.stored == nil {
+		return nil, false
+	}
+	v, ok := f.stored[key]
+	return v, ok
 }
 
 type fakeCoordinator struct {
@@ -123,6 +137,15 @@ func makeDepth(marketID string) orderbook.DepthSnapshot {
 		Asks:       []orderbook.DepthLevel{{Price: decimal.RequireFromString("101"), Quantity: decimal.RequireFromString("1")}},
 		SnapshotAt: time.Now(),
 	}
+}
+
+func makeEngine(marketID string) *market.MarketEngine {
+	return market.NewMarketEngine(market.MarketConfig{
+		MarketID:  marketID,
+		Partition: 0,
+		TickSize:  decimal.RequireFromString("0.01"),
+		LotSize:   decimal.RequireFromString("0.0001"),
+	})
 }
 
 func makeResult(fills []orderbook.Fill, marketID, topic string, partition int, offset int64) orderbook.MatchResult {
@@ -537,5 +560,255 @@ func TestPublisher_FatalHaltDoesNotDrain(t *testing.T) {
 		t.Fatalf("expected 0 coordinator completions due to fatal halt drain skip, got %d", len(coord.completedEvents))
 	}
 }
+
+// ─── Periodic Depth Heartbeat Tests ──────────────────────────────────────────
+
+func TestPublisher_IdleHeartbeat_RefreshesTimestampAndPreservesSequence(t *testing.T) {
+	k := &fakeKafka{}
+	r := &fakeRedis{}
+	coord := &fakeCoordinator{}
+	p := publisher.NewTestable(k, r, coord)
+
+	engine := makeEngine("BTC-USDT")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go p.Run(ctx, engine)
+
+	initialTime := time.Now().Add(-10 * time.Second).UTC()
+	depth := makeDepth("BTC-USDT")
+	depth.Sequence = 42
+	depth.SnapshotAt = initialTime
+
+	res := orderbook.MatchResult{
+		DepthSnapshot: depth,
+		SourcePosition: orderbook.KafkaPosition{
+			Topic:     "orders.commands",
+			Partition: 0,
+			Offset:    1,
+		},
+	}
+	engine.OutputQueue <- res
+
+	// Wait for heartbeat tick (fires every 1s)
+	time.Sleep(1200 * time.Millisecond)
+
+	val, ok := r.Get("depth:BTC-USDT")
+	if !ok {
+		t.Fatal("expected depth:BTC-USDT in Redis")
+	}
+
+	var parsed struct {
+		MarketID   string `json:"market_id"`
+		Sequence   uint64 `json:"sequence"`
+		SnapshotAt string `json:"snapshot_at"`
+		Bids       []struct {
+			Price    string `json:"price"`
+			Quantity string `json:"quantity"`
+		} `json:"bids"`
+	}
+	if err := json.Unmarshal(val, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// Requirement #6: sequence MUST NOT change
+	if parsed.Sequence != 42 {
+		t.Fatalf("expected sequence 42, got %d", parsed.Sequence)
+	}
+
+	// Requirement #6: snapshot_at must advance
+	snapTime, err := time.Parse(time.RFC3339Nano, parsed.SnapshotAt)
+	if err != nil {
+		t.Fatalf("parse snapshot_at %q: %v", parsed.SnapshotAt, err)
+	}
+	if !snapTime.After(initialTime) {
+		t.Fatalf("expected snapshot_at (%v) to be after initialTime (%v)", snapTime, initialTime)
+	}
+	if len(parsed.Bids) != len(depth.Bids) {
+		t.Fatalf("expected %d bids, got %d", len(depth.Bids), len(parsed.Bids))
+	}
+}
+
+func TestPublisher_IdleHeartbeat_MultipleTicks(t *testing.T) {
+	k := &fakeKafka{}
+	r := &fakeRedis{}
+	coord := &fakeCoordinator{}
+	p := publisher.NewTestable(k, r, coord)
+
+	engine := makeEngine("BTC-USDT")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go p.Run(ctx, engine)
+
+	depth := makeDepth("BTC-USDT")
+	depth.Sequence = 77
+	depth.SnapshotAt = time.Now().Add(-5 * time.Second).UTC()
+
+	engine.OutputQueue <- orderbook.MatchResult{
+		DepthSnapshot: depth,
+		SourcePosition: orderbook.KafkaPosition{
+			Topic:     "orders.commands",
+			Partition: 0,
+			Offset:    1,
+		},
+	}
+
+	// Wait for tick 1
+	time.Sleep(1100 * time.Millisecond)
+	val1, ok := r.Get("depth:BTC-USDT")
+	if !ok {
+		t.Fatal("expected depth in Redis after tick 1")
+	}
+	var parsed1 struct {
+		Sequence   uint64 `json:"sequence"`
+		SnapshotAt string `json:"snapshot_at"`
+	}
+	_ = json.Unmarshal(val1, &parsed1)
+	if parsed1.Sequence != 77 {
+		t.Fatalf("tick 1: expected sequence 77, got %d", parsed1.Sequence)
+	}
+	t1, _ := time.Parse(time.RFC3339Nano, parsed1.SnapshotAt)
+
+	// Wait for tick 2
+	time.Sleep(1100 * time.Millisecond)
+	val2, _ := r.Get("depth:BTC-USDT")
+	var parsed2 struct {
+		Sequence   uint64 `json:"sequence"`
+		SnapshotAt string `json:"snapshot_at"`
+	}
+	_ = json.Unmarshal(val2, &parsed2)
+	if parsed2.Sequence != 77 {
+		t.Fatalf("tick 2: expected sequence 77, got %d", parsed2.Sequence)
+	}
+	t2, _ := time.Parse(time.RFC3339Nano, parsed2.SnapshotAt)
+
+	if !t2.After(t1) {
+		t.Fatalf("expected t2 (%v) > t1 (%v)", t2, t1)
+	}
+}
+
+func TestPublisher_EventAndHeartbeatInteraction(t *testing.T) {
+	k := &fakeKafka{}
+	r := &fakeRedis{}
+	coord := &fakeCoordinator{}
+	p := publisher.NewTestable(k, r, coord)
+
+	engine := makeEngine("BTC-USDT")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go p.Run(ctx, engine)
+
+	// Event A -> Sequence 100
+	depthA := makeDepth("BTC-USDT")
+	depthA.Sequence = 100
+	engine.OutputQueue <- orderbook.MatchResult{
+		DepthSnapshot: depthA,
+		SourcePosition: orderbook.KafkaPosition{
+			Topic:     "orders.commands",
+			Partition: 0,
+			Offset:    10,
+		},
+	}
+
+	// Heartbeat A
+	time.Sleep(1100 * time.Millisecond)
+	valA, _ := r.Get("depth:BTC-USDT")
+	var pA struct {
+		Sequence uint64 `json:"sequence"`
+	}
+	_ = json.Unmarshal(valA, &pA)
+	if pA.Sequence != 100 {
+		t.Fatalf("heartbeat A: expected sequence 100, got %d", pA.Sequence)
+	}
+
+	// Event B -> Sequence 101
+	depthB := makeDepth("BTC-USDT")
+	depthB.Sequence = 101
+	engine.OutputQueue <- orderbook.MatchResult{
+		DepthSnapshot: depthB,
+		SourcePosition: orderbook.KafkaPosition{
+			Topic:     "orders.commands",
+			Partition: 0,
+			Offset:    11,
+		},
+	}
+
+	// Heartbeat B
+	time.Sleep(1100 * time.Millisecond)
+	valB, _ := r.Get("depth:BTC-USDT")
+	var pB struct {
+		Sequence uint64 `json:"sequence"`
+	}
+	_ = json.Unmarshal(valB, &pB)
+	if pB.Sequence != 101 {
+		t.Fatalf("heartbeat B: expected sequence 101, got %d", pB.Sequence)
+	}
+}
+
+func TestPublisher_Heartbeat_DoesNotPublishBeforeDepthExists(t *testing.T) {
+	k := &fakeKafka{}
+	r := &fakeRedis{}
+	coord := &fakeCoordinator{}
+	p := publisher.NewTestable(k, r, coord)
+
+	engine := makeEngine("BTC-USDT")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go p.Run(ctx, engine)
+
+	// Wait 1.2s without sending any event or seed
+	time.Sleep(1200 * time.Millisecond)
+
+	_, ok := r.Get("depth:BTC-USDT")
+	if ok {
+		t.Fatal("heartbeat must NOT publish before a valid depth exists")
+	}
+}
+
+func TestPublisher_Heartbeat_RedisFailureIsNonFatal(t *testing.T) {
+	k := &fakeKafka{}
+	r := &fakeRedis{}
+	coord := &fakeCoordinator{}
+	p := publisher.NewTestable(k, r, coord)
+
+	halted := false
+	p.SetHaltCallback(func() {
+		halted = true
+	})
+
+	engine := makeEngine("BTC-USDT")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Initial event succeeds
+	depth := makeDepth("BTC-USDT")
+	depth.Sequence = 10
+	engine.OutputQueue <- orderbook.MatchResult{
+		DepthSnapshot: depth,
+		SourcePosition: orderbook.KafkaPosition{
+			Topic:     "orders.commands",
+			Partition: 0,
+			Offset:    1,
+		},
+	}
+
+	go p.Run(ctx, engine)
+	time.Sleep(100 * time.Millisecond)
+
+	// Now make Redis fail for subsequent heartbeat ticks
+	r.failErr = errors.New("redis connection refused")
+
+	// Wait for heartbeat ticker to fire
+	time.Sleep(1200 * time.Millisecond)
+
+	// Invariant: Heartbeat failure on idle book is non-fatal!
+	if halted {
+		t.Fatal("heartbeat failure should be non-fatal, but HaltCallback was triggered")
+	}
+}
+
 
 

@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	pollInterval = 500 * time.Millisecond // polling cadence when outbox has events
-	idleInterval = 2 * time.Second        // cadence when outbox is empty
-	batchSize    = 50                     // max events per poll cycle
-	maxRetries   = 3                      // Kafka write attempts per event; on exhaustion the claim is released back to PENDING (not marked FAILED)
+	defaultPollInterval = 500 * time.Millisecond // polling cadence when outbox has events
+	defaultIdleInterval = 2 * time.Second        // cadence when outbox is empty
+	batchSize           = 50                     // max events per poll cycle
+	maxRetries          = 3                      // Kafka write attempts per event; on exhaustion the claim is released back to PENDING (not marked FAILED)
 )
 
 // OutboxPublisher polls the outbox table and publishes pending events to Kafka.
@@ -45,6 +45,8 @@ type OutboxPublisher struct {
 	topicTradeSettled        string
 	topicPortfolioUserTrades string
 	log                      *zap.Logger
+	pollInterval             time.Duration
+	idleInterval             time.Duration
 }
 
 // NewOutboxPublisher creates an OutboxPublisher that routes events to their appropriate Kafka topics.
@@ -72,12 +74,27 @@ func NewOutboxPublisher(
 		topicTradeSettled:        topicTradeSettled,
 		topicPortfolioUserTrades: topicPortfolioUserTrades,
 		log:                      log,
+		pollInterval:             defaultPollInterval,
+		idleInterval:             defaultIdleInterval,
+	}
+}
+
+// SetIntervals configures the polling and idle intervals.
+func (p *OutboxPublisher) SetIntervals(poll, idle time.Duration) {
+	if poll > 0 {
+		p.pollInterval = poll
+	}
+	if idle > 0 {
+		p.idleInterval = idle
 	}
 }
 
 // Run starts the poll loop. Blocks until ctx is cancelled.
 func (p *OutboxPublisher) Run(ctx context.Context) {
-	p.log.Info("Outbox publisher started")
+	p.log.Info("Outbox publisher started",
+		zap.Duration("poll_interval", p.pollInterval),
+		zap.Duration("idle_interval", p.idleInterval),
+	)
 	for {
 		published, err := p.publishBatch(ctx)
 		if err != nil {
@@ -89,9 +106,9 @@ func (p *OutboxPublisher) Run(ctx context.Context) {
 		}
 
 		// Adaptive sleep: shorter when there's work, longer when idle.
-		wait := idleInterval
+		wait := p.idleInterval
 		if published > 0 {
-			wait = pollInterval
+			wait = p.pollInterval
 		}
 
 		select {
@@ -126,7 +143,9 @@ func (p *OutboxPublisher) publishBatch(ctx context.Context) (int, error) {
 			for _, ev := range events[i:] {
 				remainingIDs = append(remainingIDs, ev.ID)
 			}
-			relErr := p.outbox.ReleaseClaims(ctx, remainingIDs, events[i].ClaimToken)
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			relErr := p.outbox.ReleaseClaims(cleanupCtx, remainingIDs, events[i].ClaimToken)
+			cleanupCancel()
 			if relErr != nil {
 				p.log.Error("failed to release claims for uncompleted outbox events",
 					zap.Int("count", len(remainingIDs)),
@@ -227,7 +246,6 @@ func (p *OutboxPublisher) publishOne(ctx context.Context, event *repository.Outb
 	)
 	return lastErr
 }
-
 
 // Close flushes pending writes and releases the Kafka writer.
 func (p *OutboxPublisher) Close() error {

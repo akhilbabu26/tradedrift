@@ -393,6 +393,40 @@ services:
       matching-engine:
         condition: service_started
 
+  controlled-taker:
+    build:
+      context: .
+      dockerfile: services/controlled-taker/Dockerfile
+    container_name: tradedrift-controlled-taker
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+    environment:
+      CTS_ENABLED: "true"
+      ORDER_GRPC_ADDR: order:50053
+      REDIS_ADDR: redis:6379
+      MAX_ORDER_NOTIONAL_USDT: "10000.00"
+      MAX_SLIPPAGE_BPS: "15"
+      MAX_HOURLY_VOLUME_USDT: "100000.00"
+      MAX_DAILY_VOLUME_USDT: "1500000.00"
+      MAX_TRADES_PER_HOUR: "60"
+      CIRCUIT_BREAKER_FAILURES: "5"
+      WARMUP_DELAY: "15s"
+      HIGH_COOLDOWN: "300s"
+      HEALTH_PORT: "8080"
+      METRICS_PORT: "9090"
+      LOG_LEVEL: info
+    ports:
+      - "8086:8080"
+      - "9097:9090"
+    depends_on:
+      order:
+        condition: service_started
+      redis:
+        condition: service_healthy
+      liquidity-engine:
+        condition: service_started
+
   prometheus:
     image: prom/prometheus:v2.54.1
     container_name: tradedrift-prometheus

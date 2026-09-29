@@ -2,10 +2,13 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"tradedrift/services/controlled-taker/internal/clients/orderservice"
 	"tradedrift/services/controlled-taker/internal/metrics"
 )
@@ -21,7 +24,7 @@ func (w *MarketWorker) awaitOrderCleanup(orderID string) (*orderservice.OrderRes
 
 	crossingDelay := w.cfg.CrossingDelay
 	if crossingDelay <= 0 {
-		crossingDelay = 1000 * time.Millisecond
+		crossingDelay = 300 * time.Millisecond
 	}
 
 	// Crossing delay gives the Matching Engine an opportunity to cross against resting MM quotes
@@ -38,11 +41,11 @@ func (w *MarketWorker) awaitOrderCleanup(orderID string) (*orderservice.OrderRes
 
 	pollInterval := w.cfg.ResidualPollInterval
 	if pollInterval <= 0 {
-		pollInterval = 200 * time.Millisecond
+		pollInterval = 100 * time.Millisecond
 	}
 	gracePeriod := w.cfg.ResidualGracePeriod
 	if gracePeriod <= 0 {
-		gracePeriod = 1500 * time.Millisecond
+		gracePeriod = 500 * time.Millisecond
 	}
 
 	// Bounded cleanup polling loop
@@ -116,10 +119,17 @@ cleanupLoop:
 					zap.Duration("grace_period", gracePeriod),
 				)
 				if _, cancelErr := w.ordersClient.CancelOrder(cleanupCtx, orderID); cancelErr != nil {
-					w.logger.Warn("Failed to send CancelOrder for residual; will retry in loop",
-						zap.String("order_id", orderID),
-						zap.Error(cancelErr),
-					)
+					if isNotCancellableError(cancelErr) {
+						w.logger.Info("Order no longer in cancellable state during residual cleanup (likely filled concurrently)",
+							zap.String("order_id", orderID),
+						)
+						cancelSent = true
+					} else {
+						w.logger.Warn("Failed to send CancelOrder for residual; will retry in loop",
+							zap.String("order_id", orderID),
+							zap.Error(cancelErr),
+						)
+					}
 				} else {
 					cancelSent = true
 					metrics.ResidualsCancelled.WithLabelValues(w.market.MarketID).Inc()
@@ -155,4 +165,25 @@ cleanupLoop:
 	}
 
 	return orderState, true
+}
+
+func isNotCancellableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		type statusError interface {
+			GRPCStatus() *status.Status
+		}
+		var se statusError
+		if errors.As(err, &se) {
+			st = se.GRPCStatus()
+			ok = true
+		}
+	}
+	if ok && st.Code() == codes.FailedPrecondition {
+		return true
+	}
+	return strings.Contains(err.Error(), "not in a cancellable state")
 }

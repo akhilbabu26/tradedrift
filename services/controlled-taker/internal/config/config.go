@@ -141,17 +141,17 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("HIGH_COOLDOWN: %w", err)
 	}
 
-	crossingDelay, err := platformconfig.GetEnvAsDuration("CROSSING_DELAY", 1000*time.Millisecond)
+	crossingDelay, err := platformconfig.GetEnvAsDuration("CROSSING_DELAY", 300*time.Millisecond)
 	if err != nil {
 		return Config{}, fmt.Errorf("CROSSING_DELAY: %w", err)
 	}
 
-	residualGracePeriod, err := platformconfig.GetEnvAsDuration("CTS_RESIDUAL_GRACE_PERIOD", 1500*time.Millisecond)
+	residualGracePeriod, err := platformconfig.GetEnvAsDuration("CTS_RESIDUAL_GRACE_PERIOD", 500*time.Millisecond)
 	if err != nil {
 		return Config{}, fmt.Errorf("CTS_RESIDUAL_GRACE_PERIOD: %w", err)
 	}
 
-	residualPollInterval, err := platformconfig.GetEnvAsDuration("CTS_RESIDUAL_POLL_INTERVAL", 200*time.Millisecond)
+	residualPollInterval, err := platformconfig.GetEnvAsDuration("CTS_RESIDUAL_POLL_INTERVAL", 100*time.Millisecond)
 	if err != nil {
 		return Config{}, fmt.Errorf("CTS_RESIDUAL_POLL_INTERVAL: %w", err)
 	}

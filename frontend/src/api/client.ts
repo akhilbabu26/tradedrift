@@ -40,6 +40,15 @@ client.interceptors.request.use((config) => {
 
 // ── Response interceptors ─────────────────────────────────────────────────────
 
+// Singleton in-flight refresh promise.
+// When multiple concurrent requests all receive a 401 (e.g. on page load with
+// an expired access token), only the FIRST one fires the actual token rotation.
+// All subsequent 401 interceptors await the same promise, so the refresh token
+// is presented to the auth service exactly once. Without this, each concurrent
+// caller presents the same (already-rotated) refresh token, which the auth
+// service correctly treats as a hijack attempt and revokes all sessions.
+let refreshPromise: Promise<{ accessToken: string; refreshToken: string }> | null = null
+
 // 2. Handle 401: refresh → retry; on failure clear session
 client.interceptors.response.use(
   (res) => res,
@@ -53,9 +62,15 @@ client.interceptors.response.use(
 
       original._retry = true
       try {
-        const { data } = await axios.post(`${API_BASE_URL}/api/v1/auth/refresh`, {
-          refreshToken: refresh,
-        })
+        // Only the first concurrent 401 creates the refresh promise.
+        // All others share it, so the refresh token is rotated exactly once.
+        if (!refreshPromise) {
+          refreshPromise = axios
+            .post(`${API_BASE_URL}/api/v1/auth/refresh`, { refreshToken: refresh })
+            .then((r) => r.data as { accessToken: string; refreshToken: string })
+            .finally(() => { refreshPromise = null })
+        }
+        const data = await refreshPromise
         localStorage.setItem('access_token', data.accessToken)
         localStorage.setItem('refresh_token', data.refreshToken)
         original.headers.Authorization = `Bearer ${data.accessToken}`

@@ -6,22 +6,27 @@ import SignOutAllModal from './SignOutAllModal'
 function getCurrentSession() {
   const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
   let device = 'Desktop Browser'
+  let browser = 'Browser'
+  let os = 'Windows'
   let isMobile = false
 
-  if (/Windows/i.test(ua)) device = 'Chrome on Windows'
-  else if (/Macintosh|Mac OS X/i.test(ua)) device = 'Chrome on macOS'
-  else if (/Linux/i.test(ua)) device = 'Browser on Linux'
-  else if (/iPhone|iPad/i.test(ua)) { device = 'Safari on iOS'; isMobile = true }
-  else if (/Android/i.test(ua)) { device = 'Chrome on Android'; isMobile = true }
+  if (/Windows/i.test(ua)) { device = 'Chrome on Windows'; browser = 'Chrome'; os = 'Windows' }
+  else if (/Macintosh|Mac OS X/i.test(ua)) { device = 'Chrome on macOS'; browser = 'Chrome'; os = 'macOS' }
+  else if (/Linux/i.test(ua)) { device = 'Browser on Linux'; browser = 'Browser'; os = 'Linux' }
+  else if (/iPhone|iPad/i.test(ua)) { device = 'Safari on iOS'; browser = 'Safari'; os = 'iOS'; isMobile = true }
+  else if (/Android/i.test(ua)) { device = 'Chrome on Android'; browser = 'Chrome'; os = 'Android'; isMobile = true }
 
   return [
     {
       id: 'current-session',
       device,
+      browser,
+      os,
       type: isMobile ? ('mobile' as const) : ('desktop' as const),
       location: 'Local Network / Gateway :8080',
       ip: '127.0.0.1 (Current)',
       lastActive: 'Active now',
+      status: 'active',
       isCurrent: true,
     },
   ]
@@ -35,6 +40,7 @@ export default function ActiveSessionsCard() {
   const handleRefresh = () => {
     setRefreshing(true)
     setTimeout(() => {
+      setSessions(getCurrentSession())
       setRefreshing(false)
       toast.success('Session records refreshed')
     }, 500)

@@ -1,17 +1,18 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useTradeMarket }    from '../../hooks/useTradeMarket'
-import { useTradeCandles }   from '../../hooks/useTradeCandles'
+import { useTradeMarket } from '../../hooks/useTradeMarket'
+import { useTradeCandles } from '../../hooks/useTradeCandles'
 import { useTradeOrderBook } from '../../hooks/useTradeOrderBook'
-import { useTradeBalances }  from '../../hooks/useTradeBalances'
-import { useTradeOrders }    from '../../hooks/useTradeOrders'
-import type { Timeframe }    from '../../types/trade'
+import { useTradeBalances } from '../../hooks/useTradeBalances'
+import { useTradeOrders } from '../../hooks/useTradeOrders'
+import type { Timeframe } from '../../types/trade'
 
 import TradeMarketHeader from '../../components/trade/TradeMarketHeader'
-import TradingChart      from '../../components/trade/TradingChart'
-import OrderBook         from '../../components/trade/OrderBook'
-import OrderEntry        from '../../components/trade/OrderEntry'
-import OpenOrdersPanel   from '../../components/trade/OpenOrdersPanel'
+import TradingChart from '../../components/trade/TradingChart'
+import OrderBook from '../../components/trade/OrderBook'
+import OrderEntry from '../../components/trade/OrderEntry'
+import OpenOrdersPanel from '../../components/trade/OpenOrdersPanel'
+import TradeFooter from '../../components/trade/TradeFooter'
 
 /**
  * Trade page — authenticated route at /trade.
@@ -21,14 +22,14 @@ import OpenOrdersPanel   from '../../components/trade/OpenOrdersPanel'
  *   TradePage   → flex-1 flex flex-col min-h-0          (fills exactly)
  *     MarketHeader   → flex-shrink-0 (h-14 fixed)
  *     TradingWorkspace → flex-1 min-h-0 grid            (absorbs remaining)
- *     OpenOrdersPanel  → flex-shrink-0 (h-[220px] fixed)
- *     Footer           → flex-shrink-0
+ *     OpenOrdersPanel  → flex-shrink-0 (h-[280px] fixed)
+ *     TradeFooter      → flex-shrink-0
  *
  * All hooks are called here; selectedMarketId is the single source of truth
  * and is passed to every child panel as a prop.
  */
 export default function TradePage() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const initialMarket = searchParams.get('market') || 'BTC-USDT'
 
   // ── Timeframe state ─────────────────────────────────────────────────────
@@ -44,6 +45,11 @@ export default function TradePage() {
     isDemoData: marketDemoData,
     loading: marketLoading,
   } = useTradeMarket(initialMarket)
+
+  const handleSelectMarket = (id: string) => {
+    setSelectedMarketId(id)
+    setSearchParams({ market: id }, { replace: true })
+  }
 
   useEffect(() => {
     const param = searchParams.get('market')
@@ -83,13 +89,13 @@ export default function TradePage() {
   } = useTradeOrders(selectedMarketId, refetchBalances)
 
   // ── Derived ──────────────────────────────────────────────────────────────
-  const baseAsset  = selectedMarket.base_asset
+  const baseAsset = selectedMarket.base_asset
   const quoteAsset = selectedMarket.quote_asset
-  const symbol     = `${baseAsset}/${quoteAsset}`
-  const lastPrice  = ticker?.last_price ?? orderBook.lastPrice ?? '0'
+  const symbol = `${baseAsset}/${quoteAsset}`
+  const lastPrice = ticker?.last_price ?? orderBook.lastPrice ?? '0'
 
   const quoteBalance = getBalance(quoteAsset)   // e.g. USDT
-  const baseBalance  = getBalance(baseAsset)    // e.g. BTC
+  const baseBalance = getBalance(baseAsset)    // e.g. BTC
 
   // isDemoData — any source using mock fallback
   const anyDemoData = marketDemoData || candlesDemoData || obDemoData
@@ -100,20 +106,26 @@ export default function TradePage() {
      * flex flex-col: children stack vertically
      * min-h-0: critical — allows this element to shrink below its content height
      * overflow-hidden: prevents page-level scroll; each panel manages its own
+     *
+     * NOTE: do NOT add min-h-[Npx] here — it conflicts with overflow-hidden on
+     * the parent <main> and pushes the OpenOrdersPanel out of view on short
+     * viewports where the page overflows before overflow-hidden can clip it.
      */
-    <div className="w-full flex-1 h-full min-h-[640px] flex flex-col min-h-0 overflow-hidden bg-[#0a0b0e]">
+    <div className="w-full flex-1 flex flex-col min-h-0 overflow-y-auto bg-[#0a0b0e]">
 
       {/* ── Market Header ─────────────────────────────────────────────────── */}
-      {/* flex-shrink-0 keeps it at its natural h-14 height */}
-      <TradeMarketHeader
-        markets={markets}
-        selectedMarketId={selectedMarketId}
-        onSelectMarket={setSelectedMarketId}
-        ticker={ticker}
-        isDemoData={anyDemoData}
-        usdtBalance={quoteBalance}
-        baseBalance={baseBalance}
-      />
+      {/* sticky top-0: header stays pinned when user scrolls down to lower panel */}
+      <div className="sticky top-0 z-20 flex-shrink-0">
+        <TradeMarketHeader
+          markets={markets}
+          selectedMarketId={selectedMarketId}
+          onSelectMarket={handleSelectMarket}
+          ticker={ticker}
+          isDemoData={anyDemoData}
+          usdtBalance={quoteBalance}
+          baseBalance={baseBalance}
+        />
+      </div>
 
       {/*
        * ── Trading Workspace ─────────────────────────────────────────────────
@@ -125,7 +137,7 @@ export default function TradePage() {
        * overflow-hidden: clips internal content, each child scrolls itself
        */}
       <div
-        className="flex-1 min-h-0 overflow-hidden grid"
+        className="flex-1 flex-shrink-0 min-h-[420px] overflow-hidden grid"
         style={{
           gridTemplateColumns: 'minmax(0, 1fr) minmax(240px, 280px) minmax(260px, 300px)',
         }}
@@ -180,6 +192,9 @@ export default function TradePage() {
         onCancel={cancelOrder}
         onCancelAll={cancelAll}
       />
+
+      {/* ── Footer ────────────────────────────────────────────────────────── */}
+      <TradeFooter />
     </div>
   )
 }

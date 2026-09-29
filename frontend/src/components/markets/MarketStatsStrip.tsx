@@ -50,8 +50,13 @@ export default function MarketStatsStrip({ stats }: MarketStatsStripProps) {
         </div>
         <div className="flex flex-col leading-tight">
           <div className="flex items-center gap-1.5">
-            <StatusIndicator status="live" showPing />
-            <span className="text-sm font-bold text-[#f5f7fa]">Live Data</span>
+            <StatusIndicator
+              status={stats.wsStatus ?? 'live'}
+              showPing={stats.wsStatus === 'live' || stats.wsStatus === 'online' || !stats.wsStatus}
+            />
+            <span className="text-sm font-bold text-[#f5f7fa]">
+              {stats.wsStatus === 'offline' ? 'Offline' : stats.wsStatus === 'connecting' ? 'Connecting' : 'Live Data'}
+            </span>
           </div>
           <span className="text-[10px] text-slate-500 font-medium">
             {stats.liveDataLabel}

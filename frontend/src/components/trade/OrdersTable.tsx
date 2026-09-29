@@ -81,7 +81,9 @@ export default function OrdersTable({ orders, cancellingId, onCancel }: OrdersTa
                 {/* Pair */}
                 <td className="px-3 py-2 font-semibold text-[#f5f7fa] whitespace-nowrap">{pair}</td>
                 {/* Type */}
-                <td className="px-3 py-2 text-slate-400 whitespace-nowrap capitalize">{order.order_type.toLowerCase()}</td>
+                <td className="px-3 py-2 text-slate-400 whitespace-nowrap capitalize">
+                  {order.order_type.toUpperCase().includes('LIMIT') ? 'Limit' : order.order_type.toUpperCase().includes('MARKET') ? 'Market' : order.order_type}
+                </td>
                 {/* Side */}
                 <td className={`px-3 py-2 font-semibold whitespace-nowrap ${isBuy ? 'text-[#10b981]' : 'text-[#ef4444]'}`}>
                   {isBuy ? 'Buy' : 'Sell'}
@@ -113,7 +115,17 @@ export default function OrdersTable({ orders, cancellingId, onCancel }: OrdersTa
                           ? 'text-amber-400 bg-amber-500/10 border-amber-500/20'
                           : 'text-slate-300 bg-[#0a0b0e] border-[#1e2530]'
                   }`}>
-                    {order.status === 'PARTIALLY_FILLED' ? 'Partial' : order.status.charAt(0) + order.status.slice(1).toLowerCase()}
+                    {order.status === 'PARTIALLY_FILLED'
+                      ? 'Partial'
+                      : order.status === 'OPEN'
+                      ? 'Open'
+                      : order.status === 'CANCELLED'
+                      ? 'Cancelled'
+                      : order.status === 'FILLED'
+                      ? 'Filled'
+                      : order.status === 'CANCELLING'
+                      ? 'Cancelling'
+                      : order.status}
                   </span>
                 </td>
                 {/* Action */}

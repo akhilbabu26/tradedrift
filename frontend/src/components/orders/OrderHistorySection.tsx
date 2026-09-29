@@ -150,8 +150,6 @@ export default function OrderHistorySection({ history }: OrderHistorySectionProp
             ) : (
               paginatedHistory.map((item) => {
                 const isBuy = item.side === 'BUY'
-                const isFilled = item.status === 'Filled'
-                const isCanceled = item.status === 'Canceled'
                 const isCopied = copiedId === item.orderId
 
                 // Visual truncation of order ID (ord_7f2a9c...)

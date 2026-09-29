@@ -36,13 +36,25 @@ export default function MyCoins({ holdings }: MyCoinsProps) {
         </Link>
       </div>
 
-      <div className="overflow-x-auto">
-        <div className="min-w-[500px] w-full text-xs" role="table" aria-label="My Coins">
-          {/* Header Row */}
-          <div
-            className={`${GRID_TEMPLATE} pb-2 text-slate-500 text-[10px] uppercase tracking-wider font-medium border-b border-[#1e2530]/40`}
-            role="row"
+      {holdings.length === 0 ? (
+        <div className="py-6 px-4 text-center flex flex-col items-center justify-center border border-dashed border-[#1e2530] rounded-md my-1">
+          <p className="text-xs text-slate-300 font-medium mb-1">No crypto holdings yet</p>
+          <p className="text-[11px] text-slate-500 mb-2">Simulator cash balance is 100% in USDT.</p>
+          <Link
+            to="/markets"
+            className="text-xs text-[#10b981] hover:text-[#34d399] transition-colors"
           >
+            Explore Spot Markets →
+          </Link>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <div className="min-w-[500px] w-full text-xs" role="table" aria-label="My Coins">
+            {/* Header Row */}
+            <div
+              className={`${GRID_TEMPLATE} pb-2 text-slate-500 text-[10px] uppercase tracking-wider font-medium border-b border-[#1e2530]/40`}
+              role="row"
+            >
             <div role="columnheader" className="text-left">Asset</div>
             <div role="columnheader" className="text-right">Holdings</div>
             <div role="columnheader" className="text-right">Value (USDT)</div>
@@ -131,6 +143,7 @@ export default function MyCoins({ holdings }: MyCoinsProps) {
           </div>
         </div>
       </div>
-    </div>
-  )
+    )}
+  </div>
+)
 }

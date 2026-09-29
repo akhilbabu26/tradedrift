@@ -6,28 +6,26 @@
  *
  * Data sources:
  *   Market list  → GET /api/v1/markets
- *   Tickers      → GET /api/v1/markets/{id}/ticker (initial)
+ *   Tickers      → GET /api/v1/markets/overview (initial enriched snapshot)
+ *                  GET /api/v1/markets/{id}/ticker (fallback)
  *                  WS channel market:ticker:{id} (live updates)
+ *   7D Trend     → GET /api/v1/markets/overview (trend array)
+ *                  GET /api/v1/markets/{id}/candles?resolution=1h&limit=168 (fallback)
  *
- * Derives stats (count, volume24h), highlights (gainer/loser/volume),
- * and allEntries from live ticker data.
+ * Derives stats (count, volume24h, wsStatus), highlights (gainer/loser/volume),
+ * and allEntries from live backend data.
  *
- * Error policy:
- *   - Shows explicit error state when markets API fails; no silent mock.
- *   - Falls back to MARKETS_MOCK only when API is completely unreachable
- *     AND isDemoData is explicitly set true with a banner in the UI.
- *
- * All consuming components receive the same shape as before (UseMarketsReturn)
- * — no component changes required.
+ * NO MOCK DATA FALLBACKS:
+ *   - Clean empty/error states when backend is loading or unavailable.
+ *   - Real numeric calculations with decimal safety.
  */
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { marketApi, type Market, type Ticker24h, type MarketOverview } from '../api/market'
-import { wsService, WsChannels } from '../api/ws'
+import { wsService, WsChannels, type ConnectionStatus } from '../api/ws'
 import { toDecimal } from '../utils/decimal'
 import { getAssetMetadata } from '../utils/marketMetadata'
 import { extractApiError } from '../utils/apiError'
-import { MARKETS_MOCK } from '../data/marketsMock'
 import type { MarketEntry, MarketHighlight, MarketStats } from '../types/markets'
 
 export type MarketFilter = 'all' | 'favorites'
@@ -125,9 +123,7 @@ function buildEntry(
   const vol  = formatVolume(ticker?.quote_volume_24h)
   const pair = `${base}/${market.quote_asset}`
 
-  const sparklinePoints = trendPoints
-    ?? MARKETS_MOCK.entries?.find(e => e.asset === base)?.sparklinePoints
-    ?? [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+  const sparklinePoints = (trendPoints && trendPoints.length >= 2) ? trendPoints : [0.5, 0.5]
 
   return {
     rank,
@@ -151,20 +147,20 @@ function deriveHighlights(
   entries: MarketEntry[],
   tickers: Record<string, Ticker24h>
 ): MarketHighlight[] {
-  if (entries.length === 0) return MARKETS_MOCK.highlights
+  if (entries.length === 0) return []
 
   const getSignedChange = (e: MarketEntry) => {
     const val = parseFloat(e.change24h) || 0
     return e.positive ? val : -val
   }
 
-  // Top Gainer: highest signed change
+  // Top Performer / Top Gainer: highest signed change
   const sortedGainers = [...entries].sort((a, b) => getSignedChange(b) - getSignedChange(a))
   const gainer = sortedGainers[0]
 
   // Top Loser: lowest signed change
   const sortedLosers = [...entries].sort((a, b) => getSignedChange(a) - getSignedChange(b))
-  const loser = sortedLosers.find((e) => e.pair !== gainer?.pair) || sortedLosers[0]
+  const loser = sortedLosers.find((e) => e.pair !== gainer?.pair)
 
   // 24h Volume Leader: highest quote volume from real numeric ticker data
   const byVol = [...entries].sort((a, b) => {
@@ -233,15 +229,28 @@ export function useMarkets(): UseMarketsReturn {
   const [filter, setFilter]               = useState<MarketFilter>('all')
   const [quoteCurrency, setQuoteCurrency] = useState('USDT')
 
-  const [markets, setMarkets]         = useState<Market[]>([])
-  const [tickers, setTickers]         = useState<Record<string, Ticker24h>>({})
-  const [trends, setTrends]           = useState<Record<string, number[]>>({})
-  const [loading, setLoading]         = useState(true)
-  const [error, setError]             = useState<string | null>(null)
-  const [isDemoData, setIsDemoData]   = useState(false)
+  const [markets, setMarkets]       = useState<Market[]>([])
+  const [tickers, setTickers]       = useState<Record<string, Ticker24h>>({})
+  const [trends, setTrends]         = useState<Record<string, number[]>>({})
+  const [loading, setLoading]       = useState(true)
+  const [error, setError]           = useState<string | null>(null)
+  const [isDemoData, setIsDemoData] = useState(false)
+  const [wsStatus, setWsStatus]     = useState<ConnectionStatus>(() => wsService.getStatus())
+
   const tickersRef = useRef(tickers)
   tickersRef.current = tickers
 
+  // ── Track WebSocket connection status ─────────────────────────────────────
+  useEffect(() => {
+    const unsub = wsService.onStatus((_connected, status) => {
+      setWsStatus(status)
+    })
+    return () => {
+      unsub()
+    }
+  }, [])
+
+  // ── Load initial markets & overview data from backend ──────────────────────
   const loadData = useCallback(async () => {
     setLoading(true)
     setError(null)
@@ -271,12 +280,27 @@ export function useMarkets(): UseMarketsReturn {
       })
 
       // Fallback for any market missing from overview
-      const missing = marketList.filter((m) => !newTickers[m.id])
-      if (missing.length > 0) {
-        const results = await Promise.allSettled(missing.map((m) => marketApi.getTicker(m.id)))
-        missing.forEach((m, i) => {
+      const missingTickers = marketList.filter((m) => !newTickers[m.id])
+      if (missingTickers.length > 0) {
+        const results = await Promise.allSettled(missingTickers.map((m) => marketApi.getTicker(m.id)))
+        missingTickers.forEach((m, i) => {
           const r = results[i]
           if (r.status === 'fulfilled') newTickers[m.id] = r.value
+        })
+      }
+
+      // If any market is missing trend from overview, fetch candles
+      const missingTrends = marketList.filter((m) => !newTrends[m.id])
+      if (missingTrends.length > 0) {
+        const candleResults = await Promise.allSettled(
+          missingTrends.map((m) => marketApi.getCandles(m.id, '1h', 168))
+        )
+        missingTrends.forEach((m, i) => {
+          const r = candleResults[i]
+          if (r.status === 'fulfilled' && r.value.length >= 2) {
+            const closes = r.value.map((c) => c.close)
+            newTrends[m.id] = normalizeTrend(closes)
+          }
         })
       }
 
@@ -286,8 +310,7 @@ export function useMarkets(): UseMarketsReturn {
     } catch (err) {
       const msg = extractApiError(err)
       setError(msg)
-      setIsDemoData(true)
-      // Fallback to mock — explicitly labelled
+      setIsDemoData(false)
       setMarkets([])
       setTickers({})
       setTrends({})
@@ -298,31 +321,41 @@ export function useMarkets(): UseMarketsReturn {
 
   // ── WebSocket: live ticker updates ────────────────────────────────────────
   useEffect(() => {
+    if (markets.length === 0) return
+
     const unsubs: Array<() => void> = []
 
-    // Subscribe to ticker channel for each known market
-    const knownMarkets = markets.length > 0 ? markets : []
-    for (const m of knownMarkets) {
+    for (const m of markets) {
       const channel = WsChannels.ticker(m.id)
       const marketId = m.id
       const unsub = wsService.subscribe(channel, (payload) => {
         try {
           const raw = payload as any
           if (!raw) return
-          const normalized: Partial<Ticker24h> = {
-            market_id: marketId,
-            last_price: raw.lastPrice ?? raw.last_price,
-            high_24h: raw.high24h ?? raw.high_24h,
-            low_24h: raw.low24h ?? raw.low_24h,
-            volume_24h: raw.volume24h ?? raw.volume_24h,
-            quote_volume_24h: raw.quoteVolume24h ?? raw.quote_volume_24h,
-            price_change_24h_percent: raw.priceChange24hPercent ?? raw.price_change_24h_percent,
-          }
-          setTickers((prev) => ({
-            ...prev,
-            [marketId]: { ...prev[marketId], ...normalized },
-          }))
-        } catch { /* ignore */ }
+
+          setTickers((prev) => {
+            const current = prev[marketId]
+            const rawLast = raw.lastPrice ?? raw.last_price
+            const rawHigh = raw.high24h ?? raw.high_24h
+            const rawLow = raw.low24h ?? raw.low_24h
+            const rawVol = raw.volume24h ?? raw.volume_24h
+            const rawQuoteVol = raw.quoteVolume24h ?? raw.quote_volume_24h
+            const rawChange = raw.priceChange24hPercent ?? raw.price_change_24h_percent
+
+            return {
+              ...prev,
+              [marketId]: {
+                market_id: marketId,
+                last_price: rawLast !== undefined && rawLast !== null ? String(rawLast) : (current?.last_price ?? '0'),
+                high_24h: rawHigh !== undefined && rawHigh !== null ? String(rawHigh) : (current?.high_24h ?? '0'),
+                low_24h: rawLow !== undefined && rawLow !== null ? String(rawLow) : (current?.low_24h ?? '0'),
+                volume_24h: rawVol !== undefined && rawVol !== null ? String(rawVol) : (current?.volume_24h ?? '0'),
+                quote_volume_24h: rawQuoteVol !== undefined && rawQuoteVol !== null ? String(rawQuoteVol) : (current?.quote_volume_24h ?? '0'),
+                price_change_24h_percent: rawChange !== undefined && rawChange !== null ? String(rawChange) : (current?.price_change_24h_percent ?? '0'),
+              },
+            }
+          })
+        } catch { /* ignore malformed frames */ }
       })
       unsubs.push(unsub)
     }
@@ -334,31 +367,43 @@ export function useMarkets(): UseMarketsReturn {
 
   // ── Derived UI data ───────────────────────────────────────────────────────
   const allEntries = useMemo<MarketEntry[]>(() => {
-    if (isDemoData || markets.length === 0) return MARKETS_MOCK.entries ?? []
+    if (markets.length === 0) return []
     return markets.map((m, i) => buildEntry(m, tickers[m.id], i + 1, trends[m.id]))
-  }, [markets, tickers, trends, isDemoData])
+  }, [markets, tickers, trends])
 
   const stats = useMemo<MarketStats>(() => {
-    if (isDemoData || markets.length === 0) return MARKETS_MOCK.stats
-    const totalVolumeRaw = Object.values(tickers).reduce((sum, t) => {
-      return sum + toDecimal(t.quote_volume_24h || '0').toNumber()
-    }, 0)
+    let totalQuoteVol = toDecimal('0')
+    Object.values(tickers).forEach((t) => {
+      if (t.quote_volume_24h) {
+        try {
+          totalQuoteVol = totalQuoteVol.plus(toDecimal(t.quote_volume_24h))
+        } catch { /* ignore */ }
+      }
+    })
+
+    const isConnected = wsStatus === 'connected'
+    const isConnecting = wsStatus === 'connecting' || wsStatus === 'reconnecting'
+
     return {
       marketsListed: markets.length,
-      volume24h: formatVolume(totalVolumeRaw.toString()),
-      liveDataLabel: 'via WebSocket',
+      volume24h: formatVolume(totalQuoteVol.toString()),
+      liveDataLabel: isConnected ? 'via WebSocket' : isConnecting ? 'Connecting...' : 'Disconnected',
+      wsStatus: isConnected ? 'live' : isConnecting ? 'connecting' : 'offline',
     }
-  }, [markets, tickers, isDemoData])
+  }, [markets, tickers, wsStatus])
 
   const highlights = useMemo<MarketHighlight[]>(() => {
-    if (isDemoData || allEntries.length === 0) return MARKETS_MOCK.highlights
+    if (allEntries.length === 0) return []
     return deriveHighlights(allEntries, tickers)
-  }, [allEntries, tickers, isDemoData])
+  }, [allEntries, tickers])
 
   const filteredEntries = useMemo(() => {
     let rows = allEntries
     if (filter === 'favorites') {
       rows = rows.filter((r) => favorites.has(r.pair))
+    }
+    if (quoteCurrency && quoteCurrency !== 'ALL') {
+      rows = rows.filter((r) => r.pair.endsWith(`/${quoteCurrency}`))
     }
     const q = search.trim().toLowerCase()
     if (q) {
@@ -370,7 +415,7 @@ export function useMarkets(): UseMarketsReturn {
       )
     }
     return rows
-  }, [allEntries, filter, search, favorites])
+  }, [allEntries, filter, search, favorites, quoteCurrency])
 
   const toggleFavorite = (pair: string) => {
     setFavorites((prev) => {

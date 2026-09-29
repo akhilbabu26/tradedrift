@@ -1,8 +1,11 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Trash2 } from 'lucide-react'
 import type { Order, Balance } from '../../types/trade'
+import { tradesApi, type BackendTrade } from '../../api/trades'
 import { formatPrice, formatQuantity } from '../../utils/formatters'
 import OrdersTable from './OrdersTable'
+import { wsService, WsChannels } from '../../api/ws'
+import { useAuthStore } from '../../store/authStore'
 
 interface OpenOrdersPanelProps {
   orders: Order[]
@@ -66,7 +69,74 @@ function BalancesTab({ balances }: { balances: Balance[] }) {
   )
 }
 
-/** Empty/placeholder state for Order History and Trade Fills */
+/** Trade Fills table */
+function FillsTab({ trades, loading }: { trades: BackendTrade[]; loading: boolean }) {
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <div className="w-4 h-4 border-2 border-[#10b981] border-t-transparent rounded-full animate-spin" />
+      </div>
+    )
+  }
+  if (trades.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-8 text-center">
+        <div className="w-10 h-10 rounded-full bg-[#1e2530] flex items-center justify-center mb-2">
+          <span className="text-slate-600 text-base">⚡</span>
+        </div>
+        <p className="text-xs text-slate-500">No trade fills yet</p>
+        <p className="text-[10px] text-slate-600 mt-0.5">Your executed trade fills will appear here</p>
+      </div>
+    )
+  }
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-xs min-w-[700px]">
+        <thead>
+          <tr className="border-b border-[#1e2530]">
+            {['Time', 'Pair', 'Price', 'Amount', 'Total (USDT)', 'Trade ID'].map((col) => (
+              <th
+                key={col}
+                className="px-3 py-2 text-left text-[10px] font-medium text-slate-600 uppercase tracking-wider whitespace-nowrap"
+              >
+                {col}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-[#1e2530]/50">
+          {trades.map((trade) => {
+            const pair = trade.market_id.replace('-', '/')
+            const price = parseFloat(trade.price || '0')
+            const qty = parseFloat(trade.quantity || '0')
+            const total = price * qty
+            return (
+              <tr key={trade.id} className="hover:bg-white/[0.015] transition-colors">
+                <td className="px-3 py-2 text-slate-500 font-mono whitespace-nowrap">
+                  {trade.executed_at
+                    ? new Date(trade.executed_at).toLocaleString('en-US', {
+                        month: '2-digit', day: '2-digit', year: '2-digit',
+                        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+                      })
+                    : '—'}
+                </td>
+                <td className="px-3 py-2 font-semibold text-[#f5f7fa] whitespace-nowrap">{pair}</td>
+                <td className="px-3 py-2 font-mono text-slate-200 whitespace-nowrap">${formatPrice(trade.price)}</td>
+                <td className="px-3 py-2 font-mono text-slate-200 whitespace-nowrap">{formatQuantity(trade.quantity, 4)}</td>
+                <td className="px-3 py-2 font-mono text-slate-300 whitespace-nowrap">${formatPrice(total.toString())}</td>
+                <td className="px-3 py-2 font-mono text-slate-500 text-[10px] whitespace-nowrap">
+                  {trade.id.length > 12 ? `${trade.id.substring(0, 10)}...` : trade.id}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** Empty/placeholder state for Order History */
 function PlaceholderTab({ label }: { label: string }) {
   return (
     <div className="flex flex-col items-center justify-center py-8 text-center">
@@ -86,21 +156,60 @@ export default function OpenOrdersPanel({
   onCancelAll,
 }: OpenOrdersPanelProps) {
   const [activeTab, setActiveTab] = useState<PanelTab>('open')
+  const [trades, setTrades] = useState<BackendTrade[]>([])
+  const [tradesLoading, setTradesLoading] = useState(false)
 
-  const openOrders = orders.filter(
-    (o) => o.status === 'OPEN' || o.status === 'PARTIALLY_FILLED'
-  )
-  const historyOrders = orders.filter(
-    (o) => o.status !== 'OPEN' && o.status !== 'PARTIALLY_FILLED'
-  )
+  // CANCELLING is a transient in-flight state: the cancel request has been
+  // sent to the matching engine but hasn't settled yet. Keep it in Open Orders
+  // (not Order History) so the user can see it is still being processed.
+  const isOrderOpen = (status: string) => {
+    const s = (status || '').toUpperCase()
+    return (
+      s === 'OPEN' ||
+      s === 'PARTIALLY_FILLED' ||
+      s === 'CANCELLING' ||
+      s.includes('OPEN') ||
+      s.includes('PARTIAL')
+    )
+  }
+
+  const openOrders = orders.filter((o) => isOrderOpen(o.status))
+  const historyOrders = orders.filter((o) => !isOrderOpen(o.status))
   const openCount = openOrders.length
 
+  const loadTrades = useCallback(async () => {
+    setTradesLoading(true)
+    try {
+      const res = await tradesApi.listTrades()
+      setTrades(res.trades || [])
+    } catch {
+      setTrades([])
+    } finally {
+      setTradesLoading(false)
+    }
+  }, [])
+
+  // Load trades when switching to the Fills tab
+  useEffect(() => {
+    if (activeTab === 'fills') {
+      loadTrades()
+    }
+  }, [activeTab, loadTrades])
+
+  // Auto-refresh Fills whenever a WS user-notification fires while the tab is
+  // open. This ensures a newly executed fill appears in real time without the
+  // user needing to switch tabs back and forth.
+  const userId = useAuthStore((s) => s.user?.userId)
+  useEffect(() => {
+    if (!userId) return
+    const unsub = wsService.subscribe(WsChannels.userNotifications(userId), () => {
+      if (activeTab === 'fills') loadTrades()
+    })
+    return () => unsub()
+  }, [userId, activeTab, loadTrades])
+
   return (
-    /*
-     * flex-shrink-0: prevents the panel from growing/shrinking — stays compact
-     * Fixed total height of ~220px: 36px tab bar + 184px content
-     */
-    <div className="flex-shrink-0 border-t border-[#1e2530] bg-[#111318]" style={{ height: 220 }}>
+    <div className="flex-shrink-0 border-t border-[#1e2530] bg-[#111318]">
       {/* Tab bar */}
       <div className="flex items-center justify-between border-b border-[#1e2530] px-3">
         <div className="flex items-center gap-0" role="tablist" aria-label="Order panel tabs">
@@ -154,8 +263,8 @@ export default function OpenOrdersPanel({
         )}
       </div>
 
-      {/* Panel content — scrolls internally */}
-      <div className="overflow-y-auto" style={{ height: 'calc(220px - 36px)' }}>
+      {/* Panel content */}
+      <div>
         {loading ? (
           <div className="flex items-center justify-center py-8">
             <div className="w-4 h-4 border-2 border-[#10b981] border-t-transparent rounded-full animate-spin" />
@@ -175,7 +284,7 @@ export default function OpenOrdersPanel({
                 : <PlaceholderTab label="No order history yet" />
             )}
             {activeTab === 'fills' && (
-              <PlaceholderTab label="Trade fills not yet available" />
+              <FillsTab trades={trades} loading={tradesLoading} />
             )}
             {activeTab === 'balances' && (
               <BalancesTab balances={balances} />

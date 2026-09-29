@@ -7,6 +7,8 @@ interface ChartToolbarProps {
   chartType: 'candlestick' | 'line'
   onChartTypeChange: (type: 'candlestick' | 'line') => void
   isDemoData: boolean
+  onScreenshot?: () => void
+  onFullscreen?: () => void
 }
 
 const TIMEFRAMES: { key: Timeframe; label: string }[] = [
@@ -24,6 +26,8 @@ export default function ChartToolbar({
   chartType,
   onChartTypeChange,
   isDemoData,
+  onScreenshot,
+  onFullscreen,
 }: ChartToolbarProps) {
   return (
     <div className="flex items-center gap-0 px-3 py-1.5 border-b border-[#1e2530] bg-[#111318] flex-shrink-0">
@@ -116,6 +120,7 @@ export default function ChartToolbar({
       {/* Screenshot */}
       <button
         type="button"
+        onClick={onScreenshot}
         aria-label="Save chart as image"
         title="Screenshot"
         className="p-1.5 rounded text-slate-500 hover:text-[#f5f7fa] hover:bg-white/5 transition-colors border border-transparent"
@@ -126,6 +131,7 @@ export default function ChartToolbar({
       {/* Fullscreen */}
       <button
         type="button"
+        onClick={onFullscreen}
         aria-label="Toggle fullscreen chart"
         title="Fullscreen"
         className="p-1.5 rounded text-slate-500 hover:text-[#f5f7fa] hover:bg-white/5 transition-colors border border-transparent"

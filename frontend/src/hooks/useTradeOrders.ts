@@ -10,36 +10,37 @@ export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) 
   const [submitting, setSubmitting] = useState(false)
   const [cancellingId, setCancellingId] = useState<string | null>(null)
   const [cancellingAll, setCancellingAll] = useState(false)
+  const user = useAuthStore((s) => s.user)
+  const userId = user?.userId
 
   const fetchOrders = useCallback(async () => {
     try {
-      // List all user orders
-      const data = await orderApi.listOrders()
+      // Filter by the currently selected market so the panel only shows
+      // orders relevant to what the user is trading right now.
+      const data = await orderApi.listOrders({ market_id: marketId })
       setOrders(data || [])
     } catch (err) {
       console.warn('Failed to fetch orders', err)
-      // Provide an empty or mock sample order if demo
       setOrders([])
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [marketId])
 
   useEffect(() => {
     fetchOrders()
 
-    const userId = useAuthStore.getState().user?.userId
-    const unsub = userId
-      ? wsService.subscribe(WsChannels.userNotifications(userId), () => {
-          fetchOrders()
-          onBalanceRefresh?.()
-        })
-      : () => {}
+    if (!userId) return
+
+    const unsub = wsService.subscribe(WsChannels.userNotifications(userId), () => {
+      fetchOrders()
+      onBalanceRefresh?.()
+    })
 
     return () => {
       unsub()
     }
-  }, [fetchOrders, onBalanceRefresh])
+  }, [fetchOrders, onBalanceRefresh, userId])
 
   const submitOrder = async (req: CreateOrderRequest): Promise<boolean> => {
     setSubmitting(true)
@@ -99,7 +100,7 @@ export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) 
 
       await fetchOrders()
       onBalanceRefresh?.()
-    } catch (err) {
+    } catch {
       toast.error('Unexpected error while cancelling orders')
     } finally {
       setCancellingAll(false)

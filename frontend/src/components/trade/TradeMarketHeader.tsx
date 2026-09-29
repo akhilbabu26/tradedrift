@@ -1,5 +1,5 @@
 import { Plus } from 'lucide-react'
-import toast from 'react-hot-toast'
+import { useNavigate } from 'react-router-dom'
 import type { Ticker24h, Market, Balance } from '../../types/trade'
 import { formatPrice, formatPercentage, formatQuantity } from '../../utils/formatters'
 import { toDecimal } from '../../utils/decimal'
@@ -36,6 +36,7 @@ export default function TradeMarketHeader({
   usdtBalance,
   baseBalance,
 }: TradeMarketHeaderProps) {
+  const navigate = useNavigate()
   const meta = getMarketMetadata(selectedMarketId)
   const baseAsset = meta.base
   const quoteAsset = meta.quote
@@ -58,10 +59,7 @@ export default function TradeMarketHeader({
   const baseAvailable  = formatQuantity(baseBalance.availableBalance, 6)
 
   const handleAddDemoFunds = () => {
-    toast('Demo funding is not available yet. Your simulator starts with virtual funds.', {
-      icon: '💡',
-      duration: 4000,
-    })
+    navigate('/wallet')
   }
 
   return (

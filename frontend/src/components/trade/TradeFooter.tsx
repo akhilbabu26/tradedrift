@@ -1,10 +1,27 @@
+import { useState, useEffect } from 'react'
 import StatusIndicator from '../dashboard/shared/StatusIndicator'
+import { wsService, type ConnectionStatus } from '../../api/ws'
 
 /**
  * Trade page footer.
- * Identical visual pattern to MarketsFooter.
+ * Shows dynamic live status connected to the WebSocket stream.
  */
 export default function TradeFooter() {
+  const [wsStatus, setWsStatus] = useState<ConnectionStatus>(() => wsService.getStatus())
+
+  useEffect(() => {
+    const unsub = wsService.onStatus((_connected, status) => {
+      setWsStatus(status)
+    })
+    return () => {
+      unsub()
+    }
+  }, [])
+
+  const indicatorStatus = wsStatus === 'connected' ? 'live' : wsStatus === 'connecting' || wsStatus === 'reconnecting' ? 'connecting' : 'offline'
+  const isLive = indicatorStatus === 'live'
+  const statusLabel = isLive ? 'Matching Engine Online' : wsStatus === 'connecting' || wsStatus === 'reconnecting' ? 'Connecting to Matching Engine...' : 'Matching Engine Offline'
+
   return (
     <footer className="border-t border-[#1e2530] px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 flex-shrink-0">
       {/* Logo + tagline */}
@@ -23,8 +40,8 @@ export default function TradeFooter() {
       {/* Status + version */}
       <div className="flex items-center gap-4 text-xs text-slate-500">
         <span className="flex items-center gap-1.5">
-          <StatusIndicator status="live" showPing />
-          <span className="text-slate-400 font-medium">Matching Engine Online</span>
+          <StatusIndicator status={indicatorStatus} showPing={isLive} />
+          <span className="text-slate-400 font-medium">{statusLabel}</span>
         </span>
         <span className="px-2 py-0.5 rounded border border-[#1e2530] font-mono">
           v1.0.0

@@ -1,43 +1,81 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { marketApi, type Candle } from '../api/market'
-import type { Timeframe } from '../types/trade'
 import { generateMockCandles } from '../data/tradeMock'
+import type { Timeframe } from '../types/trade'
 
 export function useTradeCandles(marketId: string, timeframe: Timeframe = '1h') {
   const [candles, setCandles] = useState<Candle[]>([])
   const [loading, setLoading] = useState(true)
   const [isDemoData, setIsDemoData] = useState(false)
+  const lastSignatureRef = useRef<string>('')
 
   useEffect(() => {
     let mounted = true
-    setLoading(true)
 
-    async function fetchCandles() {
+    // 1. Immediately reset state on market or timeframe switch (Market Isolation)
+    setCandles([])
+    setLoading(true)
+    setIsDemoData(false)
+    lastSignatureRef.current = ''
+
+    async function fetchCandles(isInitial = false) {
       try {
+        if (isInitial) setLoading(true)
         const data = await marketApi.getCandles(marketId, timeframe, 100)
         if (!mounted) return
-        if (data && data.length > 0) {
-          setCandles(data)
+
+        if (Array.isArray(data) && data.length > 0) {
+          const last = data[data.length - 1]
+          const sig = `${data.length}_${last.start_time}_${last.close}`
+          if (sig !== lastSignatureRef.current) {
+            lastSignatureRef.current = sig
+            setCandles(data)
+          }
           setIsDemoData(false)
         } else {
-          // If exchange database has no historical candles for this pair, provide baseline candles
-          setCandles(generateMockCandles(marketId, 80))
-          setIsDemoData(true)
+          // Empty data fallback to demo data if API returns empty
+          try {
+            const mock = generateMockCandles(marketId, 100)
+            if (mock && mock.length > 0) {
+              setCandles(mock)
+              setIsDemoData(true)
+            } else {
+              setCandles([])
+              setIsDemoData(false)
+            }
+          } catch {
+            setCandles([])
+            setIsDemoData(false)
+          }
         }
       } catch (err) {
         if (!mounted) return
-        console.warn(`Failed to fetch candles for ${marketId}, using fallback candles`, err)
-        setCandles(generateMockCandles(marketId, 80))
-        setIsDemoData(true)
+        console.warn(`Failed to fetch candles for ${marketId}`, err)
+        try {
+          const mock = generateMockCandles(marketId, 100)
+          setCandles(mock)
+          setIsDemoData(true)
+        } catch {
+          setCandles([])
+          setIsDemoData(false)
+        }
       } finally {
-        if (mounted) setLoading(false)
+        if (mounted && isInitial) setLoading(false)
       }
     }
 
-    fetchCandles()
+    // Initial load
+    fetchCandles(true)
+
+    // Periodic synchronization / recovery mechanism (every 20s)
+    // Non-intrusive: does NOT trigger full-screen loading state
+    const interval = setInterval(() => {
+      fetchCandles(false)
+    }, 20000)
 
     return () => {
       mounted = false
+      clearInterval(interval)
     }
   }, [marketId, timeframe])
 

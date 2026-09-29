@@ -41,6 +41,7 @@ export interface MarketStats {
   marketsListed: number
   volume24h: string       // "$2.95B"  (pre-formatted)
   liveDataLabel: string   // "via WebSocket"
+  wsStatus?: 'online' | 'connecting' | 'offline' | 'live'
 }
 
 /** Root shape returned by useMarkets() / the mock */

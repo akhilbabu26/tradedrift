@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import { wsService, WsChannels } from '../api/ws'
 import type { OrderBookSnapshot, OrderBookLevel } from '../types/trade'
-import { getMockOrderBook } from '../data/tradeMock'
 import { toDecimal } from '../utils/decimal'
 
 function processLevels(rawLevels: [string, string][], reverse = false): OrderBookLevel[] {
@@ -9,8 +8,8 @@ function processLevels(rawLevels: [string, string][], reverse = false): OrderBoo
   const levels: { price: string; quantity: string; total: string; numTotal: number }[] = []
 
   const sorted = [...rawLevels].sort((a, b) => {
-    const pA = parseFloat(a[0])
-    const pB = parseFloat(b[0])
+    const pA = parseFloat(a[0]) || 0
+    const pB = parseFloat(b[0]) || 0
     return reverse ? pA - pB : pB - pA
   })
 
@@ -84,16 +83,8 @@ export function useTradeOrderBook(marketId: string) {
       }
     })
 
-    // Timeout fallback: if no WS event received within 1500ms, mark as demo fallback
-    const timer = setTimeout(() => {
-      if (mounted) {
-        setIsDemoData(true)
-      }
-    }, 1500)
-
     return () => {
       mounted = false
-      clearTimeout(timer)
       unsubscribe()
     }
   }, [marketId, precision])

@@ -21,6 +21,23 @@ const TABS: MarketTab[] = ['Watchlist', 'Gainers', 'Losers', 'Volume']
 export default function MarketPulse({ rows }: MarketPulseProps) {
   const [activeTab, setActiveTab] = useState<MarketTab>('Watchlist')
 
+  const sortedRows = [...rows].sort((a, b) => {
+    if (activeTab === 'Gainers') {
+      const aVal = (a.positive ? 1 : -1) * parseFloat(a.change24h || '0')
+      const bVal = (b.positive ? 1 : -1) * parseFloat(b.change24h || '0')
+      return bVal - aVal
+    }
+    if (activeTab === 'Losers') {
+      const aVal = (a.positive ? 1 : -1) * parseFloat(a.change24h || '0')
+      const bVal = (b.positive ? 1 : -1) * parseFloat(b.change24h || '0')
+      return aVal - bVal
+    }
+    if (activeTab === 'Volume') {
+      return (b.quoteVolume || 0) - (a.quoteVolume || 0)
+    }
+    return 0 // Watchlist: retain default market order
+  })
+
   return (
     <DashboardCard>
       {/* Header */}
@@ -69,7 +86,7 @@ export default function MarketPulse({ rows }: MarketPulseProps) {
             </tr>
           </thead>
           <tbody className="divide-y divide-[#1e2530]/40">
-            {rows.map((row) => {
+            {sortedRows.map((row) => {
               const changeColor = row.positive ? 'text-[#10b981]' : 'text-[#ef4444]'
               return (
                 <tr key={row.pair} className="hover:bg-white/[0.02] transition-colors">

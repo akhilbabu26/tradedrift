@@ -5,7 +5,6 @@ import { topupApi, type DailyUsage, type TopUpHistoryItem } from '../api/topup'
 import {
   MOCK_WALLET_BALANCES,
   MOCK_DAILY_USAGE,
-  MOCK_TOPUP_HISTORY,
   DEFAULT_ASSET_PRICES,
 } from '../data/walletMock'
 import { toDecimal } from '../utils/decimal'
@@ -214,12 +213,12 @@ export function useWalletData() {
       if (order && order.topupId) {
         const newTx: TopUpHistoryItem = {
           id: order.topupId,
-          inrAmount: order.inrAmount,
-          usdtAmount: String(order.usdtAmount || '0.00'),
-          status: (order.status || 'COMPLETED') as any,
-          date: new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
-          time: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }),
-          method: 'UPI / Simulator',
+          orderId: order.topupId,
+          amountInr: order.inrAmount,
+          usdtCredited: `+${order.usdtAmount || '0.00'} USDT`,
+          status: 'Completed',
+          paymentMode: 'UPI / Simulator',
+          date: `${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`,
         }
         setTopUpHistory((prev) => {
           const updated = [newTx, ...prev]

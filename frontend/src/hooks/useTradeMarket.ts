@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { marketApi, type Market, type Ticker24h } from '../api/market'
 import { wsService, WsChannels } from '../api/ws'
-import { MOCK_TRADE_MARKETS, getMockTicker } from '../data/tradeMock'
 import { getMarketMetadata } from '../utils/marketMetadata'
 import type { SelectedMarket } from '../types/trade'
 
@@ -21,13 +20,10 @@ export function useTradeMarket(initialMarketId = 'BTC-USDT') {
         if (!mounted) return
         if (list && list.length > 0) {
           setMarkets(list)
-        } else {
-          setMarkets(MOCK_TRADE_MARKETS)
         }
       } catch (err) {
         if (!mounted) return
-        console.warn('Failed to fetch markets, using mock markets', err)
-        setMarkets(MOCK_TRADE_MARKETS)
+        console.warn('Failed to fetch markets', err)
       } finally {
         if (mounted) setLoading(false)
       }
@@ -50,15 +46,10 @@ export function useTradeMarket(initialMarketId = 'BTC-USDT') {
         if (data && data.last_price) {
           setTicker(data)
           setIsDemoData(false)
-        } else {
-          setTicker(getMockTicker(selectedMarketId))
-          setIsDemoData(true)
         }
       } catch (err) {
         if (!mounted) return
-        console.warn(`Failed to fetch ticker for ${selectedMarketId}, using mock ticker`, err)
-        setTicker(getMockTicker(selectedMarketId))
-        setIsDemoData(true)
+        console.warn(`Failed to fetch ticker for ${selectedMarketId}`, err)
       }
     }
 
@@ -69,16 +60,24 @@ export function useTradeMarket(initialMarketId = 'BTC-USDT') {
     const unsubscribe = wsService.subscribe(stream, (liveData: any) => {
       if (!mounted) return
       if (liveData) {
-        setTicker((prev) => ({
-          market_id: selectedMarketId,
-          last_price: liveData.lastPrice ?? liveData.last_price ?? liveData.price ?? prev?.last_price ?? '0',
-          high_24h: liveData.high24h ?? liveData.high_24h ?? liveData.high ?? prev?.high_24h ?? '0',
-          low_24h: liveData.low24h ?? liveData.low_24h ?? liveData.low ?? prev?.low_24h ?? '0',
-          volume_24h: liveData.volume24h ?? liveData.volume_24h ?? liveData.volume ?? prev?.volume_24h ?? '0',
-          quote_volume_24h: liveData.quoteVolume24h ?? liveData.quote_volume_24h ?? liveData.quote_volume ?? prev?.quote_volume_24h ?? '0',
-          price_change_24h_percent:
-            liveData.priceChange24hPercent ?? liveData.price_change_24h_percent ?? liveData.change_24h ?? prev?.price_change_24h_percent ?? '0',
-        }))
+        setTicker((prev) => {
+          const lastPrice = liveData.lastPrice ?? liveData.last_price ?? liveData.price
+          const high = liveData.high24h ?? liveData.high_24h ?? liveData.high
+          const low = liveData.low24h ?? liveData.low_24h ?? liveData.low
+          const vol = liveData.volume24h ?? liveData.volume_24h ?? liveData.volume
+          const quoteVol = liveData.quoteVolume24h ?? liveData.quote_volume_24h ?? liveData.quote_volume
+          const change = liveData.priceChange24hPercent ?? liveData.price_change_24h_percent ?? liveData.change_24h
+
+          return {
+            market_id: selectedMarketId,
+            last_price: lastPrice !== undefined && lastPrice !== null ? String(lastPrice) : (prev?.last_price ?? '0'),
+            high_24h: high !== undefined && high !== null ? String(high) : (prev?.high_24h ?? '0'),
+            low_24h: low !== undefined && low !== null ? String(low) : (prev?.low_24h ?? '0'),
+            volume_24h: vol !== undefined && vol !== null ? String(vol) : (prev?.volume_24h ?? '0'),
+            quote_volume_24h: quoteVol !== undefined && quoteVol !== null ? String(quoteVol) : (prev?.quote_volume_24h ?? '0'),
+            price_change_24h_percent: change !== undefined && change !== null ? String(change) : (prev?.price_change_24h_percent ?? '0'),
+          }
+        })
         setIsDemoData(false)
       }
     })

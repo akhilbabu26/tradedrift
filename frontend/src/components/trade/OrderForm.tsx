@@ -165,12 +165,19 @@ export default function OrderForm({
     if (err) { setError(err); return }
     setError(null)
 
+    // Price logic:
+    //   LIMIT  orders → user-entered price (always required)
+    //   MARKET BUY    → lastPrice as the reservation cap (backend requires
+    //                   price × quantity to reserve USDT from the wallet)
+    //   MARKET SELL   → no price (backend only needs the quantity to reserve base)
     const req: CreateOrderRequest = {
       market_id:  market.id,
       side,
       order_type: orderType,
       quantity:   amountNum.toFixed(8),
-      ...(isLimit && { price: priceNum.toFixed(2) }),
+      ...(isLimit
+        ? { price: priceNum.toFixed(2) }
+        : (isBuy && lastPrice ? { price: toDecimal(lastPrice).toFixed(2) } : {})),
     }
 
     const ok = await onSubmit(req)

@@ -161,7 +161,7 @@ export function useProfileData() {
         id: 'account_status',
         label: 'Account Status',
         value: 'Active Trader',
-        subValue: `Role: ${user?.role || 'TRADER'}`,
+        subValue: `Role: ${(user as any)?.role || 'TRADER'}`,
         badge: 'Verified',
       },
       {

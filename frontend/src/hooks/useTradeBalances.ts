@@ -6,6 +6,8 @@ import { useAuthStore } from '../store/authStore'
 export function useTradeBalances() {
   const [balances, setBalances] = useState<Balance[]>([])
   const [loading, setLoading] = useState(true)
+  const user = useAuthStore((s) => s.user)
+  const userId = user?.userId
 
   const fetchBalances = useCallback(async () => {
     try {
@@ -13,13 +15,7 @@ export function useTradeBalances() {
       setBalances(data || [])
     } catch (err) {
       console.warn('Failed to fetch wallet balances', err)
-      // Provide fallback demo balances if user is offline/demo
-      setBalances([
-        { asset: 'USDT', availableBalance: '25420.50', reservedBalance: '1500.00' },
-        { asset: 'BTC', availableBalance: '0.8450', reservedBalance: '0.0500' },
-        { asset: 'ETH', availableBalance: '4.2500', reservedBalance: '0.0000' },
-        { asset: 'SOL', availableBalance: '18.4000', reservedBalance: '0.0000' },
-      ])
+      setBalances([])
     } finally {
       setLoading(false)
     }
@@ -28,18 +24,17 @@ export function useTradeBalances() {
   useEffect(() => {
     fetchBalances()
 
+    if (!userId) return
+
     // Listen to user notifications stream to auto-refresh balances on fills
-    const userId = useAuthStore.getState().user?.userId
-    const unsub = userId
-      ? wsService.subscribe(WsChannels.userNotifications(userId), () => {
-          fetchBalances()
-        })
-      : () => {}
+    const unsub = wsService.subscribe(WsChannels.userNotifications(userId), () => {
+      fetchBalances()
+    })
 
     return () => {
       unsub()
     }
-  }, [fetchBalances])
+  }, [fetchBalances, userId])
 
   const getBalance = useCallback(
     (asset: string): Balance => {

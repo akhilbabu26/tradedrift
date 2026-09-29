@@ -22,11 +22,13 @@ export interface MarketRow {
   iconBg: string          // Tailwind classes for icon background
   iconLabel: string       // "₿"
   sparklinePoints: number[] // normalized 0–1 values for sparkline
+  volume24h?: string      // "124.5M"
+  quoteVolume?: number    // numeric for sorting
 }
 
 export interface ActiveOrder {
   id: string
-  type: 'Limit Buy' | 'Limit Sell'
+  type: 'Limit Buy' | 'Limit Sell' | 'Market Buy' | 'Market Sell' | string
   side: 'BUY' | 'SELL'
   pair: string            // "BTC/USDT"
   price: string           // "64200.00"

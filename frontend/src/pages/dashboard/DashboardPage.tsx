@@ -20,7 +20,7 @@ import GlobalFooter from '../../components/layout/GlobalFooter'
  *   - Chart / System status: static demo data (no backend endpoint)
  */
 export default function DashboardPage() {
-  const { data, loading, error, isDemoData, refetch } = useDashboardData()
+  const { data, loading, error, isDemoData, refetch, cancelOrder } = useDashboardData()
 
   return (
     <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa] flex flex-col justify-between">
@@ -84,7 +84,7 @@ export default function DashboardPage() {
         <MarketPulse rows={data.marketRows} />
 
         {/* Right: Live Operations */}
-        <LiveOperations orders={data.activeOrders} />
+        <LiveOperations orders={data.activeOrders} onCancel={cancelOrder} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">

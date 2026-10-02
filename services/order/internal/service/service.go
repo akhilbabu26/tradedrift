@@ -139,7 +139,7 @@ func (s *orderService) CreateOrder(ctx context.Context, p *CreateOrderParams) (*
 
 	// 4.5. Pre-Trade Price Band & Slippage Protection
 	if s.priceFilter != nil && priceDec.GreaterThan(decimal.Zero) {
-		if err := s.priceFilter.ValidatePriceBand(ctx, p.MarketID, p.Side, p.OrderType, priceDec); err != nil {
+		if err := s.priceFilter.ValidatePriceBand(ctx, p.MarketID, p.Side, p.OrderType, priceDec, p.UserID); err != nil {
 			return nil, err
 		}
 	}

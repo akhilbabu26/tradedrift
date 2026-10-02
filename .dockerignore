@@ -8,3 +8,4 @@ tmp/
 bin/
 frontend/node_modules/
 frontend/dist/
+*.zip

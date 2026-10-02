@@ -2,23 +2,26 @@
 
 ## Purpose
 
-Provides the **in-memory order tracker** and **diff algorithm** that are at the heart of the LE's reconciliation loop. The tracker maintains the LE's working picture of all MM orders; the diff computes the minimal set of actions to converge actual state to desired state.
+Provides the **in-memory order tracker** and **diff algorithm** that form the operational core of the LE's reconciliation loop. The tracker maintains the LE's working picture of all MM orders; the diff computes the minimal set of actions to converge actual state to desired state.
 
 ## Problem It Solves
 
-The LE needs to maintain exactly N bid levels and M ask levels in the ME order book at all times. The challenge is that order state is spread across three systems:
+The LE needs to maintain exactly N bid levels and M ask levels in the ME order book at all times across dynamic volatility zones (LOW, MID, HIGH). The challenge is that order state is spread across three asynchronous systems:
 
-- **Order Service (authoritative)**: knows if an order is OPEN, FILLED, or CANCELLED.
-- **Matching Engine**: knows if an order is in the live order book.
-- **LE tracker (working)**: the LE's own in-flight view, which may be ahead of OS/ME due to Kafka lag.
+- **Order Service (authoritative ledger)**: knows if an order is OPEN, FILLED, or CANCELLED in PostgreSQL.
+- **Matching Engine (execution core)**: knows if an order is actively resting in the in-memory book.
+- **LE Tracker (in-memory state coordinator)**: the LE's own low-latency view, tracking zones, reference versions, queued corrections, and capital commitments.
 
-Without a local tracker, every reconcile cycle would need to make gRPC calls to determine what exists. Without a diff algorithm, every reconcile would cancel and recreate everything — producing unnecessary Kafka traffic and gaps in liquidity.
+Without a local tracker, every reconcile cycle would require heavy gRPC queries. Without a diff algorithm, every cycle would blindly cancel and replace everything — causing liquidity gaps, high latency, and Kafka command storms.
 
 ## How It Solves It
 
-The tracker stores every MM order by its stable `LevelID` (e.g., `MM-BTC-USDT-ASK-01`). Each level has a lifecycle status and a monotonically increasing `Generation` counter that survives restarts via the `client_order_id` (`MM-BTC-USDT-ASK-01-G003`).
+The tracker stores every MM order by its stable `LevelID` (e.g., `MM-BTC-USDT-ASK-01`). Each level has a lifecycle status, mononotically increasing `Generation` counter (`MM-BTC-USDT-ASK-01-G003`), zone classification (`LOW`, `MID`, `HIGH`), and `RefVersion` stamp.
 
-`Diff()` does a two-pass set comparison: (1) desired vs known → CREATE/CORRECT, (2) RESTING vs desired → CANCEL. Orders in PENDING, CANCELLING, or STALE are excluded from all actions — left to resolve via timeout handlers.
+`Diff()` performs a two-pass set comparison:
+1. **Desired vs Known**: Creates missing slots (`DiffCreate`) and schedules price/quantity corrections (`DiffCorrect`).
+2. **Known vs Desired**: Cancels extraneous resting slots (`DiffCancel`).
+3. **Price Collision Protection**: Locks prices belonging to CANCELLING or QueuedCorrection slots in a uniqueness set so new CREATEs never collide with orders pending removal.
 
 ---
 
@@ -29,7 +32,7 @@ The tracker stores every MM order by its stable `LevelID` (e.g., `MM-BTC-USDT-AS
                  │       Diff() produces DiffCreate            │
                  ▼                                             │
             PENDING ←── SetPending()                          │
-                 │  (Kafka published, OS registered)           │
+                 │  (stores Zone, RefVersion, KafkaPublished)  │
                  │                                             │
     ┌────────────┤ CheckPendingTimeouts()                      │
     │            │  OS confirms OPEN                           │
@@ -42,11 +45,11 @@ The tracker stores every MM order by its stable `LevelID` (e.g., `MM-BTC-USDT-AS
     │         RESTING ←── SetResting()                        │
     │            │        (RemainingQty synced from snapshot) │
     │       ┌────┴─────────────────┐                          │
-    │  DiffCancel             DiffCorrect                      │
+    │  DiffCancel             DiffCorrect / Reprice / Expiry   │
     │       │                      │                          │
     │       ▼                      ▼                          │
     │   CANCELLING ←── SetCancelling()                        │
-    │       │          (QueuedCorrection stored)              │
+    │       │          (QueuedCorrection stored with new price)│
     │       │                                                  │
     │       │ CheckCancellingTimeouts()                        │
     │       │  OS confirms CANCELLED                           │
@@ -69,11 +72,12 @@ The tracker stores every MM order by its stable `LevelID` (e.g., `MM-BTC-USDT-AS
 
 | Symbol | Kind | Purpose |
 |:---|:---|:---|
-| `Status` | `type string` | Lifecycle states: `PENDING`, `OS_REGISTERED`, `RESTING`, `CANCELLING`, `STALE` |
-| `LiveOrder` | `struct` | One tracker entry: level identity, order details (market/side/price/qty), status, and timing fields. |
+| `Status` | `type string` | Order lifecycle states: `PENDING`, `OS_REGISTERED`, `RESTING`, `CANCELLING`, `STALE`. |
+| `LiveOrder` | `struct` | Represents one active order in the tracker: `LevelID`, `OrderID`, `ClientOrderID`, `Generation`, `Price`, `OriginalQty`, `RemainingQty`, `FilledQty`, `Status`, `Zone` ("LOW"|"MID"|"HIGH"), `RefVersion`, `QueuedCorrection`, and timestamps. |
 | `IncrementCancelRetry()` | `func` | Increments cancel retry counter and resets timer on `LiveOrder`. |
-| `OSOrder` | `struct` | Minimal order representation received from the Order Service (with LevelID and Generation extracted). |
-| `ClientOrderID(levelID, gen)` | `func` | Constructs `"MM-BTC-USDT-ASK-01-G003"`. Idempotency key for OS and ME. |
+| `OSOrder` | `struct` | Order representation received from the Order Service with parsed `LevelID` and `Generation`. |
+| `ClientOrderID(levelID, gen)` | `func` | Constructs stable idempotency key (e.g. `"MM-BTC-USDT-ASK-01-G003"`). |
+| `Diff(desired, tracker, marketID, cfg)` | `func` | Two-pass comparison between desired `[]PriceLevel` and tracked orders. Protects locked/in-flight prices in the uniqueness set. |
 
 ---
 
@@ -81,52 +85,22 @@ The tracker stores every MM order by its stable `LevelID` (e.g., `MM-BTC-USDT-AS
 
 | Symbol | Kind | Purpose |
 |:---|:---|:---|
-| `Tracker` | `struct` | Holds `orders`, `generations`, and `lastSync` maps. |
-| `NewTracker()` | `func` | Creates an empty tracker. |
-| `SetPending(...)` | `func` | Adds a new entry in PENDING state after OS registration and Kafka publish. |
-| `SetKafkaPublished(levelID, bool)` | `func` | Marks Kafka dispatch confirmed. If `false`, `CheckPendingTimeouts` retries the publish. |
-| `SetOSRegistered(levelID, orderID, ...)` | `func` | PENDING → OS_REGISTERED. OS has the order; ME confirmation window starts. |
-| `SetResting(levelID, orderID, ...)` | `func` | Promotes order to RESTING and syncs RemainingQty directly from ME snapshot (INV-MM-08). |
-| `SetCancelling(levelID)` | `func` | RESTING → CANCELLING. Cancel command published to Kafka. |
-| `QueueCorrection(levelID, desired)` | `func` | Stores the replacement level on a CANCELLING order. Applied once cancel is confirmed. |
-| `SetStale(levelID)` | `func` | CANCELLING → STALE. Cancel retry limit exceeded; frozen until OS resync. |
-| `Remove(levelID)` | `func` | Deletes the tracker entry. Generation counter is preserved for monotonicity. |
-| `NextGeneration(levelID)` | `func` | Increments and returns the generation counter. Persists across `Remove()`. |
-| `CurrentGeneration(levelID)` | `func` | Returns the current generation without incrementing. |
-| `SetMaxGeneration(levelID, gen)` | `func` | Updates generation counter to highest observed generation during recovery (INV-MM-07). |
-| `Get(levelID)` | `func` | Returns the `LiveOrder` for a level, or nil. |
-| `All(marketID)` | `func` | Returns all tracked orders for one market. Used by Diff and timeout handlers. |
-| `AllMarkets()` | `func` | Returns all tracked orders across all markets. |
-| `ActiveCount(marketID, side)` | `func` | Count of RESTING + OS_REGISTERED orders for a side. |
-| `RestingCount(marketID, side)` | `func` | Count of strictly RESTING orders. Used exclusively by `/readyz`. |
-| `PendingCount(marketID)` | `func` | Count of PENDING + OS_REGISTERED orders. |
-| `StaleCount(marketID)` | `func` | Count of STALE orders. |
-| `CommittedBase(marketID)` | `func` | Sum of `RemainingQty` for active SELL orders. Used by `inventory.EffectiveAvailableBase`. |
-| `CommittedQuote(marketID)` | `func` | Sum of `RemainingQty × Price` for active BUY orders. Used by `inventory.EffectiveAvailableQuote`. |
-| `RecordSync(marketID)` | `func` | Records a successful `ListMMOrders` sync timestamp. |
-| `LastSuccessfulSync(marketID)` | `func` | Returns the last sync time. Stale sync blocks new order creation. |
-| `SyncFromOrders(marketID, orders)` | `func` | Populates tracker from OS response. Deduplicates by LevelID (highest generation wins). New entries enter OS_REGISTERED. Returns `(added, duplicates)`. |
-
----
-
-### [`diff.go`](./diff.go)
-
-| Symbol | Kind | Purpose |
-|:---|:---|:---|
-| `DiffAction` | `type int` | `DiffCreate`, `DiffCancel`, `DiffCorrect` |
-| `DiffEntry` | `struct` | One reconciliation action: action, LevelID, desired level, existing COID/OID. |
-| `Diff(desired, tracker, marketID, cfg)` | `func` | **Two-pass diff.** Pass 1: desired vs known → CREATE (missing) or CORRECT (wrong price or qty < MinOrderSize). Pass 2: RESTING not in desired → CANCEL. PENDING/CANCELLING/STALE block CREATE but are excluded from CANCEL/CORRECT. Returns the minimal `[]DiffEntry`. |
-
-#### Diff Decision Matrix
-
-```
-                 │  In desired?  │  Not in desired?
-─────────────────┼───────────────┼─────────────────
-PENDING          │  skip         │  skip
-OS_REGISTERED    │  skip         │  skip
-RESTING          │  check price  │  CANCEL
-                 │  + qty → CORRECT
-CANCELLING       │  skip         │  skip
-STALE            │  skip         │  skip
-Not tracked      │  CREATE       │  —
-```
+| `Tracker` | `struct` | Thread-safe in-memory store for orders, generations, and sync timestamps. Protected by `sync.RWMutex`. |
+| `NewTracker()` | `func` | Creates an initialized, empty tracker. |
+| `SetPending(levelID, orderID, coid, gen, level)` | `func` | Registers a newly created order in PENDING state, copying `Price`, `Quantity`, `Zone`, and `RefVersion` from desired level. |
+| `SetKafkaPublished(levelID, bool)` | `func` | Marks Kafka publication confirmed. Retried by `CheckPendingTimeouts` if false. |
+| `SetOSRegistered(levelID, orderID, ...)` | `func` | Transitions order to OS_REGISTERED upon Order Service confirmation. |
+| `SetResting(levelID, orderID, orig, rem)` | `func` | Promotes order to RESTING and updates `RemainingQty` from the ME snapshot (INV-MM-08). |
+| `SetCancelling(levelID)` | `func` | Transitions order to CANCELLING when a cancel command is emitted. |
+| `QueueCorrection(levelID, desired)` | `func` | Attaches a desired replacement `PriceLevel` to a CANCELLING order. |
+| `SetStale(levelID)` | `func` | Marks order STALE when cancel retries exceed limit; halts further automated mutations until full resync. |
+| `Remove(levelID)` | `func` | Removes order from tracking. Preserves generation counter to guarantee monotonicity. |
+| `NextGeneration(levelID)` | `func` | Increments and returns the next generation number for a level slot. |
+| `CurrentGeneration(levelID)` | `func` | Reads the current generation without incrementing. |
+| `SetMaxGeneration(levelID, gen)` | `func` | Updates generation counter to highest observed historical generation during recovery (INV-MM-07). |
+| `CommittedBase(marketID)` | `func` | Calculates the total base currency quantity currently committed in active ask orders. Used for ask exposure cap checks. |
+| `CommittedQuote(marketID)` | `func` | Calculates the total quote currency value (`Price × RemainingQty`) committed in active bid orders. Used for bid exposure cap checks. |
+| `Get(levelID)` | `func` | Returns pointer to tracked `LiveOrder`, or nil. |
+| `All(marketID)` | `func` | Returns snapshot slice of all tracked orders for a market. |
+| `AllMarkets()` | `func` | Returns all tracked orders across all configured markets. |
+| `ActiveCount(marketID, side)` | `func` | Returns count of active RESTING and OS_REGISTERED orders on a side. |

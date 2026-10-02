@@ -214,3 +214,12 @@ func (e *Engine) handleCancellingCheck(ctx context.Context) {
 		e.reconciler.CheckCancellingTimeouts(ctx, mc.MarketID)
 	}
 }
+
+func (e *Engine) handleExpiryCheck(ctx context.Context) {
+	for _, mc := range e.cfg.Markets {
+		if !e.marketPaused[mc.MarketID] {
+			e.reconciler.CheckExpiredOrders(ctx, mc.MarketID)
+		}
+	}
+}
+

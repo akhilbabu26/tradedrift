@@ -22,7 +22,10 @@ This document provides a detailed breakdown of the 17 architectural, distributed
 15. [Lock-Free Concurrent State Access](#15-lock-free-concurrent-state-access)
 16. [Inventory Projection & Available Balance Management](#16-inventory-projection--available-balance-management)
 17. [Cold-Start Liquidity Provisioning](#17-cold-start-liquidity-provisioning)
-18. [Top 5 Architectural Pillars](#top-5-architectural-pillars)
+18. [Zoned Ladder Allocation & Anti-Threshing Dynamic Repricing](#18-zoned-ladder-allocation--anti-threshing-dynamic-repricing)
+19. [Slot-Level Order Lifetime Expiry & Authoritative Reference Tracking](#19-slot-level-order-lifetime-expiry--authoritative-reference-tracking)
+20. [Capital Exposure Budget Enforcement](#20-capital-exposure-budget-enforcement)
+21. [Top 5 Architectural Pillars](#top-5-architectural-pillars)
 
 ---
 
@@ -308,7 +311,55 @@ A newly initialized exchange starts with zero users, zero bids, and zero asks. W
 
 ---
 
-## Top 5 Architectural Pillars
+## 18. Zoned Ladder Allocation & Anti-Threshing Dynamic Repricing
+
+### The Challenge
+With traditional uniform ladders, reference price fluctuations trigger high volumes of order cancellations and creations simultaneously across all levels. During market volatility or inventory imbalance, this causes:
+- Dangerous order cancellation storms in Kafka and the Matching Engine.
+- Book thinning at the inside spread if levels are dropped uniformly.
+- Jitter collisions where bids cross asks or adjacent levels collapse onto identical tick increments.
+
+### How We Fixed It
+1. **Dynamic 3-Zone Hierarchy (`pricing.GenerateZonedDesired`):** Decomposes the book into `LOW` (tight inside spread), `MID` (depth buffer), and `HIGH` (deep tail liquidity) zones.
+2. **LOW-First Skew Allocation:** When inventory skew reduces available levels (e.g. down to 6 or 3 levels), slots are allocated to `LOW` zone first, ensuring tight inside spreads are strictly preserved.
+3. **Controlled Multi-Cycle Rebase:**
+   - Moves $< 10\text{ bps}$ (`SmallBps`) are absorbed by the spread without touching resting orders.
+   - Moves between $10$ and $100\text{ bps}$ trigger selective single-zone repricing.
+   - Moves $\ge 100\text{ bps}$ (`LargeBps`) activate persistent multi-cycle rebase, cancelling and repositioning orders in batches of `MaxBatch` (4) from outside-in (`HIGH` $\to$ `MID` $\to$ `LOW`).
+4. **Deterministic RNG Jitter & Boundary Guards:** Deterministic pseudorandom noise prevents predictable grid sniping while monotonic boundary assertions guarantee bids stay below reference and asks stay above.
+
+---
+
+## 19. Slot-Level Order Lifetime Expiry & Authoritative Reference Tracking
+
+### The Challenge
+Orders left resting in the book for extended periods become vulnerable to stale queue positions or reference drift if price variations were below the repricing threshold. Completely flushing the book creates temporary liquidity voids and spikes Kafka load.
+
+### How We Fixed It
+1. **Slot-Level Expiry (`CheckExpiredOrders`):** Inspects resting orders against `OrderLifetime` (default: 30 minutes).
+2. **Authoritative Lineage (`currentReference`):** Pulls the live external reference price and monotonically increasing `RefVersion` from `platform/refprice`.
+3. **Cancel-Replace Queue:** Expired orders are cancelled up to `MaxBatch` per cycle with `tracker.QueueCorrection()`, seamlessly anchoring replacement orders to the newest `RefVersion` without book dropouts.
+4. **STALE & PAUSED Fail-Safes:** If external reference feeds disconnect or stall (`FreshnessStale`), existing liquidity is preserved while blocking new creations; if the feed is `FreshnessPaused`, mutations halt entirely.
+
+---
+
+## 20. Capital Exposure Budget Enforcement
+
+### The Challenge
+High trading volatility or rapid one-sided order fills can cause market maker capital commitments to spike uncontrollably. If quoting is unbounded, market maker balances could be entirely locked in open resting bids or asks across multiple pairs.
+
+### How We Fixed It
+1. **Exposure Budget Caps (`MarketConfig`):**
+   - `MaxBidExposureUSDT`: Maximum cumulative quote capital committed in active buy orders.
+   - `MaxAskExposureBase`: Maximum cumulative base inventory committed in active sell orders.
+2. **Dispatch-Time Enforcement (`applyCreate`):** Before sending any order creation to the Order Service and Kafka:
+   $$\text{Committed Quote} + (\text{Qty} \times \text{Price}) \le \text{MaxBidExposureUSDT}$$
+   $$\text{Committed Base} + \text{Qty} \le \text{MaxAskExposureBase}$$
+3. **Graceful Level Skipping:** If adding a level would breach the budget cap, the creation is safely skipped without stalling or corrupting the remainder of the ladder.
+
+---
+
+## 21. Top 5 Architectural Pillars
 
 When explaining this architecture in system design reviews or technical discussions, highlight these five core pillars:
 

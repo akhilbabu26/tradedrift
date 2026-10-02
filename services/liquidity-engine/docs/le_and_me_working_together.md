@@ -96,10 +96,12 @@ $$\text{Order Service DB} \iff \text{Matching Engine} \iff \text{In-Flight Local
 ```
 
 ### Core Responsibilities of the Liquidity Engine:
-1. **Dynamic Price Laddering:** Computes geometric spreads around market reference prices (`pricing.GenerateLadder`) to supply continuous two-sided liquidity (72 total orders across BTC, ETH, and SOL).
+1. **Dynamic Zoned Price Laddering:** Computes multi-tier geometric spreads across LOW, MID, and HIGH volatility zones (`pricing.GenerateZonedDesired`) anchored to live reference prices from `platform/refprice` (up to 72 total orders across BTC, ETH, and SOL).
 2. **Crash-Safe 3-Step Creation:** Registers orders in the Order Service before publishing to Kafka. If the engine crashes midway, the order is recovered dynamically on restart via `ListMMOrders()`.
 3. **Monotonic Generation Tracking:** Uses deterministic client order IDs (`MM-BTC-USDT-ASK-01-G007`) so price updates increment to `G008` without resetting to `G001`.
-4. **Inventory Projection & Skew:** Projects available capital after deducting in-flight committed orders, automatically trimming ladder depth when inventory drops into `Low` or `Critical` tiers.
+4. **Inventory Projection & LOW-First Skew:** Projects available capital after deducting in-flight committed orders, automatically trimming ladder depth when inventory drops into `Low` or `Critical` tiers using a **LOW-first priority policy** to preserve tight inside-spread liquidity.
+5. **Multi-Cycle Controlled Rebase:** Smoothly migrates resting orders across cycles in prioritized batches (`HIGH → MID → LOW`) when large market movements occur, preventing cancellation bursts.
+6. **Capital Exposure Caps:** Enforces strict per-market ceilings (`MaxBidExposureUSDT`, `MaxAskExposureBase`) on committed inventory, preventing over-allocation of capital under volatile conditions.
 
 ---
 

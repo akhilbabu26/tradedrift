@@ -83,7 +83,14 @@ func main() {
 	pingCancel()
 	appLogger.Info("Connected to Redis successfully", zap.String("addr", cfg.RedisAddr))
 
-	priceFilter := service.NewPriceFilter(redisClient, cfg.MaxPriceDeviation, appLogger)
+	priceFilter := service.NewDualPriceFilter(
+		redisClient,
+		cfg.MaxPriceDeviation,
+		cfg.MMUserID,
+		cfg.MMReferenceMaxDeviation,
+		cfg.RefPriceAnchorMaxAge,
+		appLogger,
+	)
 	marketGuard := service.NewRedisMarketGuard(redisClient)
 
 	orderSvc := service.NewService(orderRepo, walletClient, priceFilter, marketGuard, appLogger)

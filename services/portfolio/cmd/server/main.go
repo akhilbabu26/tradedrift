@@ -23,6 +23,7 @@ import (
 	portfolioconfig "tradedrift/services/portfolio/internal/config"
 	portfoliohandler "tradedrift/services/portfolio/internal/handler"
 	portfoliokafka "tradedrift/services/portfolio/internal/kafka"
+	portfoliorepository "tradedrift/services/portfolio/internal/repository"
 	portfoliopg "tradedrift/services/portfolio/internal/repository/postgres"
 	portfoliosvc "tradedrift/services/portfolio/internal/service"
 )
@@ -83,6 +84,37 @@ func main() {
 	repo := portfoliopg.New(dbPool)
 	svc := portfoliosvc.New(repo, walletClient, marketClient)
 	handler := portfoliohandler.New(svc, appLogger)
+
+	// ── 7b. Apply System Bootstrap Opening Positions ─────────────────────────
+	// Ensures system accounts (e.g. CT-001) whose wallets were seeded directly
+	// at bootstrap have matching Portfolio holdings before the Kafka consumer starts.
+	// Quantities are read from portfolio_bootstrap_positions (migration SQL) —
+	// this code only identifies which records to apply, not what the values are.
+	// Safe on every restart: applied_at idempotency guard makes subsequent calls no-ops.
+	bootstrapTargets := []portfoliorepository.BootstrapInput{
+		{UserID: "00000000-0000-0000-0000-000000000002", AssetCode: "BTC", Source: "SYSTEM_BOOTSTRAP"},
+		{UserID: "00000000-0000-0000-0000-000000000002", AssetCode: "ETH", Source: "SYSTEM_BOOTSTRAP"},
+		{UserID: "00000000-0000-0000-0000-000000000002", AssetCode: "SOL", Source: "SYSTEM_BOOTSTRAP"},
+	}
+	for _, target := range bootstrapTargets {
+		applied, err := repo.InitializePositionFromBootstrap(ctx, target)
+		if err != nil {
+			appLogger.Fatal("portfolio bootstrap initialization failed",
+				zap.String("user_id", target.UserID),
+				zap.String("asset", target.AssetCode),
+				zap.String("source", target.Source),
+				zap.Error(err))
+		}
+		if applied {
+			appLogger.Info("portfolio bootstrap position applied",
+				zap.String("user_id", target.UserID),
+				zap.String("asset", target.AssetCode))
+		} else {
+			appLogger.Info("portfolio bootstrap position already applied; skipping",
+				zap.String("user_id", target.UserID),
+				zap.String("asset", target.AssetCode))
+		}
+	}
 
 	var wg sync.WaitGroup
 

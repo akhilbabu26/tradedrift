@@ -33,6 +33,9 @@ func (m *mockRepo) FetchPendingOutbox(ctx context.Context, limit int) ([]reposit
 func (m *mockRepo) MarkOutboxPublished(ctx context.Context, ids []string) error {
 	return nil
 }
+func (m *mockRepo) InitializePositionFromBootstrap(ctx context.Context, in repository.BootstrapInput) (bool, error) {
+	return false, nil
+}
 
 // mockWalletClient implements walletv1.WalletServiceClient for unit tests
 type mockWalletClient struct {

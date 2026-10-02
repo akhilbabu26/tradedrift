@@ -73,6 +73,7 @@ const (
 	evCancellingCheck
 	evResyncTick
 	evTargetedReconcile
+	evExpiryCheck
 )
 
 type loopEvent struct {
@@ -231,11 +232,13 @@ func (e *Engine) Run(ctx context.Context) error {
 		resyncInterval = 45 * time.Second
 	}
 	resyncTicker := time.NewTicker(resyncInterval)
+	expiryTicker := time.NewTicker(10 * time.Second)
 	defer reconcileTicker.Stop()
 	defer walletTicker.Stop()
 	defer pendingTicker.Stop()
 	defer cancellingTicker.Stop()
 	defer resyncTicker.Stop()
+	defer expiryTicker.Stop()
 
 	// Start ticker pump goroutines (post events to channel, no state mutation)
 	go e.pumpTicker(ctx, reconcileTicker.C, evReconcileTick)
@@ -243,6 +246,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	go e.pumpTicker(ctx, pendingTicker.C, evPendingCheck)
 	go e.pumpTicker(ctx, cancellingTicker.C, evCancellingCheck)
 	go e.pumpTicker(ctx, resyncTicker.C, evResyncTick)
+	go e.pumpTicker(ctx, expiryTicker.C, evExpiryCheck)
 
 	e.setState(StateRunning)
 
@@ -301,6 +305,11 @@ func (e *Engine) Run(ctx context.Context) error {
 						e.logger.Warn("periodic full resync failed", zap.Error(err))
 					}
 					e.publishSnapshot()
+				}
+
+			case evExpiryCheck:
+				if e.state == StateRunning || e.state == StateDegraded {
+					e.handleExpiryCheck(ctx)
 				}
 			}
 		}

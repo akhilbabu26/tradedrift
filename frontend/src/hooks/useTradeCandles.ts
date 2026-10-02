@@ -33,20 +33,8 @@ export function useTradeCandles(marketId: string, timeframe: Timeframe = '1h') {
           }
           setIsDemoData(false)
         } else {
-          // Empty data fallback to demo data if API returns empty
-          try {
-            const mock = generateMockCandles(marketId, 100)
-            if (mock && mock.length > 0) {
-              setCandles(mock)
-              setIsDemoData(true)
-            } else {
-              setCandles([])
-              setIsDemoData(false)
-            }
-          } catch {
-            setCandles([])
-            setIsDemoData(false)
-          }
+          setCandles([])
+          setIsDemoData(false)
         }
       } catch (err) {
         if (!mounted) return

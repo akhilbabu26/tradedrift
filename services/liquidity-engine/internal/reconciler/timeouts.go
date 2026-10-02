@@ -4,15 +4,24 @@ import (
 	"context"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 
 	"tradedrift/services/liquidity-engine/internal/config"
-	"tradedrift/services/liquidity-engine/internal/meclient"
 	"tradedrift/services/liquidity-engine/internal/order"
 	"tradedrift/services/liquidity-engine/internal/orderservice"
 )
 
 // CheckPendingTimeouts examines all PENDING orders across all markets.
+//
+// ARCHITECTURAL INVARIANT (LE-13):
+// This method deliberately does NOT check isMarketPaused(marketID).
+// Even when a market is in PAUSED state (e.g. due to a reference price provider outage),
+// any order already registered as PENDING represents an existing committed command that
+// was already created in Order Service. Retrying its Kafka publish is strictly idempotent
+// and completes an already-committed lifecycle operation; it does NOT create new liquidity
+// bands or expand exposure. Permitting these retries during PAUSED preserves state
+// consistency and prevents dangling PENDING orders from being abandoned.
 func (r *Reconciler) CheckPendingTimeouts(ctx context.Context, marketID string) (consecutiveTimeouts int) {
 	mc := r.cfg.ForMarket(marketID)
 	if mc == nil {
@@ -112,15 +121,13 @@ func (r *Reconciler) CheckPendingTimeouts(ctx context.Context, marketID string) 
 		case "FILLED":
 			r.logger.Info("PENDING order was filled before RESTING",
 				zap.String("level_id", o.LevelID))
-			delete(r.notFoundCount, o.LevelID)
-			r.tracker.Remove(o.LevelID)
+			r.removeTrackedOrder(o.LevelID)
 			r.metrics.IncOrdersFilled(marketID, o.Side)
 
 		case "CANCELLED":
 			r.logger.Warn("PENDING order was cancelled",
 				zap.String("level_id", o.LevelID))
-			delete(r.notFoundCount, o.LevelID)
-			r.tracker.Remove(o.LevelID)
+			r.removeTrackedOrder(o.LevelID)
 
 		default:
 			timedOut = true
@@ -132,68 +139,6 @@ func (r *Reconciler) CheckPendingTimeouts(ctx context.Context, marketID string) 
 	}
 
 	return r.consecutivePendingTimeouts[marketID]
-}
-
-// ConfirmRestingFromSnapshot promotes tracked orders to RESTING if and only if
-// they are confirmed present in the Matching Engine's atomic snapshot.
-// INVARIANT: CANCELLING and STALE are locked states. Presence in ME snapshot must NEVER promote them back to RESTING.
-func (r *Reconciler) ConfirmRestingFromSnapshot(marketID string, snap *meclient.MarketSnapshot) {
-	if snap == nil || snap.State != "LIVE" {
-		return
-	}
-
-	snapOrders := make(map[string]meclient.MMOrderSummary, len(snap.Orders))
-	for _, o := range snap.Orders {
-		snapOrders[o.LevelID] = o
-	}
-
-	for _, o := range r.tracker.All(marketID) {
-		// Only unconfirmed orders (OS_REGISTERED or PENDING) can be promoted to RESTING.
-		// Crucially, CANCELLING and STALE orders must NEVER be promoted back to RESTING.
-		if o.Status != order.StatusOSRegistered && o.Status != order.StatusPending {
-			continue
-		}
-		if meOrder, found := snapOrders[o.LevelID]; found {
-			if meOrder.ClientOrderID == o.ClientOrderID || meOrder.OrderID == o.OrderID {
-				r.logger.Info("order confirmed RESTING via ME snapshot",
-					zap.String("level_id", o.LevelID),
-					zap.String("order_id", meOrder.OrderID),
-					zap.String("client_order_id", o.ClientOrderID),
-					zap.String("prev_status", string(o.Status)))
-				r.tracker.SetResting(o.LevelID, meOrder.OrderID, o.OriginalQty, o.RemainingQty)
-				delete(r.notFoundCount, o.LevelID)
-			}
-		}
-	}
-}
-
-// ConfirmOSRegisteredOrders verifies OS_REGISTERED orders against the Matching Engine snapshot.
-// Blind auto-promotion has been REMOVED — orders are promoted to RESTING
-// only when confirmed present in the ME snapshot.
-// When meClient == nil or ME is unhealthy, this check is FAIL-CLOSED: orders remain OS_REGISTERED.
-func (r *Reconciler) ConfirmOSRegisteredOrders(marketID string, meHealthy bool) {
-	if !meHealthy {
-		r.logger.Warn("ME is unhealthy — holding OS_REGISTERED orders without promoting to RESTING",
-			zap.String("market_id", marketID))
-		return
-	}
-
-	if r.meClient == nil {
-		r.logger.Warn("ME client is nil — holding OS_REGISTERED orders without promoting (fail-closed)",
-			zap.String("market_id", marketID))
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	snap, err := r.meClient.FetchSnapshot(ctx, marketID)
-	if err != nil {
-		r.logger.Warn("failed to fetch ME snapshot during unconfirmed orders check",
-			zap.String("market_id", marketID),
-			zap.Error(err))
-		return
-	}
-	r.ConfirmRestingFromSnapshot(marketID, snap)
 }
 
 // CheckCancellingTimeouts examines all CANCELLING orders for a market.
@@ -224,6 +169,7 @@ func (r *Reconciler) handleCancellingTimeout(ctx context.Context, o *order.LiveO
 		zap.Int("cancel_retries", o.CancelRetries))
 
 	osState, err := r.orderSvc.GetOrderByClientID(ctx, o.ClientOrderID)
+	isOrderNotFound := false
 	if err != nil {
 		if err != orderservice.ErrOrderNotFound {
 			r.logger.Warn("CANCELLING check failed — will retry next cycle",
@@ -231,24 +177,77 @@ func (r *Reconciler) handleCancellingTimeout(ctx context.Context, o *order.LiveO
 				zap.Error(err))
 			return
 		}
-		osState = &orderservice.OrderState{Status: "CANCELLED"}
+		isOrderNotFound = true
+		// LE-5: Order Service NOT_FOUND does not mean fully filled.
+		// Preserve tracked remaining quantity rather than zeroing it out.
+		osState = &orderservice.OrderState{
+			Status:       "CANCELLED",
+			RemainingQty: o.RemainingQty,
+		}
 	}
 
 	switch osState.Status {
 	case "CANCELLED":
 		r.logger.Info("CANCELLING confirmed",
 			zap.String("level_id", o.LevelID))
-		r.tracker.Remove(o.LevelID)
+		r.removeTrackedOrder(o.LevelID)
 
 		if o.QueuedCorrection != nil {
 			desired := *o.QueuedCorrection
+
+			// Invariant: If order was fully filled before cancellation took effect (RemainingQty == 0),
+			// NEVER recreate the order.
+			// LE-5: ErrOrderNotFound must NEVER be treated as a full fill, nor increment orders filled metric.
+			if !isOrderNotFound && osState != nil && osState.RemainingQty.IsZero() {
+				r.logger.Info("CANCELLING order was fully filled before cancel took effect — skipping replacement",
+					zap.String("level_id", o.LevelID),
+					zap.String("client_order_id", o.ClientOrderID))
+				r.metrics.IncOrdersFilled(mc.MarketID, o.Side)
+				return
+			}
+
+			// Invariant: PAUSED reference prevents new replacement creations
+			if r.isMarketPaused(mc.MarketID) {
+				r.logger.Warn("reference price is PAUSED — dropping queued replacement creation",
+					zap.String("market_id", mc.MarketID),
+					zap.String("level_id", o.LevelID))
+				return
+			}
+
+			remQty := decimal.Zero
+			if osState != nil {
+				remQty = osState.RemainingQty
+			}
+			safeQty, ok := r.resolveReplacementQuantity(
+				desired.Quantity,
+				remQty,
+				o.OriginalQty,
+				mc.MinOrderSize,
+				mc.LotSize,
+				mc.MarketID,
+				o.LevelID,
+			)
+			if !ok {
+				return
+			}
+			desired.Quantity = safeQty
+
+			// Capital budget check: verify projected exposure stays within market limits
+			if allowed, reason := r.canCreateLevel(mc, desired); !allowed {
+				r.logger.Warn("skipping replacement creation — "+reason,
+					zap.String("market_id", mc.MarketID),
+					zap.String("level_id", o.LevelID),
+				)
+				return
+			}
+
 			gen := r.tracker.NextGeneration(o.LevelID)
 			clientOrderID := order.ClientOrderID(o.LevelID, gen)
 
 			// Register replacement with Order Service
 			osOrder, err := r.orderSvc.CreateMMOrder(ctx, mc.MarketID, desired.Side,
 				desired.Price.String(), desired.Quantity.String(), clientOrderID)
-			if err != nil {
+			if err != nil || osOrder == nil {
 				r.logger.Error("failed to register CORRECT replacement in Order Service",
 					zap.String("level_id", o.LevelID),
 					zap.Error(err))
@@ -279,7 +278,7 @@ func (r *Reconciler) handleCancellingTimeout(ctx context.Context, o *order.LiveO
 		if osState.RemainingQty.IsZero() || osState.Status == "FILLED" {
 			r.logger.Info("CANCELLING: order was filled — creating replacement",
 				zap.String("level_id", o.LevelID))
-			r.tracker.Remove(o.LevelID)
+			r.removeTrackedOrder(o.LevelID)
 			r.metrics.IncOrdersFilled(mc.MarketID, o.Side)
 		} else {
 			r.logger.Warn("CANCELLING: PARTIALLY_FILLED with remaining — retrying cancel",
@@ -326,3 +325,5 @@ func (r *Reconciler) retryCancelOrStale(ctx context.Context, o *order.LiveOrder,
 	}
 	o.IncrementCancelRetry()
 }
+
+

@@ -1,7 +1,7 @@
 // Package order provides the in-memory tracker for MM-001 resting orders.
 //
 // The tracker is the LE's working picture of what orders currently exist.
-// It is NOT authoritative — the Order Service is authoritative.
+// It is NOT authoritative â€” the Order Service is authoritative.
 // On startup, the tracker is populated from ListMMOrders().
 // During operation it is updated by reconcile cycles and trade events.
 //
@@ -18,18 +18,18 @@ import (
 )
 
 // Tracker holds the in-memory working state of all MM orders across all markets.
-// The zero value is not usable — use NewTracker().
+// The zero value is not usable â€” use NewTracker().
 //
 // CONCURRENCY: All public methods must be called from the engine's single event loop.
 type Tracker struct {
-	// orders maps LevelID → LiveOrder across all markets.
+	// orders maps LevelID â†’ LiveOrder across all markets.
 	orders map[string]*LiveOrder
 
-	// generations maps LevelID → current generation number.
+	// generations maps LevelID â†’ current generation number.
 	// Survives Remove() so that generation is monotonically increasing.
 	generations map[string]int
 
-	// lastSync maps marketID → time of last successful ListMMOrders sync.
+	// lastSync maps marketID â†’ time of last successful ListMMOrders sync.
 	lastSync map[string]time.Time
 }
 
@@ -61,6 +61,12 @@ func (t *Tracker) SetPending(levelID, orderID, clientOrderID string, gen int, le
 		Status:         StatusPending,
 		KafkaPublished: false,
 		PendingSince:   time.Now(),
+		// Dynamic pricing metadata — carried from the desired PriceLevel so that
+		// GetActive() returns the correct Zone and RefVersion for price-locking,
+		// and CreatedAt enables order-lifetime expiry in Phase D.
+		Zone:       level.Zone,
+		RefVersion: level.RefVersion,
+		CreatedAt:  time.Now(),
 	}
 }
 
@@ -90,7 +96,7 @@ func (t *Tracker) SetOSRegistered(levelID, orderID string, origQty, remainQty de
 	o.OSRegisteredSince = time.Now()
 }
 
-// SetResting transitions an order to RESTING — ME has accepted it into the live book.
+// SetResting transitions an order to RESTING â€” ME has accepted it into the live book.
 // In V1 this is called after MEConfirmationTimeout elapses with a healthy ME.
 // In V2 this should be called directly on an OrderRested event from the ME.
 func (t *Tracker) SetResting(levelID, orderID string, origQty, remainQty decimal.Decimal) {
@@ -144,7 +150,7 @@ func (t *Tracker) Remove(levelID string) {
 // NextGeneration returns the next generation number for a level and increments the counter.
 // Generation is monotonically increasing and survives Remove() calls.
 // Once SetPending is called with a given generation, that generation is COMMITTED.
-// There is no rollback — the PENDING tracker entry keeps the generation alive for retry.
+// There is no rollback â€” the PENDING tracker entry keeps the generation alive for retry.
 func (t *Tracker) NextGeneration(levelID string) int {
 	t.generations[levelID]++
 	return t.generations[levelID]
@@ -165,6 +171,21 @@ func (t *Tracker) SetMaxGeneration(levelID string, gen int) {
 // Get returns the LiveOrder for a level, or nil if not tracked.
 func (t *Tracker) Get(levelID string) *LiveOrder {
 	return t.orders[levelID]
+}
+
+// GetActive returns the minimal pricing.ActiveLevel snapshot for a level, or nil if absent.
+// It satisfies pricing.TrackerReader so that GenerateZonedDesired can use the tracker
+// without importing the order package (which would create an import cycle).
+func (t *Tracker) GetActive(levelID string) *pricing.ActiveLevel {
+	o := t.orders[levelID]
+	if o == nil {
+		return nil
+	}
+	return &pricing.ActiveLevel{
+		Status:     string(o.Status),
+		Price:      o.Price,
+		RefVersion: o.RefVersion,
+	}
 }
 
 // All returns all tracked orders for a given market.
@@ -251,7 +272,7 @@ func (t *Tracker) CommittedBase(marketID string) decimal.Decimal {
 }
 
 // CommittedQuote returns the total quote asset committed by BUY orders in RESTING, OS_REGISTERED, or PENDING.
-// committed_quote = Σ(RemainingQty × Price) for all active BUY orders.
+// committed_quote = Î£(RemainingQty Ã— Price) for all active BUY orders.
 func (t *Tracker) CommittedQuote(marketID string) decimal.Decimal {
 	total := decimal.Zero
 	for _, o := range t.orders {
@@ -330,7 +351,7 @@ func (t *Tracker) SyncFromOrders(marketID string, orders []OSOrder) (int, int) {
 			t.generations[o.LevelID] = o.Generation
 		}
 
-		// New entry — recovered from Order Service
+		// New entry â€” recovered from Order Service
 		gen := o.Generation
 		if gen <= 0 {
 			gen = 1

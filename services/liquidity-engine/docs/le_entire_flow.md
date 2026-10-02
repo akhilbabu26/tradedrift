@@ -135,7 +135,17 @@ engine.runReconcileMarket(ctx, marketID)
    │   • Applies 10s grace period and 2-cycle hysteresis for missing orders
    │   • If missing >= 2 cycles: handleMissingRestingOrder (locks slot as CANCELLING)
    │
-   ├── Step 3: Compute Inventory Skew (inventory.ComputeSkew)
+   ├── Step 3: Reference Price Resolution & Movement Classification (reprice.go)
+   │   • Resolves authoritative ref, version, and freshness via currentReference(mc)
+   │   • Freshness == PAUSED? ──> Halt mutations, skip cycle
+   │   • Evaluates movement via ClassifyMovement():
+   │       - |Δ| < SmallBps (10 bps)  ──> ActionKeep
+   │       - SmallBps <= |Δ| < LargeBps ──> ActionSelectiveReprice
+   │       - |Δ| >= LargeBps (100 bps) ──> ActionControlledRebase (persistent multi-cycle rebase)
+   │       - STALE reference ──> ActionHold (preserve resting liquidity, block new creates)
+   │   • If RebaseActive is ongoing, executes next batch (up to MaxBatch = 4)
+   │
+   ├── Step 4: Compute Inventory Skew (inventory.ComputeSkew)
    │   • EffectiveBase  = projectedBase - tracker.CommittedBase(marketID)
    │   • EffectiveQuote = projectedUSDT - Σ tracker.CommittedQuote(all markets)
    │   • Decision Matrix:
@@ -143,22 +153,33 @@ engine.runReconcileMarket(ctx, marketID)
    │       Effective <= MinThreshold     ──> TierLow      (6 Bids / 6 Asks)
    │       Effective <= CriticalThreshold──> TierCritical (0 levels on that side)
    │
-   ├── Step 4: Mathematical Ladder Generation (pricing.GenerateLadder)
-   │   • Computes geometric spread for i = 1..N:
-   │       Bid_i = floor(RefPrice / (1 + SpreadBps * i / 10000), TickSize)
-   │       Ask_i = floor(RefPrice * (1 + SpreadBps * i / 10000), TickSize)
-   │   • Produces desired []PriceLevel (e.g., 24 levels for BTC-USDT)
+   ├── Step 5: Dynamic Zoned Ladder Generation (pricing.GenerateZonedDesired)
+   │   • Allocates bidCount/askCount using LOW-first priority policy
+   │   • Computes spreads across 3 zones:
+   │       - LOW Zone  (4 slots): 10 - 40 bps, 1.0x lot multiplier (inside market)
+   │       - MID Zone  (4 slots): 50 - 150 bps, 1.5x lot multiplier
+   │       - HIGH Zone (4 slots): 175 - 400 bps, 2.5x lot multiplier (deep buffer)
+   │   • Applies deterministic slot jitter via stable RNG (±20% of slot step)
+   │   • Enforces ValidateZoneBoundaries() to ensure tick rounding stays in zone
+   │   • Produces desired []PriceLevel stamped with Zone and RefVersion
    │
-   ├── Step 5: Two-Pass Diffing Algorithm (order.Diff)
+   ├── Step 6: Two-Pass Diffing Algorithm (order.Diff)
    │   • Pass 1 (Desired vs Known):
    │       - Missing in tracker? ──> DiffCreate
    │       - RESTING with wrong price or depleted qty? ──> DiffCorrect
    │       - In PENDING / OS_REGISTERED / CANCELLING / STALE? ──> Skip (in-flight)
    │   • Pass 2 (Known vs Desired):
    │       - RESTING but not in desired list? ──> DiffCancel
+   │   • Uniqueness Guard: locks in-flight/cancelling prices to avoid collisions
    │
-   └── Step 6: Execute Diff Actions (reconciler.applyEntry via dispatch.go)
-       • For each DiffCreate  ──> Crash-Safe 3-Step Creation (OS Register → Pending → Kafka)
+   └── Step 7: Execute Diff Actions with Capital Protection (dispatch.go)
+       • For each DiffCreate:
+           - Check Capital Budget:
+             * BUY: committedQuote + orderValue <= MaxBidExposureUSDT
+             * SELL: committedBase + orderQty <= MaxAskExposureBase
+             (Skip gracefully if capital limit reached)
+           - If reference is STALE: skip creation (preserves existing liquidity)
+           - Dispatch Crash-Safe 3-Step Creation (OS Register → Pending → Kafka)
        • For each DiffCancel  ──> Publish Cancel (OS gRPC Cancel + Kafka Publish)
        • For each DiffCorrect ──> Cancel Old + Queue Replacement
 ```
@@ -318,6 +339,24 @@ To ensure orders never get permanently stuck in transient states, the engine run
        └── OPEN / CANCELLING:
            ├── retries < 3 ──> Retry producer.PublishCancel() & IncrementCancelRetry()
            └── retries >= 3──> tracker.SetStale() (Lock level until full OS resync)
+
+4. SLOT-LEVEL ORDER LIFETIME EXPIRY (CheckExpiredOrders - Periodic):
+   For each RESTING order where time.Since(CreatedAt) > OrderLifetime (30m):
+   ├── Resolves authoritative reference price and latest RefVersion
+   ├── Up to MaxBatch oldest expired orders are selected
+   ├── Computes replacement PriceLevel anchored to live reference & RefVersion
+   ├── Stores replacement via tracker.QueueCorrection(levelID, newLevel)
+   └── Publishes cancel to Kafka and marks slot as CANCELLING
+
+5. MULTI-CYCLE CONTROLLED REBASE (Persistent Rebase State Machine):
+   When reference moves >= LargeBps (100 bps):
+   ├── Activates RefState.RebaseActive = true and locks target version (RebaseTargetVer)
+   ├── Processes resting orders across cycles in prioritized batches:
+   │   Priority 1: HIGH Zone  (outer boundary orders)
+   │   Priority 2: MID Zone   (intermediate depth)
+   │   Priority 3: LOW Zone   (inside spread)
+   ├── Dispatches up to MaxBatch (4) cancels with QueuedCorrection per cycle
+   └── Deactivates RebaseActive once all eligible resting levels have converged
 ```
 
 ---

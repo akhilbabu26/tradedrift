@@ -13,29 +13,29 @@ import (
 type Status string
 
 const (
-	// StatusPending — OrderCreate published to Kafka, awaiting OS confirmation.
+	// StatusPending â€” OrderCreate published to Kafka, awaiting OS confirmation.
 	// The LE has sent the command but has not yet verified the OS received it.
 	// Diff: excluded from CREATE.
 	StatusPending Status = "PENDING"
 
-	// StatusOSRegistered — Order Service has confirmed the order exists (OPEN).
+	// StatusOSRegistered â€” Order Service has confirmed the order exists (OPEN).
 	// This means OS will return it on ListMMOrders for recovery.
 	// It does NOT mean ME has the order in the live order book.
 	// Diff: excluded from CREATE (already in flight).
 	// Transitions to RESTING after MEConfirmationTimeout if ME is healthy.
 	StatusOSRegistered Status = "OS_REGISTERED"
 
-	// StatusResting — ME has accepted the order into the live order book.
+	// StatusResting â€” ME has accepted the order into the live order book.
 	// Confirmed indirectly: OS is OPEN and ME liveness healthy for MEConfirmationTimeout.
 	// In V2, an OrderRested Kafka event from ME will trigger this directly.
 	// Diff: eligible for CANCEL or CORRECT.
 	StatusResting Status = "RESTING"
 
-	// StatusCancelling — OrderCancel published, awaiting Order Service confirmation.
+	// StatusCancelling â€” OrderCancel published, awaiting Order Service confirmation.
 	// Diff: excluded from all actions (let it resolve).
 	StatusCancelling Status = "CANCELLING"
 
-	// StatusStale — Cancel retry limit exceeded, reconciliation frozen for this level.
+	// StatusStale â€” Cancel retry limit exceeded, reconciliation frozen for this level.
 	// Diff: excluded from all actions. Authoritative resync required.
 	StatusStale Status = "STALE"
 )
@@ -61,7 +61,7 @@ type LiveOrder struct {
 	Side         string
 	Price        decimal.Decimal
 	OriginalQty  decimal.Decimal // from Order Service response
-	RemainingQty decimal.Decimal // from Order Service response — used for committed calc
+	RemainingQty decimal.Decimal // from Order Service response â€” used for committed calc
 	FilledQty    decimal.Decimal // derived: OriginalQty - RemainingQty
 
 	// State
@@ -72,13 +72,18 @@ type LiveOrder struct {
 
 	// Timing and retry tracking
 	PendingSince      time.Time
-	OSRegisteredSince time.Time // set when status transitions PENDING → OS_REGISTERED
+	OSRegisteredSince time.Time // set when status transitions PENDING â†’ OS_REGISTERED
 	CancellingSince   time.Time
 	CancelRetries     int
 
 	// CORRECT flow: set when a CANCEL is issued to correct a wrong-price order.
 	// After cancel confirms, the reconciler creates a replacement using this level.
 	QueuedCorrection *pricing.PriceLevel
+
+	// Dynamic pricing fields (Phase 4+). Zero-value safe for V1 compatibility.
+	Zone       string    // zone this level belongs to: "LOW", "MID", "HIGH", or "" (V1)
+	RefVersion int64     // refprice.Entry.Version when this generation was created (0 = V1)
+	CreatedAt  time.Time // when this generation started (for order lifetime expiry)
 }
 
 // IncrementCancelRetry increments the retry counter and resets the timer.

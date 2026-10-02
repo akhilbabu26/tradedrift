@@ -111,7 +111,7 @@ Market-level pauses (ME liveness failures) cause `DEGRADED` but do NOT stop the 
 
 | Function | Problem It Solves |
 |:---|:---|
-| `runReconcileAll(ctx)` | Full reconcile across all 3 markets. Skips paused/stale markets. Computes skew per market → calls `ReconcileMarket` (verifying ME snapshot first) → updates engine state. |
+| `runReconcileAll(ctx)` | Full reconcile across all 3 markets. Skips paused/stale markets. Computes skew per market → calls `ReconcileMarket` (snapshot sync, live reference resolution, multi-cycle rebase, zoned ladder generation, capital exposure checks) → calls `CheckExpiredOrders` (30m slot-level expiry) → updates engine state. |
 | `runReconcileMarket(ctx, marketID)` | Targeted single-market reconcile triggered after a fill. Same safety gates as full reconcile. |
 | `syncAllMarkets(ctx)` | Queries Order Service for all active MM orders and recovers highest historical generations (INV-MM-07). Updates the tracker. Called at startup and on `evResyncTick`. |
 

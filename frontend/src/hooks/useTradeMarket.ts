@@ -55,9 +55,9 @@ export function useTradeMarket(initialMarketId = 'BTC-USDT') {
 
     loadTicker()
 
-    // Subscribe to WS stream
-    const stream = WsChannels.ticker(selectedMarketId)
-    const unsubscribe = wsService.subscribe(stream, (liveData: any) => {
+    // Subscribe to WS ticker stream
+    const tickerStream = WsChannels.ticker(selectedMarketId)
+    const unsubTicker = wsService.subscribe(tickerStream, (liveData: any) => {
       if (!mounted) return
       if (liveData) {
         setTicker((prev) => {
@@ -84,7 +84,7 @@ export function useTradeMarket(initialMarketId = 'BTC-USDT') {
 
     return () => {
       mounted = false
-      unsubscribe()
+      unsubTicker()
     }
   }, [selectedMarketId])
 

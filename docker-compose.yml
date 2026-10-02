@@ -164,6 +164,9 @@ services:
       KAFKA_BROKERS: kafka:29092
       REDIS_ADDR: redis:6379
       MAX_PRICE_DEVIATION_PERCENT: "0.05"
+      MM_USER_ID: "00000000-0000-0000-0000-000000000001"
+      MM_REFERENCE_MAX_DEVIATION_PERCENT: "0.10"
+      REFPRICE_ANCHOR_MAX_AGE: "60s"
       LOG_LEVEL: info
     ports:
       - "50053:50053"
@@ -388,12 +391,20 @@ services:
       WALLET_GRPC_ADDR: wallet:50052
       ORDER_GRPC_ADDR: order:50053
       ME_HTTP_ADDR: http://matching-engine:8082
+      REDIS_ADDR: redis:6379
       BTC_PARTITION: 0
       ETH_PARTITION: 1
       SOL_PARTITION: 2
-      BTC_REFERENCE_PRICE: "96450.00"
-      ETH_REFERENCE_PRICE: "2780.50"
-      SOL_REFERENCE_PRICE: "188.20"
+      BTC_REFERENCE_PRICE: "84000.00"
+      ETH_REFERENCE_PRICE: "2675.00"
+      SOL_REFERENCE_PRICE: "117.00"
+      LE_REFPRICE_API_URL: "https://api.coingecko.com/api/v3"
+      LE_COINGECKO_API_KEY: "${COINGECKO_API_KEY:-}"
+      LE_COINGECKO_PLAN: "${COINGECKO_PLAN:-demo}"
+      LE_REFPRICE_REFRESH_INTERVAL: "30s"
+      LE_REFPRICE_STALE_THRESHOLD: "${LE_REFPRICE_STALE_THRESHOLD:-5m}"
+      LE_REFPRICE_PAUSE_THRESHOLD: "${LE_REFPRICE_PAUSE_THRESHOLD:-10m}"
+      LE_REFPRICE_FETCH_TIMEOUT: "5s"
       RECONCILE_INTERVAL: "30s"
       WALLET_REFRESH_INTERVAL: "15s"
       MAX_BALANCE_STALENESS: "60s"
@@ -420,6 +431,8 @@ services:
       order:
         condition: service_started
       matching-engine:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   controlled-taker:

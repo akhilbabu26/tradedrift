@@ -41,7 +41,7 @@ export default function ChartToolbar({
               type="button"
               onClick={() => onTimeframeChange(key)}
               aria-pressed={active}
-              className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+              className={`px-2.5 py-1 text-xs font-medium rounded transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-[#10b981] ${
                 active
                   ? 'bg-[#10b981]/15 text-[#10b981] border border-[#10b981]/25'
                   : 'text-slate-400 hover:text-[#f5f7fa] hover:bg-white/5 border border-transparent'

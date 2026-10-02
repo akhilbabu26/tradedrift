@@ -22,7 +22,10 @@ type Metrics struct {
 	meLivenessTimeouts *prometheus.CounterVec
 	duplicateLevels    *prometheus.CounterVec
 	meHealthProbes     *prometheus.CounterVec
-	marketPauseEvents  *prometheus.CounterVec
+	marketPauseEvents           *prometheus.CounterVec
+	rebaseGenFailures           *prometheus.CounterVec
+	expiryGenFailures           *prometheus.CounterVec
+	quantityInvariantViolations *prometheus.CounterVec
 }
 
 // New creates and registers all LE Prometheus metrics.
@@ -106,6 +109,24 @@ func New() *Metrics {
 			Name:      "market_pause_total",
 			Help:      "Total market pause and resume events",
 		}, []string{"market_id", "action"}),
+
+		rebaseGenFailures: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "le",
+			Name:      "rebase_generation_failure_total",
+			Help:      "Total level price generation failures during rebase",
+		}, []string{"market_id", "level_id"}),
+
+		expiryGenFailures: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "le",
+			Name:      "expiry_generation_failure_total",
+			Help:      "Total level price generation failures during order expiry",
+		}, []string{"market_id"}),
+
+		quantityInvariantViolations: promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "le",
+			Name:      "quantity_invariant_violation_total",
+			Help:      "Total quantity invariant violations detected (e.g. remaining exceeds original)",
+		}, []string{"market_id"}),
 	}
 }
 
@@ -166,4 +187,16 @@ func (m *Metrics) IncMEHealthProbe(status string) {
 
 func (m *Metrics) IncMarketPause(marketID, action string) {
 	m.marketPauseEvents.WithLabelValues(marketID, action).Inc()
+}
+
+func (m *Metrics) IncRebaseGenerationFailure(marketID, levelID string) {
+	m.rebaseGenFailures.WithLabelValues(marketID, levelID).Inc()
+}
+
+func (m *Metrics) IncExpiryGenerationFailure(marketID string) {
+	m.expiryGenFailures.WithLabelValues(marketID).Inc()
+}
+
+func (m *Metrics) IncQuantityInvariantViolation(marketID string) {
+	m.quantityInvariantViolations.WithLabelValues(marketID).Inc()
 }

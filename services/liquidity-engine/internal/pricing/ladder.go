@@ -1,4 +1,4 @@
-// Package pricing generates the desired MM ladder — the set of limit orders
+// Package pricing generates the desired MM ladder â€” the set of limit orders
 // the Liquidity Engine wants to maintain in the order book at all times.
 //
 // The ladder is symmetric around a reference price:
@@ -43,6 +43,10 @@ type PriceLevel struct {
 	Side     string          // "BUY" | "SELL"
 	Price    decimal.Decimal // tick-rounded
 	Quantity decimal.Decimal // lot-rounded
+
+	// Dynamic pricing fields (Phase 4+). Zero-value safe for V1 GenerateLadder compat.
+	Zone       string // "LOW", "MID", "HIGH", or "" (V1 path)
+	RefVersion int64  // platform/refprice version used; 0 = V1 path
 }
 
 // bpsMultiplier returns (1 + bps/10000) as a decimal, for price level calculations.
@@ -91,6 +95,8 @@ func levelQuantity(mc *config.MarketConfig, side string, levelIndex int) decimal
 	return roundToLot(rawQty, mc.LotSize)
 }
 
+// Deprecated: GenerateLadder is the legacy V1 uniform ladder generator. Use GenerateZonedDesired instead.
+//
 // GenerateLadder generates the desired MM ladder for a given market.
 // bidCount and askCount control how many levels to generate on each side.
 //

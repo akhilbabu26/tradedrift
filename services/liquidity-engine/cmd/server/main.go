@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 
+	"tradedrift/platform/refprice"
 	"tradedrift/services/liquidity-engine/internal/config"
 	"tradedrift/services/liquidity-engine/internal/engine"
 	"tradedrift/services/liquidity-engine/internal/health"
@@ -98,12 +99,89 @@ func main() {
 	// ── Reconciler ────────────────────────────────────────────────────
 	rec := reconciler.NewReconciler(tracker, producer, orderSvc, meClient, &cfg, logger, m)
 
-	// ── Engine ────────────────────────────────────────────────────────
-	eng := engine.NewEngine(&cfg, tracker, inv, rec, producer, consumer, tradeEvents, walletSvc, meClient, m, logger)
-
 	// ── Context with graceful shutdown ────────────────────────────────
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// ── Reference Price Provider ──────────────────────────────────────
+	marketIDs := make([]string, len(cfg.Markets))
+	for i, mc := range cfg.Markets {
+		marketIDs[i] = mc.MarketID
+	}
+	refCfg := refprice.Config{
+		RefreshInterval: cfg.RefPrice.RefreshInterval,
+		StaleThreshold:  cfg.RefPrice.StaleThreshold,
+		PauseThreshold:  cfg.RefPrice.PauseThreshold,
+		FetchTimeout:    cfg.RefPrice.FetchTimeout,
+	}
+	if refCfg.RefreshInterval <= 0 {
+		refCfg.RefreshInterval = 30 * time.Second
+	}
+	if refCfg.StaleThreshold <= 0 {
+		refCfg.StaleThreshold = 5 * time.Minute
+	}
+	if refCfg.PauseThreshold <= 0 {
+		refCfg.PauseThreshold = 10 * time.Minute
+	}
+	if refCfg.FetchTimeout <= 0 {
+		refCfg.FetchTimeout = 5 * time.Second
+	}
+	plan := refprice.PlanDemo
+	if cfg.RefPrice.Plan == "pro" {
+		plan = refprice.PlanPro
+	}
+	refFetcher, err := refprice.NewCoinGeckoFetcherWithConfig(refprice.CoinGeckoConfig{
+		Plan:    plan,
+		APIKey:  cfg.RefPrice.APIKey,
+		BaseURL: cfg.RefPrice.APIURL,
+		Timeout: refCfg.FetchTimeout,
+		Markets: marketIDs,
+	})
+	if err != nil {
+		logger.Fatal("failed to initialize reference price fetcher", zap.Error(err))
+	}
+	refProv, err := refprice.NewProvider(refCfg, refFetcher, marketIDs, logger)
+	if err != nil {
+		logger.Fatal("failed to initialize reference price provider", zap.Error(err))
+	}
+
+	// ── Redis Anchor Publisher ────────────────────────────────────────
+	// Publishes live reference anchors to Redis (refprice:anchor:{marketID})
+	// with TTL=60s and monotonic version protection for Order Service validation.
+	anchorPub, closePub := refprice.NewRedisAnchorPublisherFromAddr(cfg.RedisAddr, logger)
+	defer closePub()
+	refProv.WithPublisher(anchorPub)
+
+	// ── Gated Startup Live Fetch ──────────────────────────────────────
+	// Invariant (Reviewer Directive 1): Synchronous, bounded startup fetch ensures LE quotes
+	// from fresh external live prices before reconciler or ME book can drift.
+	// If live fetch succeeds, it populates provider cache, stamps version 1,
+	// and publishes the Redis anchor for Order Service.
+	// If it times out or fails (e.g. offline sandbox, rate limit), it falls back
+	// to configured static seeds with an explicit operator warning.
+	fetchTimeout := 3 * time.Second
+	if err := refProv.FetchInitial(ctx, fetchTimeout); err != nil {
+		logger.Warn("gated startup live reference fetch failed — falling back to configured seeds",
+			zap.Duration("timeout", fetchTimeout),
+			zap.Error(err))
+		for _, mc := range cfg.Markets {
+			seed := cfg.RefPrice.SeedForMarket(mc.MarketID)
+			if seed.IsZero() {
+				seed = mc.ReferencePrice
+			}
+			if !seed.IsZero() {
+				refProv.SeedIfAbsent(mc.MarketID, seed)
+			}
+		}
+	} else {
+		logger.Info("gated startup live reference fetch succeeded — quoting directly from live external reference prices")
+	}
+
+	go refProv.Run(ctx)
+	rec.SetRefProvider(refProv)
+
+	// ── Engine ────────────────────────────────────────────────────────
+	eng := engine.NewEngine(&cfg, tracker, inv, rec, producer, consumer, tradeEvents, walletSvc, meClient, m, logger)
 
 	// ── HTTP Servers ──────────────────────────────────────────────────
 	// Health server (Port 8080: /healthz, /readyz, /status)

@@ -11,9 +11,9 @@ import {
   type AreaSeriesPartialOptions,
   type HistogramSeriesPartialOptions,
 } from 'lightweight-charts'
-import type { Candle } from '../../types/trade'
+import type { Candle, Timeframe } from '../../types/trade'
+import { wsService, WsChannels } from '../../api/ws'
 import ChartToolbar from './ChartToolbar'
-import type { Timeframe } from '../../types/trade'
 
 interface TradingChartProps {
   marketId: string
@@ -33,7 +33,7 @@ const CANDLE_OPTIONS: CandlestickSeriesPartialOptions = {
   borderDownColor:  '#ef4444',
   wickUpColor:      '#10b981',
   wickDownColor:    '#ef4444',
-  priceLineVisible: false,
+  priceLineVisible: true,
   lastValueVisible: true,
 }
 
@@ -177,8 +177,9 @@ export default function TradingChart({
 
   const [chartType, setChartType] = useState<'candlestick' | 'line'>('candlestick')
 
-  // Tracking refs for real-time live active candle and market safety
+  // Tracking refs for real-time live active candle, volume, and market safety
   const lastBarRef = useRef<SanitizedBar | null>(null)
+  const activeVolumeRef = useRef<number>(0)
   const activeMarketRef = useRef<string>(marketId)
   const hasFittedRef = useRef<boolean>(false)
 
@@ -210,7 +211,10 @@ export default function TradingChart({
         timeVisible:    true,
         secondsVisible: false,
         fixLeftEdge:    false,
-        fixRightEdge:   true,
+        fixRightEdge:   false,
+        rightOffset:    8,
+        barSpacing:     10,
+        minBarSpacing:  4,
       },
       crosshair: {
         vertLine: { color: '#475569', style: 1, width: 1, labelBackgroundColor: '#1e2530' },
@@ -275,6 +279,7 @@ export default function TradingChart({
     activeMarketRef.current = marketId
     hasFittedRef.current = false
     lastBarRef.current = null
+    activeVolumeRef.current = 0
 
     // Immediately clear previous market's series
     if (candleRef.current) candleRef.current.setData([])
@@ -291,6 +296,7 @@ export default function TradingChart({
       areaRef.current.setData([])
       volumeRef.current.setData([])
       lastBarRef.current = null
+      activeVolumeRef.current = 0
       return
     }
 
@@ -300,27 +306,156 @@ export default function TradingChart({
       areaRef.current.setData([])
       volumeRef.current.setData([])
       lastBarRef.current = null
+      activeVolumeRef.current = 0
       return
+    }
+
+    // Bridge gap to current timeframe bucket if database candles ended earlier
+    const last = bars[bars.length - 1]
+    const lastVol = volumes[volumes.length - 1]
+    const tfSeconds = getTimeframeSeconds(timeframe)
+    const nowSeconds = Math.floor(Date.now() / 1000)
+    const currentBucketTime = (Math.floor(nowSeconds / tfSeconds) * tfSeconds) as UTCTimestamp
+
+    if (currentBucketTime > (last.time as number)) {
+      const activeBar: SanitizedBar = {
+        time: currentBucketTime,
+        open: last.close,
+        high: last.close,
+        low: last.close,
+        close: last.close,
+      }
+      const activeVolBar: SanitizedVolume = {
+        time: currentBucketTime,
+        value: 0,
+        color: 'rgba(16,185,129,0.45)',
+      }
+      bars.push(activeBar)
+      volumes.push(activeVolBar)
+      lastBarRef.current = { ...activeBar }
+      activeVolumeRef.current = 0
+    } else {
+      lastBarRef.current = { ...last }
+      activeVolumeRef.current = lastVol ? lastVol.value : 0
     }
 
     candleRef.current.setData(bars)
     areaRef.current.setData(bars.map((b) => ({ time: b.time, value: b.close })))
     volumeRef.current.setData(volumes)
 
-    const last = bars[bars.length - 1]
-    lastBarRef.current = { ...last }
-
-    // Fit content on initial load or timeframe switch without disrupting background refreshes
+    // Focus visible range on recent bars with comfortable spacing on initial load / timeframe switch
     if (!hasFittedRef.current) {
-      chartRef.current?.timeScale().fitContent()
+      if (bars.length > 25) {
+        chartRef.current?.timeScale().setVisibleLogicalRange({
+          from: bars.length - 30,
+          to: bars.length + 6,
+        })
+      } else {
+        chartRef.current?.timeScale().fitContent()
+      }
       hasFittedRef.current = true
     }
   }, [candles, timeframe])
 
-  // ── Real-Time Active Candle Updates ─────────────────────────────────────────
+  // ── Real-Time Trades Stream (Kafka -> Gateway -> WebSocket) ────────────────
+  useEffect(() => {
+    let mounted = true
+    const channel = WsChannels.trades(marketId)
+
+    const unsubscribe = wsService.subscribe(channel, (tradeData: any) => {
+      if (!mounted || !tradeData) return
+      if (activeMarketRef.current !== marketId) return
+      if (tradeData.marketId && tradeData.marketId !== marketId) return
+      if (!candleRef.current || !volumeRef.current || !areaRef.current) return
+
+      const rawPrice = tradeData.price
+      const rawQty = tradeData.quantity
+      if (!rawPrice) return
+
+      const price = parseFloat(rawPrice)
+      const qty = parseFloat(rawQty) || 0
+      if (isNaN(price) || price <= 0) return
+
+      const execMs = tradeData.executedAt || tradeData.executed_at || Date.now()
+      const tfSeconds = getTimeframeSeconds(timeframe)
+      const tradeSeconds = Math.floor(execMs / 1000)
+      const bucketTime = (Math.floor(tradeSeconds / tfSeconds) * tfSeconds) as UTCTimestamp
+
+      const currentBar = lastBarRef.current
+
+      if (!currentBar) {
+        const newBar: SanitizedBar = {
+          time: bucketTime,
+          open: price,
+          high: price,
+          low: price,
+          close: price,
+        }
+        activeVolumeRef.current = qty
+        lastBarRef.current = newBar
+
+        candleRef.current.update(newBar)
+        areaRef.current.update({ time: bucketTime, value: price })
+        volumeRef.current.update({
+          time: bucketTime,
+          value: qty,
+          color: 'rgba(16,185,129,0.45)',
+        })
+        return
+      }
+
+      if (bucketTime > (currentBar.time as number)) {
+        // Timeframe boundary crossed: start new candle bar
+        const newBar: SanitizedBar = {
+          time: bucketTime,
+          open: price,
+          high: price,
+          low: price,
+          close: price,
+        }
+        activeVolumeRef.current = qty
+        lastBarRef.current = newBar
+
+        candleRef.current.update(newBar)
+        areaRef.current.update({ time: bucketTime, value: price })
+        volumeRef.current.update({
+          time: bucketTime,
+          value: qty,
+          color: 'rgba(16,185,129,0.45)',
+        })
+      } else if (bucketTime === (currentBar.time as number)) {
+        // Update active candle with new high/low, latest close, and accumulated trade volume
+        const updatedBar: SanitizedBar = {
+          time: currentBar.time,
+          open: currentBar.open,
+          high: Math.max(currentBar.high, price),
+          low: Math.min(currentBar.low, price),
+          close: price,
+        }
+        activeVolumeRef.current += qty
+        lastBarRef.current = updatedBar
+
+        const volColor = price >= updatedBar.open ? 'rgba(16,185,129,0.45)' : 'rgba(239,68,68,0.45)'
+
+        candleRef.current.update(updatedBar)
+        areaRef.current.update({ time: updatedBar.time, value: price })
+        volumeRef.current.update({
+          time: updatedBar.time,
+          value: activeVolumeRef.current,
+          color: volColor,
+        })
+      }
+    })
+
+    return () => {
+      mounted = false
+      unsubscribe()
+    }
+  }, [marketId, timeframe])
+
+  // ── Secondary Active Candle Price Tick Updates (e.g. from Order Book) ─────────
   useEffect(() => {
     if (!lastPrice || lastPrice === '0' || lastPrice === '—') return
-    // Market Safety: verify current market matches
     if (activeMarketRef.current !== marketId) return
     if (!candleRef.current || !areaRef.current) return
 
@@ -335,7 +470,7 @@ export default function TradingChart({
     const currentBucketTime = (Math.floor(nowSeconds / tfSeconds) * tfSeconds) as UTCTimestamp
 
     if (currentBucketTime > (currentBar.time as number)) {
-      // New candle interval started
+      // Time boundary crossed: create new bar
       const newBar: SanitizedBar = {
         time: currentBucketTime,
         open: price,
@@ -344,20 +479,22 @@ export default function TradingChart({
         close: price,
       }
       lastBarRef.current = newBar
+      activeVolumeRef.current = 0
       candleRef.current.update(newBar)
-      areaRef.current.update({ time: newBar.time, value: newBar.close })
-    } else {
-      // Mutate active candle
-      const updatedBar: SanitizedBar = {
-        time: currentBar.time,
-        open: currentBar.open,
-        high: Math.max(currentBar.high, price),
-        low: Math.min(currentBar.low, price),
-        close: price,
+      areaRef.current.update({ time: newBar.time, value: price })
+    } else if (currentBucketTime === (currentBar.time as number)) {
+      if (price !== currentBar.close || price > currentBar.high || price < currentBar.low) {
+        const updatedBar: SanitizedBar = {
+          time: currentBar.time,
+          open: currentBar.open,
+          high: Math.max(currentBar.high, price),
+          low: Math.min(currentBar.low, price),
+          close: price,
+        }
+        lastBarRef.current = updatedBar
+        candleRef.current.update(updatedBar)
+        areaRef.current.update({ time: updatedBar.time, value: price })
       }
-      lastBarRef.current = updatedBar
-      candleRef.current.update(updatedBar)
-      areaRef.current.update({ time: updatedBar.time, value: updatedBar.close })
     }
   }, [lastPrice, marketId, timeframe])
 

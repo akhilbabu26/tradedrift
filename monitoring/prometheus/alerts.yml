@@ -164,3 +164,36 @@ groups:
           summary: "High Rate of Depth Read / Validation Errors in Controlled Taker"
           description: "Controlled Taker Service is observing frequent depth errors for market {{ $labels.market_id }} (reason: {{ $labels.reason }})."
 
+  - name: tradedrift-liquidity-engine-alerts
+    rules:
+      - alert: LiquidityEngineServiceDown
+        expr: up{job="liquidity-engine"} == 0 or absent(up{job="liquidity-engine"}) == 1
+        for: 1m
+        labels:
+          severity: critical
+          service: liquidity-engine
+        annotations:
+          summary: "TradeDrift Liquidity Engine Service is Down"
+          description: "Prometheus cannot scrape TradeDrift Liquidity Engine at liquidity-engine:9090."
+
+      - alert: RefPriceFeedPaused
+        expr: increase(refprice_market_paused_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: liquidity-engine
+        annotations:
+          summary: "Reference Price Feed Paused for Market: {{ $labels.market_id }}"
+          description: "External reference price feed has transitioned to PAUSED state. Liquidity Engine has halted new order creation for market {{ $labels.market_id }}."
+
+      - alert: QuantityInvariantViolation
+        expr: increase(le_quantity_invariant_violations_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: liquidity-engine
+        annotations:
+          summary: "Liquidity Engine Quantity Invariant Violation"
+          description: "An order remaining quantity exceeded its original quantity for market {{ $labels.market_id }}, indicating unexpected external state mutation."
+
+

@@ -44,6 +44,9 @@ func (m *mockEngineMetrics) IncReconcileCorrect(marketID string)                
 func (m *mockEngineMetrics) IncReconcileNoop(marketID string)                     { m.reconcileNoopCount++ }
 func (m *mockEngineMetrics) IncOrdersFilled(marketID, side string)                { m.ordersFilled++ }
 func (m *mockEngineMetrics) IncDuplicateMMLevel(marketID string)                  { m.duplicateLevels++ }
+func (m *mockEngineMetrics) IncRebaseGenerationFailure(marketID, levelID string)  {}
+func (m *mockEngineMetrics) IncExpiryGenerationFailure(marketID string)           {}
+func (m *mockEngineMetrics) IncQuantityInvariantViolation(marketID string)        {}
 func (m *mockEngineMetrics) SetEngineState(state string)                          {}
 func (m *mockEngineMetrics) SetLevelCount(marketID, side string, count int)       {}
 func (m *mockEngineMetrics) ObserveReconcileDuration(marketID string, ms float64) {}

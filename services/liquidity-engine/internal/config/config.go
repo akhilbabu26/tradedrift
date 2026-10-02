@@ -6,16 +6,111 @@ package config
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
-
-	platformconfig "tradedrift/platform/config"
 )
+
+// ── Zone configuration ───────────────────────────────────────────────────────
+
+// ZoneBand defines the price distance range for one liquidity zone.
+// Distances are expressed in basis points (bps) relative to the current reference price.
+//
+//	BID zone: price = ref / (1 + bps/10000)  →  further below ref at higher bps
+//	ASK zone: price = ref * (1 + bps/10000)  →  further above ref at higher bps
+//
+// Count is how many levels occupy this zone (LOW=7, MID=4, HIGH=1 per the 7/4/1 design).
+type ZoneBand struct {
+	MinBps int // minimum distance from ref (inclusive)
+	MaxBps int // maximum distance from ref (exclusive)
+	Count  int // number of levels in this zone
+}
+
+// ZoneConfig groups the three zones for one side of the order book.
+type ZoneConfig struct {
+	Low  ZoneBand
+	Mid  ZoneBand
+	High ZoneBand
+}
+
+// TotalLevels returns the sum of levels across all zones.
+func (z ZoneConfig) TotalLevels() int {
+	return z.Low.Count + z.Mid.Count + z.High.Count
+}
+
+// DefaultZoneConfig returns the 7/4/1 zone split with production-safe bps defaults.
+// LOW : 5–50 bps  (7 levels)   — tightly around the reference price
+// MID : 50–150 bps (4 levels)  — moderate distance
+// HIGH: 150–300 bps (1 level)  — outer sentinel
+func DefaultZoneConfig() ZoneConfig {
+	return ZoneConfig{
+		Low:  ZoneBand{MinBps: 5, MaxBps: 50, Count: 7},
+		Mid:  ZoneBand{MinBps: 50, MaxBps: 150, Count: 4},
+		High: ZoneBand{MinBps: 150, MaxBps: 300, Count: 1},
+	}
+}
+
+// ── Repricing policy ─────────────────────────────────────────────────────────
+
+// RepricingConfig controls how aggressively the LE responds to reference-price movement.
+//
+// Three-tier policy:
+//
+//	Movement < SmallBps  → KEEP: no repricing, existing ladder is fine
+//	Movement < LargeBps  → MEDIUM: reprice outermost stale levels, up to MaxBatch per cycle
+//	Movement ≥ LargeBps  → LARGE: controlled full-ladder regeneration over multiple cycles
+//
+// OrderLifetime is how long a RESTING level is kept before being expired and replaced
+// with a fresh generation at a newly randomised price within its zone.
+type RepricingConfig struct {
+	SmallBps      int           // movement below this → no action (default: 10 bps)
+	LargeBps      int           // movement at or above this → full regeneration (default: 100 bps)
+	MaxBatch      int           // max levels repriced per 60-second evaluation cycle (default: 4)
+	OrderLifetime time.Duration // max age of a resting level before expiry-replace (default: 30m)
+}
+
+// ── RefPrice provider config ──────────────────────────────────────────────────
+
+// RefPriceConfig controls the shared platform/refprice.Provider that is embedded in the LE.
+// Seeds are startup fallbacks used before the first live API response arrives.
+type RefPriceConfig struct {
+	APIURL          string          // CoinGecko base URL (default: https://api.coingecko.com/api/v3)
+	APIKey          string          // Optional CoinGecko API key
+	Plan            string          // Optional CoinGecko API plan: "demo" or "pro" (default: "demo")
+	RefreshInterval time.Duration   // polling cadence (default: 30s)
+	StaleThreshold  time.Duration   // FRESH→STALE transition (default: 5m)
+	PauseThreshold  time.Duration   // STALE→PAUSED transition (default: 10m)
+	FetchTimeout    time.Duration   // per-request HTTP timeout (default: 5s)
+	BTCSeed         decimal.Decimal // startup seed for BTC-USDT (from BTC_REFERENCE_PRICE)
+	ETHSeed         decimal.Decimal // startup seed for ETH-USDT (from ETH_REFERENCE_PRICE)
+	SOLSeed         decimal.Decimal // startup seed for SOL-USDT (from SOL_REFERENCE_PRICE)
+}
+
+// SeedForMarket returns the configured startup seed price for marketID, or decimal.Zero if unconfigured.
+func (c *RefPriceConfig) SeedForMarket(marketID string) decimal.Decimal {
+	if c == nil {
+		return decimal.Zero
+	}
+	switch marketID {
+	case "BTC-USDT":
+		return c.BTCSeed
+	case "ETH-USDT":
+		return c.ETHSeed
+	case "SOL-USDT":
+		return c.SOLSeed
+	default:
+		return decimal.Zero
+	}
+}
+
+// ── MarketConfig ──────────────────────────────────────────────────────────────
 
 // MarketConfig holds per-market configuration that mirrors the ME's market.MarketConfig.
 // Tick/lot sizes must exactly match the ME's values — the ME rejects orders that violate them.
+//
+// MIGRATION NOTE: SpreadBps and ReferencePrice are V1 static fields, kept for backward
+// compatibility. They are superseded by BidZones/AskZones and the platform/refprice
+// Provider respectively. Do not add new code that reads SpreadBps or ReferencePrice.
 type MarketConfig struct {
 	MarketID        string
 	BaseAsset       string
@@ -27,10 +122,34 @@ type MarketConfig struct {
 	MinOrderSize    decimal.Decimal // minimum resting quantity before treating as consumed
 	MinBase         decimal.Decimal // effective available base below which skew to LOW
 	CriticalBase    decimal.Decimal // effective available base below which skew to CRITICAL
-	MinQuote       decimal.Decimal // effective available quote below which bid-side skew
-	CriticalQuote  decimal.Decimal
-	SpreadBps      int             // base spread in basis points (default 4 bps per level)
-	ReferencePrice decimal.Decimal // V1 static reference price
+	MinQuote        decimal.Decimal // effective available quote below which bid-side skew
+	CriticalQuote   decimal.Decimal
+
+	// Deprecated V1 fields — superseded by dynamic pricing. Kept for backward compat.
+	SpreadBps      int             // V1: flat bps spacing. Unused when BidZones/AskZones are set.
+	ReferencePrice decimal.Decimal // Seed/fallback reference price used during startup bootstrap or if refprice Provider is offline.
+
+	// ── Dynamic pricing (Phase 3+) ──────────────────────────────────────────
+
+	// BidZones / AskZones define the LOW/MID/HIGH price bands for each side.
+	// Zero value → DefaultZoneConfig() is used by GenerateZonedDesired().
+	BidZones ZoneConfig
+	AskZones ZoneConfig
+
+	// QtyPerLevel is the quantity placed at each level for this market.
+	// Replaces the hardcoded switch statement in pricing/ladder.go levelQuantity().
+	// Zero value → falls back to the hardcoded defaults for backward compat.
+	QtyPerLevel decimal.Decimal
+
+	// Capital budget: maximum total notional the LE is allowed to deploy per side.
+	// These caps are checked in applyCreate() before each order is submitted.
+	// Zero value → no budget cap applied (default for backward compat).
+	MaxBidExposureUSDT decimal.Decimal // max total USDT committed across all bid levels
+	MaxAskExposureBase decimal.Decimal // max total base committed across all ask levels
+
+	// Repricing policy for this market.
+	// Zero value → RepricingConfig with SmallBps=10, LargeBps=100, MaxBatch=4, OrderLifetime=30m.
+	Repricing RepricingConfig
 }
 
 // Config is the full LE configuration.
@@ -43,6 +162,7 @@ type Config struct {
 	WalletGRPCAddr string
 	OrderGRPCAddr  string
 	MEHTTPAddr     string
+	RedisAddr      string
 
 	// Markets
 	Markets []MarketConfig
@@ -66,172 +186,11 @@ type Config struct {
 	// Readiness thresholds
 	MinReadyBids int
 	MinReadyAsks int
+
+	// Dynamic pricing (Phase 3+)
+	RefPrice RefPriceConfig
 }
 
-// Load reads all configuration from environment variables.
-// Returns an error if any required variable is missing or invalid.
-func Load() (Config, error) {
-	rawBrokers := platformconfig.GetEnv("KAFKA_BROKERS", "localhost:9092")
-	brokers := strings.Split(rawBrokers, ",")
-	for i := range brokers {
-		brokers[i] = strings.TrimSpace(brokers[i])
-	}
-
-	btcPart, err := platformconfig.GetEnvAsInt("BTC_PARTITION", 0)
-	if err != nil {
-		return Config{}, fmt.Errorf("BTC_PARTITION: %w", err)
-	}
-	ethPart, err := platformconfig.GetEnvAsInt("ETH_PARTITION", 1)
-	if err != nil {
-		return Config{}, fmt.Errorf("ETH_PARTITION: %w", err)
-	}
-	solPart, err := platformconfig.GetEnvAsInt("SOL_PARTITION", 2)
-	if err != nil {
-		return Config{}, fmt.Errorf("SOL_PARTITION: %w", err)
-	}
-
-	btcRef, err := getEnvDecimal("BTC_REFERENCE_PRICE", "96450.00")
-	if err != nil {
-		return Config{}, fmt.Errorf("BTC_REFERENCE_PRICE: %w", err)
-	}
-	ethRef, err := getEnvDecimal("ETH_REFERENCE_PRICE", "2780.50")
-	if err != nil {
-		return Config{}, fmt.Errorf("ETH_REFERENCE_PRICE: %w", err)
-	}
-	solRef, err := getEnvDecimal("SOL_REFERENCE_PRICE", "188.20")
-	if err != nil {
-		return Config{}, fmt.Errorf("SOL_REFERENCE_PRICE: %w", err)
-	}
-
-	cancelRetry, err := platformconfig.GetEnvAsInt("CANCEL_RETRY_LIMIT", 3)
-	if err != nil {
-		return Config{}, fmt.Errorf("CANCEL_RETRY_LIMIT: %w", err)
-	}
-	meThreshold, err := platformconfig.GetEnvAsInt("ME_LIVENESS_THRESHOLD", 3)
-	if err != nil {
-		return Config{}, fmt.Errorf("ME_LIVENESS_THRESHOLD: %w", err)
-	}
-	minReadyBids, err := platformconfig.GetEnvAsInt("MIN_READY_BIDS", 6)
-	if err != nil {
-		return Config{}, fmt.Errorf("MIN_READY_BIDS: %w", err)
-	}
-	minReadyAsks, err := platformconfig.GetEnvAsInt("MIN_READY_ASKS", 6)
-	if err != nil {
-		return Config{}, fmt.Errorf("MIN_READY_ASKS: %w", err)
-	}
-
-	walletRefresh, err := platformconfig.GetEnvAsDuration("WALLET_REFRESH_INTERVAL", 15*time.Second)
-	if err != nil {
-		return Config{}, fmt.Errorf("WALLET_REFRESH_INTERVAL: %w", err)
-	}
-	maxBalStaleness, err := platformconfig.GetEnvAsDuration("MAX_BALANCE_STALENESS", 60*time.Second)
-	if err != nil {
-		return Config{}, fmt.Errorf("MAX_BALANCE_STALENESS: %w", err)
-	}
-	reconcileInterval, err := platformconfig.GetEnvAsDuration("RECONCILE_INTERVAL", 30*time.Second)
-	if err != nil {
-		return Config{}, fmt.Errorf("RECONCILE_INTERVAL: %w", err)
-	}
-	maxOrderStaleness, err := platformconfig.GetEnvAsDuration("MAX_ORDER_STATE_STALENESS", 90*time.Second)
-	if err != nil {
-		return Config{}, fmt.Errorf("MAX_ORDER_STATE_STALENESS: %w", err)
-	}
-	pendingTimeout, err := platformconfig.GetEnvAsDuration("PENDING_TIMEOUT", 10*time.Second)
-	if err != nil {
-		return Config{}, fmt.Errorf("PENDING_TIMEOUT: %w", err)
-	}
-	cancellingTimeout, err := platformconfig.GetEnvAsDuration("CANCELLING_TIMEOUT", 30*time.Second)
-	if err != nil {
-		return Config{}, fmt.Errorf("CANCELLING_TIMEOUT: %w", err)
-	}
-	debounce, err := platformconfig.GetEnvAsDuration("TARGETED_RECONCILE_DEBOUNCE", 200*time.Millisecond)
-	if err != nil {
-		return Config{}, fmt.Errorf("TARGETED_RECONCILE_DEBOUNCE: %w", err)
-	}
-	orphanCooldown, err := platformconfig.GetEnvAsDuration("LE_ORPHAN_CANCEL_COOLDOWN", 5*time.Second)
-	if err != nil {
-		return Config{}, fmt.Errorf("LE_ORPHAN_CANCEL_COOLDOWN: %w", err)
-	}
-
-	cfg := Config{
-		KafkaBrokers:   brokers,
-		KafkaGroupID:   platformconfig.GetEnv("KAFKA_GROUP_ID", "liquidity-engine-group"),
-		WalletGRPCAddr: platformconfig.GetEnv("WALLET_GRPC_ADDR", "localhost:50052"),
-		OrderGRPCAddr:  platformconfig.GetEnv("ORDER_GRPC_ADDR", "localhost:50053"),
-		MEHTTPAddr:     platformconfig.GetEnv("ME_HTTP_ADDR", "http://localhost:8082"),
-
-		WalletRefreshInterval:     walletRefresh,
-		MaxBalanceStaleness:       maxBalStaleness,
-		ReconcileInterval:         reconcileInterval,
-		MaxOrderStateStaleness:    maxOrderStaleness,
-		PendingTimeout:            pendingTimeout,
-		CancellingTimeout:         cancellingTimeout,
-		CancelRetryLimit:          cancelRetry,
-		MELivenessThreshold:       meThreshold,
-		TargetedReconcileDebounce: debounce,
-		OrphanCancelCooldown:      orphanCooldown,
-
-		HealthPort:   platformconfig.GetEnv("HEALTH_PORT", "8080"),
-		MetricsPort:  platformconfig.GetEnv("METRICS_PORT", "9090"),
-		MinReadyBids: minReadyBids,
-		MinReadyAsks: minReadyAsks,
-
-		Markets: []MarketConfig{
-			{
-				// BTC-USDT — tick=0.01, lot=0.00001 (verified from ME main.go)
-				MarketID:       "BTC-USDT",
-				BaseAsset:      "BTC",
-				QuoteAsset:     "USDT",
-				TickSize:       decimal.RequireFromString("0.01"),
-				LotSize:        decimal.RequireFromString("0.00001"),
-				Partition:      btcPart,
-				LevelCount:     12,
-				MinOrderSize:   decimal.RequireFromString("0.00001"),
-				MinBase:        decimal.RequireFromString("30"),      // 30 BTC = normal inventory
-				CriticalBase:   decimal.RequireFromString("5"),       // 5 BTC = critical
-				MinQuote:       decimal.RequireFromString("1000000"), // $1M USDT = normal
-				CriticalQuote:  decimal.RequireFromString("100000"),
-				SpreadBps:      4,
-				ReferencePrice: btcRef,
-			},
-			{
-				// ETH-USDT — tick=0.01, lot=0.0001 (verified from ME main.go)
-				MarketID:       "ETH-USDT",
-				BaseAsset:      "ETH",
-				QuoteAsset:     "USDT",
-				TickSize:       decimal.RequireFromString("0.01"),
-				LotSize:        decimal.RequireFromString("0.0001"),
-				Partition:      ethPart,
-				LevelCount:     12,
-				MinOrderSize:   decimal.RequireFromString("0.0001"),
-				MinBase:        decimal.RequireFromString("100"),
-				CriticalBase:   decimal.RequireFromString("10"),
-				MinQuote:       decimal.RequireFromString("100000"),
-				CriticalQuote:  decimal.RequireFromString("10000"),
-				SpreadBps:      4,
-				ReferencePrice: ethRef,
-			},
-			{
-				// SOL-USDT — tick=0.001, lot=0.01 (verified from ME main.go)
-				MarketID:       "SOL-USDT",
-				BaseAsset:      "SOL",
-				QuoteAsset:     "USDT",
-				TickSize:       decimal.RequireFromString("0.001"),
-				LotSize:        decimal.RequireFromString("0.01"),
-				Partition:      solPart,
-				LevelCount:     12,
-				MinOrderSize:   decimal.RequireFromString("0.01"),
-				MinBase:        decimal.RequireFromString("500"),
-				CriticalBase:   decimal.RequireFromString("50"),
-				MinQuote:       decimal.RequireFromString("20000"),
-				CriticalQuote:  decimal.RequireFromString("2000"),
-				SpreadBps:      4,
-				ReferencePrice: solRef,
-			},
-		},
-	}
-	return cfg, nil
-}
 
 // ForMarket returns the MarketConfig for the given market ID, or nil if not found.
 func (c *Config) ForMarket(marketID string) *MarketConfig {
@@ -262,14 +221,4 @@ func (c *Config) PartitionFor(marketID string) int {
 		return -1
 	}
 	return mc.Partition
-}
-
-// Helper for decimal environment variable parsing
-func getEnvDecimal(key, fallback string) (decimal.Decimal, error) {
-	v := platformconfig.GetEnv(key, fallback)
-	d, err := decimal.NewFromString(v)
-	if err != nil {
-		return decimal.Zero, fmt.Errorf("must be decimal, got %q: %w", v, err)
-	}
-	return d, nil
 }

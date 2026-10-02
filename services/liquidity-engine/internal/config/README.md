@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Loads and validates the **complete runtime configuration** for the Liquidity Engine from environment variables. It is the single source of truth for all per-market parameters (tick size, lot size, Kafka partition) and all timing/threshold knobs.
+Loads and validates the **complete runtime configuration** for the Liquidity Engine from environment variables. It is the single source of truth for all per-market parameters (tick size, lot size, Kafka partition, zone tiers, capital exposure caps) and all timing/threshold knobs.
 
 ## Problem It Solves
 
@@ -10,13 +10,19 @@ The LE and ME must agree on a set of critical values at runtime:
 
 1. **Kafka partition assignments** — if the LE publishes to the wrong partition, the ME's recovery pipeline will never see the command.
 2. **Tick and lot sizes** — the ME hard-rejects orders that violate its configured precision; if the LE uses different values it will produce permanently-rejected orders.
-3. **Timing parameters** — timeouts for pending/cancelling orders, wallet refresh intervals, ME liveness thresholds, and readiness thresholds all need to be tunable without code changes.
+3. **Zoned pricing & repricing tiers** — spread boundaries, slot distributions, lot multipliers, and multi-cycle rebase batch sizes need clear definitions per market.
+4. **Capital exposure limits** — limits on total quote (USDT) and base inventory quoted prevent the engine from over-allocating capital.
+5. **Timing parameters** — timeouts for pending/cancelling orders, wallet refresh intervals, ME liveness thresholds, and reference price staleness thresholds all need to be tunable without code changes.
 
 Embedding these values as hardcoded constants makes testing and environment-specific tuning impossible.
 
 ## How It Solves It
 
-`config.go` reads all values from environment variables with sensible defaults, validates them early (parsing errors are returned at startup, not at runtime), and exposes them through a typed `Config` struct. The same `BTC_PARTITION`, `ETH_PARTITION`, `SOL_PARTITION` env vars are read by **both** the ME and LE — ensuring a shared source of truth.
+The configuration package is organized into two files:
+- **`config.go`**: Defines domain structs (`Config`, `MarketConfig`, `ZoneConfig`, `RepricingConfig`, `RefPriceConfig`), default constructors, and partition lookup methods.
+- **`loader.go`**: Reads all values from environment variables with sensible defaults, validates them early (parsing errors are returned at startup, not at runtime), and exposes them through a typed `Config` struct.
+
+The same `BTC_PARTITION`, `ETH_PARTITION`, `SOL_PARTITION` env vars are read by **both** the ME and LE — ensuring a shared source of truth.
 
 ---
 
@@ -28,26 +34,40 @@ Embedding these values as hardcoded constants makes testing and environment-spec
 
 | Type | Purpose |
 |:---|:---|
-| `MarketConfig` | Per-market parameters: tick/lot sizes, Kafka partition, level count, inventory thresholds, spread in basis points, and reference price. |
-| `Config` | Full LE configuration: Kafka brokers, service addresses, all market configs, all timing parameters, health ports, and readiness thresholds. |
+| `ZoneConfig` | Defines spread bounds (`MinBps`, `MaxBps`), number of slots (`SlotCount`), and `LotMultiplier` for a pricing tier (LOW, MID, HIGH). |
+| `RepricingConfig` | Controls reference movement classification thresholds (`SmallBps`, `LargeBps`), slot order lifetime (`OrderLifetime`), and max rebase batch size (`MaxBatch`). |
+| `RefPriceConfig` | Staleness thresholds (`StaleThreshold`, `PauseThreshold`) for external platform reference price validation. |
+| `MarketConfig` | Per-market parameters: tick/lot sizes, Kafka partition, level count, inventory thresholds, spread in basis points, reference price, `BidZones`, `AskZones`, capital caps (`MaxBidExposureUSDT`, `MaxAskExposureBase`), and `Repricing`. |
+| `Config` | Full LE configuration: Kafka brokers, service addresses, all market configs, all timing parameters, health ports, refprice config, and readiness thresholds. |
+
+#### Methods
+
+| Method | Problem It Solves |
+|:---|:---|
+| `(c *Config) ForMarket(marketID string) *MarketConfig` | Provides lookup of a `MarketConfig` by market ID string. Returns `nil` for unknown markets. Used pervasively throughout the reconciler and engine to avoid re-scanning all markets from a raw string. |
+| `(c *Config) ValidatePartitions() error` | Detects duplicate Kafka partition assignments across markets — a partition collision would cause the ME to route two markets' commands to the same consumer group partition, corrupting recovery. Called once at startup. |
+| `(c *Config) PartitionFor(marketID string) int` | Returns the Kafka partition number for a market. Returns `-1` for unknown markets. Used by the Kafka producer to route commands to the correct partition. |
+
+---
+
+### [`loader.go`](./loader.go)
 
 #### Functions
 
 | Function | Problem It Solves |
 |:---|:---|
-| `Load() (Config, error)` | Reads all required and optional env vars, parses them into correct types (decimal, int, duration), and returns a fully validated `Config`. Returns an error on the first invalid or missing value — **fails fast at startup** so problems are caught before the engine processes any events. |
-| `(c *Config) ForMarket(marketID string) *MarketConfig` | Provides lookup of a `MarketConfig` by market ID string. Returns `nil` for unknown markets. Used pervasively throughout the reconciler and engine to avoid re-scanning all markets from a raw string. |
-| `(c *Config) ValidatePartitions() error` | Detects duplicate Kafka partition assignments across markets — a partition collision would cause the ME to route two markets' commands to the same consumer group partition, corrupting recovery. Called once at startup. |
-| `(c *Config) PartitionFor(marketID string) int` | Returns the Kafka partition number for a market. Returns `-1` for unknown markets. Used by the Kafka producer to route commands to the correct partition. |
-| `getEnvDecimal(key, fallback string) (decimal.Decimal, error)` | (internal) Parses a decimal environment variable. Wraps `decimal.NewFromString` with a useful error message. Used by `Load()` for all price/size values. |
+| `Load() (Config, error)` | Reads all required and optional env vars, parses them into correct types (decimal, int, duration), populates default zone tiers (LOW, MID, HIGH) and repricing parameters, and returns a fully validated `Config`. Returns an error on the first invalid or missing value — **fails fast at startup** so problems are caught before the engine processes any events. |
+| `getEnvDecimal(key, fallback string) (decimal.Decimal, error)` | (internal) Parses a decimal environment variable. Wraps `decimal.NewFromString` with a useful error message. Used by `Load()` for all price/size/exposure values. |
 
 ---
 
 ## Key Design Decisions
 
+- **Clear separation of concern**: `config.go` holds models and methods, while `loader.go` encapsulates environment variable loading and validation.
 - **No global config**: `Config` is passed explicitly through the dependency graph. This makes tests simple — construct any `Config` directly.
 - **Both ME and LE read the same partition env vars**: Prevents the most common misconfiguration (partition mismatch), which is otherwise invisible until recovery fails.
 - **Tick/lot sizes mirror the ME exactly**: The values in `MarketConfig` are verified against `services/matching-engine/cmd/main.go`. Any drift is a bug.
+- **Zoned pricing configuration**: Each market defaults to 3 structured bands (LOW: 4 slots at 10-40 bps, MID: 4 slots at 50-150 bps, HIGH: 4 slots at 175-400 bps) with customizable lot sizing multipliers.
 
 ---
 
@@ -60,9 +80,9 @@ Embedding these values as hardcoded constants makes testing and environment-spec
 | `BTC_PARTITION` | `0` | Kafka partition for BTC-USDT commands |
 | `ETH_PARTITION` | `1` | Kafka partition for ETH-USDT commands |
 | `SOL_PARTITION` | `2` | Kafka partition for SOL-USDT commands |
-| `BTC_REFERENCE_PRICE` | `96450.00` | V1 static reference price for BTC |
-| `ETH_REFERENCE_PRICE` | `2780.50` | V1 static reference price for ETH |
-| `SOL_REFERENCE_PRICE` | `188.20` | V1 static reference price for SOL |
+| `BTC_REFERENCE_PRICE` | `96450.00` | Seed/fallback reference price for BTC |
+| `ETH_REFERENCE_PRICE` | `2780.50` | Seed/fallback reference price for ETH |
+| `SOL_REFERENCE_PRICE` | `188.20` | Seed/fallback reference price for SOL |
 | `WALLET_GRPC_ADDR` | `localhost:50052` | Wallet Service gRPC address |
 | `ORDER_GRPC_ADDR` | `localhost:50053` | Order Service gRPC address |
 | `ME_HTTP_ADDR` | `http://localhost:8082` | Matching Engine HTTP health address |
@@ -79,3 +99,5 @@ Embedding these values as hardcoded constants makes testing and environment-spec
 | `METRICS_PORT` | `9090` | Prometheus metrics server port |
 | `MIN_READY_BIDS` | `6` | Minimum RESTING bid levels for `/readyz` |
 | `MIN_READY_ASKS` | `6` | Minimum RESTING ask levels for `/readyz` |
+| `REFPRICE_STALE_THRESHOLD` | `5m` | Max age of reference price before entering STALE state |
+| `REFPRICE_PAUSE_THRESHOLD` | `10m` | Max age of reference price before entering PAUSED state |

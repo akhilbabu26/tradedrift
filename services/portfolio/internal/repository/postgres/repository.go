@@ -380,6 +380,105 @@ func (r *Repository) ProcessTradeSettled(ctx context.Context, in repository.Trad
 	return []repository.OutboxMessage{buyerOutbox, sellerOutbox}, nil
 }
 
+// InitializePositionFromBootstrap applies the opening position defined in portfolio_bootstrap_positions
+// for (user_id, asset_code, source) to the holdings table exactly once.
+//
+// Safety properties:
+//   - SELECT FOR UPDATE on the bootstrap row serializes concurrent startup instances.
+//   - applied_at is set in the same transaction commit as the holdings change (crash-safe).
+//   - Additive UPDATE (quantity + seed) preserves any trades already processed (Case B).
+//   - RowsAffected() == 1 assertion after the Case B UPDATE prevents a silent no-op from
+//     being marked as successfully applied.
+func (r *Repository) InitializePositionFromBootstrap(
+	ctx context.Context,
+	in repository.BootstrapInput,
+) (bool, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin bootstrap tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	// 1. Lock and read the bootstrap record.
+	//    FOR UPDATE prevents two concurrent service instances from both applying the bootstrap.
+	var qty, costBasis decimal.Decimal
+	var appliedAt *time.Time
+
+	err = tx.QueryRow(ctx, `
+		SELECT quantity, cost_basis, applied_at
+		FROM portfolio_bootstrap_positions
+		WHERE user_id = $1 AND asset_code = $2 AND source = $3
+		FOR UPDATE;
+	`, in.UserID, in.AssetCode, in.Source).Scan(&qty, &costBasis, &appliedAt)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No bootstrap record defined for this (user, asset, source) — nothing to do.
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read bootstrap position for user %s asset %s: %w", in.UserID, in.AssetCode, err)
+	}
+
+	// 2. Idempotency guard: already applied on a prior startup — no-op.
+	if appliedAt != nil {
+		return false, nil
+	}
+
+	// 3a. Case A — holdings row does not yet exist.
+	//     INSERT with the full bootstrap quantity. ON CONFLICT DO NOTHING falls through to Case B.
+	tag, err := tx.Exec(ctx, `
+		INSERT INTO holdings (user_id, asset_code, quantity, total_cost, realized_pnl, version, updated_at)
+		VALUES ($1, $2, $3, $4, 0, 1, NOW())
+		ON CONFLICT (user_id, asset_code) DO NOTHING;
+	`, in.UserID, in.AssetCode, qty, costBasis)
+	if err != nil {
+		return false, fmt.Errorf("insert holdings from bootstrap for user %s asset %s: %w", in.UserID, in.AssetCode, err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		// 3b. Case B — holdings row already exists (CT-001 accumulated trades before this bootstrap ran).
+		//     Add the bootstrap quantity on top of existing holdings.
+		//     This preserves all previously processed trades — quantity is additive, not overwritten.
+		tag, err = tx.Exec(ctx, `
+			UPDATE holdings
+			SET
+				quantity   = quantity + $3,
+				total_cost = total_cost + $4,
+				version    = version + 1,
+				updated_at = NOW()
+			WHERE user_id = $1 AND asset_code = $2;
+		`, in.UserID, in.AssetCode, qty, costBasis)
+		if err != nil {
+			return false, fmt.Errorf("update holdings from bootstrap for user %s asset %s: %w", in.UserID, in.AssetCode, err)
+		}
+		// Defensive invariant: the holdings row must have existed for the UPDATE to affect a row.
+		// If it somehow affected 0 rows, do not mark applied_at — let the next startup retry.
+		if tag.RowsAffected() != 1 {
+			return false, fmt.Errorf(
+				"bootstrap UPDATE affected %d rows (expected 1) for user %s asset %s; rolling back",
+				tag.RowsAffected(), in.UserID, in.AssetCode,
+			)
+		}
+	}
+
+	// 4. Mark the bootstrap record as applied — in the same commit as the holdings change.
+	//    Crash between the UPDATE and this line: applied_at stays NULL → safe retry on next startup.
+	_, err = tx.Exec(ctx, `
+		UPDATE portfolio_bootstrap_positions
+		SET applied_at = NOW()
+		WHERE user_id = $1 AND asset_code = $2 AND source = $3;
+	`, in.UserID, in.AssetCode, in.Source)
+	if err != nil {
+		return false, fmt.Errorf("mark bootstrap applied for user %s asset %s: %w", in.UserID, in.AssetCode, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit bootstrap tx for user %s asset %s: %w", in.UserID, in.AssetCode, err)
+	}
+
+	return true, nil
+}
+
 // lockHoldingRow ensures the holding row exists and acquires an exclusive row lock (FOR UPDATE).
 func lockHoldingRow(ctx context.Context, tx pgx.Tx, userID, assetCode string) (repository.Holding, error) {
 	ensureQuery := `

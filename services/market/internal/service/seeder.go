@@ -40,9 +40,9 @@ func NewHistorySeeder(
 }
 
 var basePrices = map[string]decimal.Decimal{
-	"BTC-USDT": decimal.NewFromFloat(96450.00),
-	"ETH-USDT": decimal.NewFromFloat(2780.50),
-	"SOL-USDT": decimal.NewFromFloat(188.20),
+	"BTC-USDT": decimal.NewFromFloat(84000.00),
+	"ETH-USDT": decimal.NewFromFloat(2675.00),
+	"SOL-USDT": decimal.NewFromFloat(117.00),
 }
 
 var seedSpecs = []struct {

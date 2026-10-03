@@ -65,13 +65,6 @@ type MarketRepository interface {
 	GetTicker24h(ctx context.Context, marketID string) (*Ticker24h, error)
 	DeleteOldTrades(ctx context.Context, olderThan time.Duration) (int64, error)
 	GetMarketsOverview(ctx context.Context, resolution string, limit int) ([]*MarketOverviewItem, error)
-	// BulkInsertSeedTrades inserts synthetic trade rows for the 24h ticker baseline.
-	// Synthetic baseline trade invariants:
-	// - Deterministic UUID v5 derived from (marketID, bucketStartTime)
-	// - Fixed baseline quantity (0.25)
-	// - Price matches the corresponding seeded 1h candle close_price
-	// - Uses ON CONFLICT DO NOTHING — safe to call repeatedly.
-	BulkInsertSeedTrades(ctx context.Context, trades []*MarketTrade) error
 	// HasRecentTrades returns true if any trade exists for the market within the given duration window.
 	HasRecentTrades(ctx context.Context, marketID string, within time.Duration) (bool, error)
 }
@@ -79,9 +72,5 @@ type MarketRepository interface {
 type CandleRepository interface {
 	GetCandles(ctx context.Context, marketID string, resolution string, from, to *time.Time, limit int) ([]*OHLCCandle, error)
 	// GetCandleCount returns the number of candles for a given market and resolution.
-	// Used by the seeder for idempotency checks.
 	GetCandleCount(ctx context.Context, marketID string, resolution string) (int, error)
-	// BulkInsertSeedCandles inserts historical seed candle rows.
-	// Uses ON CONFLICT DO NOTHING — safe to call repeatedly.
-	BulkInsertSeedCandles(ctx context.Context, candles []*OHLCCandle) error
 }

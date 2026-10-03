@@ -1,75 +1,68 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { marketApi, type Candle } from '../api/market'
-import { generateMockCandles } from '../data/tradeMock'
 import type { Timeframe } from '../types/trade'
 
-export function useTradeCandles(marketId: string, timeframe: Timeframe = '1h') {
+export function useTradeCandles(marketId: string, timeframe: Timeframe = '1m') {
   const [candles, setCandles] = useState<Candle[]>([])
   const [loading, setLoading] = useState(true)
-  const [isDemoData, setIsDemoData] = useState(false)
+  const [isDemoData] = useState(false)
   const lastSignatureRef = useRef<string>('')
+  const mountedRef = useRef<boolean>(true)
+
+  const fetchCandles = useCallback(async (isInitial = false) => {
+    if (!marketId) return
+    try {
+      if (isInitial) setLoading(true)
+      const data = await marketApi.getCandles(marketId, timeframe, 100)
+      if (!mountedRef.current) return
+
+      if (Array.isArray(data) && data.length > 0) {
+        const last = data[data.length - 1]
+        const sig = `${data.length}_${last.start_time}_${last.open}_${last.high}_${last.low}_${last.close}_${last.volume}`
+        if (sig !== lastSignatureRef.current) {
+          lastSignatureRef.current = sig
+          setCandles(data)
+        }
+      } else {
+        setCandles([])
+        lastSignatureRef.current = ''
+      }
+    } catch (err) {
+      if (!mountedRef.current) return
+      console.warn(`Failed to fetch candles for ${marketId}`, err)
+      setCandles([])
+      lastSignatureRef.current = ''
+    } finally {
+      if (mountedRef.current && isInitial) setLoading(false)
+    }
+  }, [marketId, timeframe])
 
   useEffect(() => {
-    let mounted = true
+    mountedRef.current = true
 
     // 1. Immediately reset state on market or timeframe switch (Market Isolation)
     setCandles([])
     setLoading(true)
-    setIsDemoData(false)
     lastSignatureRef.current = ''
-
-    async function fetchCandles(isInitial = false) {
-      try {
-        if (isInitial) setLoading(true)
-        const data = await marketApi.getCandles(marketId, timeframe, 100)
-        if (!mounted) return
-
-        if (Array.isArray(data) && data.length > 0) {
-          const last = data[data.length - 1]
-          const sig = `${data.length}_${last.start_time}_${last.close}`
-          if (sig !== lastSignatureRef.current) {
-            lastSignatureRef.current = sig
-            setCandles(data)
-          }
-          setIsDemoData(false)
-        } else {
-          setCandles([])
-          setIsDemoData(false)
-        }
-      } catch (err) {
-        if (!mounted) return
-        console.warn(`Failed to fetch candles for ${marketId}`, err)
-        try {
-          const mock = generateMockCandles(marketId, 100)
-          setCandles(mock)
-          setIsDemoData(true)
-        } catch {
-          setCandles([])
-          setIsDemoData(false)
-        }
-      } finally {
-        if (mounted && isInitial) setLoading(false)
-      }
-    }
 
     // Initial load
     fetchCandles(true)
 
-    // Periodic synchronization / recovery mechanism (every 20s)
-    // Non-intrusive: does NOT trigger full-screen loading state
+    // Periodic synchronization every 5s
     const interval = setInterval(() => {
       fetchCandles(false)
-    }, 20000)
+    }, 5000)
 
     return () => {
-      mounted = false
+      mountedRef.current = false
       clearInterval(interval)
     }
-  }, [marketId, timeframe])
+  }, [marketId, timeframe, fetchCandles])
 
   return {
     candles,
     loading,
     isDemoData,
+    refetch: () => fetchCandles(false),
   }
 }

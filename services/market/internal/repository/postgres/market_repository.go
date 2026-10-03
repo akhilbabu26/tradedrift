@@ -218,35 +218,6 @@ func (r *MarketRepository) DeleteOldTrades(ctx context.Context, olderThan time.D
 	return ct.RowsAffected(), nil
 }
 
-// BulkInsertSeedTrades inserts synthetic trade rows for the 24h ticker baseline.
-// Uses ON CONFLICT DO NOTHING — safe to call repeatedly.
-func (r *MarketRepository) BulkInsertSeedTrades(ctx context.Context, trades []*repository.MarketTrade) error {
-	if len(trades) == 0 {
-		return nil
-	}
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin seed trades tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	query := `
-		INSERT INTO market_trades (id, market_id, price, quantity, executed_at)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (id) DO NOTHING
-	`
-	for _, t := range trades {
-		if _, err := tx.Exec(ctx, query, t.ID, t.MarketID, t.Price, t.Quantity, t.ExecutedAt); err != nil {
-			return fmt.Errorf("insert seed trade (%s %s): %w", t.MarketID, t.ExecutedAt, err)
-		}
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit seed trades tx: %w", err)
-	}
-	return nil
-}
-
 // GetMarketsOverview returns active markets with 24h ticker metrics and close-price trends.
 func (r *MarketRepository) GetMarketsOverview(ctx context.Context, resolution string, limit int) ([]*repository.MarketOverviewItem, error) {
 	query := `

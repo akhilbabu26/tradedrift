@@ -191,12 +191,15 @@ services:
       KAFKA_BROKERS: kafka:29092
       KAFKA_GROUP_ID: market-service-group
       KAFKA_TOPIC_TRADE_EXECUTED: trades.executed
+      REDIS_ADDR: redis:6379
       LOG_LEVEL: info
     ports:
       - "50054:50054"
     depends_on:
       kafka-init:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
 
   matching-engine:
     build:

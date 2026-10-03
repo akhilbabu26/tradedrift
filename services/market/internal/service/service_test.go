@@ -16,7 +16,6 @@ type mockMarketRepo struct {
 	getTicker24hFunc       func(ctx context.Context, marketID string) (*repository.Ticker24h, error)
 	deleteOldTradesFunc    func(ctx context.Context, olderThan time.Duration) (int64, error)
 	getMarketsOverviewFunc func(ctx context.Context, resolution string, limit int) ([]*repository.MarketOverviewItem, error)
-	bulkInsertTradesFunc   func(ctx context.Context, trades []*repository.MarketTrade) error
 	hasRecentTradesFunc    func(ctx context.Context, marketID string, within time.Duration) (bool, error)
 }
 
@@ -56,12 +55,6 @@ func (m *mockMarketRepo) GetMarketsOverview(ctx context.Context, resolution stri
 	}
 	return nil, nil
 }
-func (m *mockMarketRepo) BulkInsertSeedTrades(ctx context.Context, trades []*repository.MarketTrade) error {
-	if m.bulkInsertTradesFunc != nil {
-		return m.bulkInsertTradesFunc(ctx, trades)
-	}
-	return nil
-}
 func (m *mockMarketRepo) HasRecentTrades(ctx context.Context, marketID string, within time.Duration) (bool, error) {
 	if m.hasRecentTradesFunc != nil {
 		return m.hasRecentTradesFunc(ctx, marketID, within)
@@ -72,7 +65,6 @@ func (m *mockMarketRepo) HasRecentTrades(ctx context.Context, marketID string, w
 type mockCandleRepo struct {
 	getCandlesFunc     func(ctx context.Context, marketID, resolution string, from, to *time.Time, limit int) ([]*repository.OHLCCandle, error)
 	getCandleCountFunc func(ctx context.Context, marketID, resolution string) (int, error)
-	bulkInsertCandles  func(ctx context.Context, candles []*repository.OHLCCandle) error
 }
 
 func (c *mockCandleRepo) GetCandles(ctx context.Context, marketID, resolution string, from, to *time.Time, limit int) ([]*repository.OHLCCandle, error) {
@@ -86,12 +78,6 @@ func (c *mockCandleRepo) GetCandleCount(ctx context.Context, marketID, resolutio
 		return c.getCandleCountFunc(ctx, marketID, resolution)
 	}
 	return 0, nil
-}
-func (c *mockCandleRepo) BulkInsertSeedCandles(ctx context.Context, candles []*repository.OHLCCandle) error {
-	if c.bulkInsertCandles != nil {
-		return c.bulkInsertCandles(ctx, candles)
-	}
-	return nil
 }
 
 func TestMarketService_GetCandles_Resolutions(t *testing.T) {

@@ -231,6 +231,7 @@ services/market/
 | `KAFKA_BROKERS` | `localhost:9092` | Comma-separated list of Apache Kafka brokers |
 | `KAFKA_GROUP_ID` | `market-service-group` | Kafka consumer group ID |
 | `KAFKA_TOPIC_TRADE_EXECUTED` | `trades.executed` | Kafka topic for executed trades |
+| `REDIS_ADDR` | `localhost:6379` | Redis address for 24h rolling ticker publication |
 | `LOG_LEVEL` | `info` | Logging verbosity (`debug`, `info`, `warn`, `error`) |
 
 ---

@@ -15,6 +15,7 @@ import (
 	"tradedrift/platform/config"
 	"tradedrift/platform/logger"
 	"tradedrift/platform/postgres"
+	platformredis "tradedrift/platform/redis"
 	marketconfig "tradedrift/services/market/internal/config"
 	"tradedrift/services/market/internal/handler"
 	marketkafka "tradedrift/services/market/internal/kafka"
@@ -55,21 +56,28 @@ func main() {
 	}
 	defer dbPool.Close()
 
-	// 4. Initialize Repositories and Service
+	// 4. Redis Client for real-time ticker publication (Invariant 6)
+	redisClient, err := platformredis.NewClient(poolCtx, platformredis.Config{
+		Addr: cfg.RedisAddr,
+	})
+	if err != nil {
+		appLogger.Fatal("Failed to connect to Redis for ticker publication",
+			zap.Error(err),
+			zap.String("addr", cfg.RedisAddr),
+		)
+	}
+	defer redisClient.Close()
+	appLogger.Info("Connected to Redis for ticker publication successfully", zap.String("addr", cfg.RedisAddr))
+
+	// 5. Initialize Repositories and Service
 	marketRepo := postgresrepo.NewMarketRepository(dbPool)
 	candleRepo := postgresrepo.NewCandleRepository(dbPool)
-	marketSvc := service.NewMarketService(marketRepo, candleRepo)
+	marketSvc := service.NewMarketService(marketRepo, candleRepo, redisClient, appLogger)
 
-	// 4a. Ensure deterministic historical market data (idempotent)
-	appLogger.Info("Verifying market seed history (SeedVersion=1)...")
-	seeder := service.NewHistorySeeder(marketRepo, candleRepo, appLogger)
-	if err := seeder.EnsureSeedHistory(ctx); err != nil {
-		appLogger.Fatal("Failed to ensure market seed history", zap.Error(err))
-	}
-	appLogger.Info("Market seed history verified")
+	// Invariant 1: No synthetic historical trades or candles are generated.
+	// Market history is strictly execution-derived from ME TradeExecuted events.
 
-
-	// 5. Start Kafka Consumer for TradeExecuted Events
+	// 6. Start Kafka Consumer for TradeExecuted Events
 	rawBrokers := strings.Split(cfg.KafkaBrokers, ",")
 	brokers := make([]string, 0, len(rawBrokers))
 	for _, b := range rawBrokers {

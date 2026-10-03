@@ -33,7 +33,7 @@ export default function TradePage() {
   const initialMarket = searchParams.get('market') || 'BTC-USDT'
 
   // ── Timeframe state ─────────────────────────────────────────────────────
-  const [timeframe, setTimeframe] = useState<Timeframe>('1h')
+  const [timeframe, setTimeframe] = useState<Timeframe>('1m')
 
   // ── Market + ticker (owns selectedMarketId) ──────────────────────────────
   const {
@@ -63,6 +63,7 @@ export default function TradePage() {
     candles,
     loading: candlesLoading,
     isDemoData: candlesDemoData,
+    refetch: refetchCandles,
   } = useTradeCandles(selectedMarketId, timeframe)
 
   // ── Order book ───────────────────────────────────────────────────────────
@@ -153,6 +154,7 @@ export default function TradePage() {
             isDemoData={candlesDemoData}
             timeframe={timeframe}
             onTimeframeChange={setTimeframe}
+            onRefreshCandles={refetchCandles}
           />
         </div>
 

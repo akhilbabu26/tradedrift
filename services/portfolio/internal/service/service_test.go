@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
 	"google.golang.org/grpc"
@@ -36,6 +37,16 @@ func (m *mockRepo) MarkOutboxPublished(ctx context.Context, ids []string) error 
 func (m *mockRepo) InitializePositionFromBootstrap(ctx context.Context, in repository.BootstrapInput) (bool, error) {
 	return false, nil
 }
+func (m *mockRepo) RecordSnapshot(ctx context.Context, snap repository.PortfolioSnapshot) error {
+	return nil
+}
+func (m *mockRepo) GetSnapshots(ctx context.Context, userID string, startTime time.Time, bucketDuration time.Duration, limit int) ([]repository.PortfolioSnapshot, error) {
+	return nil, nil
+}
+func (m *mockRepo) GetActiveUserIDsWithHoldings(ctx context.Context) ([]string, error) {
+	return nil, nil
+}
+
 
 // mockWalletClient implements walletv1.WalletServiceClient for unit tests
 type mockWalletClient struct {

@@ -100,6 +100,90 @@ var (
 		},
 		[]string{"market_id", "reason"},
 	)
+
+	SweepOrders = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "cts_sweep_orders_total",
+			Help: "Total number of multi-level sweep orders executed by CTS",
+		},
+		[]string{"market_id", "profile", "side"},
+	)
+
+	SweepLevels = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "cts_sweep_levels_total",
+			Help: "Distribution of reachable depth levels involved in sweeps",
+		},
+		[]string{"market_id", "profile", "levels"},
+	)
+
+	SweepQuantity = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "cts_sweep_quantity_total",
+			Help: "Cumulative filled base quantity executed via sweeps",
+		},
+		[]string{"market_id", "profile"},
+	)
+
+	RegimeTransitions = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "cts_regime_transitions_total",
+			Help: "Total number of market regime transitions",
+		},
+		[]string{"market_id", "from_regime", "to_regime"},
+	)
+
+	RegimeCurrent = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "cts_regime_current",
+			Help: "Current active market regime (1 = active state)",
+		},
+		[]string{"market_id", "regime"},
+	)
+
+	ProfileSelected = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "cts_profile_selected_total",
+			Help: "Total number of taker order profiles selected",
+		},
+		[]string{"market_id", "regime", "profile"},
+	)
+
+	InterarrivalSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "cts_interarrival_seconds",
+			Help:    "Distribution of inter-arrival wait durations between order cycles",
+			Buckets: []float64{0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300},
+		},
+		[]string{"market_id", "regime"},
+	)
+
+	PostHighCooldownSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "cts_post_high_cooldown_seconds",
+			Help:    "Duration of post-HIGH sweep pacing cooldown floors",
+			Buckets: []float64{5, 15, 30, 45, 60, 90, 120, 180, 300},
+		},
+		[]string{"market_id", "severity"},
+	)
+
+	DepthAgeSeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "cts_depth_age_seconds",
+			Help:    "Observed age of orderbook depth snapshot at read or submission",
+			Buckets: []float64{0.05, 0.1, 0.25, 0.5, 1, 2, 3, 5, 10},
+		},
+		[]string{"market_id", "stage"},
+	)
+
+	SubmissionLatencySeconds = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "cts_order_submission_latency_seconds",
+			Help:    "Latency of gRPC order submission to Order Service in seconds",
+			Buckets: []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5},
+		},
+		[]string{"market_id", "profile"},
+	)
 )
 
 func init() {
@@ -114,6 +198,27 @@ func init() {
 	prometheus.MustRegister(ResidualsCancelled)
 	prometheus.MustRegister(OrderLatency)
 	prometheus.MustRegister(DepthReadErrors)
+	prometheus.MustRegister(SweepOrders)
+	prometheus.MustRegister(SweepLevels)
+	prometheus.MustRegister(SweepQuantity)
+	prometheus.MustRegister(RegimeTransitions)
+	prometheus.MustRegister(RegimeCurrent)
+	prometheus.MustRegister(ProfileSelected)
+	prometheus.MustRegister(InterarrivalSeconds)
+	prometheus.MustRegister(PostHighCooldownSeconds)
+	prometheus.MustRegister(DepthAgeSeconds)
+	prometheus.MustRegister(SubmissionLatencySeconds)
+}
+
+// SetCurrentRegime updates the cts_regime_current gauge vector for all regimes.
+func SetCurrentRegime(marketID, activeRegime string) {
+	for _, reg := range []string{"QUIET", "NORMAL", "ACTIVE", "BURST"} {
+		v := 0.0
+		if reg == activeRegime {
+			v = 1.0
+		}
+		RegimeCurrent.WithLabelValues(marketID, reg).Set(v)
+	}
 }
 
 // Server serves Prometheus metrics.

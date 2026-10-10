@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { orderApi, type Order, type CreateOrderRequest } from '../api/order'
 import { wsService, WsChannels } from '../api/ws'
 import { useAuthStore } from '../store/authStore'
@@ -13,34 +13,49 @@ export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) 
   const user = useAuthStore((s) => s.user)
   const userId = user?.userId
 
+  const reqIdRef = useRef(0)
+
   const fetchOrders = useCallback(async () => {
+    const thisReqId = ++reqIdRef.current
+    const targetMarket = marketId
+
     try {
-      // Filter by the currently selected market so the panel only shows
-      // orders relevant to what the user is trading right now.
-      const data = await orderApi.listOrders({ market_id: marketId })
+      const data = await orderApi.listOrders({ market_id: targetMarket })
+      if (thisReqId !== reqIdRef.current || targetMarket !== marketId) return
       setOrders(data || [])
     } catch (err) {
+      if (thisReqId !== reqIdRef.current || targetMarket !== marketId) return
       console.warn('Failed to fetch orders', err)
-      setOrders([])
+      // On error, do not wipe valid orders if market hasn't changed
     } finally {
-      setLoading(false)
+      if (thisReqId === reqIdRef.current && targetMarket === marketId) {
+        setLoading(false)
+      }
     }
   }, [marketId])
 
   useEffect(() => {
+    // Reset orders state immediately on market switch (Market Isolation)
+    setOrders([])
+    setLoading(true)
     fetchOrders()
 
-    if (!userId) return
-
-    const unsub = wsService.subscribe(WsChannels.userNotifications(userId), () => {
+    const onRefresh = () => {
       fetchOrders()
       onBalanceRefresh?.()
-    })
+    }
+
+    const unsub = wsService.subscribe(WsChannels.userNotifications(userId), onRefresh)
+    const unsubReconnect = wsService.onReconnect(onRefresh)
+
+    window.addEventListener('focus', onRefresh)
 
     return () => {
       unsub()
+      unsubReconnect()
+      window.removeEventListener('focus', onRefresh)
     }
-  }, [fetchOrders, onBalanceRefresh, userId])
+  }, [fetchOrders, onBalanceRefresh, userId, marketId])
 
   const submitOrder = async (req: CreateOrderRequest): Promise<boolean> => {
     setSubmitting(true)

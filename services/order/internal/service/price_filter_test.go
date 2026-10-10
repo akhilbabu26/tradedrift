@@ -280,3 +280,55 @@ func TestPriceFilter_MM_AnchorMarketIDMismatch_Reject(t *testing.T) {
 	assert.Contains(t, violation.Reason, "ETH-USDT")
 	assert.Contains(t, violation.Reason, "SOL-USDT")
 }
+
+func TestPriceFilter_Retail_RedisError_FailClosed(t *testing.T) {
+	mockRedis := &mockRedisClient{err: fmt.Errorf("connection refused")}
+	filter := NewPriceFilter(mockRedis, "0.05", zap.NewNop())
+
+	err := filter.ValidatePriceBand(context.Background(), "BTC-USDT", repository.SideBuy, repository.TypeMarket, decimal.NewFromInt(96400), retailUUID)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrPriceReferenceUnavailable)
+}
+
+func TestPriceFilter_Retail_CorruptedJSON_FailClosed(t *testing.T) {
+	mockRedis := &mockRedisClient{val: "{corrupted json"}
+	filter := NewPriceFilter(mockRedis, "0.05", zap.NewNop())
+
+	err := filter.ValidatePriceBand(context.Background(), "BTC-USDT", repository.SideBuy, repository.TypeMarket, decimal.NewFromInt(96400), retailUUID)
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrPriceReferenceUnavailable)
+}
+
+func TestPriceFilter_Retail_RedisNil_ColdStartAllow(t *testing.T) {
+	mockRedis := &mockRedisClient{err: redis.Nil}
+	filter := NewPriceFilter(mockRedis, "0.05", zap.NewNop())
+
+	err := filter.ValidatePriceBand(context.Background(), "BTC-USDT", repository.SideBuy, repository.TypeLimit, decimal.NewFromInt(96400), retailUUID)
+	require.NoError(t, err)
+}
+
+func TestPriceFilter_MarketSell_ProtectionFloor(t *testing.T) {
+	mockRedis := &mockRedisClient{val: sampleDepthJSON}
+	filter := NewPriceFilter(mockRedis, "0.05", zap.NewNop())
+
+	// Mid is ~96444.29. 5% band gives minAllowed = 91622.0755, best bid is 96400.
+
+	// Case 1: Valid floor (95000: >= minAllowed 91622 and <= bestBid 96400) -> OK
+	err := filter.ValidatePriceBand(context.Background(), "BTC-USDT", repository.SideSell, repository.TypeMarket, decimal.NewFromInt(95000), retailUUID)
+	require.NoError(t, err)
+
+	// Case 2: Floor below minAllowed (90000: < 91622) -> VIOLATION
+	err = filter.ValidatePriceBand(context.Background(), "BTC-USDT", repository.SideSell, repository.TypeMarket, decimal.NewFromInt(90000), retailUUID)
+	require.Error(t, err)
+	var v1 *PriceFilterViolation
+	require.ErrorAs(t, err, &v1)
+	assert.Contains(t, v1.Reason, "below minimum allowed price")
+
+	// Case 3: Floor above best bid (97000: > bestBid 96400) -> VIOLATION (cannot execute)
+	err = filter.ValidatePriceBand(context.Background(), "BTC-USDT", repository.SideSell, repository.TypeMarket, decimal.NewFromInt(97000), retailUUID)
+	require.Error(t, err)
+	var v2 *PriceFilterViolation
+	require.ErrorAs(t, err, &v2)
+	assert.Contains(t, v2.Reason, "above current market best bid")
+}
+

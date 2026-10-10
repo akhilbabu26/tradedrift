@@ -1,3 +1,4 @@
+
 package config
 
 import (
@@ -121,27 +122,27 @@ func Load() (Config, error) {
 	}
 
 	// Zone config — 7/4/1 split with bps-range env overrides.
-	lowMin, err := platformconfig.GetEnvAsInt("LE_LOW_MIN_BPS", 5)
+	lowMin, err := platformconfig.GetEnvAsInt("LE_LOW_MIN_BPS", 1)
 	if err != nil {
 		return Config{}, fmt.Errorf("LE_LOW_MIN_BPS: %w", err)
 	}
-	lowMax, err := platformconfig.GetEnvAsInt("LE_LOW_MAX_BPS", 50)
+	lowMax, err := platformconfig.GetEnvAsInt("LE_LOW_MAX_BPS", 15)
 	if err != nil {
 		return Config{}, fmt.Errorf("LE_LOW_MAX_BPS: %w", err)
 	}
-	midMin, err := platformconfig.GetEnvAsInt("LE_MID_MIN_BPS", 50)
+	midMin, err := platformconfig.GetEnvAsInt("LE_MID_MIN_BPS", 15)
 	if err != nil {
 		return Config{}, fmt.Errorf("LE_MID_MIN_BPS: %w", err)
 	}
-	midMax, err := platformconfig.GetEnvAsInt("LE_MID_MAX_BPS", 150)
+	midMax, err := platformconfig.GetEnvAsInt("LE_MID_MAX_BPS", 45)
 	if err != nil {
 		return Config{}, fmt.Errorf("LE_MID_MAX_BPS: %w", err)
 	}
-	highMin, err := platformconfig.GetEnvAsInt("LE_HIGH_MIN_BPS", 150)
+	highMin, err := platformconfig.GetEnvAsInt("LE_HIGH_MIN_BPS", 45)
 	if err != nil {
 		return Config{}, fmt.Errorf("LE_HIGH_MIN_BPS: %w", err)
 	}
-	highMax, err := platformconfig.GetEnvAsInt("LE_HIGH_MAX_BPS", 300)
+	highMax, err := platformconfig.GetEnvAsInt("LE_HIGH_MAX_BPS", 100)
 	if err != nil {
 		return Config{}, fmt.Errorf("LE_HIGH_MAX_BPS: %w", err)
 	}
@@ -169,16 +170,32 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("LE_ORDER_LIFETIME: %w", err)
 	}
+	refreshCooldown, err := platformconfig.GetEnvAsDuration("LE_REFRESH_COOLDOWN", 5*time.Second)
+	if err != nil {
+		return Config{}, fmt.Errorf("LE_REFRESH_COOLDOWN: %w", err)
+	}
+	refreshConsumptionThreshold, err := getEnvDecimal("LE_REFRESH_CONSUMPTION_THRESHOLD", "0.50")
+	if err != nil || refreshConsumptionThreshold.LessThan(decimal.NewFromFloat(0.10)) || refreshConsumptionThreshold.GreaterThan(decimal.NewFromFloat(0.90)) {
+		refreshConsumptionThreshold = decimal.NewFromFloat(0.50)
+	}
+
+	spreadBreachBps, err := platformconfig.GetEnvAsInt("LE_SPREAD_BREACH_BPS", 0)
+	if err != nil {
+		return Config{}, fmt.Errorf("LE_SPREAD_BREACH_BPS: %w", err)
+	}
 
 	repricing := RepricingConfig{
-		SmallBps:      smallBps,
-		LargeBps:      largeBps,
-		MaxBatch:      maxBatch,
-		OrderLifetime: orderLifetime,
+		SmallBps:                    smallBps,
+		LargeBps:                    largeBps,
+		MaxBatch:                    maxBatch,
+		SpreadBreachBps:             spreadBreachBps,
+		OrderLifetime:               orderLifetime,
+		RefreshCooldown:             refreshCooldown,
+		RefreshConsumptionThreshold: refreshConsumptionThreshold,
 	}
 
 	// Per-market quantity per level (env-configurable, falls back to V1 hardcoded values).
-	btcQty, err := getEnvDecimal("LE_BTC_QTY_PER_LEVEL", "0.85")
+	btcQty, err := getEnvDecimal("LE_BTC_QTY_PER_LEVEL", "0.15")
 	if err != nil {
 		return Config{}, fmt.Errorf("LE_BTC_QTY_PER_LEVEL: %w", err)
 	}

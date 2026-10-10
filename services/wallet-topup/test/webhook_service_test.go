@@ -612,3 +612,204 @@ func TestWebhook_ValidSignatureAmountMismatch_AuditRecorded(t *testing.T) {
 	}
 }
 
+func TestWebhook_Razorpay_DelayedValidCapture_Succeeds(t *testing.T) {
+	_, webhookSvc, dailyRepo, orderRepo, _, txManager, _ := setupWebhookTest("secret", 10)
+	razorpay := mock.NewNamedMockPaymentProvider("RAZORPAY", "secret")
+	topupSvc := service.NewTopUpService(dailyRepo, orderRepo, txManager, razorpay, 10, zap.NewNop())
+	ctx := context.Background()
+
+	order, err := topupSvc.CreateTopUp(ctx, "user-delayed-test", "key-delayed-1", 5)
+	if err != nil {
+		t.Fatalf("failed to create order: %v", err)
+	}
+	provOrderID := *order.ProviderOrderID
+	now := time.Now().Unix()
+
+	// Payload created 60 seconds ago (would fail under old 5-second skew rule!)
+	eventCreatedAt := now - 60
+	rzpPayload := map[string]interface{}{
+		"event":      "payment.captured",
+		"created_at": eventCreatedAt,
+		"payload": map[string]interface{}{
+			"payment": map[string]interface{}{
+				"entity": map[string]interface{}{
+					"id":         "pay_delayed_123",
+					"amount":     500, // 5 INR in paise
+					"currency":   "INR",
+					"status":     "captured",
+					"order_id":   provOrderID,
+					"created_at": eventCreatedAt,
+					"notes": map[string]string{
+						"topup_order_id": order.ID,
+					},
+				},
+			},
+		},
+	}
+	body, _ := json.Marshal(rzpPayload)
+	sig := razorpay.GenerateSignature(body, now)
+
+	// Webhook arrives now (server receipt time = now, header timestamp = now)
+	err = webhookSvc.ProcessWebhook(ctx, "RAZORPAY", body, sig, now)
+	if err != nil {
+		t.Fatalf("expected delayed webhook to succeed, got error: %v", err)
+	}
+
+	o, _ := orderRepo.GetByID(ctx, order.ID)
+	if o.Status != domain.StatusCreditPending {
+		t.Errorf("expected order status CREDIT_PENDING, got %s", o.Status)
+	}
+}
+
+func TestWebhook_Razorpay_CaseInsensitiveProvider_Succeeds(t *testing.T) {
+	_, webhookSvc, dailyRepo, orderRepo, _, txManager, _ := setupWebhookTest("secret", 10)
+	razorpay := mock.NewNamedMockPaymentProvider("RAZORPAY", "secret")
+	topupSvc := service.NewTopUpService(dailyRepo, orderRepo, txManager, razorpay, 10, zap.NewNop())
+	ctx := context.Background()
+
+	order, err := topupSvc.CreateTopUp(ctx, "user-case-test", "key-case-1", 5)
+	if err != nil {
+		t.Fatalf("failed to create order: %v", err)
+	}
+	provOrderID := *order.ProviderOrderID
+	now := time.Now().Unix()
+
+	rzpPayload := map[string]interface{}{
+		"event":      "payment.captured",
+		"created_at": now,
+		"payload": map[string]interface{}{
+			"payment": map[string]interface{}{
+				"entity": map[string]interface{}{
+					"id":         "pay_case_123",
+					"amount":     500,
+					"currency":   "INR",
+					"status":     "captured",
+					"order_id":   provOrderID,
+					"created_at": now,
+				},
+			},
+		},
+	}
+	body, _ := json.Marshal(rzpPayload)
+	sig := razorpay.GenerateSignature(body, now)
+
+	// Incoming path passes lowercase "razorpay"
+	err = webhookSvc.ProcessWebhook(ctx, "razorpay", body, sig, now)
+	if err != nil {
+		t.Fatalf("expected lowercase razorpay provider lookup to succeed, got: %v", err)
+	}
+
+	o, _ := orderRepo.GetByID(ctx, order.ID)
+	if o.Status != domain.StatusCreditPending {
+		t.Errorf("expected order status CREDIT_PENDING, got %s", o.Status)
+	}
+}
+
+func TestWebhook_Razorpay_OrderPaidEvent_Succeeds(t *testing.T) {
+	_, webhookSvc, dailyRepo, orderRepo, _, txManager, _ := setupWebhookTest("secret", 10)
+	razorpay := mock.NewNamedMockPaymentProvider("RAZORPAY", "secret")
+	topupSvc := service.NewTopUpService(dailyRepo, orderRepo, txManager, razorpay, 10, zap.NewNop())
+	ctx := context.Background()
+
+	order, err := topupSvc.CreateTopUp(ctx, "user-orderpaid-test", "key-orderpaid-1", 5)
+	if err != nil {
+		t.Fatalf("failed to create order: %v", err)
+	}
+	provOrderID := *order.ProviderOrderID
+	now := time.Now().Unix()
+
+	// Payload with event "order.paid"
+	rzpPayload := map[string]interface{}{
+		"event":      "order.paid",
+		"created_at": now,
+		"payload": map[string]interface{}{
+			"order": map[string]interface{}{
+				"entity": map[string]interface{}{
+					"id":         provOrderID,
+					"amount":     500,
+					"currency":   "INR",
+					"status":     "paid",
+					"created_at": now,
+					"notes": map[string]string{
+						"topup_order_id": order.ID,
+					},
+				},
+			},
+			"payment": map[string]interface{}{
+				"entity": map[string]interface{}{
+					"id":         "pay_orderpaid_123",
+					"amount":     500,
+					"currency":   "INR",
+					"status":     "captured",
+					"order_id":   provOrderID,
+					"created_at": now,
+				},
+			},
+		},
+	}
+	body, _ := json.Marshal(rzpPayload)
+	sig := razorpay.GenerateSignature(body, now)
+
+	err = webhookSvc.ProcessWebhook(ctx, "RAZORPAY", body, sig, now)
+	if err != nil {
+		t.Fatalf("expected order.paid event to succeed, got: %v", err)
+	}
+
+	o, _ := orderRepo.GetByID(ctx, order.ID)
+	if o.Status != domain.StatusCreditPending {
+		t.Errorf("expected order status CREDIT_PENDING, got %s", o.Status)
+	}
+}
+
+func TestWebhook_Razorpay_DuplicateEvent_Idempotent(t *testing.T) {
+	_, webhookSvc, dailyRepo, orderRepo, _, txManager, _ := setupWebhookTest("secret", 10)
+	razorpay := mock.NewNamedMockPaymentProvider("RAZORPAY", "secret")
+	topupSvc := service.NewTopUpService(dailyRepo, orderRepo, txManager, razorpay, 10, zap.NewNop())
+	ctx := context.Background()
+
+	order, err := topupSvc.CreateTopUp(ctx, "user-dup-test", "key-dup-1", 5)
+	if err != nil {
+		t.Fatalf("failed to create order: %v", err)
+	}
+	provOrderID := *order.ProviderOrderID
+	now := time.Now().Unix()
+
+	rzpPayload := map[string]interface{}{
+		"event":      "payment.captured",
+		"created_at": now,
+		"payload": map[string]interface{}{
+			"payment": map[string]interface{}{
+				"entity": map[string]interface{}{
+					"id":         "pay_dup_123",
+					"amount":     500,
+					"currency":   "INR",
+					"status":     "captured",
+					"order_id":   provOrderID,
+					"created_at": now,
+				},
+			},
+		},
+	}
+	body, _ := json.Marshal(rzpPayload)
+	sig := razorpay.GenerateSignature(body, now)
+
+	// First delivery: transitions order
+	err = webhookSvc.ProcessWebhook(ctx, "RAZORPAY", body, sig, now)
+	if err != nil {
+		t.Fatalf("first delivery failed: %v", err)
+	}
+
+	// Second delivery (retry with same payload): must be idempotent no-op
+	err = webhookSvc.ProcessWebhook(ctx, "RAZORPAY", body, sig, now)
+	if err != nil {
+		t.Fatalf("retry delivery failed: %v", err)
+	}
+
+	o, _ := orderRepo.GetByID(ctx, order.ID)
+	if o.Status != domain.StatusCreditPending {
+		t.Errorf("order status should still be CREDIT_PENDING, got %s", o.Status)
+	}
+}
+
+
+

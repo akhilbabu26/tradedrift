@@ -39,7 +39,7 @@ export default function NotificationCategoryTabs() {
           >
             <span>{tab.label}</span>
             <span
-              className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold transition-colors ${
+              className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold transition-colors ${
                 active
                   ? 'bg-[#10b981] text-[#0a0b0e]'
                   : 'bg-[#0a0b0e] text-slate-400 border border-[#1e2530]'

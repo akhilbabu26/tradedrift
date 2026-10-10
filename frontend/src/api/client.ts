@@ -94,6 +94,11 @@ client.interceptors.response.use(
 const originalGet = client.get
 
 client.get = (function dedupedGet(url: string, config?: Record<string, unknown>) {
+  // If request has an explicit AbortSignal, do not share in-flight promise
+  if (config?.signal) {
+    return originalGet.call(client, url, config)
+  }
+
   const key = dedupeKey(url, config?.params)
 
   const existing = inFlight.get(key)

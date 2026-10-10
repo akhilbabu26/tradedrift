@@ -14,6 +14,7 @@ import {
 import type { Candle, Timeframe } from '../../types/trade'
 import { wsService, WsChannels } from '../../api/ws'
 import ChartToolbar from './ChartToolbar'
+import { getPrecisionFromTickSize } from '../../utils/formatters'
 
 interface TradingChartProps {
   marketId: string
@@ -23,6 +24,7 @@ interface TradingChartProps {
   loading: boolean
   isDemoData?: boolean
   timeframe: Timeframe
+  tickSize?: string
   onTimeframeChange: (tf: Timeframe) => void
   onRefreshCandles?: () => void
 }
@@ -38,6 +40,11 @@ const CANDLE_OPTIONS: CandlestickSeriesPartialOptions = {
   wickVisible:      true,
   priceLineVisible: true,
   lastValueVisible: true,
+  priceFormat: {
+    type: 'price',
+    precision: 4,
+    minMove: 0.0001,
+  },
 }
 
 const AREA_OPTIONS: AreaSeriesPartialOptions = {
@@ -48,6 +55,11 @@ const AREA_OPTIONS: AreaSeriesPartialOptions = {
   priceLineVisible: false,
   lastValueVisible: true,
   visible:          false,
+  priceFormat: {
+    type: 'price',
+    precision: 4,
+    minMove: 0.0001,
+  },
 }
 
 const VOLUME_OPTIONS: HistogramSeriesPartialOptions = {
@@ -169,6 +181,7 @@ export default function TradingChart({
   loading,
   isDemoData = false,
   timeframe,
+  tickSize,
   onTimeframeChange,
   onRefreshCandles,
 }: TradingChartProps) {
@@ -181,11 +194,13 @@ export default function TradingChart({
 
   const [chartType, setChartType] = useState<'candlestick' | 'line'>('candlestick')
 
-  // Tracking refs for real-time live active candle, volume, and market safety
+  // Tracking refs for real-time live active candle, volume, deduplication, and market safety
   const lastBarRef = useRef<SanitizedBar | null>(null)
   const activeVolumeRef = useRef<number>(0)
   const activeMarketRef = useRef<string>(marketId)
   const hasFittedRef = useRef<boolean>(false)
+  const totalBarsRef = useRef<number>(0)
+  const seenTradeIdsRef = useRef<Set<string>>(new Set())
 
   // ── Create chart once ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -207,18 +222,19 @@ export default function TradingChart({
       rightPriceScale: {
         borderColor:  '#1e2530',
         textColor:    '#64748b',
-        scaleMargins: { top: 0.05, bottom: 0.22 },
+        scaleMargins: { top: 0.10, bottom: 0.25 },
         autoScale:    true,
       },
       timeScale: {
-        borderColor:    '#1e2530',
-        timeVisible:    true,
-        secondsVisible: false,
-        fixLeftEdge:    false,
-        fixRightEdge:   false,
-        rightOffset:    8,
-        barSpacing:     12,
-        minBarSpacing:  4,
+        borderColor:         '#1e2530',
+        timeVisible:         true,
+        secondsVisible:      false,
+        uniformDistribution: true,
+        fixLeftEdge:         false,
+        fixRightEdge:        false,
+        rightOffset:         10,
+        barSpacing:          6,
+        minBarSpacing:       2,
       },
       crosshair: {
         vertLine: { color: '#475569', style: 1, width: 1, labelBackgroundColor: '#1e2530' },
@@ -231,12 +247,21 @@ export default function TradingChart({
 
     chartRef.current = chart
 
+    const { precision, minMove } = getPrecisionFromTickSize(tickSize)
+    const priceFormat = { type: 'price' as const, precision, minMove }
+
     // 1. Candlestick series
-    const candleSeries = chart.addSeries(CandlestickSeries, CANDLE_OPTIONS)
+    const candleSeries = chart.addSeries(CandlestickSeries, {
+      ...CANDLE_OPTIONS,
+      priceFormat,
+    })
     candleRef.current = candleSeries
 
     // 2. Area (Line) series
-    const areaSeries = chart.addSeries(AreaSeries, AREA_OPTIONS)
+    const areaSeries = chart.addSeries(AreaSeries, {
+      ...AREA_OPTIONS,
+      priceFormat,
+    })
     areaRef.current = areaSeries
 
     // 3. Volume histogram
@@ -245,7 +270,7 @@ export default function TradingChart({
       priceScaleId: 'volume',
     })
     volumeSeries.priceScale().applyOptions({
-      scaleMargins: { top: 0.80, bottom: 0 },
+      scaleMargins: { top: 0.82, bottom: 0 },
     })
     volumeRef.current = volumeSeries
 
@@ -270,6 +295,14 @@ export default function TradingChart({
     }
   }, []) // Create once — never re-run
 
+  // ── Dynamic Price Precision updates on tickSize change ──────────────────────
+  useEffect(() => {
+    const { precision, minMove } = getPrecisionFromTickSize(tickSize)
+    const priceFormat = { type: 'price' as const, precision, minMove }
+    candleRef.current?.applyOptions({ priceFormat })
+    areaRef.current?.applyOptions({ priceFormat })
+  }, [tickSize])
+
   // ── Chart type toggle (Candlestick vs Line) ─────────────────────────────────
   useEffect(() => {
     if (!candleRef.current || !areaRef.current) return
@@ -284,6 +317,8 @@ export default function TradingChart({
     hasFittedRef.current = false
     lastBarRef.current = null
     activeVolumeRef.current = 0
+    totalBarsRef.current = 0
+    seenTradeIdsRef.current.clear()
 
     // Immediately clear previous market's or timeframe's series
     if (candleRef.current) candleRef.current.setData([])
@@ -291,53 +326,137 @@ export default function TradingChart({
     if (volumeRef.current) volumeRef.current.setData([])
   }, [marketId, timeframe])
 
+  // ── Helper: determine if user is currently near the real-time edge ──────────
+  const isNearRealtimeEdge = useCallback((): boolean => {
+    if (!chartRef.current) return true
+    const range = chartRef.current.timeScale().getVisibleLogicalRange()
+    if (!range) return true
+    const currentTotal = totalBarsRef.current
+    // In Lightweight Charts, the last data bar is at logical index (currentTotal - 1).
+    // At the real-time edge, range.to extends past (currentTotal - 1) by rightOffset.
+    // If range.to drops below (currentTotal - 2), the user has intentionally panned back into history.
+    return range.to >= currentTotal - 2
+  }, [])
+
+  // Stable refs for callbacks to prevent subscription churn in WebSocket effect
+  const onRefreshCandlesRef = useRef(onRefreshCandles)
+  useEffect(() => {
+    onRefreshCandlesRef.current = onRefreshCandles
+  }, [onRefreshCandles])
+
+  const isNearRealtimeEdgeRef = useRef(isNearRealtimeEdge)
+  useEffect(() => {
+    isNearRealtimeEdgeRef.current = isNearRealtimeEdge
+  }, [isNearRealtimeEdge])
+
   // ── Historical Candles & Timeframe Updates (Authoritative REST sync) ────────
   useEffect(() => {
     if (!candleRef.current || !volumeRef.current || !areaRef.current) return
 
     if (candles.length === 0) {
+      // If we already have an active live bar from WebSocket, keep it
+      if (lastBarRef.current) {
+        return
+      }
       candleRef.current.setData([])
       areaRef.current.setData([])
       volumeRef.current.setData([])
       lastBarRef.current = null
       activeVolumeRef.current = 0
+      totalBarsRef.current = 0
       return
     }
 
     const { bars, volumes } = sanitizeCandles(candles)
     if (bars.length === 0) {
+      if (lastBarRef.current) {
+        return
+      }
       candleRef.current.setData([])
       areaRef.current.setData([])
       volumeRef.current.setData([])
       lastBarRef.current = null
       activeVolumeRef.current = 0
+      totalBarsRef.current = 0
       return
     }
 
-    // Authentic real candles only: NO synthetic future bar!
+    // ── Phase 3 Reconciliation Tree: REST vs Live WebSocket State ───────────
+    const currentBar = lastBarRef.current
+    if (currentBar && bars.length > 0) {
+      const lastIndex = bars.length - 1
+      const restLast = bars[lastIndex]
+      const restLastVol = volumes[lastIndex]?.value ?? 0
+
+      if ((currentBar.time as number) === (restLast.time as number)) {
+        // SAME BUCKET: Reconcile live state with authoritative REST baseline
+        // 1. Open is always authoritative from REST (the bucket opening price)
+        // 2. High is the maximum of REST high and live high
+        // 3. Low is the minimum of REST low and live low
+        // 4. Volume is max of REST volume and accumulated live volume
+        // 5. Close is live close if live volume > REST volume (in-flight trades pending DB commit), else REST close
+        const reconciledHigh = Math.max(restLast.high, currentBar.high)
+        const reconciledLow = Math.min(restLast.low, currentBar.low)
+        const reconciledVol = Math.max(restLastVol, activeVolumeRef.current)
+        const reconciledClose = activeVolumeRef.current > restLastVol ? currentBar.close : restLast.close
+
+        const mergedBar: SanitizedBar = {
+          time: restLast.time,
+          open: restLast.open,
+          high: reconciledHigh,
+          low: reconciledLow,
+          close: reconciledClose,
+        }
+
+        bars[lastIndex] = mergedBar
+        volumes[lastIndex] = {
+          time: restLast.time,
+          value: reconciledVol,
+          color: mergedBar.close >= mergedBar.open ? 'rgba(16,185,129,0.45)' : 'rgba(239,68,68,0.45)',
+        }
+      } else if ((currentBar.time as number) > (restLast.time as number)) {
+        // FUTURE BUCKET: WebSocket has already started a newer bucket not yet returned by REST.
+        // Append current live bar so REST snapshot does not wipe out newer in-flight bucket.
+        bars.push({ ...currentBar })
+        volumes.push({
+          time: currentBar.time,
+          value: activeVolumeRef.current,
+          color: currentBar.close >= currentBar.open ? 'rgba(16,185,129,0.45)' : 'rgba(239,68,68,0.45)',
+        })
+      }
+      // If currentBar.time < restLast.time: REST has advanced past old live state, REST bars win completely.
+    }
+
     const last = bars[bars.length - 1]
     const lastVol = volumes[volumes.length - 1]
 
     lastBarRef.current = { ...last }
     activeVolumeRef.current = lastVol ? lastVol.value : 0
+    totalBarsRef.current = bars.length
 
     candleRef.current.setData(bars)
     areaRef.current.setData(bars.map((b) => ({ time: b.time, value: b.close })))
     volumeRef.current.setData(volumes)
 
-    // Focus visible range on recent bars with comfortable spacing on initial load / timeframe switch
+    // Viewport positioning:
+    // When history is dense (>= 45 bars), focus visible range on the most recent ~85 bars.
+    // When history is sparse (< 45 bars), avoid forcing a narrow logical range that would
+    // stretch bars across the full canvas width; instead preserve the configured target barSpacing
+    // and anchor directly to the real-time edge.
     if (!hasFittedRef.current) {
-      if (bars.length > 25) {
+      const total = bars.length
+      if (total >= 45) {
+        const visibleBars = Math.min(85, total)
         chartRef.current?.timeScale().setVisibleLogicalRange({
-          from: bars.length - 30,
-          to: bars.length + 6,
+          from: total - visibleBars,
+          to: total + 10,
         })
       } else {
-        chartRef.current?.timeScale().fitContent()
+        chartRef.current?.timeScale().scrollToRealTime()
       }
       hasFittedRef.current = true
-    } else {
-      // Follow the real-time edge as new bars arrive via REST polling
+    } else if (isNearRealtimeEdgeRef.current()) {
+      // Follow the real-time edge only if user has not intentionally panned back in history
       chartRef.current?.timeScale().scrollToRealTime()
     }
   }, [candles, timeframe])
@@ -353,6 +472,17 @@ export default function TradingChart({
       if (tradeData.marketId && tradeData.marketId !== marketId) return
       if (!candleRef.current || !volumeRef.current || !areaRef.current) return
 
+      // Deduplicate trade IDs to prevent double counting on re-deliveries
+      const tradeId = tradeData.tradeId || tradeData.trade_id || tradeData.id
+      if (tradeId) {
+        if (seenTradeIdsRef.current.has(tradeId)) return
+        seenTradeIdsRef.current.add(tradeId)
+        if (seenTradeIdsRef.current.size > 1000) {
+          const first = seenTradeIdsRef.current.values().next().value
+          if (first) seenTradeIdsRef.current.delete(first)
+        }
+      }
+
       const rawPrice = tradeData.price
       const rawQty = tradeData.quantity
       if (!rawPrice) return
@@ -361,7 +491,13 @@ export default function TradingChart({
       const qty = parseFloat(rawQty) || 0
       if (isNaN(price) || price <= 0) return
 
-      const execMs = tradeData.executedAt || tradeData.executed_at || Date.now()
+      // Defensive timestamp parsing: handles both epoch ms number and RFC3339 string
+      const rawTime = tradeData.executedAt ?? tradeData.executed_at
+      const execMs = typeof rawTime === 'number'
+        ? rawTime
+        : (rawTime ? new Date(rawTime).getTime() : Date.now())
+      if (isNaN(execMs) || execMs <= 0) return
+
       const tfSeconds = getTimeframeSeconds(timeframe)
       const tradeSeconds = Math.floor(execMs / 1000)
       const bucketTime = (Math.floor(tradeSeconds / tfSeconds) * tfSeconds) as UTCTimestamp
@@ -369,7 +505,7 @@ export default function TradingChart({
       const currentBar = lastBarRef.current
 
       if (!currentBar) {
-        // First candle ever!
+        // First real trade ever in this market/timeframe!
         const newBar: SanitizedBar = {
           time: bucketTime,
           open: price,
@@ -379,6 +515,7 @@ export default function TradingChart({
         }
         activeVolumeRef.current = qty
         lastBarRef.current = newBar
+        totalBarsRef.current = 1
 
         candleRef.current.update(newBar)
         areaRef.current.update({ time: bucketTime, value: price })
@@ -413,7 +550,7 @@ export default function TradingChart({
           color: volColor,
         })
       } else if (bucketTime > (currentBar.time as number)) {
-        // Timeframe boundary crossed: start new candle bar
+        // Timeframe boundary crossed: start new real candle bar
         const newBar: SanitizedBar = {
           time: bucketTime,
           open: price,
@@ -423,6 +560,7 @@ export default function TradingChart({
         }
         activeVolumeRef.current = qty
         lastBarRef.current = newBar
+        totalBarsRef.current += 1
 
         candleRef.current.update(newBar)
         areaRef.current.update({ time: bucketTime, value: price })
@@ -431,11 +569,13 @@ export default function TradingChart({
           value: qty,
           color: 'rgba(16,185,129,0.45)',
         })
-        chartRef.current?.timeScale().scrollToRealTime()
+        if (isNearRealtimeEdgeRef.current()) {
+          chartRef.current?.timeScale().scrollToRealTime()
+        }
       } else {
         // bucketTime < currentBar.time
         // Out-of-order or late trade: don't fabricate anything. Trigger authoritative REST candles refresh!
-        onRefreshCandles?.()
+        onRefreshCandlesRef.current?.()
       }
     })
 
@@ -443,7 +583,7 @@ export default function TradingChart({
       mounted = false
       unsubscribe()
     }
-  }, [marketId, timeframe, onRefreshCandles])
+  }, [marketId, timeframe])
 
   // ── Secondary Toolbar Actions (Screenshot & Fullscreen) ─────────────────────
   const handleScreenshot = useCallback(() => {

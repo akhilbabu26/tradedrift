@@ -17,7 +17,9 @@ import (
 	"tradedrift/services/wallet-topup/internal/client"
 	"tradedrift/services/wallet-topup/internal/config"
 	"tradedrift/services/wallet-topup/internal/handler"
+	"tradedrift/services/wallet-topup/internal/payment"
 	"tradedrift/services/wallet-topup/internal/payment/mock"
+	"tradedrift/services/wallet-topup/internal/payment/razorpay"
 	postgresRepo "tradedrift/services/wallet-topup/internal/repository/postgres"
 	"tradedrift/services/wallet-topup/internal/service"
 	"tradedrift/services/wallet-topup/internal/webhook"
@@ -69,7 +71,23 @@ func main() {
 
 	// 7. Payment Provider & Webhook Verifier
 	mockProvider := mock.NewMockPaymentProvider(cfg.WebhookSecret)
-	verifier := webhook.NewVerifier(mockProvider)
+	var activeProvider payment.PaymentProvider = mockProvider
+
+	var rzpProvider *razorpay.RazorpayPaymentProvider
+	if cfg.PaymentProvider == "RAZORPAY" && cfg.RazorpayKeyID != "" {
+		rzpProvider = razorpay.NewRazorpayPaymentProvider(cfg.RazorpayKeyID, cfg.RazorpayKeySecret, cfg.RazorpayWebhookSecret)
+		activeProvider = rzpProvider
+		log.Info("Configured Razorpay as active payment provider", zap.String("key_id", cfg.RazorpayKeyID))
+	} else {
+		log.Info("Configured Mock as active payment provider")
+	}
+
+	var verifier *webhook.Verifier
+	if rzpProvider != nil {
+		verifier = webhook.NewVerifier(activeProvider, mockProvider)
+	} else {
+		verifier = webhook.NewVerifier(activeProvider)
+	}
 
 	// 8. Wallet gRPC Client (Non-blocking async connection)
 	walletClient, err := client.NewWalletClient(cfg.WalletGRPCAddr)
@@ -83,7 +101,7 @@ func main() {
 	}
 
 	// 9. Services & Workers
-	topupService := service.NewTopUpService(dailyLimitRepo, orderRepo, txManager, mockProvider, cfg.DailyLimitINR, log)
+	topupService := service.NewTopUpService(dailyLimitRepo, orderRepo, txManager, activeProvider, cfg.DailyLimitINR, log)
 	webhookService := service.NewWebhookService(verifier, webhookRepo, orderRepo, txManager, cfg.DailyLimitINR, log)
 
 	if walletClient != nil {
@@ -102,7 +120,6 @@ func main() {
 	expiryWorker := service.NewExpiryWorker(orderRepo, txManager, log, cfg.ExpiryInterval)
 	expiryWorker.Start(ctx)
 	defer expiryWorker.Stop()
-
 
 	// 10. HTTP Handlers & Router
 	topupHandler := handler.NewTopUpHandler(topupService, log)

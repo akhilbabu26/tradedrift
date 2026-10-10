@@ -52,6 +52,7 @@ type Order struct {
 // OrderRepository defines the database operations for Order Service.
 type OrderRepository interface {
 	OutboxRepository
+	WalletReleaseRepository
 
 	// FindByIdempotencyKey looks up an order by client-supplied idempotency key. Returns (nil, nil) if not found.
 	FindByIdempotencyKey(ctx context.Context, key string) (*Order, error)
@@ -74,4 +75,8 @@ type OrderRepository interface {
 
 	// MarkOrderCancelled updates the order status to CANCELLED.
 	MarkOrderCancelled(ctx context.Context, orderID string) (*Order, error)
+
+	// ReconcileAbsentOrder idempotently transitions an order that is absent from the matching engine
+	// (e.g. on ALREADY_ABSENT cancel response) to FILLED (if filled_quantity >= quantity) or CANCELLED.
+	ReconcileAbsentOrder(ctx context.Context, orderID string) (*Order, error)
 }

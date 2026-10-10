@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 
 	"tradedrift/services/order/internal/repository"
@@ -67,7 +68,7 @@ func (r *orderRepository) CreateOrder(ctx context.Context, o *repository.Order, 
 	)
 	if err != nil {
 		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "orders_idempotency_key_key" {
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && (pgErr.ConstraintName == "orders_idempotency_key_key" || strings.Contains(pgErr.ConstraintName, "idempotency_key") || strings.Contains(pgErr.Detail, "idempotency_key")) {
 			return repository.ErrDuplicateIdempotencyKey
 		}
 		return fmt.Errorf("failed to insert order: %w", err)
@@ -258,13 +259,126 @@ func scanOrder(row pgx.Row) (*repository.Order, error) {
 }
 
 func (r *orderRepository) ApplyTradeFill(ctx context.Context, tradeID, buyOrderID, sellOrderID, fillQty string) ([]string, error) {
+	fillQtyDec, err := decimal.NewFromString(fillQty)
+	if err != nil || !fillQtyDec.GreaterThan(decimal.Zero) {
+		return nil, fmt.Errorf("fill quantity must be positive decimal: %s", fillQty)
+	}
+
+	if buyOrderID != "" && sellOrderID != "" && buyOrderID == sellOrderID {
+		return nil, fmt.Errorf("self-match rejected: buy_order_id equals sell_order_id (%s)", buyOrderID)
+	}
+
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx for trade fill: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	// Idempotency: record processed trade
+	// Idempotency: check if already processed
+	var alreadyProcessed bool
+	err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM processed_trades WHERE trade_id = $1)", tradeID).Scan(&alreadyProcessed)
+	if err != nil {
+		return nil, fmt.Errorf("check processed trade %s: %w", tradeID, err)
+	}
+	if alreadyProcessed {
+		return nil, nil // Already processed this trade — idempotent no-op
+	}
+
+	// Deterministic row locking order (lexicographically by UUID) to prevent deadlock
+	var orderIDsToLock []string
+	if buyOrderID != "" && sellOrderID != "" {
+		if buyOrderID < sellOrderID {
+			orderIDsToLock = []string{buyOrderID, sellOrderID}
+		} else {
+			orderIDsToLock = []string{sellOrderID, buyOrderID}
+		}
+	} else if buyOrderID != "" {
+		orderIDsToLock = []string{buyOrderID}
+	} else if sellOrderID != "" {
+		orderIDsToLock = []string{sellOrderID}
+	}
+
+	type lockedOrder struct {
+		id                string
+		marketID          string
+		side              string
+		remainingQuantity decimal.Decimal
+		status            string
+	}
+	ordersByID := make(map[string]*lockedOrder, len(orderIDsToLock))
+
+	for _, id := range orderIDsToLock {
+		var o lockedOrder
+		var remStr string
+		err := tx.QueryRow(ctx, `
+			SELECT id, market_id, side, remaining_quantity, status
+			FROM orders
+			WHERE id = $1
+			FOR UPDATE`, id).Scan(&o.id, &o.marketID, &o.side, &remStr, &o.status)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, fmt.Errorf("order %s not found: %w", id, repository.ErrOrderNotFound)
+			}
+			return nil, fmt.Errorf("lock order %s: %w", id, err)
+		}
+
+		remDec, err := decimal.NewFromString(remStr)
+		if err != nil {
+			return nil, fmt.Errorf("invalid remaining quantity for order %s: %w", id, err)
+		}
+		o.remainingQuantity = remDec
+		ordersByID[id] = &o
+	}
+
+	// Authoritative validation of locked orders
+	if buyOrderID != "" {
+		buyOrder, ok := ordersByID[buyOrderID]
+		if !ok {
+			return nil, fmt.Errorf("buy order %s not found", buyOrderID)
+		}
+		if buyOrder.side != string(repository.SideBuy) {
+			return nil, fmt.Errorf("buy order %s has invalid side %s (expected BUY)", buyOrderID, buyOrder.side)
+		}
+		if buyOrder.status != string(repository.StatusOpen) &&
+			buyOrder.status != string(repository.StatusPartiallyFilled) &&
+			buyOrder.status != string(repository.StatusCancelling) &&
+			buyOrder.status != string(repository.StatusCancelled) {
+			return nil, fmt.Errorf("buy order %s has invalid status %s for fill", buyOrderID, buyOrder.status)
+		}
+		if buyOrder.remainingQuantity.LessThan(fillQtyDec) {
+			return nil, fmt.Errorf("buy order %s remaining quantity %s is less than fill quantity %s",
+				buyOrderID, buyOrder.remainingQuantity.String(), fillQtyDec.String())
+		}
+	}
+
+	if sellOrderID != "" {
+		sellOrder, ok := ordersByID[sellOrderID]
+		if !ok {
+			return nil, fmt.Errorf("sell order %s not found", sellOrderID)
+		}
+		if sellOrder.side != string(repository.SideSell) {
+			return nil, fmt.Errorf("sell order %s has invalid side %s (expected SELL)", sellOrderID, sellOrder.side)
+		}
+		if sellOrder.status != string(repository.StatusOpen) &&
+			sellOrder.status != string(repository.StatusPartiallyFilled) &&
+			sellOrder.status != string(repository.StatusCancelling) &&
+			sellOrder.status != string(repository.StatusCancelled) {
+			return nil, fmt.Errorf("sell order %s has invalid status %s for fill", sellOrderID, sellOrder.status)
+		}
+		if sellOrder.remainingQuantity.LessThan(fillQtyDec) {
+			return nil, fmt.Errorf("sell order %s remaining quantity %s is less than fill quantity %s",
+				sellOrderID, sellOrder.remainingQuantity.String(), fillQtyDec.String())
+		}
+	}
+
+	if buyOrderID != "" && sellOrderID != "" {
+		if ordersByID[buyOrderID].marketID != ordersByID[sellOrderID].marketID {
+			return nil, fmt.Errorf("market mismatch: buy order %s in %s, sell order %s in %s",
+				buyOrderID, ordersByID[buyOrderID].marketID, sellOrderID, ordersByID[sellOrderID].marketID)
+		}
+	}
+
+	// Record processed trade ONLY after validation passes
 	var insertedTradeID string
 	err = tx.QueryRow(ctx,
 		`INSERT INTO processed_trades (trade_id) VALUES ($1)
@@ -274,31 +388,46 @@ func (r *orderRepository) ApplyTradeFill(ctx context.Context, tradeID, buyOrderI
 	).Scan(&insertedTradeID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			// Already processed this trade — idempotent no-op
+			// Concurrently processed trade — idempotent no-op
 			return nil, nil
 		}
 		return nil, fmt.Errorf("record processed trade %s: %w", tradeID, err)
 	}
 
-	updateQuery := `
+	updateBuyQuery := `
 		UPDATE orders
 		SET filled_quantity = LEAST(quantity, filled_quantity + $1::numeric),
 		    remaining_quantity = GREATEST(0, remaining_quantity - $1::numeric),
 		    status = CASE 
 		        WHEN remaining_quantity - $1::numeric <= 0 THEN 'FILLED' 
 		        WHEN status = 'CANCELLING' THEN 'CANCELLING'
+		        WHEN status = 'CANCELLED' THEN 'CANCELLED'
 		        ELSE 'PARTIALLY_FILLED' 
 		    END,
 		    updated_at = NOW()
-		WHERE id = $2 AND status IN ('OPEN', 'PARTIALLY_FILLED', 'CANCELLING')
+		WHERE id = $2 AND side = 'BUY'
+		RETURNING id, status`
+
+	updateSellQuery := `
+		UPDATE orders
+		SET filled_quantity = LEAST(quantity, filled_quantity + $1::numeric),
+		    remaining_quantity = GREATEST(0, remaining_quantity - $1::numeric),
+		    status = CASE 
+		        WHEN remaining_quantity - $1::numeric <= 0 THEN 'FILLED' 
+		        WHEN status = 'CANCELLING' THEN 'CANCELLING'
+		        WHEN status = 'CANCELLED' THEN 'CANCELLED'
+		        ELSE 'PARTIALLY_FILLED' 
+		    END,
+		    updated_at = NOW()
+		WHERE id = $2 AND side = 'SELL'
 		RETURNING id, status`
 
 	var filledOrderIDs []string
 
 	if buyOrderID != "" {
 		var id, status string
-		err := tx.QueryRow(ctx, updateQuery, fillQty, buyOrderID).Scan(&id, &status)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		err := tx.QueryRow(ctx, updateBuyQuery, fillQty, buyOrderID).Scan(&id, &status)
+		if err != nil {
 			return nil, fmt.Errorf("update buy order %s: %w", buyOrderID, err)
 		}
 		if status == string(repository.StatusFilled) {
@@ -308,12 +437,23 @@ func (r *orderRepository) ApplyTradeFill(ctx context.Context, tradeID, buyOrderI
 
 	if sellOrderID != "" {
 		var id, status string
-		err := tx.QueryRow(ctx, updateQuery, fillQty, sellOrderID).Scan(&id, &status)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		err := tx.QueryRow(ctx, updateSellQuery, fillQty, sellOrderID).Scan(&id, &status)
+		if err != nil {
 			return nil, fmt.Errorf("update sell order %s: %w", sellOrderID, err)
 		}
 		if status == string(repository.StatusFilled) {
 			filledOrderIDs = append(filledOrderIDs, id)
+		}
+	}
+
+	// Durably enqueue wallet release for each order that reached FILLED status in this transaction
+	for _, filledID := range filledOrderIDs {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO wallet_releases (order_id, status)
+			VALUES ($1, 'PENDING')
+			ON CONFLICT (order_id) DO NOTHING`, filledID)
+		if err != nil {
+			return nil, fmt.Errorf("enqueue wallet release for filled order %s: %w", filledID, err)
 		}
 	}
 
@@ -332,6 +472,12 @@ func (r *orderRepository) ApplyTradeFill(ctx context.Context, tradeID, buyOrderI
 }
 
 func (r *orderRepository) MarkOrderCancelled(ctx context.Context, orderID string) (*repository.Order, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx for mark order cancelled: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	query := `
 		UPDATE orders
 		SET status = 'CANCELLED', updated_at = NOW()
@@ -340,7 +486,7 @@ func (r *orderRepository) MarkOrderCancelled(ctx context.Context, orderID string
 		          filled_quantity, remaining_quantity, status, idempotency_key,
 		          created_at, updated_at`
 
-	row := r.db.QueryRow(ctx, query, orderID)
+	row := tx.QueryRow(ctx, query, orderID)
 	order, err := scanOrder(row)
 	if err != nil {
 		if errors.Is(err, repository.ErrOrderNotFound) {
@@ -348,7 +494,70 @@ func (r *orderRepository) MarkOrderCancelled(ctx context.Context, orderID string
 		}
 		return nil, fmt.Errorf("mark order cancelled: %w", err)
 	}
+
+	// Durably enqueue wallet release for the cancelled order in the same transaction
+	_, err = tx.Exec(ctx, `
+		INSERT INTO wallet_releases (order_id, status)
+		VALUES ($1, 'PENDING')
+		ON CONFLICT (order_id) DO NOTHING`, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("enqueue wallet release for cancelled order %s: %w", orderID, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit mark order cancelled tx: %w", err)
+	}
+
 	return order, nil
 }
+
+func (r *orderRepository) ReconcileAbsentOrder(ctx context.Context, orderID string) (*repository.Order, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx for reconcile absent order: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	query := `
+		UPDATE orders
+		SET status = CASE 
+				WHEN filled_quantity >= quantity THEN 'FILLED'
+				ELSE 'CANCELLED'
+			END,
+			remaining_quantity = CASE
+				WHEN filled_quantity >= quantity THEN 0
+				ELSE remaining_quantity
+			END,
+			updated_at = NOW()
+		WHERE id = $1 AND status IN ('OPEN', 'PARTIALLY_FILLED', 'CANCELLING')
+		RETURNING id, user_id, market_id, side, order_type, price, quantity,
+		          filled_quantity, remaining_quantity, status, idempotency_key,
+		          created_at, updated_at`
+
+	row := tx.QueryRow(ctx, query, orderID)
+	order, err := scanOrder(row)
+	if err != nil {
+		if errors.Is(err, repository.ErrOrderNotFound) {
+			return nil, nil // idempotent: already settled (FILLED or CANCELLED)
+		}
+		return nil, fmt.Errorf("reconcile absent order: %w", err)
+	}
+
+	// In both terminal outcomes (FILLED or CANCELLED), durably enqueue wallet release in the same transaction
+	_, err = tx.Exec(ctx, `
+		INSERT INTO wallet_releases (order_id, status)
+		VALUES ($1, 'PENDING')
+		ON CONFLICT (order_id) DO NOTHING`, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("enqueue wallet release for reconciled order %s: %w", orderID, err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit reconcile absent order tx: %w", err)
+	}
+
+	return order, nil
+}
+
 
 

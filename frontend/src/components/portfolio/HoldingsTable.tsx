@@ -3,6 +3,7 @@ import { MoreHorizontal, ArrowUpRight } from 'lucide-react'
 import { toDecimal } from '../../utils/decimal'
 import { formatPrice, formatUSDT } from '../../utils/formatters'
 import type { PortfolioHolding } from '../../types/portfolio'
+import Sparkline from '../common/Sparkline'
 
 interface Props {
   holdings: PortfolioHolding[]
@@ -22,7 +23,7 @@ export default function HoldingsTable({ holdings }: Props) {
 
   function pnlColor(value: string): string {
     try {
-      const sanitized = String(value || '0').replace(/[^\d.\-]/g, '').replace(/^-?$/, '0')
+      const sanitized = String(value || '0').replace(/[^\d.-]/g, '').replace(/^-?$/, '0')
       const d = toDecimal(sanitized)
       if (d.gt(0)) return 'text-[#10b981]'
       if (d.lt(0)) return 'text-[#ef4444]'
@@ -50,6 +51,7 @@ export default function HoldingsTable({ holdings }: Props) {
             <th className="text-right py-3 px-3 text-[#64748b] font-medium">Holdings</th>
             <th className="text-right py-3 px-3 text-[#64748b] font-medium">Avg Cost</th>
             <th className="text-right py-3 px-3 text-[#64748b] font-medium">Current Price</th>
+            <th className="text-right py-3 px-3 text-[#64748b] font-medium w-24">24h Trend</th>
             <th className="text-right py-3 px-3 text-[#64748b] font-medium">Market Value</th>
             <th className="text-right py-3 px-3 text-[#64748b] font-medium">Unrealized PnL</th>
             <th className="text-right py-3 px-3 text-[#64748b] font-medium">Realized PnL</th>
@@ -98,6 +100,22 @@ export default function HoldingsTable({ holdings }: Props) {
                 <span className="text-[#f5f7fa] font-mono font-medium">
                   ${formatPrice(h.currentPrice)}
                 </span>
+              </td>
+
+              {/* 24h Trend */}
+              <td className="py-3.5 px-3 text-right">
+                <div className="flex items-center justify-end">
+                  {h.sparklinePoints && h.sparklinePoints.length > 0 ? (
+                    <Sparkline
+                      data={h.sparklinePoints}
+                      width={80}
+                      height={26}
+                      ariaLabel={`${h.asset} 24h price trend`}
+                    />
+                  ) : (
+                    <span className="text-[#475569] font-mono text-xs pr-2" title="No market pair">—</span>
+                  )}
+                </div>
               </td>
 
               {/* Market Value */}

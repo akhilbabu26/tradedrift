@@ -12,6 +12,17 @@ topupClient.interceptors.request.use((config) => {
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
+  const userStr = localStorage.getItem('user')
+  if (userStr) {
+    try {
+      const user = JSON.parse(userStr)
+      if (user?.userId) {
+        config.headers['X-User-ID'] = user.userId
+      }
+    } catch {
+      // Ignore JSON parse error
+    }
+  }
   return config
 })
 
@@ -92,5 +103,11 @@ export const topupApi = {
   getTopUpById: async (id: string): Promise<TopUpOrder> => {
     const res = await topupClient.get<TopUpOrder>(`/api/v1/topups/${id}`)
     return res.data
+  },
+
+  // GET /api/v1/topups — list recent top-up orders for user
+  listTopUps: async (): Promise<TopUpOrder[]> => {
+    const res = await topupClient.get<{ topups: TopUpOrder[] }>('/api/v1/topups')
+    return res.data?.topups || []
   },
 }

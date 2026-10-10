@@ -126,6 +126,11 @@ func (r *Reconciler) IsMarketPaused(marketID string) bool {
 	return r.isMarketPaused(marketID)
 }
 
+// AllowsNewLiquidity exposes the allowsNewLiquidity check for test verification.
+func (r *Reconciler) AllowsNewLiquidity(marketID string) bool {
+	return r.allowsNewLiquidity(marketID)
+}
+
 // RefProvider returns the current reference price provider.
 func (r *Reconciler) RefProvider() ReferencePriceProvider {
 	return r.refProvider

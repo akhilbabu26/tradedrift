@@ -7,13 +7,17 @@ import (
 )
 
 type Config struct {
-	Port               string
-	PostgresDSN        string
-	WalletGRPCAddr     string
-	DailyLimitINR      int64
-	WebhookSecret      string
-	ReconcilerInterval time.Duration
-	ExpiryInterval     time.Duration
+	Port                  string
+	PostgresDSN           string
+	WalletGRPCAddr        string
+	DailyLimitINR         int64
+	WebhookSecret         string
+	PaymentProvider       string
+	RazorpayKeyID         string
+	RazorpayKeySecret     string
+	RazorpayWebhookSecret string
+	ReconcilerInterval    time.Duration
+	ExpiryInterval        time.Duration
 }
 
 func Load() *Config {
@@ -44,13 +48,33 @@ func Load() *Config {
 		webhookSecret = "topup_mock_secret_key_12345"
 	}
 
+	rzpKeyID := os.Getenv("RAZORPAY_KEY_ID")
+	rzpKeySecret := os.Getenv("RAZORPAY_KEY_SECRET")
+	rzpWebhookSecret := os.Getenv("RAZORPAY_WEBHOOK_SECRET")
+	if rzpWebhookSecret == "" {
+		rzpWebhookSecret = webhookSecret
+	}
+
+	paymentProvider := os.Getenv("PAYMENT_PROVIDER")
+	if paymentProvider == "" {
+		if rzpKeyID != "" && rzpKeySecret != "" {
+			paymentProvider = "RAZORPAY"
+		} else {
+			paymentProvider = "MOCK"
+		}
+	}
+
 	return &Config{
-		Port:               port,
-		PostgresDSN:        postgresDSN,
-		WalletGRPCAddr:     walletGRPCAddr,
-		DailyLimitINR:      dailyLimit,
-		WebhookSecret:      webhookSecret,
-		ReconcilerInterval: 1 * time.Second,
-		ExpiryInterval:     30 * time.Second,
+		Port:                  port,
+		PostgresDSN:           postgresDSN,
+		WalletGRPCAddr:        walletGRPCAddr,
+		DailyLimitINR:         dailyLimit,
+		WebhookSecret:         webhookSecret,
+		PaymentProvider:       paymentProvider,
+		RazorpayKeyID:         rzpKeyID,
+		RazorpayKeySecret:     rzpKeySecret,
+		RazorpayWebhookSecret: rzpWebhookSecret,
+		ReconcilerInterval:    1 * time.Second,
+		ExpiryInterval:        30 * time.Second,
 	}
 }

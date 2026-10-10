@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -33,6 +34,20 @@ type HoldingDetail struct {
 type PortfolioHoldings struct {
 	UserID   string
 	Holdings []HoldingDetail
+}
+
+type PortfolioHistoryPoint struct {
+	Timestamp     int64
+	TotalEquity   string
+	CashBalance   string
+	HoldingsValue string
+	UnrealizedPnL string
+	RealizedPnL   string
+}
+
+type PortfolioHistory struct {
+	UserID string
+	Points []PortfolioHistoryPoint
 }
 
 type Service struct {
@@ -169,4 +184,112 @@ func (s *Service) GetPortfolioHoldings(ctx context.Context, userID string) (*Por
 		UserID:   userID,
 		Holdings: details,
 	}, nil
+}
+
+// RecordSnapshot computes the real-time valuation for a user and writes an immutable snapshot.
+// Directly reuses GetPortfolioSummary to guarantee Total Equity = Cash + Holdings Value.
+func (s *Service) RecordSnapshot(ctx context.Context, userID string, triggerType string) error {
+	summary, err := s.GetPortfolioSummary(ctx, userID)
+	if err != nil {
+		return fmt.Errorf("compute summary for snapshot (user %s): %w", userID, err)
+	}
+
+	totalEquity, _ := decimal.NewFromString(summary.TotalValue)
+	cashBalance, _ := decimal.NewFromString(summary.CashBalance)
+	unrealizedPnL, _ := decimal.NewFromString(summary.UnrealizedPnL)
+	realizedPnL, _ := decimal.NewFromString(summary.RealizedPnL)
+	holdingsValue := totalEquity.Sub(cashBalance)
+
+	snap := repository.PortfolioSnapshot{
+		UserID:        userID,
+		TotalEquity:   totalEquity,
+		CashBalance:   cashBalance,
+		HoldingsValue: holdingsValue,
+		UnrealizedPnL: unrealizedPnL,
+		RealizedPnL:   realizedPnL,
+		TriggerType:   triggerType,
+		SnapshotAt:    time.Now().UTC(),
+	}
+
+	return s.repo.RecordSnapshot(ctx, snap)
+}
+
+// GetPortfolioHistory retrieves chronological, bucket-sampled snapshots for the specified timeframe.
+// Strictly returns ascending points with Unix seconds timestamps for TradingView Lightweight Charts.
+func (s *Service) GetPortfolioHistory(ctx context.Context, userID string, timeframe string) (*PortfolioHistory, error) {
+	now := time.Now().UTC()
+	var startTime time.Time
+	var bucketDuration time.Duration
+
+	switch strings.ToUpper(strings.TrimSpace(timeframe)) {
+	case "24H":
+		startTime = now.Add(-24 * time.Hour)
+		bucketDuration = 5 * time.Minute
+	case "30D":
+		startTime = now.Add(-30 * 24 * time.Hour)
+		bucketDuration = 4 * time.Hour
+	case "90D":
+		startTime = now.Add(-90 * 24 * time.Hour)
+		bucketDuration = 12 * time.Hour
+	case "1Y":
+		startTime = now.Add(-365 * 24 * time.Hour)
+		bucketDuration = 24 * time.Hour
+	case "7D":
+		fallthrough
+	default:
+		startTime = now.Add(-7 * 24 * time.Hour)
+		bucketDuration = 1 * time.Hour
+	}
+
+	snapshots, err := s.repo.GetSnapshots(ctx, userID, startTime, bucketDuration, 150)
+	if err != nil {
+		return nil, fmt.Errorf("fetch snapshots for user %s: %w", userID, err)
+	}
+
+	points := make([]PortfolioHistoryPoint, 0, len(snapshots))
+	for _, snap := range snapshots {
+		points = append(points, PortfolioHistoryPoint{
+			Timestamp:     snap.SnapshotAt.Unix(),
+			TotalEquity:   snap.TotalEquity.StringFixed(2),
+			CashBalance:   snap.CashBalance.StringFixed(2),
+			HoldingsValue: snap.HoldingsValue.StringFixed(2),
+			UnrealizedPnL: snap.UnrealizedPnL.StringFixed(2),
+			RealizedPnL:   snap.RealizedPnL.StringFixed(2),
+		})
+	}
+
+	return &PortfolioHistory{
+		UserID: userID,
+		Points: points,
+	}, nil
+}
+
+// StartPeriodicSnapshotWorker runs a single centralized ticker that records valuation snapshots
+// for users with active holdings or recent activity. Gracefully shuts down when ctx is cancelled.
+func (s *Service) StartPeriodicSnapshotWorker(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 60 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			userIDs, err := s.repo.GetActiveUserIDsWithHoldings(ctx)
+			if err != nil {
+				continue
+			}
+			for _, uid := range userIDs {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					_ = s.RecordSnapshot(ctx, uid, "PERIODIC")
+				}
+			}
+		}
+	}
 }

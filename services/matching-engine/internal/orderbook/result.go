@@ -15,7 +15,7 @@ import (
 type Fill struct {
 	TradeID      uuid.UUID
 	MarketID     string          // market this trade occurred in (e.g. "BTC-USDT")
-	Sequence     uint64          // Authoritative matching engine sequence (> 0)
+	Sequence     uint64          // Authoritative order-book mutation sequence (> 0) — NOT a trade count
 	MakerOrderID uuid.UUID       // the resting order that was consumed
 	TakerOrderID uuid.UUID       // the incoming order that triggered the match
 	BuyOrderID   uuid.UUID       // whichever of maker/taker had side == BUY
@@ -24,6 +24,7 @@ type Fill struct {
 	SellerUserID uuid.UUID
 	Price        decimal.Decimal // ALWAYS the maker's price — never taker's
 	Quantity     decimal.Decimal // min(incoming.RemainingQty, best.RemainingQty)
+	ExecutedAt   time.Time       // Authoritative matching event execution timestamp
 }
 
 // CancelStatus is the explicit outcome of a cancel attempt in the Matching Engine.
@@ -42,6 +43,18 @@ const (
 	// inconsistency, or ordering gap. The Order Service MUST consult its own DB
 	// to decide the correct action. Funds MUST NOT be released on this value alone.
 	CancelStatusAlreadyAbsent CancelStatus = "ALREADY_ABSENT"
+
+	// CancelStatusUserMismatch — order was found in the book but belonged to a different user.
+	// Authoritative. The ME refuses cancellation; the order remains active in the book.
+	// Neither the order book nor sequence is mutated. Downstream must NOT cancel the order
+	// and must NOT release funds.
+	CancelStatusUserMismatch CancelStatus = "USER_MISMATCH"
+
+	// CancelStatusInvalidRequest — the event could not be routed to the correct book
+	// (e.g. market_id mismatch on create or cancel). No order was found or removed.
+	// Neither the order book nor sequence is mutated. Downstream must NOT cancel any order
+	// and must NOT release any funds. Treat as an observational error only.
+	CancelStatusInvalidRequest CancelStatus = "INVALID_REQUEST"
 )
 
 // CancelOutcome is the typed return value of matcher.Cancel — never nil.
@@ -49,9 +62,9 @@ const (
 type CancelOutcome struct {
 	Status            CancelStatus
 	OrderID           uuid.UUID
-	UserID            uuid.UUID       // populated when Status == CancelStatusRemovedFromBook
-	MarketID          string          // populated when Status == CancelStatusRemovedFromBook
-	RemainingQuantity decimal.Decimal // populated when Status == CancelStatusRemovedFromBook
+	UserID            uuid.UUID       // populated when Status == CancelStatusRemovedFromBook or CancelStatusUserMismatch
+	MarketID          string          // populated when Status == CancelStatusRemovedFromBook or CancelStatusUserMismatch
+	RemainingQuantity decimal.Decimal // populated when Status == CancelStatusRemovedFromBook or CancelStatusUserMismatch
 }
 
 // CancelledOrder is produced when an order is removed from the book.

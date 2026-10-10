@@ -39,6 +39,9 @@ func mapServiceError(err error) error {
 		errors.Is(err, service.ErrInvalidMarket),
 		errors.Is(err, service.ErrInvalidPrice),
 		errors.Is(err, service.ErrInvalidQuantity),
+		errors.Is(err, service.ErrInvalidUserID),
+		errors.Is(err, service.ErrInvalidQuantityPrecision),
+		errors.Is(err, service.ErrInvalidPricePrecision),
 		errors.Is(err, service.ErrInvalidPaginationCursor),
 		errors.Is(err, repository.ErrInvalidPaginationCursor):
 		return status.Error(codes.InvalidArgument, err.Error())
@@ -62,8 +65,9 @@ func mapServiceError(err error) error {
 		return status.Error(codes.FailedPrecondition, "market is currently halted for trading")
 
 	case errors.Is(err, service.ErrMarketStateUnavailable),
-		errors.Is(err, service.ErrMarketEnforcementNotReady):
-		return status.Error(codes.Unavailable, "market status verification service is temporarily unavailable")
+		errors.Is(err, service.ErrMarketEnforcementNotReady),
+		errors.Is(err, service.ErrPriceReferenceUnavailable):
+		return status.Error(codes.Unavailable, "market status or price reference service is temporarily unavailable")
 
 	default:
 		return status.Error(codes.Internal, "failed to process order request")

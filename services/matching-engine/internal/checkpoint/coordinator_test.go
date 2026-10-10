@@ -344,3 +344,80 @@ func TestCoordinator_PostgresFailure_DoesNotCommitToKafka(t *testing.T) {
 		t.Fatalf("Kafka committed offset prematurely after DB failure: %+v", committer.committedOffsets)
 	}
 }
+
+type failingKafkaCommitter struct {
+	err error
+}
+
+func (f *failingKafkaCommitter) CommitMessages(_ context.Context, _ ...kafkago.Message) error {
+	return f.err
+}
+
+// TestCoordinator_PostgresSuccess_KafkaCommitFailure_Durability verifies the durability invariant:
+// When PostgreSQL commits contiguous offsets successfully but Kafka CommitMessages fails,
+// PostgreSQL remains the authoritative source of truth. Upon restart, the engine initializes
+// from the DB checkpoint (e.g. 102) and resumes consuming at DB checkpoint + 1 (103).
+func TestCoordinator_PostgresSuccess_KafkaCommitFailure_Durability(t *testing.T) {
+	db := &fakeDB{}
+	coord := checkpoint.NewCoordinator(db)
+	committer := &failingKafkaCommitter{err: errors.New("kafka broker disconnected")}
+	topic := intkafka.TopicOrderCommands
+	const partition = 0
+
+	coord.RegisterCommitter(topic, committer)
+	coord.InitBaseline(topic, partition, 100)
+	ctx := context.Background()
+
+	// Track offsets 101 and 102
+	coord.Track(orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 101})
+	coord.Track(orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 102})
+
+	// Process offset 101
+	err101 := coord.MarkDone(ctx, orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 101})
+	if err101 == nil {
+		t.Fatalf("expected error from failed Kafka commit, got nil")
+	}
+
+	// Invariant 1: DB transaction committed offset 101 despite Kafka error
+	if len(db.commits) != 1 || db.commits[0] != 101 {
+		t.Fatalf("expected DB commit at offset 101, got %+v", db.commits)
+	}
+
+	// Process offset 102
+	err102 := coord.MarkDone(ctx, orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 102})
+	if err102 == nil {
+		t.Fatalf("expected error from failed Kafka commit, got nil")
+	}
+
+	// Invariant 2: DB transaction committed offset 102
+	if len(db.commits) != 2 || db.commits[1] != 102 {
+		t.Fatalf("expected DB commit at offset 102, got %+v", db.commits)
+	}
+
+	// Invariant 3: Simulated process restart reads PostgreSQL authoritative checkpoint (102).
+	// A new coordinator is initialized with baseline=102 from DB.
+	restartDB := &fakeDB{}
+	workingCommitter := &fakeKafkaCommitter{}
+	restartedCoord := checkpoint.NewCoordinator(restartDB)
+	restartedCoord.RegisterCommitter(topic, workingCommitter)
+	restartedCoord.InitBaseline(topic, partition, 102)
+
+	restartedCommitted, ok := restartedCoord.GetCommittedOffset(topic, partition)
+	if !ok || restartedCommitted != 102 {
+		t.Fatalf("expected restarted coordinator baseline to be 102, got %d (ok=%v)", restartedCommitted, ok)
+	}
+
+	// Next consumer offset processed is exactly 103 (DB checkpoint + 1)
+	restartedCoord.Track(orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 103})
+	if err := restartedCoord.MarkDone(ctx, orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 103}); err != nil {
+		t.Fatalf("unexpected error processing offset 103 after restart: %v", err)
+	}
+
+	if len(restartDB.commits) != 1 || restartDB.commits[0] != 103 {
+		t.Fatalf("expected restart DB commit at offset 103, got %+v", restartDB.commits)
+	}
+	if len(workingCommitter.committedOffsets) != 1 || workingCommitter.committedOffsets[0] != 103 {
+		t.Fatalf("expected Kafka group commit at offset 103, got %+v", workingCommitter.committedOffsets)
+	}
+}
+

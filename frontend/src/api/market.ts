@@ -100,9 +100,10 @@ export const marketApi = {
   },
 
   // GET /api/v1/markets/{id}/candles — Candlestick bars
-  getCandles: async (id: string, resolution = '1m', limit = 100): Promise<Candle[]> => {
+  getCandles: async (id: string, resolution = '1m', limit = 100, signal?: AbortSignal): Promise<Candle[]> => {
     const res = await client.get<{ candles: Candle[] }>(`/api/v1/markets/${id}/candles`, {
       params: { resolution, limit },
+      signal,
     })
     return res.data?.candles || []
   },

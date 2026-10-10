@@ -12,21 +12,35 @@ import (
 
 type OutboxPublisher struct {
 	repo     repository.OutboxRepository
-	producer Producer
-	logger   *zap.Logger
-	interval time.Duration
-	topicMap map[string]string
+	producer      Producer
+	logger        *zap.Logger
+	interval      time.Duration
+	retention     time.Duration
+	pruneInterval time.Duration
+	topicMap      map[string]string
 }
 
 func NewOutboxPublisher(repo repository.OutboxRepository, producer Producer, logger *zap.Logger, interval time.Duration) *OutboxPublisher {
+	return NewOutboxPublisherWithRetention(repo, producer, logger, interval, 24*time.Hour, 10*time.Minute)
+}
+
+func NewOutboxPublisherWithRetention(repo repository.OutboxRepository, producer Producer, logger *zap.Logger, interval time.Duration, retention time.Duration, pruneInterval time.Duration) *OutboxPublisher {
 	if interval <= 0 {
 		interval = 200 * time.Millisecond
 	}
+	if retention <= 0 {
+		retention = 24 * time.Hour
+	}
+	if pruneInterval <= 0 {
+		pruneInterval = 10 * time.Minute
+	}
 	return &OutboxPublisher{
-		repo:     repo,
-		producer: producer,
-		logger:   logger,
-		interval: interval,
+		repo:          repo,
+		producer:      producer,
+		logger:        logger,
+		interval:      interval,
+		retention:     retention,
+		pruneInterval: pruneInterval,
 		topicMap: map[string]string{
 			"OrderCreated":         "orders.commands",
 			"OrderCancelRequested": "orders.commands",
@@ -35,9 +49,16 @@ func NewOutboxPublisher(repo repository.OutboxRepository, producer Producer, log
 }
 
 func (p *OutboxPublisher) Start(ctx context.Context) {
-	p.logger.Info("Starting Outbox Publisher background loop", zap.Duration("interval", p.interval))
+	p.logger.Info("Starting Outbox Publisher background loop",
+		zap.Duration("interval", p.interval),
+		zap.Duration("retention", p.retention),
+		zap.Duration("prune_interval", p.pruneInterval),
+	)
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
+
+	pruneTicker := time.NewTicker(p.pruneInterval)
+	defer pruneTicker.Stop()
 
 	for {
 		select {
@@ -46,8 +67,29 @@ func (p *OutboxPublisher) Start(ctx context.Context) {
 			return
 		case <-ticker.C:
 			p.processPendingEvents(ctx)
+		case <-pruneTicker.C:
+			p.prunePublishedEvents(ctx)
 		}
 	}
+}
+
+func (p *OutboxPublisher) prunePublishedEvents(ctx context.Context) {
+	deleted, err := p.repo.PrunePublishedOutboxEvents(ctx, p.retention, 1000)
+	if err != nil {
+		p.logger.Error("Failed to prune old published outbox events", zap.Error(err))
+		return
+	}
+	if deleted > 0 {
+		p.logger.Info("Reaped published outbox events",
+			zap.Int64("deleted_rows", deleted),
+			zap.Duration("retention", p.retention),
+		)
+	}
+}
+
+// PrunePublishedEvents exposes on-demand outbox reaping for testing and operational maintenance.
+func (p *OutboxPublisher) PrunePublishedEvents(ctx context.Context) (int64, error) {
+	return p.repo.PrunePublishedOutboxEvents(ctx, p.retention, 1000)
 }
 
 func (p *OutboxPublisher) processPendingEvents(ctx context.Context) {

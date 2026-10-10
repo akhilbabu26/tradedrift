@@ -43,6 +43,7 @@ type TopUpOrderRepository interface {
 	RecordClaimFailure(ctx context.Context, orderID, workerToken, errMsg string) (bool, error)
 	TransitionToCreditPending(ctx context.Context, orderID, provider, paymentID string) error
 	TransitionToRefundRequired(ctx context.Context, orderID, provider, paymentID, reason string) error
+	ListByUserID(ctx context.Context, userID string, limit int) ([]*domain.TopUpOrder, error)
 }
 
 // WebhookEventRepository manages immutable webhook audit logs and deduplication.

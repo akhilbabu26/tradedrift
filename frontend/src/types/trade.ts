@@ -28,6 +28,7 @@ export interface OrderBookLevel {
 }
 
 export interface OrderBookSnapshot {
+  marketId?: string
   asks: OrderBookLevel[]
   bids: OrderBookLevel[]
   spread: string

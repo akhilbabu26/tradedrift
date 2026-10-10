@@ -53,3 +53,38 @@ func holdingsDTO(res *portfoliov1.PortfolioHoldingsResponse) PortfolioHoldingsDT
 		Holdings: list,
 	}
 }
+
+type PortfolioHistoryPointDTO struct {
+	Timestamp     int64  `json:"timestamp"`
+	TotalEquity   string `json:"totalEquity"`
+	CashBalance   string `json:"cashBalance"`
+	HoldingsValue string `json:"holdingsValue"`
+	UnrealizedPnL string `json:"unrealizedPnl"`
+	RealizedPnL   string `json:"realizedPnl"`
+}
+
+type PortfolioHistoryDTO struct {
+	UserID    string                     `json:"userId"`
+	Timeframe string                     `json:"timeframe"`
+	Points    []PortfolioHistoryPointDTO `json:"points"`
+}
+
+func historyDTO(timeframe string, res *portfoliov1.GetPortfolioHistoryResponse) PortfolioHistoryDTO {
+	list := make([]PortfolioHistoryPointDTO, 0, len(res.GetPoints()))
+	for _, p := range res.GetPoints() {
+		list = append(list, PortfolioHistoryPointDTO{
+			Timestamp:     p.GetTimestamp(),
+			TotalEquity:   p.GetTotalEquity(),
+			CashBalance:   p.GetCashBalance(),
+			HoldingsValue: p.GetHoldingsValue(),
+			UnrealizedPnL: p.GetUnrealizedPnl(),
+			RealizedPnL:   p.GetRealizedPnl(),
+		})
+	}
+	return PortfolioHistoryDTO{
+		UserID:    res.GetUserId(),
+		Timeframe: timeframe,
+		Points:    list,
+	}
+}
+

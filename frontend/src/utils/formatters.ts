@@ -126,3 +126,20 @@ function formatWithCommas(value: string): string {
   const formatted = int.replace(/\B(?=(\d{3})+(?!\d))/g, ',')
   return dec !== undefined ? `${formatted}.${dec}` : formatted
 }
+
+/**
+ * Derives price display precision and minimum move from market tick size.
+ * e.g. "0.01"   → { precision: 2, minMove: 0.01 }
+ *      "0.001"  → { precision: 3, minMove: 0.001 }
+ *      "0.0001" → { precision: 4, minMove: 0.0001 }
+ * Falls back to 2 decimals / 0.01 if tickSize is missing or invalid.
+ */
+export function getPrecisionFromTickSize(tickSize?: string): { precision: number; minMove: number } {
+  if (!tickSize) return { precision: 2, minMove: 0.01 }
+  const parsed = parseFloat(tickSize)
+  if (isNaN(parsed) || parsed <= 0) return { precision: 2, minMove: 0.01 }
+  const parts = tickSize.split('.')
+  const decimals = parts.length > 1 ? parts[1].length : 0
+  return { precision: Math.max(0, Math.min(decimals, 8)), minMove: parsed }
+}
+

@@ -14,10 +14,12 @@ export default function OrdersPage() {
     tradeFills,
     kpis,
     loading,
+    error,
     isDemoData,
     cancellingId,
     wsStatus,
     handleCancelOrder,
+    refetch,
   } = useOrdersPageData()
 
   // Smooth scroll handler for the top navigation tabs
@@ -35,6 +37,22 @@ export default function OrdersPage() {
   return (
     <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa] flex flex-col justify-between">
       <div className="max-w-[1600px] w-full mx-auto px-4 lg:px-6 py-6 flex flex-col gap-6">
+        {/* Authentic Error State Notice when order API is unreachable */}
+        {error && (
+          <div className="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 flex items-center justify-between text-xs text-red-400">
+            <span className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-red-400" />
+              Failed to load orders: {error}
+            </span>
+            <button
+              onClick={() => refetch()}
+              className="px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded font-medium transition-colors cursor-pointer"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
         {/* Subtle Demo State Notice when running in dev without backend */}
         {isDemoData && (
           <div className="bg-[#111318] border border-amber-500/30 rounded-lg px-4 py-2.5 flex items-center justify-between text-xs text-amber-400 select-none">

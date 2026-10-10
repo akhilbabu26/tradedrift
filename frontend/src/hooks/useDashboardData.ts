@@ -20,20 +20,25 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { portfolioApi } from '../api/portfolio'
 import { walletApi } from '../api/wallet'
-import { marketApi, type MarketOverview } from '../api/market'
+import { marketApi, type MarketOverview, type Candle } from '../api/market'
 import { orderApi, type Order } from '../api/order'
 import { tradesApi } from '../api/trades'
 import { wsService, WsChannels } from '../api/ws'
 import { useAuthStore } from '../store/authStore'
 import { toDecimal } from '../utils/decimal'
 import { extractApiError } from '../utils/apiError'
+import { evaluateTrendCoverage } from '../utils/trendCoverage'
+
 import type {
   DashboardData,
   CoinHolding,
   MarketRow,
   ActiveOrder,
   RecentFill,
+  PeriodTab,
+  PortfolioDataPoint,
 } from '../types/dashboard'
+
 
 // ── Known dashboard markets ──────────────────────────────────────────────────
 const DASHBOARD_MARKETS = [
@@ -43,7 +48,7 @@ const DASHBOARD_MARKETS = [
 ] as const
 
 /** Normalize array of price string points into 0..1 values for Sparkline */
-function normalizeTrend(trend: string[] | undefined, targetPoints = 16): number[] {
+export function normalizeTrend(trend: string[] | undefined, targetPoints = 16): number[] {
   if (!trend || trend.length < 2) return [0.5, 0.5]
   const nums = trend.map((v) => parseFloat(v)).filter((v) => !isNaN(v) && v > 0)
   if (nums.length < 2) return [0.5, 0.5]
@@ -140,6 +145,8 @@ export interface UseDashboardDataReturn {
   isDemoData: boolean
   refetch: () => void
   cancelOrder: (orderId: string) => Promise<void>
+  activePeriod: PeriodTab
+  setActivePeriod: (period: PeriodTab) => void
 }
 
 export function useDashboardData(): UseDashboardDataReturn {
@@ -147,6 +154,7 @@ export function useDashboardData(): UseDashboardDataReturn {
   const [loading, setLoading]       = useState(true)
   const [error, setError]           = useState<string | null>(null)
   const [isDemoData, setIsDemoData] = useState(false)
+  const [activePeriod, setActivePeriod] = useState<PeriodTab>('7D')
 
   const userId = useAuthStore((s) => s.user?.userId)
   const livePrices = useRef<Record<string, string>>({})
@@ -156,19 +164,27 @@ export function useDashboardData(): UseDashboardDataReturn {
     setError(null)
 
     try {
-      // ── Step 1: Critical data — portfolio, wallet, and live markets overview ─
-      const [summaryRes, holdingsRes, balancesRes, overviewRes] = await Promise.all([
+      // ── Step 1: Critical data — portfolio, wallet, snapshots history, live markets, and hourly candles ─
+      const candlesPromises = DASHBOARD_MARKETS.map((m) =>
+        marketApi.getCandles(m.id, '1h', 168).catch(() => [] as Candle[])
+      )
+
+      const [summaryRes, holdingsRes, balancesRes, overviewRes, historyRes, candlesList] = await Promise.all([
         portfolioApi.getSummary(),
         portfolioApi.getHoldings().catch(() => ({ userId: '', holdings: [] })),
         walletApi.getAllBalances().catch(() => []),
         marketApi.getMarketsOverview().catch(() => [] as MarketOverview[]),
+        portfolioApi.getHistory(activePeriod).catch(() => ({ userId: '', timeframe: activePeriod, points: [] })),
+        Promise.all(candlesPromises),
       ])
+
 
       // Map market overview data into lookup records
       const overviewMap: Record<string, MarketOverview> = {}
       overviewRes.forEach((ov) => {
         overviewMap[ov.market_id] = ov
       })
+
 
       // ── Step 2: Open orders + recent fills (non-critical) ─────────────────
       const [allOrders, tradesRes] = await Promise.allSettled([
@@ -246,14 +262,29 @@ export function useDashboardData(): UseDashboardDataReturn {
         }
       })
 
-      // ── Market Pulse rows with real trend sparklines ───────────────────────
-      const marketRows: MarketRow[] = DASHBOARD_MARKETS.map((m) => {
+      // ── Market Pulse rows with authentic trend coverage ───────────────────
+      const marketRows: MarketRow[] = DASHBOARD_MARKETS.map((m, idx) => {
         const ov = overviewMap[m.id]
         const price = livePrices.current[m.asset] || ov?.last_price || '--'
         const changeStr = livePrices.current[`${m.asset}_change`] || ov?.price_change_24h_percent || '0'
-        const sparklinePoints = ov?.trend && ov.trend.length >= 2
-          ? normalizeTrend(ov.trend)
-          : [0.5, 0.5]
+
+        // Evaluate genuine coverage using timestamp span from 1h candles
+        const candles = candlesList[idx] || []
+        const candleCloses = candles.length > 0 ? candles.map((c) => c.close) : (ov?.trend || [])
+        const startCandle = candles[0]
+        const endCandle = candles[candles.length - 1]
+
+        const coverage = evaluateTrendCoverage(
+          candleCloses.length,
+          startCandle?.start_time,
+          endCandle?.start_time
+        )
+
+        // Draw sparkline with genuine available candle observations
+        const sparklinePoints = candleCloses.length > 0
+          ? candleCloses.map((c) => parseFloat(String(c))).filter((v) => !isNaN(v) && isFinite(v) && v > 0)
+          : []
+
         const quoteVolNum = ov?.quote_volume_24h ? parseFloat(ov.quote_volume_24h) : 0
 
         return {
@@ -267,8 +298,12 @@ export function useDashboardData(): UseDashboardDataReturn {
           sparklinePoints,
           volume24h: formatVolume(ov?.quote_volume_24h),
           quoteVolume: isNaN(quoteVolNum) ? 0 : quoteVolNum,
+          trendStatus: coverage.status,
+          trendLabel: coverage.label,
+          trendHours: coverage.hoursCovered,
         }
       })
+
 
       // ── Active Orders ──────────────────────────────────────────────────────
       const activeOrdersList: ActiveOrder[] =
@@ -310,17 +345,31 @@ export function useDashboardData(): UseDashboardDataReturn {
         }
       }
 
-      // ── Authentic Portfolio Chart Baseline ─────────────────────────────────
-      // If user has 0 trades, portfolio balance has been stable flat cash.
-      // Do NOT invent artificial fluctuating curves around a brand new account.
+      // ── Authentic Portfolio Snapshots Chart ────────────────────────────────
       const baselineVal = totalValue.toNumber()
       const nowSec = Math.floor(Date.now() / 1000)
-      const daySec = 86400
-      const daysCount = 7
-      const chartPoints = Array.from({ length: daysCount }).map((_, idx) => ({
-        time: nowSec - (daysCount - 1 - idx) * daySec,
-        value: baselineVal > 0 ? baselineVal : 0,
-      }))
+      let chartPoints: PortfolioDataPoint[] = []
+
+      if (historyRes.points && historyRes.points.length > 0) {
+        chartPoints = historyRes.points.map((pt) => ({
+          time: pt.timestamp,
+          value: parseFloat(pt.totalEquity),
+        }))
+        // Ensure latest live equity is anchored at current timestamp if last snapshot is > 60s old
+        const lastPt = chartPoints[chartPoints.length - 1]
+        if (lastPt && nowSec - lastPt.time > 60 && baselineVal > 0) {
+          chartPoints.push({
+            time: nowSec,
+            value: baselineVal,
+          })
+        }
+      } else if (baselineVal > 0) {
+        // Honest baseline: only current timestamp if no historical snapshots recorded yet
+        chartPoints = [
+          { time: nowSec - 60, value: baselineVal },
+          { time: nowSec, value: baselineVal },
+        ]
+      }
 
       // ── Final compiled state ───────────────────────────────────────────────
       const dashData: DashboardData = {
@@ -353,7 +402,8 @@ export function useDashboardData(): UseDashboardDataReturn {
     } finally {
       setLoading(false)
     }
-  }, [userId])
+  }, [userId, activePeriod])
+
 
   // ── Cancel Order Action ────────────────────────────────────────────────────
   const cancelOrder = useCallback(
@@ -386,9 +436,8 @@ export function useDashboardData(): UseDashboardDataReturn {
             if (change !== undefined) {
               livePrices.current[`${m.asset}_change`] = change
             }
-            setData((prev) => ({
-              ...prev,
-              marketRows: prev.marketRows.map((row) =>
+            setData((prev) => {
+              const updatedMarketRows = prev.marketRows.map((row) =>
                 row.symbol === m.asset
                   ? {
                       ...row,
@@ -397,8 +446,60 @@ export function useDashboardData(): UseDashboardDataReturn {
                       positive: toDecimal(change || '0').gte(0),
                     }
                   : row
-              ),
-            }))
+              )
+
+              // Reactively recalculate holdings value and unrealized PnL based on live ticker
+              let totalHoldingsVal = toDecimal(0)
+              let totalUnrealized = toDecimal(0)
+
+              const updatedHoldings = prev.holdings.map((h) => {
+                const currentPrice = h.asset.toUpperCase() === m.asset.toUpperCase()
+                  ? toDecimal(price)
+                  : toDecimal(livePrices.current[h.asset] || '0')
+                const qty = toDecimal(h.holdings)
+                const val = currentPrice.gt(0) ? qty.times(currentPrice) : toDecimal(h.valueUsdt)
+                const prevPnl = toDecimal(h.pnlUsdt)
+                const prevVal = toDecimal(h.valueUsdt)
+                const costBasis = prevVal.minus(prevPnl)
+                const newPnl = costBasis.gt(0) ? val.minus(costBasis) : prevPnl
+                const newPnlPct = costBasis.gt(0)
+                  ? newPnl.dividedBy(costBasis).times(100).toFixed(2)
+                  : h.pnlPercent
+
+                totalHoldingsVal = totalHoldingsVal.plus(val)
+                totalUnrealized = totalUnrealized.plus(newPnl)
+
+                return {
+                  ...h,
+                  valueUsdt: val.toFixed(2),
+                  pnlUsdt: (newPnl.gte(0) ? '+' : '') + newPnl.toFixed(2),
+                  pnlPercent: (newPnl.gte(0) ? '+' : '') + newPnlPct,
+                }
+              })
+
+              const cash = toDecimal(prev.availableUsdt)
+              const newTotalPortfolio = cash.plus(totalHoldingsVal)
+
+              const reallocatedHoldings = updatedHoldings.map((h) => ({
+                ...h,
+                allocation: newTotalPortfolio.gt(0)
+                  ? Math.round(toDecimal(h.valueUsdt).dividedBy(newTotalPortfolio).times(1000).toNumber()) / 10
+                  : h.allocation,
+              }))
+
+              const changePct = newTotalPortfolio.gt(0)
+                ? (totalUnrealized.gte(0) ? '+' : '') + totalUnrealized.dividedBy(newTotalPortfolio).times(100).toFixed(2) + '%'
+                : prev.portfolioChangePercent
+
+              return {
+                ...prev,
+                marketRows: updatedMarketRows,
+                holdings: reallocatedHoldings,
+                portfolioValue: newTotalPortfolio.gt(0) ? newTotalPortfolio.toFixed(2) : prev.portfolioValue,
+                portfolioChangeUsdt: (totalUnrealized.gte(0) ? '+' : '') + totalUnrealized.toFixed(2),
+                portfolioChangePercent: changePct,
+              }
+            })
           }
         } catch {
           // Ignore malformed WS payloads
@@ -408,11 +509,26 @@ export function useDashboardData(): UseDashboardDataReturn {
     }
 
     if (userId) {
+      // User notification stream (trade fills, order updates)
       const unsubNotifications = wsService.subscribe(WsChannels.userNotifications(userId), () => {
         buildData()
       })
-      unsubs.push(unsubNotifications)
+      // User portfolio stream (balance & snapshot updates)
+      const unsubPortfolio = wsService.subscribe(WsChannels.userPortfolio(userId), () => {
+        buildData()
+      })
+      unsubs.push(unsubNotifications, unsubPortfolio)
     }
+
+    // Auto-refresh when returning to tab or reconnecting
+    const unsubReconnect = wsService.onReconnect(() => {
+      buildData()
+    })
+    const onFocus = () => {
+      buildData()
+    }
+    window.addEventListener('focus', onFocus)
+    unsubs.push(unsubReconnect, () => window.removeEventListener('focus', onFocus))
 
     return () => unsubs.forEach((u) => u())
   }, [buildData, userId])
@@ -422,5 +538,15 @@ export function useDashboardData(): UseDashboardDataReturn {
     buildData()
   }, [buildData])
 
-  return { data, loading, error, isDemoData, refetch: buildData, cancelOrder }
+  return {
+    data,
+    loading,
+    error,
+    isDemoData,
+    refetch: buildData,
+    cancelOrder,
+    activePeriod,
+    setActivePeriod,
+  }
 }
+

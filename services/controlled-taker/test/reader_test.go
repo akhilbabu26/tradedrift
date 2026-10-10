@@ -31,7 +31,7 @@ func TestDepthValidation_MissingOrMalformedTimestamp(t *testing.T) {
 }
 
 func TestDepthValidation_StaleOrFutureTimestamp(t *testing.T) {
-	rawStale := `{"market_id":"BTC-USDT","sequence":100,"snapshot_at":"` + time.Now().Add(-10*time.Second).Format(time.RFC3339) + `","bids":[{"price":"96490","quantity":"1.0"}],"asks":[{"price":"96500","quantity":"1.0"}]}`
+	rawStale := `{"market_id":"BTC-USDT","sequence":100,"snapshot_at":"` + time.Now().Add(-35*time.Second).Format(time.RFC3339) + `","bids":[{"price":"96490","quantity":"1.0"}],"asks":[{"price":"96500","quantity":"1.0"}]}`
 	_, err := redisdepth.ParseSnapshotJSON("BTC-USDT", []byte(rawStale))
 	if !errors.Is(err, redisdepth.ErrStaleSnapshot) {
 		t.Fatalf("expected ErrStaleSnapshot, got %v", err)

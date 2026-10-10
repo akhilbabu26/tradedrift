@@ -24,7 +24,11 @@ export interface MarketRow {
   sparklinePoints: number[] // normalized 0–1 values for sparkline
   volume24h?: string      // "124.5M"
   quoteVolume?: number    // numeric for sorting
+  trendStatus?: 'accumulating' | 'provisional' | 'partial' | 'full'
+  trendLabel?: string
+  trendHours?: number
 }
+
 
 export interface ActiveOrder {
   id: string
@@ -57,7 +61,7 @@ export interface PortfolioDataPoint {
   value: number           // portfolio value in USDT
 }
 
-export type PeriodTab = '7D' | '30D' | '90D' | '1Y'
+export type PeriodTab = '24H' | '7D' | '30D' | '90D' | '1Y'
 
 export interface DashboardData {
   portfolioValue: string          // "34250.80"

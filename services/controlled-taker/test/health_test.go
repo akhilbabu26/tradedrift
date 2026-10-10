@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"tradedrift/services/controlled-taker/internal/clients/redisdepth"
@@ -22,7 +23,7 @@ func sampleMarkets() []config.MarketConfig {
 }
 
 func TestHealthz(t *testing.T) {
-	server := health.NewServer("8080", &mockRedisReader{}, &mockOrderPinger{}, sampleMarkets(), zap.NewNop())
+	server := health.NewServer("8080", &mockRedisReader{}, &mockOrderPinger{}, sampleMarkets(), 5*time.Second, zap.NewNop())
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	w := httptest.NewRecorder()
 
@@ -50,7 +51,7 @@ func TestReadyz_AllMarketsReady(t *testing.T) {
 		},
 	}
 	orders := &mockOrderPinger{}
-	server := health.NewServer("8080", redis, orders, sampleMarkets(), zap.NewNop())
+	server := health.NewServer("8080", redis, orders, sampleMarkets(), 5*time.Second, zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
@@ -84,7 +85,7 @@ func TestReadyz_PartialMarketsReady(t *testing.T) {
 		},
 	}
 	orders := &mockOrderPinger{}
-	server := health.NewServer("8080", redis, orders, sampleMarkets(), zap.NewNop())
+	server := health.NewServer("8080", redis, orders, sampleMarkets(), 5*time.Second, zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
@@ -119,7 +120,7 @@ func TestReadyz_NoMarketsReady(t *testing.T) {
 		depths: map[string]*redisdepth.DepthSnapshot{},
 	}
 	orders := &mockOrderPinger{}
-	server := health.NewServer("8080", redis, orders, sampleMarkets(), zap.NewNop())
+	server := health.NewServer("8080", redis, orders, sampleMarkets(), 5*time.Second, zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
@@ -136,7 +137,7 @@ func TestReadyz_RedisDown(t *testing.T) {
 		pingErr: errors.New("connection refused"),
 	}
 	orders := &mockOrderPinger{}
-	server := health.NewServer("8080", redis, orders, sampleMarkets(), zap.NewNop())
+	server := health.NewServer("8080", redis, orders, sampleMarkets(), 5*time.Second, zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
@@ -157,7 +158,7 @@ func TestReadyz_OrderServiceDown(t *testing.T) {
 	orders := &mockOrderPinger{
 		pingErr: errors.New("order service unavailable"),
 	}
-	server := health.NewServer("8080", redis, orders, sampleMarkets(), zap.NewNop())
+	server := health.NewServer("8080", redis, orders, sampleMarkets(), 5*time.Second, zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
@@ -175,7 +176,7 @@ func TestReadyz_NilOrderClient(t *testing.T) {
 			"BTC-USDT": freshDepth("BTC-USDT"),
 		},
 	}
-	server := health.NewServer("8080", redis, nil, sampleMarkets(), zap.NewNop())
+	server := health.NewServer("8080", redis, nil, sampleMarkets(), 5*time.Second, zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
@@ -189,7 +190,7 @@ func TestReadyz_NilOrderClient(t *testing.T) {
 
 func TestReadyz_NilRedisReader(t *testing.T) {
 	orders := &mockOrderPinger{}
-	server := health.NewServer("8080", nil, orders, sampleMarkets(), zap.NewNop())
+	server := health.NewServer("8080", nil, orders, sampleMarkets(), 5*time.Second, zap.NewNop())
 
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	w := httptest.NewRecorder()
@@ -198,5 +199,37 @@ func TestReadyz_NilRedisReader(t *testing.T) {
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 when Redis reader is nil, got %d", w.Code)
+	}
+}
+
+func TestReadyz_CustomMaxDepthAge(t *testing.T) {
+	// Snapshot is 3 seconds old
+	snapshotTime := time.Now().Add(-3 * time.Second)
+	depth := freshDepth("BTC-USDT")
+	depth.SnapshotAt = snapshotTime
+
+	redis := &mockRedisReader{
+		depths: map[string]*redisdepth.DepthSnapshot{
+			"BTC-USDT": depth,
+		},
+	}
+	orders := &mockOrderPinger{}
+
+	// Case 1: MaxDepthAge is 2s -> 3s old depth must be rejected as unready (503)
+	serverStrict := health.NewServer("8080", redis, orders, []config.MarketConfig{{MarketID: "BTC-USDT"}}, 2*time.Second, zap.NewNop())
+	req1 := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w1 := httptest.NewRecorder()
+	serverStrict.HandleReadyz(w1, req1)
+	if w1.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when depth (3s old) exceeds MaxDepthAge (2s), got %d", w1.Code)
+	}
+
+	// Case 2: MaxDepthAge is 5s -> 3s old depth must be accepted as ready (200)
+	serverPermissive := health.NewServer("8080", redis, orders, []config.MarketConfig{{MarketID: "BTC-USDT"}}, 5*time.Second, zap.NewNop())
+	req2 := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	w2 := httptest.NewRecorder()
+	serverPermissive.HandleReadyz(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200 when depth (3s old) is within MaxDepthAge (5s), got %d", w2.Code)
 	}
 }

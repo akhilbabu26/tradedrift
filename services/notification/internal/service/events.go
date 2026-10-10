@@ -67,7 +67,7 @@ func (s *Service) HandleTradeSettled(ctx context.Context, ev *TradeSettledEvent)
 		EventID:        ev.EventID, // source event ID — same for buyer and seller
 		NotificationID: buyerNotifID,
 		Type:           "notification.created",
-		Channel:        "user:notifications",
+		Channel:        "user:notifications:" + ev.BuyerUserID,
 		Timestamp:      now,
 		Data:           buyerNotif,
 	}
@@ -99,7 +99,7 @@ func (s *Service) HandleTradeSettled(ctx context.Context, ev *TradeSettledEvent)
 		EventID:        ev.EventID, // same source event ID
 		NotificationID: sellerNotifID,
 		Type:           "notification.created",
-		Channel:        "user:notifications",
+		Channel:        "user:notifications:" + ev.SellerUserID,
 		Timestamp:      now,
 		Data:           sellerNotif,
 	}
@@ -179,7 +179,7 @@ func (s *Service) HandleOrderCancelled(ctx context.Context, ev *OrderCancelledEv
 		EventID:        ev.EventID, // source domain event ID — no fallback
 		NotificationID: notifID,
 		Type:           "notification.created",
-		Channel:        "user:notifications",
+		Channel:        "user:notifications:" + ev.UserID,
 		Timestamp:      now,
 		Data:           notif,
 	}
@@ -252,7 +252,7 @@ func (s *Service) HandlePortfolioUpdated(ctx context.Context, ev *PortfolioUpdat
 		EventID:        ev.EventID,
 		NotificationID: "", // portfolio updates have no persistent notification
 		Type:           "portfolio.updated",
-		Channel:        "user:portfolio",
+		Channel:        "user:portfolio:" + ev.UserID,
 		Timestamp:      now,
 		Data:           ev,
 	}

@@ -174,6 +174,7 @@ func main() {
 		cfg.KafkaTopicPortfolioUserTrades,
 		cfg.KafkaTopicTradeDLQ,
 		repo,
+		svc,
 		appLogger,
 	)
 
@@ -201,7 +202,17 @@ func main() {
 		}
 	}()
 
+	// ── 11b. Start Periodic Valuation Snapshot Worker (60s ticker) ───────────
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		appLogger.Info("Starting periodic portfolio snapshot worker (60s ticker)...")
+		svc.StartPeriodicSnapshotWorker(ctx, 60*time.Second)
+		appLogger.Info("Periodic portfolio snapshot worker stopped")
+	}()
+
 	// ── 12. Await OS Signals & Graceful Teardown ─────────────────────────────
+
 	<-ctx.Done()
 	appLogger.Info("Shutdown signal received; draining portfolio service resources...")
 

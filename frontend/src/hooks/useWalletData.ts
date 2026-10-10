@@ -2,13 +2,15 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { walletApi, type Balance } from '../api/wallet'
 import { marketApi } from '../api/market'
 import { topupApi, type DailyUsage, type TopUpHistoryItem } from '../api/topup'
+import { useWalletStore } from '../store/walletStore'
+import { wsService } from '../api/ws'
 import {
-  MOCK_WALLET_BALANCES,
   MOCK_DAILY_USAGE,
   DEFAULT_ASSET_PRICES,
 } from '../data/walletMock'
 import { toDecimal } from '../utils/decimal'
 import { getAssetMetadata, type AssetMetadata } from '../utils/marketMetadata'
+import { extractApiError } from '../utils/apiError'
 import toast from 'react-hot-toast'
 
 export interface EnrichedAssetRow {
@@ -37,7 +39,7 @@ function loadSavedTopUps(): TopUpHistoryItem[] {
   try {
     const raw = localStorage.getItem(TOPUP_STORAGE_KEY)
     if (raw) return JSON.parse(raw)
-  } catch {}
+  } catch { }
   return []
 }
 
@@ -51,42 +53,43 @@ export function useWalletData() {
   const [error, setError] = useState<string | null>(null)
   const [submittingTopUp, setSubmittingTopUp] = useState(false)
 
-  // ── 1. Fetch Balances & Market Prices ──────────────────────────────────────
+  const storeBalances = useWalletStore((s) => s.balances)
+
+  // ── 1. Fetch Balances, Top-Ups & Market Prices ─────────────────────────────
   const loadData = useCallback(async () => {
     setLoading(true)
     setError(null)
 
     let loadedBalances: Balance[] = []
-    let isMock = false
 
     try {
-      // 1. Try real wallet API
       const res = await walletApi.getAllBalances()
       if (res && res.length > 0) {
         loadedBalances = res
-        isMock = false
       } else {
-        // Authentic empty balances for supported assets
+        // Authentic zero balances for supported assets
         loadedBalances = [
           { asset: 'BTC', availableBalance: '0.00000000', reservedBalance: '0.00000000' },
           { asset: 'ETH', availableBalance: '0.00000000', reservedBalance: '0.00000000' },
           { asset: 'SOL', availableBalance: '0.00000000', reservedBalance: '0.00000000' },
           { asset: 'USDT', availableBalance: '0.00', reservedBalance: '0.00' },
         ]
-        isMock = false
       }
+      setRawBalances(loadedBalances)
+      setIsDemoData(false)
     } catch (err) {
-      console.warn('Wallet API unreachable, falling back to mock balances', err)
-      loadedBalances = MOCK_WALLET_BALANCES
-      isMock = true
+      const msg = extractApiError(err)
+      console.warn('Wallet API unreachable:', msg)
+      setError(msg)
+      setRawBalances([])
+      setIsDemoData(false)
     }
-
-    setRawBalances(loadedBalances)
-    setIsDemoData(isMock)
 
     // 2. Fetch live prices for non-USDT assets
     const updatedPrices: Record<string, string> = { ...DEFAULT_ASSET_PRICES, USDT: '1.00' }
-    const cryptoAssets = loadedBalances.filter((b) => b.asset.toUpperCase() !== 'USDT')
+    const cryptoAssets = (loadedBalances.length > 0 ? loadedBalances : [
+      { asset: 'BTC' }, { asset: 'ETH' }, { asset: 'SOL' }
+    ]).filter((b) => b.asset?.toUpperCase() !== 'USDT')
 
     await Promise.allSettled(
       cryptoAssets.map(async (b) => {
@@ -98,35 +101,75 @@ export function useWalletData() {
             updatedPrices[symbol] = ticker.last_price
           }
         } catch {
-          // Keep default mock price if ticker fetch fails
+          // Keep default fallback price if ticker fetch fails
         }
       })
     )
     setPrices(updatedPrices)
 
-    // 3. Fetch daily usage from TopUp API
-    // NOTE: /api/v1/topups/daily-usage returns 404 on some backend versions.
-    // Silently fall back to mock data when the endpoint is unavailable.
+    // 3. Fetch authentic top-ups from backend GET /api/v1/topups
+    try {
+      const serverOrders = await topupApi.listTopUps()
+      if (serverOrders && serverOrders.length > 0) {
+        const history: TopUpHistoryItem[] = serverOrders.map((o) => {
+          let status: TopUpHistoryItem['status'] = 'Pending'
+          if (o.status === 'COMPLETED') status = 'Completed'
+          else if (o.status === 'PAYMENT_CONFIRMED' || o.status === 'CREDIT_PENDING') status = 'Credited'
+          else if (o.status === 'FAILED' || o.status === 'REFUND_REQUIRED') status = 'Failed'
+
+          return {
+            id: o.topupId,
+            orderId: o.topupId.startsWith('topup_') ? o.topupId : `topup_${o.topupId.substring(0, 8)}`,
+            amountInr: o.inrAmount,
+            usdtCredited: o.usdtAmount,
+            paymentMode: (o.provider || 'UPI').toUpperCase(),
+            status,
+            date: o.createdAt ? new Date(o.createdAt).toLocaleDateString() : 'Recent',
+          }
+        })
+        setTopUpHistory(history)
+      }
+    } catch {
+      // Local fallback if top-up service endpoint unconfigured
+    }
+
+    // 4. Fetch daily usage from TopUp API
     try {
       const usage = await topupApi.getDailyUsage()
       if (usage) {
         setDailyUsage(usage)
       }
-    } catch (topupErr: unknown) {
-      // 404 = endpoint not yet deployed; silently use mock defaults
-      const status = (topupErr as { response?: { status?: number } })?.response?.status
-      if (status !== 404) {
-        // Only log unexpected errors (not missing-endpoint 404s)
-        console.warn('[useWalletData] getDailyUsage failed:', status)
-      }
+    } catch {
       setDailyUsage(MOCK_DAILY_USAGE)
     }
 
     setLoading(false)
   }, [])
 
+  // Sync with global walletStore
+  useEffect(() => {
+    if (storeBalances.length > 0) {
+      setRawBalances(storeBalances)
+    }
+  }, [storeBalances])
+
+  // Lifecycle listeners: auto-refresh on mount, WS balance push, reconnect, and tab focus
   useEffect(() => {
     loadData()
+
+    const unsubBalances = useWalletStore.getState().subscribeToBalanceUpdates()
+    const unsubReconnect = wsService.onReconnect(loadData)
+
+    const onFocus = () => {
+      loadData()
+    }
+    window.addEventListener('focus', onFocus)
+
+    return () => {
+      unsubBalances()
+      unsubReconnect()
+      window.removeEventListener('focus', onFocus)
+    }
   }, [loadData])
 
   // ── 2. Enriched Asset Rows ─────────────────────────────────────────────────
@@ -224,7 +267,7 @@ export function useWalletData() {
           const updated = [newTx, ...prev]
           try {
             localStorage.setItem(TOPUP_STORAGE_KEY, JSON.stringify(updated))
-          } catch {}
+          } catch { }
           return updated
         })
 
@@ -234,12 +277,63 @@ export function useWalletData() {
           if (freshUsage) {
             setDailyUsage(freshUsage)
           }
-        } catch {}
+        } catch { }
 
-        toast.success(
-          `Top-up order created: ₹${order.inrAmount} for ${order.usdtAmount} USDT (${order.status}). Note: Simulation mode active.`,
-          { duration: 5000 }
-        )
+        // If Razorpay provider, open Razorpay Checkout modal
+        if (order.provider === 'RAZORPAY' && order.providerOrderId && typeof window !== 'undefined' && (window as any).Razorpay) {
+          const userObj = (() => {
+            try {
+              return JSON.parse(localStorage.getItem('user') || '{}')
+            } catch {
+              return {}
+            }
+          })()
+
+          const rzpKey = import.meta.env.VITE_RAZORPAY_KEY_ID || ''
+          const rzpOptions = {
+            key: rzpKey,
+            amount: order.inrAmount * 100,
+            currency: 'INR',
+            name: 'TradeDrift',
+            description: `Top up ${order.usdtAmount} Virtual USDT`,
+            order_id: order.providerOrderId,
+            prefill: {
+              name: userObj.username || '',
+              email: userObj.email || '',
+            },
+            theme: {
+              color: '#10b981',
+            },
+            handler: function () {
+              toast.success('Payment completed! Crediting USDT to wallet...')
+              // Automatically poll to reflect backend webhook receipt and wallet reconciliation
+              const pollDelays = [1200, 2500, 4500]
+              pollDelays.forEach((delay) => {
+                setTimeout(async () => {
+                  try {
+                    await loadData()
+                    await useWalletStore.getState().invalidateBalances()
+                  } catch (e) {
+                    console.warn('Auto-refresh wallet failed:', e)
+                  }
+                }, delay)
+              })
+            },
+            modal: {
+              ondismiss: function () {
+                toast('Checkout modal closed', { icon: 'ℹ️' })
+              },
+            },
+          }
+
+          const rzp = new (window as any).Razorpay(rzpOptions)
+          rzp.open()
+        } else {
+          toast.success(
+            `Top-up order created: ₹${order.inrAmount} for ${order.usdtAmount} USDT (${order.status}).`,
+            { duration: 5000 }
+          )
+        }
       } else {
         toast('Top-up service is currently simulated. No funds were debited.', {
           icon: 'ℹ️',
@@ -247,16 +341,33 @@ export function useWalletData() {
         })
       }
     } catch (err: any) {
-      const msg = err?.response?.data?.message || err?.message || 'Top-up endpoint unavailable'
-      toast('Top-up service is offline. No real transaction occurred.', {
-        icon: 'ℹ️',
-        duration: 4000,
-      })
-      console.info('TopUp API response:', msg)
+      const responseData = err?.response?.data
+      const status = err?.response?.status
+
+      if (status === 429 || responseData?.code === 'DAILY_LIMIT_EXCEEDED') {
+        const errorMsg = responseData?.error || 'Daily top-up limit exceeded. You cannot top up more than ₹10 (10,000 USDT) per day.'
+        toast.error(errorMsg, { duration: 5000 })
+        // Refresh daily usage to immediately reflect remaining quota in UI
+        try {
+          const fresh = await topupApi.getDailyUsage()
+          if (fresh) setDailyUsage(fresh)
+        } catch {}
+      } else if (status === 409 || responseData?.code === 'IDEMPOTENCY_KEY_REUSED') {
+        toast.error('Top-up request already in progress. Please try again.', { duration: 4000 })
+      } else if (status === 400) {
+        toast.error(responseData?.error || 'Invalid top-up amount.', { duration: 4000 })
+      } else if (responseData?.error || responseData?.message) {
+        toast.error(responseData.error || responseData.message, { duration: 4000 })
+      } else if (err?.code === 'ERR_NETWORK' || !err?.response) {
+        toast.error('Top-up service is offline or unreachable.', { duration: 4000 })
+      } else {
+        toast.error('Failed to create top-up order. Please try again.', { duration: 4000 })
+      }
+      console.warn('TopUp API error:', err)
     } finally {
       setSubmittingTopUp(false)
     }
-  }, [])
+  }, [loadData])
 
   return {
     rawBalances,

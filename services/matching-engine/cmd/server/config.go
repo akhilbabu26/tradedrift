@@ -90,6 +90,8 @@ func marketConfigs() ([]market.MarketConfig, error) {
 	}, nil
 }
 
+// validateMarketConfigs enforces tick/lot sanity and the strict 1:1 Kafka partition ownership invariant:
+// One market owns exactly one Kafka partition, and an ME instance must never run two markets on the same partition.
 func validateMarketConfigs(configs []market.MarketConfig) error {
 	seenPartitions := make(map[int]string)
 	for _, mc := range configs {

@@ -129,18 +129,18 @@ class WebSocketService {
 
     // Verify token validity before passing as query param.
     // An expired token causes the Gateway to reject with 401, breaking even public market data.
-    const token = localStorage.getItem('access_token')
+    const token = typeof localStorage !== 'undefined' ? localStorage.getItem('access_token') : null
     const hasValidToken = isTokenValid(token)
 
     if (token && !hasValidToken) {
       wsLog('Stored access_token has expired. Attempting token refresh...')
-      const refreshToken = localStorage.getItem('refresh_token')
+      const refreshToken = typeof localStorage !== 'undefined' ? localStorage.getItem('refresh_token') : null
       if (refreshToken) {
         import('axios').then(async ({ default: axios }) => {
           try {
             const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
             const { data } = await axios.post(`${apiBase}/api/v1/auth/refresh`, { refreshToken })
-            if (data?.accessToken) {
+            if (data?.accessToken && typeof localStorage !== 'undefined') {
               localStorage.setItem('access_token', data.accessToken)
               if (data.refreshToken) localStorage.setItem('refresh_token', data.refreshToken)
               wsLog('Token refreshed. Upgrading WebSocket with authenticated session...')
@@ -159,6 +159,9 @@ class WebSocketService {
     wsLog(`Connecting to ${WS_BASE_URL} (authenticated: ${hasValidToken})`)
 
     try {
+      if (typeof WebSocket === 'undefined') {
+        return
+      }
       this.socket = new WebSocket(url)
 
       this.socket.onopen = () => {

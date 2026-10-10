@@ -9,7 +9,7 @@ services:
     ports:
       - "6379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: [ "CMD", "redis-cli", "ping" ]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -45,7 +45,7 @@ services:
       KAFKA_ADDR: kafka:29092
     volumes:
       - ./scripts/kafka-init-topics.sh:/kafka-init-topics.sh:ro
-    entrypoint: ["/bin/sh", "/kafka-init-topics.sh"]
+    entrypoint: [ "/bin/sh", "/kafka-init-topics.sh" ]
     depends_on:
       kafka:
         condition: service_started
@@ -109,6 +109,10 @@ services:
       WALLET_GRPC_ADDR: wallet:50052
       DAILY_LIMIT_INR: "10"
       WEBHOOK_SECRET: topup_mock_secret_key_12345
+      PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-MOCK}
+      RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
+      RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
     ports:
       - "8084:8084"
     depends_on:
@@ -223,7 +227,7 @@ services:
     ports:
       - "8082:8082"
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8082/readyz || exit 1"]
+      test: [ "CMD-SHELL", "wget -q -O - http://127.0.0.1:8082/readyz || exit 1" ]
       interval: 3s
       timeout: 2s
       retries: 20
@@ -254,7 +258,6 @@ services:
         condition: service_completed_successfully
       wallet:
         condition: service_started
-
 
   trade:
     build:
@@ -344,18 +347,20 @@ services:
     restart: unless-stopped
     environment:
       GATEWAY_PORT: ":8080"
-      AUTH_ADDR:    "auth:50051"
-      WALLET_ADDR:  "wallet:50052"
-      ORDER_ADDR:   "order:50053"
-      MARKET_ADDR:  "market:50054"
-      TRADE_ADDR:   "trade:50057"
+      AUTH_ADDR: "auth:50051"
+      WALLET_ADDR: "wallet:50052"
+      ORDER_ADDR: "order:50053"
+      MARKET_ADDR: "market:50054"
+      TRADE_ADDR: "trade:50057"
       PORTFOLIO_ADDR: "portfolio:50058"
       NOTIFICATION_ADDR: "notification:50059"
-      REDIS_ADDR:   "redis:6379"
+      REDIS_ADDR: "redis:6379"
       KAFKA_BROKERS: "kafka:29092"
-      JWT_SECRET:   "super-secret-jwt-key-tradedrift-dev-32bytes"
-      CORS_ORIGIN:  "http://localhost:5173"
-      LOG_LEVEL:    "info"
+      JWT_SECRET: "super-secret-jwt-key-tradedrift-dev-32bytes"
+      CORS_ORIGIN: "http://localhost:5173"
+      GATEWAY_RATE_LIMIT_RPS: "50"
+      GATEWAY_RATE_LIMIT_BURST: "100"
+      LOG_LEVEL: "info"
     ports:
       - "8080:8080"
     depends_on:
@@ -408,24 +413,38 @@ services:
       LE_REFPRICE_STALE_THRESHOLD: "${LE_REFPRICE_STALE_THRESHOLD:-5m}"
       LE_REFPRICE_PAUSE_THRESHOLD: "${LE_REFPRICE_PAUSE_THRESHOLD:-10m}"
       LE_REFPRICE_FETCH_TIMEOUT: "5s"
-      RECONCILE_INTERVAL: "30s"
-      WALLET_REFRESH_INTERVAL: "15s"
+      RECONCILE_INTERVAL: "8s"
+      WALLET_REFRESH_INTERVAL: "5s"
       MAX_BALANCE_STALENESS: "60s"
       PENDING_TIMEOUT: "10s"
       CANCELLING_TIMEOUT: "30s"
       CANCEL_RETRY_LIMIT: 3
       ME_LIVENESS_THRESHOLD: 3
+      LE_LOW_MIN_BPS: 1
+      LE_LOW_MAX_BPS: 15
+      LE_MID_MIN_BPS: 15
+      LE_MID_MAX_BPS: 45
+      LE_HIGH_MIN_BPS: 45
+      LE_HIGH_MAX_BPS: 100
+      LE_ORDER_LIFETIME: "3m"
+      LE_REFRESH_COOLDOWN: "5s"
+      LE_REFRESH_CONSUMPTION_THRESHOLD: "0.50"
+      LE_DRIFT_ENABLED: "false"
+      LE_DRIFT_MAX_BPS: 25
+      LE_DRIFT_VOLATILITY_BPS: 4
+      LE_DRIFT_REVERSION_SPEED: "0.15"
+      LE_DRIFT_STEP_CADENCE: "2s"
       HEALTH_PORT: "8080"
       METRICS_PORT: "9090"
     ports:
       - "8081:8080"
       - "9094:9090" # Host port 9094 mapped to container 9090 (avoids collision with portfolio's 9091)
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/readyz || exit 1"]
-      interval: 3s
-      timeout: 2s
-      retries: 20
-      start_period: 5s
+      test: [ "CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz || exit 1" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -451,25 +470,34 @@ services:
       ORDER_GRPC_ADDR: order:50053
       REDIS_ADDR: redis:6379
       MAX_ORDER_NOTIONAL_USDT: "10000.00"
-      MAX_SLIPPAGE_BPS: "15"
+      MAX_SLIPPAGE_BPS: "50"
       MAX_SPREAD_PERCENT: "0.015"
-      MAX_HOURLY_VOLUME_USDT: "100000.00"
-      MAX_DAILY_VOLUME_USDT: "1500000.00"
-      MAX_TRADES_PER_HOUR: "60"
+      MAX_HOURLY_VOLUME_USDT: "2000000.00"
+      MAX_DAILY_VOLUME_USDT: "20000000.00"
+      MAX_TRADES_PER_HOUR: "2000"
       CIRCUIT_BREAKER_FAILURES: "5"
       WARMUP_DELAY: "30s"
-      HIGH_COOLDOWN: "300s"
+      HIGH_COOLDOWN: "30s"
       CROSSING_DELAY: "300ms"
-      CTS_RESIDUAL_GRACE_PERIOD: "500ms"
+      CTS_RESIDUAL_GRACE_PERIOD: "4s"
+      CTS_RESIDUAL_DEADLINE: "8s"
       CTS_RESIDUAL_POLL_INTERVAL: "100ms"
       CTS_INVENTORY_MODERATE_BIAS_USDT: "5000.00"
       CTS_INVENTORY_HEAVY_BIAS_USDT: "25000.00"
+      CTS_HIGH_SWEEP_PROBABILITY: "0.70"
+      CTS_MAX_SWEEP_LEVELS: "3"
       HEALTH_PORT: "8080"
       METRICS_PORT: "9090"
       LOG_LEVEL: info
     ports:
       - "8086:8080"
       - "9097:9090"
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz || exit 1" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
     depends_on:
       kafka-init:
         condition: service_completed_successfully
@@ -516,4 +544,3 @@ services:
       - "3000:3000"
     depends_on:
       - prometheus
-

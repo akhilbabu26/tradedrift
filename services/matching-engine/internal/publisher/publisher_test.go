@@ -810,5 +810,182 @@ func TestPublisher_Heartbeat_RedisFailureIsNonFatal(t *testing.T) {
 	}
 }
 
+func TestPublisher_Cancel_UserMismatch_EmitsAuthoritativeStatus(t *testing.T) {
+	k := &fakeKafka{}
+	r := &fakeRedis{}
+	c := &fakeCoordinator{}
+	p := newTestPublisher(k, r, c)
 
+	orderID := uuid.New()
+	userID := uuid.New()
+	cancel := &orderbook.CancelledOrder{
+		OrderID:           orderID,
+		UserID:            userID,
+		MarketID:          "BTC-USDT",
+		RemainingQuantity: decimal.RequireFromString("2.5"),
+		Reason:            "user_mismatch",
+		CancelStatus:      orderbook.CancelStatusUserMismatch,
+		CancelledAt:       time.Now(),
+		SourceOffset:      105,
+	}
+
+	res := orderbook.MatchResult{
+		CancelResult:  cancel,
+		DepthSnapshot: makeDepth("BTC-USDT"),
+		SourcePosition: orderbook.KafkaPosition{
+			Topic:     "orders.commands",
+			Partition: 0,
+			Offset:    105,
+		},
+	}
+
+	if err := p.Process(context.Background(), res); err != nil {
+		t.Fatalf("unexpected process error: %v", err)
+	}
+
+	if len(k.published) != 1 {
+		t.Fatalf("expected 1 message published, got %d", len(k.published))
+	}
+
+	var msg struct {
+		EventID   string `json:"event_id"`
+		EventType string `json:"event_type"`
+		OrderID   string `json:"order_id"`
+		UserID    string `json:"user_id"`
+		Status    string `json:"status"`
+		Reason    string `json:"reason"`
+	}
+	if err := json.Unmarshal(k.published[0].Value, &msg); err != nil {
+		t.Fatalf("unmarshal cancel outcome: %v", err)
+	}
+
+	if msg.Status != "USER_MISMATCH" {
+		t.Fatalf("expected status USER_MISMATCH, got %q", msg.Status)
+	}
+	if msg.Reason != "user_mismatch" {
+		t.Fatalf("expected reason user_mismatch, got %q", msg.Reason)
+	}
+	if msg.OrderID != orderID.String() {
+		t.Fatalf("expected OrderID %s, got %s", orderID, msg.OrderID)
+	}
+	if msg.UserID != userID.String() {
+		t.Fatalf("expected authoritative owner UserID %s, got %s", userID, msg.UserID)
+	}
+}
+
+func TestPublisher_Durability_NoCheckpointOnKafkaFailure(t *testing.T) {
+	k := &fakeKafka{
+		failErr: errors.New("kafka replication timeout: not enough in-sync replicas"),
+	}
+	r := &fakeRedis{}
+	c := &fakeCoordinator{}
+	p := newTestPublisher(k, r, c)
+
+	fill := orderbook.Fill{
+		TradeID:     uuid.New(),
+		MarketID:    "BTC-USDT",
+		Price:       decimal.RequireFromString("50000"),
+		Quantity:    decimal.RequireFromString("1"),
+		ExecutedAt:  time.Now(),
+		BuyOrderID:  uuid.New(),
+		SellOrderID: uuid.New(),
+	}
+
+	res := orderbook.MatchResult{
+		Fills:         []orderbook.Fill{fill},
+		DepthSnapshot: makeDepth("BTC-USDT"),
+		SourcePosition: orderbook.KafkaPosition{
+			Topic:     "orders.commands",
+			Partition: 0,
+			Offset:    200,
+		},
+	}
+
+	// Invariant: ME must fail process when Kafka write fails under durability policy
+	err := p.Process(context.Background(), res)
+	if err == nil {
+		t.Fatal("expected process to fail when Kafka write fails")
+	}
+
+	// Invariant: Checkpoint MUST NOT advance if authoritative Kafka write was not durably acknowledged
+	if len(c.completedEvents) != 0 {
+		t.Fatalf("expected 0 completed events committed to checkpoint, got %d", len(c.completedEvents))
+	}
+}
+
+// TestProcess_InvalidRequest_PublishedAsIs verifies that a CancelResult with
+// CancelStatusInvalidRequest is published without being rewritten to REMOVED_FROM_BOOK.
+// This prevents incorrect fund releases when ME receives a misrouted create or cancel.
+func TestProcess_InvalidRequest_PublishedAsIs(t *testing.T) {
+	k, r, coord := &fakeKafka{}, &fakeRedis{}, &fakeCoordinator{}
+	p := newTestPublisher(k, r, coord)
+
+	orderID := uuid.New()
+	userID := uuid.New()
+	result := orderbook.MatchResult{
+		CancelResult: &orderbook.CancelledOrder{
+			OrderID:      orderID,
+			UserID:       userID,
+			MarketID:     "BTC-USDT",
+			Reason:       "invalid_market_id",
+			CancelStatus: orderbook.CancelStatusInvalidRequest,
+			CancelledAt:  time.Now(),
+		},
+		DepthSnapshot:  orderbook.DepthSnapshot{MarketID: "BTC-USDT", Sequence: 1},
+		SourcePosition: orderbook.KafkaPosition{Topic: "orders.commands", Partition: 0, Offset: 55},
+	}
+
+	if err := p.Process(context.Background(), result); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Invariant: one cancel message must be published
+	if len(k.published) != 1 {
+		t.Fatalf("expected 1 published message, got %d", len(k.published))
+	}
+
+	// Invariant: published status must be INVALID_REQUEST, not REMOVED_FROM_BOOK
+	var payload map[string]any
+	if err := json.Unmarshal(k.published[0].Value, &payload); err != nil {
+		t.Fatalf("unmarshal published cancel: %v", err)
+	}
+	gotStatus, _ := payload["status"].(string)
+	if gotStatus != "INVALID_REQUEST" {
+		t.Fatalf("expected published status=INVALID_REQUEST, got %q — publisher must not downgrade to REMOVED_FROM_BOOK", gotStatus)
+	}
+}
+
+// TestProcess_InvalidRequest_ZeroStatusFallback verifies that a CancelResult with
+// no CancelStatus set (empty string, e.g. ioc_expired path) still falls back to
+// REMOVED_FROM_BOOK, preserving the existing fund-release behaviour for legitimate paths.
+func TestProcess_InvalidRequest_ZeroStatusFallback(t *testing.T) {
+	k, r, coord := &fakeKafka{}, &fakeRedis{}, &fakeCoordinator{}
+	p := newTestPublisher(k, r, coord)
+
+	result := orderbook.MatchResult{
+		CancelResult: &orderbook.CancelledOrder{
+			OrderID:     uuid.New(),
+			UserID:      uuid.New(),
+			MarketID:    "BTC-USDT",
+			Reason:      "ioc_expired",
+			CancelledAt: time.Now(),
+			// CancelStatus intentionally left as zero value ""
+		},
+		DepthSnapshot:  orderbook.DepthSnapshot{MarketID: "BTC-USDT", Sequence: 2},
+		SourcePosition: orderbook.KafkaPosition{Topic: "orders.commands", Partition: 0, Offset: 56},
+	}
+
+	if err := p.Process(context.Background(), result); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(k.published[0].Value, &payload); err != nil {
+		t.Fatalf("unmarshal published cancel: %v", err)
+	}
+	gotStatus, _ := payload["status"].(string)
+	if gotStatus != "REMOVED_FROM_BOOK" {
+		t.Fatalf("expected fallback status=REMOVED_FROM_BOOK for zero-status cancel, got %q", gotStatus)
+	}
+}
 

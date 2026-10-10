@@ -78,16 +78,16 @@ func NewPublisher(brokers []string, rdb *redis.Client, coord checkpointCoordinat
 			Addr:                   kafkago.TCP(brokers...),
 			Topic:                  TopicTradeExecuted,
 			Balancer:               &kafkago.LeastBytes{},
-			RequiredAcks:           kafkago.RequireOne,
+			RequiredAcks:           kafkago.RequireAll,
 			Async:                  false,
-			AllowAutoTopicCreation: true,
+			AllowAutoTopicCreation: false,
 		},
 		cancelWriter: &kafkago.Writer{
 			Addr:                   kafkago.TCP(brokers...),
 			Balancer:               &kafkago.LeastBytes{},
-			RequiredAcks:           kafkago.RequireOne,
+			RequiredAcks:           kafkago.RequireAll,
 			Async:                  false,
-			AllowAutoTopicCreation: true,
+			AllowAutoTopicCreation: false,
 		},
 	}
 	if db != nil {
@@ -314,9 +314,13 @@ func (p *Publisher) process(ctx context.Context, result orderbook.MatchResult) e
 
 func (p *Publisher) publishFills(ctx context.Context, fills []orderbook.Fill) error {
 	msgs := make([]kafkago.Message, 0, len(fills))
-	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	for _, fill := range fills {
+		executedAt := fill.ExecutedAt
+		if executedAt.IsZero() {
+			executedAt = time.Now().UTC()
+		}
+
 		payload := tradeExecutedMessage{
 			TradeID:      fill.TradeID.String(),
 			MarketID:     fill.MarketID,
@@ -329,7 +333,7 @@ func (p *Publisher) publishFills(ctx context.Context, fills []orderbook.Fill) er
 			SellerUserID: fill.SellerUserID.String(),
 			Price:        fill.Price.String(),
 			Quantity:     fill.Quantity.String(),
-			ExecutedAt:   now,
+			ExecutedAt:   executedAt.UTC().Format(time.RFC3339Nano),
 		}
 
 		b, err := json.Marshal(payload)
@@ -357,12 +361,17 @@ func (p *Publisher) pushDepth(ctx context.Context, snap orderbook.DepthSnapshot)
 		asks[i] = depthLevel{Price: a.Price.String(), Quantity: a.Quantity.String()}
 	}
 
+	snapshotAt := snap.SnapshotAt
+	if snapshotAt.IsZero() || time.Since(snapshotAt) > 1*time.Second {
+		snapshotAt = time.Now().UTC()
+	}
+
 	msg := depthSnapshotMessage{
 		MarketID:   snap.MarketID,
 		Sequence:   snap.Sequence,
 		Bids:       bids,
 		Asks:       asks,
-		SnapshotAt: snap.SnapshotAt.UTC().Format(time.RFC3339Nano),
+		SnapshotAt: snapshotAt.UTC().Format(time.RFC3339Nano),
 	}
 
 	b, err := json.Marshal(msg)
@@ -375,7 +384,9 @@ func (p *Publisher) pushDepth(ctx context.Context, snap orderbook.DepthSnapshot)
 
 func (p *Publisher) publishCancel(ctx context.Context, cancel *orderbook.CancelledOrder) error {
 	if cancel.CancelStatus != orderbook.CancelStatusRemovedFromBook &&
-		cancel.CancelStatus != orderbook.CancelStatusAlreadyAbsent {
+		cancel.CancelStatus != orderbook.CancelStatusAlreadyAbsent &&
+		cancel.CancelStatus != orderbook.CancelStatusUserMismatch &&
+		cancel.CancelStatus != orderbook.CancelStatusInvalidRequest {
 		// Safety guard: non-user-cancel paths (ioc_expired, invalid_order_parameters)
 		// do not set CancelStatus. Publish them with the legacy single-event approach
 		// using REMOVED_FROM_BOOK semantics so the consumer can release funds.

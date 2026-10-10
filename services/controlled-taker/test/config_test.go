@@ -23,8 +23,8 @@ func validTestConfig() config.Config {
 		InventoryModerateBiasUSDT: decimal.NewFromInt(5000),
 		InventoryHeavyBiasUSDT:    decimal.NewFromInt(25000),
 		WarmupDelay:               1 * time.Second,
-		HighCooldown:              60 * time.Second,
 		ResidualGracePeriod:       1500 * time.Millisecond,
+		ResidualDeadline:          3000 * time.Millisecond,
 		ResidualPollInterval:      200 * time.Millisecond,
 		ResidualMaxReadRetries:    3,
 		Markets: []config.MarketConfig{
@@ -38,9 +38,10 @@ func validTestConfig() config.Config {
 				Partition:   0,
 			},
 		},
-		LowInterval:  config.IntervalConfig{MinInterval: 10 * time.Second, BaseInterval: 20 * time.Second, MaxInterval: 30 * time.Second},
-		MidInterval:  config.IntervalConfig{MinInterval: 20 * time.Second, BaseInterval: 40 * time.Second, MaxInterval: 60 * time.Second},
-		HighInterval: config.IntervalConfig{MinInterval: 30 * time.Second, BaseInterval: 60 * time.Second, MaxInterval: 90 * time.Second},
+		HighSweepProbability:       0.70,
+		MaxSweepLevels:             3,
+		MaxVisibleDepthConsumption: decimal.NewFromFloat(0.90),
+		MaxDepthAge:                5 * time.Second,
 	}
 }
 
@@ -49,6 +50,26 @@ func TestConfig_Validate(t *testing.T) {
 	cfg := validTestConfig()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected valid config to pass, got: %v", err)
+	}
+
+	// 1b. MaxVisibleDepthConsumption validation
+	cfg = validTestConfig()
+	cfg.MaxVisibleDepthConsumption = decimal.Zero
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error on 0 MaxVisibleDepthConsumption, got nil")
+	}
+
+	cfg = validTestConfig()
+	cfg.MaxVisibleDepthConsumption = decimal.NewFromFloat(1.5)
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error on > 1 MaxVisibleDepthConsumption, got nil")
+	}
+
+	// 1c. MaxDepthAge validation
+	cfg = validTestConfig()
+	cfg.MaxDepthAge = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error on 0 MaxDepthAge, got nil")
 	}
 
 	// 2. Negative notional rejected
@@ -65,19 +86,6 @@ func TestConfig_Validate(t *testing.T) {
 		t.Fatalf("expected error on 0 CircuitBreakerFailures, got nil")
 	}
 
-	// 4. Inverted intervals rejected (MinInterval > BaseInterval)
-	cfg = validTestConfig()
-	cfg.LowInterval = config.IntervalConfig{MinInterval: 50 * time.Second, BaseInterval: 20 * time.Second, MaxInterval: 60 * time.Second}
-	if err := cfg.Validate(); err == nil {
-		t.Fatalf("expected error when MinInterval > BaseInterval, got nil")
-	}
-
-	// 5. Inverted intervals rejected (BaseInterval > MaxInterval)
-	cfg = validTestConfig()
-	cfg.LowInterval = config.IntervalConfig{MinInterval: 10 * time.Second, BaseInterval: 80 * time.Second, MaxInterval: 60 * time.Second}
-	if err := cfg.Validate(); err == nil {
-		t.Fatalf("expected error when BaseInterval > MaxInterval, got nil")
-	}
 
 	// 6. Non-positive moderate bias rejected
 	cfg = validTestConfig()
@@ -169,8 +177,17 @@ func TestConfig_Validate(t *testing.T) {
 	cfg = validTestConfig()
 	cfg.ResidualPollInterval = 2 * time.Second
 	cfg.ResidualGracePeriod = 1 * time.Second
+	cfg.ResidualDeadline = 3 * time.Second
 	if err := cfg.Validate(); err == nil {
 		t.Fatalf("expected error when ResidualPollInterval > ResidualGracePeriod, got nil")
+	}
+
+	// 16b. Residual deadline <= Residual grace period rejected
+	cfg = validTestConfig()
+	cfg.ResidualGracePeriod = 4 * time.Second
+	cfg.ResidualDeadline = 3 * time.Second
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error when ResidualDeadline <= ResidualGracePeriod, got nil")
 	}
 
 	// 17. Negative max read retries rejected
@@ -178,6 +195,24 @@ func TestConfig_Validate(t *testing.T) {
 	cfg.ResidualMaxReadRetries = -1
 	if err := cfg.Validate(); err == nil {
 		t.Fatalf("expected error when ResidualMaxReadRetries < 0, got nil")
+	}
+
+	// 17. HighSweepProbability > 1.0 or < 0.0 rejected
+	cfg = validTestConfig()
+	cfg.HighSweepProbability = 1.5
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error when HighSweepProbability > 1.0, got nil")
+	}
+	cfg.HighSweepProbability = -0.1
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error when HighSweepProbability < 0.0, got nil")
+	}
+
+	// 18. MaxSweepLevels <= 0 rejected
+	cfg = validTestConfig()
+	cfg.MaxSweepLevels = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatalf("expected error when MaxSweepLevels <= 0, got nil")
 	}
 }
 

@@ -23,6 +23,7 @@ type Config struct {
 	MMUserID                 string
 	MMReferenceMaxDeviation  string
 	RefPriceAnchorMaxAge     time.Duration
+	OutboxRetention          time.Duration
 	LogLevel                  string
 }
 
@@ -36,6 +37,7 @@ func Load() Config {
 
 	brokers := config.GetEnv("KAFKA_BROKERS", "localhost:9092")
 	anchorMaxAge, _ := config.GetEnvAsDuration("REFPRICE_ANCHOR_MAX_AGE", 60*time.Second)
+	outboxRetention, _ := config.GetEnvAsDuration("OUTBOX_RETENTION_DURATION", 24*time.Hour)
 
 	mmDev := config.GetEnv("MM_REFERENCE_MAX_DEVIATION_PERCENT", "0.10")
 	// Startup validation (Directive 4): MM deviation must strictly exceed the maximum LE ladder
@@ -60,6 +62,7 @@ func Load() Config {
 		MMUserID:                config.GetEnv("MM_USER_ID", "00000000-0000-0000-0000-000000000001"),
 		MMReferenceMaxDeviation: mmDev,
 		RefPriceAnchorMaxAge:    anchorMaxAge,
+		OutboxRetention:         outboxRetention,
 		LogLevel:                config.GetEnv("LOG_LEVEL", "info"),
 	}
 }

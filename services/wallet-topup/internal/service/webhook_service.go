@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 	"time"
 
@@ -69,6 +68,7 @@ func NewWebhookService(
 // ProcessWebhook handles the incoming webhook with cryptographic verification, replay check,
 // verified deduplication, strict payload & event validation, and single-transaction atomic confirmation.
 func (s *WebhookService) ProcessWebhook(ctx context.Context, provider string, rawPayload []byte, signature string, timestamp int64) error {
+	provider = strings.ToUpper(strings.TrimSpace(provider))
 	webhookEventID, err := platformuuid.New()
 	if err != nil {
 		return fmt.Errorf("failed to generate webhook event ID: %w", err)
@@ -102,6 +102,73 @@ func (s *WebhookService) ProcessWebhook(ctx context.Context, provider string, ra
 		return fmt.Errorf("malformed webhook payload: %w", err)
 	}
 
+	// Fallback to Razorpay native payload if flat fields are empty
+	if payload.EventType == "" || payload.PaymentID == "" {
+		var rzp struct {
+			Entity    string `json:"entity"`
+			Event     string `json:"event"`
+			CreatedAt int64  `json:"created_at"`
+			Payload   struct {
+				Payment struct {
+					Entity struct {
+						ID        string            `json:"id"`
+						Amount    int64             `json:"amount"` // in paise
+						Currency  string            `json:"currency"`
+						Status    string            `json:"status"`
+						OrderID   string            `json:"order_id"`
+						CreatedAt int64             `json:"created_at"`
+						Notes     map[string]string `json:"notes"`
+					} `json:"entity"`
+				} `json:"payment"`
+				Order struct {
+					Entity struct {
+						ID        string            `json:"id"`
+						Amount    int64             `json:"amount"` // in paise
+						Currency  string            `json:"currency"`
+						Status    string            `json:"status"`
+						CreatedAt int64             `json:"created_at"`
+						Notes     map[string]string `json:"notes"`
+					} `json:"entity"`
+				} `json:"order"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal(rawPayload, &rzp); err == nil && rzp.Event != "" {
+			payload.EventType = rzp.Event
+
+			// Payment entity extraction (preferred)
+			if rzp.Payload.Payment.Entity.ID != "" {
+				payload.PaymentID = rzp.Payload.Payment.Entity.ID
+				payload.EventID = fmt.Sprintf("rzp_ev_%s", rzp.Payload.Payment.Entity.ID)
+				payload.ProviderOrderID = rzp.Payload.Payment.Entity.OrderID
+				if rzp.Payload.Payment.Entity.Notes != nil && rzp.Payload.Payment.Entity.Notes["topup_order_id"] != "" {
+					payload.OrderID = rzp.Payload.Payment.Entity.Notes["topup_order_id"]
+				}
+				payload.INRAmount = rzp.Payload.Payment.Entity.Amount / 100 // paise to INR
+				payload.Currency = rzp.Payload.Payment.Entity.Currency
+				payload.PaidAt = rzp.Payload.Payment.Entity.CreatedAt
+			} else if rzp.Payload.Order.Entity.ID != "" {
+				// Order entity extraction (order.paid fallback)
+				payload.PaymentID = fmt.Sprintf("pay_order_%s", rzp.Payload.Order.Entity.ID)
+				payload.EventID = fmt.Sprintf("rzp_ev_order_%s", rzp.Payload.Order.Entity.ID)
+				payload.ProviderOrderID = rzp.Payload.Order.Entity.ID
+				if rzp.Payload.Order.Entity.Notes != nil && rzp.Payload.Order.Entity.Notes["topup_order_id"] != "" {
+					payload.OrderID = rzp.Payload.Order.Entity.Notes["topup_order_id"]
+				}
+				payload.INRAmount = rzp.Payload.Order.Entity.Amount / 100
+				payload.Currency = rzp.Payload.Order.Entity.Currency
+				payload.PaidAt = rzp.Payload.Order.Entity.CreatedAt
+			}
+
+			if payload.PaidAt == 0 {
+				payload.PaidAt = rzp.CreatedAt
+			}
+			if payload.PaidAt == 0 {
+				payload.PaidAt = time.Now().Unix()
+			}
+			payload.Timestamp = rzp.CreatedAt
+		}
+	}
+
 	var payIDPtr *string
 	if strings.TrimSpace(payload.PaymentID) != "" {
 		payIDPtr = &payload.PaymentID
@@ -128,11 +195,23 @@ func (s *WebhookService) ProcessWebhook(ctx context.Context, provider string, ra
 		return err
 	}
 
-	// ── 4. Validate Header Timestamp vs Payload Timestamp Coherence ───────────
+	// ── 4. Validate Event Timestamp Integrity ─────────────────────────────────
+	// Replay defense is primarily enforced by cryptographically verified HMAC signatures,
+	// atomic (provider, event_id) deduplication in PostgreSQL, and order lifecycle expiry.
+	// We verify the timestamp is not in the far future (>60s clock skew) or beyond 24h retry window.
+	now := time.Now().Unix()
 	if payload.Timestamp > 0 {
-		if math.Abs(float64(timestamp-payload.Timestamp)) > 5 {
-			s.log.Warn("ProcessWebhook: header timestamp and payload timestamp skew exceeded",
-				zap.Int64("headerTimestamp", timestamp),
+		if payload.Timestamp > now+60 {
+			s.log.Warn("ProcessWebhook: payload timestamp is in the future",
+				zap.Int64("now", now),
+				zap.Int64("payloadTimestamp", payload.Timestamp),
+			)
+			s.recordFailedValidationEvent(ctx, webhookEventID, provider, evIDStr, payIDPtr, rawPayload, domain.ErrWebhookReplay)
+			return domain.ErrWebhookReplay
+		}
+		if now-payload.Timestamp > 86400 { // 24 hours maximum gateway retry window
+			s.log.Warn("ProcessWebhook: payload timestamp exceeds max retry window of 24h",
+				zap.Int64("now", now),
 				zap.Int64("payloadTimestamp", payload.Timestamp),
 			)
 			s.recordFailedValidationEvent(ctx, webhookEventID, provider, evIDStr, payIDPtr, rawPayload, domain.ErrWebhookReplay)
@@ -140,8 +219,8 @@ func (s *WebhookService) ProcessWebhook(ctx context.Context, provider string, ra
 		}
 	}
 
-	// ── 5. Validate Event Type (Only 'payment.captured' triggers credit) ──────
-	if payload.EventType != "payment.captured" {
+	// ── 5. Validate Event Type (payment.captured and order.paid trigger credit) ─
+	if payload.EventType != "payment.captured" && payload.EventType != "order.paid" {
 		s.log.Warn("ProcessWebhook: non-capturing event received, rejecting credit transition",
 			zap.String("eventType", payload.EventType),
 			zap.String("orderID", payload.OrderID),
@@ -269,4 +348,3 @@ func (s *WebhookService) recordFailedValidationEvent(
 		)
 	}
 }
-

@@ -148,15 +148,20 @@ func (c *Coordinator) MarkDoneWithSequence(ctx context.Context, event CompletedE
 	}
 
 	pt.completed[event.Pos.Offset] = &event
+	delete(pt.inFlight, event.Pos.Offset)
 
 	// Determine candidate contiguous watermark
 	var toCommit int64 = -1
 	curr := pt.lastCommitted + 1
 	var eventsToCommit []CompletedEvent
-	for pt.completed[curr] != nil {
-		toCommit = curr
-		eventsToCommit = append(eventsToCommit, *pt.completed[curr])
-		curr++
+	for {
+		if ev, ok := pt.completed[curr]; ok && ev != nil {
+			toCommit = curr
+			eventsToCommit = append(eventsToCommit, *ev)
+			curr++
+		} else {
+			break
+		}
 	}
 
 	if toCommit == -1 {

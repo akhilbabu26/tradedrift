@@ -82,3 +82,18 @@ func (r *Replayer) loadMarketSequence(ctx context.Context, marketID string) (uin
 	}
 	return seq, nil
 }
+
+func (r *Replayer) saveMarketSequence(ctx context.Context, marketID string, seq uint64) error {
+	const query = `
+		INSERT INTO market_sequences (market_id, sequence, updated_at)
+		VALUES ($1, $2, NOW())
+		ON CONFLICT (market_id)
+		DO UPDATE SET
+			sequence   = EXCLUDED.sequence,
+			updated_at = NOW()`
+	_, err := r.db.Exec(ctx, query, marketID, seq)
+	if err != nil {
+		return fmt.Errorf("upsert market_sequence (market=%s seq=%d): %w", marketID, seq, err)
+	}
+	return nil
+}

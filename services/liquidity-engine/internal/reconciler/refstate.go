@@ -45,10 +45,14 @@ type RefState struct {
 	LastUpdated     time.Time
 	Freshness       Freshness
 
+	ActiveGenerationRef decimal.Decimal
+	LastRepriceRef      decimal.Decimal
+
 	RebaseActive    bool
 	RebaseTargetRef decimal.Decimal
 	RebaseTargetVer int64
 	RebaseAction    RepricingAction
+	RebaseStartTime time.Time
 }
 
 // RepricingAction defines how the LE should adapt its order ladder to reference movement.

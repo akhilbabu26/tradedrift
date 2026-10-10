@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"tradedrift/services/order/internal/repository"
 )
@@ -87,3 +88,27 @@ func (r *orderRepository) RecordOutboxPublishError(ctx context.Context, id strin
 	}
 	return nil
 }
+
+func (r *orderRepository) PrunePublishedOutboxEvents(ctx context.Context, olderThan time.Duration, limit int) (int64, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	cutoff := time.Now().UTC().Add(-olderThan)
+	query := `
+		DELETE FROM outbox
+		WHERE id IN (
+			SELECT id
+			FROM outbox
+			WHERE published_at IS NOT NULL
+			  AND published_at < $1
+			ORDER BY published_at ASC
+			LIMIT $2
+		)`
+
+	res, err := r.db.Exec(ctx, query, cutoff, limit)
+	if err != nil {
+		return 0, fmt.Errorf("prune published outbox events: %w", err)
+	}
+	return res.RowsAffected(), nil
+}
+

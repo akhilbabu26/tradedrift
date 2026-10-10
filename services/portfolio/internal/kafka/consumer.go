@@ -65,12 +65,17 @@ type TradeSettledEvent struct {
 	SettledAt   string `json:"settled_at"`
 }
 
+type SnapshotRecorder interface {
+	RecordSnapshot(ctx context.Context, userID string, triggerType string) error
+}
+
 type Consumer struct {
-	reader    *kafkago.Reader
-	dlqWriter *kafkago.Writer
-	repo      repository.Repository
-	logger    *zap.Logger
-	topicDLQ  string
+	reader           *kafkago.Reader
+	dlqWriter        *kafkago.Writer
+	repo             repository.Repository
+	snapshotRecorder SnapshotRecorder
+	logger           *zap.Logger
+	topicDLQ         string
 }
 
 func NewConsumer(
@@ -79,6 +84,7 @@ func NewConsumer(
 	topicTradeSettled string,
 	topicDLQ string,
 	repo repository.Repository,
+	snapshotRecorder SnapshotRecorder,
 	logger *zap.Logger,
 ) *Consumer {
 	reader := kafkago.NewReader(kafkago.ReaderConfig{
@@ -101,13 +107,15 @@ func NewConsumer(
 	}
 
 	return &Consumer{
-		reader:    reader,
-		dlqWriter: dlqWriter,
-		repo:      repo,
-		logger:    logger,
-		topicDLQ:  topicDLQ,
+		reader:           reader,
+		dlqWriter:        dlqWriter,
+		repo:             repo,
+		snapshotRecorder: snapshotRecorder,
+		logger:           logger,
+		topicDLQ:         topicDLQ,
 	}
 }
+
 
 func (c *Consumer) Start(ctx context.Context) error {
 	c.logger.Info("starting portfolio settled trade consumer loop")
@@ -307,8 +315,20 @@ func (c *Consumer) processMessage(ctx context.Context, msg kafkago.Message) erro
 	}
 
 	metrics.EventsConsumedTotal.WithLabelValues("success", market).Inc()
+
+	if c.snapshotRecorder != nil {
+		if snapErr := c.snapshotRecorder.RecordSnapshot(ctx, event.UserID, "TRADE"); snapErr != nil {
+			c.logger.Warn("failed to record portfolio snapshot after trade settlement",
+				zap.String("user_id", event.UserID),
+				zap.String("trade_id", event.TradeID),
+				zap.Error(snapErr),
+			)
+		}
+	}
+
 	return nil
 }
+
 
 func (c *Consumer) sendToDLQ(ctx context.Context, original kafkago.Message, reason string) error {
 	dlqMsg := kafkago.Message{

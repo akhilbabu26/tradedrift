@@ -139,6 +139,16 @@ func (m *mockMetrics) IncDuplicateMMLevel(marketID string)                  {}
 func (m *mockMetrics) IncRebaseGenerationFailure(marketID, levelID string) { m.rebaseGenFailures++ }
 func (m *mockMetrics) IncExpiryGenerationFailure(marketID string)          { m.expiryGenFailures++ }
 func (m *mockMetrics) IncQuantityInvariantViolation(marketID string)       {}
+func (m *mockMetrics) IncCreateBlocked(marketID, reason string)              {}
+func (m *mockMetrics) IncRefresh(marketID, reason string)                    {}
+func (m *mockMetrics) SetExposure(marketID string, bidUSDT, askBase, bidCap, askCap decimal.Decimal) {}
+func (m *mockMetrics) IncRepriceEvent(marketID, action string)               {}
+func (m *mockMetrics) ObserveRebaseDuration(marketID, action string, seconds float64) {}
+func (m *mockMetrics) IncRebaseTargetChanges(marketID string)                         {}
+func (m *mockMetrics) SetRebaseLevelsRemaining(marketID string, count int)            {}
+func (m *mockMetrics) IncRebaseLevelsRepriced(marketID, zone string)                  {}
+func (m *mockMetrics) IncCancelOSFailure(marketID string)                              {}
+func (m *mockMetrics) IncCancelMEPublish(marketID string)                              {}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -186,7 +196,7 @@ func newInvTestRec(t *testing.T, marketID string) (*reconciler.Reconciler, *orde
 	return rec, tracker, cfg, prod, osClient
 }
 
-func newInvTestRecWithMetrics(t *testing.T, marketID string, metrics *mockMetrics) (*reconciler.Reconciler, *order.Tracker, *config.Config, *mockProducer, *mockOrderSvc) {
+func newInvTestRecWithMetrics(t *testing.T, marketID string, metrics reconciler.ReconcilerMetrics) (*reconciler.Reconciler, *order.Tracker, *config.Config, *mockProducer, *mockOrderSvc) {
 	t.Helper()
 	tracker := order.NewTracker()
 	cfg := &config.Config{

@@ -16,7 +16,7 @@ var (
 	ErrDailyVolumeExceeded   = errors.New("daily notional volume limit exceeded")
 	ErrTradesPerHourExceeded = errors.New("maximum trades per hour exceeded")
 	ErrSpreadTooWide         = errors.New("market bid/ask spread exceeds maximum allowable threshold")
-	ErrCumulativeDepthRatio  = errors.New("available reachable depth does not meet the 1.5x safety multiplier")
+	ErrCumulativeDepthRatio  = errors.New("available reachable depth does not meet the visible depth consumption ceiling")
 )
 
 // SafetyManager tracks rolling volumes and validates order safety constraints.
@@ -26,7 +26,8 @@ type SafetyManager struct {
 	maxHourlyNotional decimal.Decimal
 	maxDailyNotional  decimal.Decimal
 	maxTradesPerHour  int
-	maxSpreadPercent  decimal.Decimal
+	maxSpreadPercent    decimal.Decimal
+	maxDepthConsumption decimal.Decimal
 
 	hourlyNotional  decimal.Decimal
 	dailyNotional   decimal.Decimal
@@ -40,25 +41,33 @@ func NewSafetyManager(
 	maxHourlyNotional, maxDailyNotional decimal.Decimal,
 	maxTradesPerHour int,
 	maxSpreadPercent decimal.Decimal,
+	maxDepthConsumption ...decimal.Decimal,
 ) *SafetyManager {
 	now := time.Now().UTC()
+	depthConsumption := decimal.NewFromFloat(0.90)
+	if len(maxDepthConsumption) > 0 && maxDepthConsumption[0].GreaterThan(decimal.Zero) {
+		depthConsumption = maxDepthConsumption[0]
+	}
 	return &SafetyManager{
-		circuitBreaker:    cb,
-		maxHourlyNotional: maxHourlyNotional,
-		maxDailyNotional:  maxDailyNotional,
-		maxTradesPerHour:  maxTradesPerHour,
-		maxSpreadPercent:  maxSpreadPercent,
-		hourWindowStart:   now,
-		dayWindowStart:    now,
+		circuitBreaker:      cb,
+		maxHourlyNotional:   maxHourlyNotional,
+		maxDailyNotional:    maxDailyNotional,
+		maxTradesPerHour:    maxTradesPerHour,
+		maxSpreadPercent:    maxSpreadPercent,
+		maxDepthConsumption: depthConsumption,
+		hourWindowStart:     now,
+		dayWindowStart:      now,
 	}
 }
 
 // ValidatePreOrder validates spread, depth ratio, volume caps, and circuit breaker before submission.
+// conservativePrice is the upper-bound conservative price (PriceCap for BUY, L1.Price for SELL).
 func (sm *SafetyManager) ValidatePreOrder(
 	depth *redisdepth.DepthSnapshot,
 	side string,
 	targetQty decimal.Decimal,
 	priceCap decimal.Decimal,
+	conservativePrice decimal.Decimal,
 ) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -85,7 +94,19 @@ func (sm *SafetyManager) ValidatePreOrder(
 		return ErrTradesPerHourExceeded
 	}
 
-	notional := targetQty.Mul(priceCap)
+	// Invariant: Use ConservativePrice for notional exposure.
+	// BUY: PriceCap (highest ask reachable)
+	// SELL: L1.Price (highest bid reachable, since swept bids are lower)
+	// If conservativePrice is zero or not provided, fallback conservatively to priceCap or L1.
+	evalPrice := conservativePrice
+	if !evalPrice.GreaterThan(decimal.Zero) {
+		evalPrice = priceCap
+		if side == "SELL" && len(depth.Bids) > 0 && depth.Bids[0].Price.GreaterThan(evalPrice) {
+			evalPrice = depth.Bids[0].Price
+		}
+	}
+
+	notional := targetQty.Mul(evalPrice)
 	if sm.hourlyNotional.Add(notional).GreaterThan(sm.maxHourlyNotional) {
 		return ErrHourlyVolumeExceeded
 	}
@@ -113,7 +134,7 @@ func (sm *SafetyManager) ValidatePreOrder(
 	}
 
 	// 5. Cumulative Depth Guard:
-	// Verify that cumulative reachable depth within the price cap is at least 1.5x targetQty
+	// Verify that targetQty does not exceed maxDepthConsumption of reachable depth.
 	var reachableDepth decimal.Decimal
 	if side == "BUY" {
 		for _, ask := range depth.Asks {
@@ -129,9 +150,9 @@ func (sm *SafetyManager) ValidatePreOrder(
 		}
 	}
 
-	requiredDepth := targetQty.Mul(decimal.NewFromFloat(1.5))
-	if reachableDepth.LessThan(requiredDepth) {
-		return fmt.Errorf("%w: reachable %s < required 1.5x %s", ErrCumulativeDepthRatio, reachableDepth, requiredDepth)
+	maxAllowedQty := reachableDepth.Mul(sm.maxDepthConsumption)
+	if targetQty.GreaterThan(maxAllowedQty) {
+		return fmt.Errorf("%w: target %s > max allowed %s (depth %s * %s)", ErrCumulativeDepthRatio, targetQty, maxAllowedQty, reachableDepth, sm.maxDepthConsumption)
 	}
 
 	return nil

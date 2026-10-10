@@ -20,6 +20,13 @@ export default function TopUpPanel({ dailyUsage, onPay, submitting = false }: To
     ? Math.min(100, Math.round((consumedUsdt / dailyLimitUsdt) * 100))
     : 0
 
+  const remainingInr = dailyUsage.remainingInr !== undefined
+    ? dailyUsage.remainingInr
+    : Math.max(0, (dailyUsage.dailyLimitInr ?? 10) - (dailyUsage.consumedInr ?? 0) - (dailyUsage.reservedInr ?? 0))
+  const isDailyLimitReached = remainingInr <= 0
+  const exceedsRemaining = inrAmount > remainingInr
+  const isActionDisabled = submitting || isDailyLimitReached || exceedsRemaining
+
   const handleSliderChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInrAmount(parseInt(e.target.value, 10))
   }
@@ -143,14 +150,18 @@ export default function TopUpPanel({ dailyUsage, onPay, submitting = false }: To
           {/* Pay Action Button */}
           <button
             type="submit"
-            disabled={submitting}
-            className="w-full py-2.5 rounded-lg bg-[#10b981] hover:bg-[#0ea572] disabled:opacity-50 text-[#0a0b0e] font-extrabold text-sm transition-all shadow-lg shadow-[#10b981]/20 flex items-center justify-center gap-2 cursor-pointer"
+            disabled={isActionDisabled}
+            className="w-full py-2.5 rounded-lg bg-[#10b981] hover:bg-[#0ea572] disabled:opacity-50 disabled:cursor-not-allowed text-[#0a0b0e] font-extrabold text-sm transition-all shadow-lg shadow-[#10b981]/20 flex items-center justify-center gap-2 cursor-pointer"
           >
             {submitting ? (
               <>
                 <span className="w-4 h-4 border-2 border-[#0a0b0e] border-t-transparent rounded-full animate-spin" />
                 Processing...
               </>
+            ) : isDailyLimitReached ? (
+              'Daily Limit Reached (₹10 / 10,000 USDT max per day)'
+            ) : exceedsRemaining ? (
+              `Exceeds Limit (Only ₹${remainingInr} remaining today)`
             ) : (
               `Pay ₹${inrAmount} & Get ${formatPrice(virtualUsdt.toString())} USDT`
             )}

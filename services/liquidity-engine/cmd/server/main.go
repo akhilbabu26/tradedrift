@@ -178,7 +178,22 @@ func main() {
 	}
 
 	go refProv.Run(ctx)
-	rec.SetRefProvider(refProv)
+
+	// ── Phase 4: Bounded Mean-Reverting Reference Price Drift ──────────
+	driftCfg := reconciler.LoadDriftConfigFromEnv()
+	driftingProv := reconciler.NewDriftingProvider(refProv, driftCfg, cfg.Markets, logger)
+	if driftCfg.Enabled {
+		logger.Info("simulated reference price drift enabled (Phase 4)",
+			zap.String("anchor_source", "external_reference_provider"),
+			zap.Int("max_drift_bps", driftCfg.MaxDriftBps),
+			zap.Int("volatility_bps", driftCfg.VolatilityBps),
+			zap.Float64("reversion_speed", driftCfg.ReversionSpeed),
+			zap.Duration("step_cadence", driftCfg.StepCadence))
+		rec.SetRefProvider(driftingProv)
+	} else {
+		logger.Info("simulated reference price drift disabled, quoting directly from external reference provider")
+		rec.SetRefProvider(refProv)
+	}
 
 	// ── Engine ────────────────────────────────────────────────────────
 	eng := engine.NewEngine(&cfg, tracker, inv, rec, producer, consumer, tradeEvents, walletSvc, meClient, m, logger)

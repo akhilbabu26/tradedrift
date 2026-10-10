@@ -146,21 +146,32 @@ func Restore(
 		return ErrSnapshotChecksumMismatch
 	}
 
-	// Reset book structures
-	book.Bids = Side{
-		IsBid:        true,
-		SortedPrices: make([]decimal.Decimal, 0),
-		PriceLevels:  make(map[string]*PriceLevel),
+	// Staged book initialization (ME-5 transactional restore)
+	// The live book is NOT mutated unless and until all orders validate completely.
+	stagedBook := &OrderBook{
+		MarketID: book.MarketID,
+		Bids: Side{
+			IsBid:        true,
+			SortedPrices: make([]decimal.Decimal, 0),
+			PriceLevels:  make(map[string]*PriceLevel),
+		},
+		Asks: Side{
+			IsBid:        false,
+			SortedPrices: make([]decimal.Decimal, 0),
+			PriceLevels:  make(map[string]*PriceLevel),
+		},
+		OrderIndex: make(map[uuid.UUID]*OrderNode),
+		Sequence:   snap.Sequence,
 	}
-	book.Asks = Side{
-		IsBid:        false,
-		SortedPrices: make([]decimal.Decimal, 0),
-		PriceLevels:  make(map[string]*PriceLevel),
-	}
-	book.OrderIndex = make(map[uuid.UUID]*OrderNode)
-	book.Sequence = snap.Sequence
 
-	// Replay orders in serialized FIFO order
+	// Replay orders in serialized FIFO order with strict structural sorting validation
+	var (
+		seenAsks  bool
+		lastSide  SideType
+		lastPrice decimal.Decimal
+		lastTime  time.Time
+	)
+
 	for _, o := range snap.Orders {
 		oID, err := uuid.Parse(o.OrderID)
 		if err != nil {
@@ -206,15 +217,56 @@ func Restore(
 		if tickSize.GreaterThan(decimal.Zero) && !price.Mod(tickSize).IsZero() {
 			return fmt.Errorf("invalid snapshot order price %s: does not conform to tick size %s", price, tickSize)
 		}
-		if lotSize.GreaterThan(decimal.Zero) && !remQty.Mod(lotSize).IsZero() {
-			return fmt.Errorf("invalid snapshot order remaining qty %s: does not conform to lot size %s", remQty, lotSize)
+		if lotSize.GreaterThan(decimal.Zero) {
+			if !origQty.Mod(lotSize).IsZero() {
+				return fmt.Errorf("invalid snapshot order original qty %s: does not conform to lot size %s", origQty, lotSize)
+			}
+			if !remQty.Mod(lotSize).IsZero() {
+				return fmt.Errorf("invalid snapshot order remaining qty %s: does not conform to lot size %s", remQty, lotSize)
+			}
 		}
 		if OrderType(o.OrderType) == OrderTypeLimit && price.LessThanOrEqual(decimal.Zero) {
 			return fmt.Errorf("invalid snapshot limit price %s: must be > 0", price)
 		}
-		if _, exists := book.OrderIndex[oID]; exists {
+		if t.IsZero() {
+			return fmt.Errorf("invalid snapshot order timestamp: zero time")
+		}
+		if t.After(time.Now().Add(24 * time.Hour)) {
+			return fmt.Errorf("invalid snapshot order timestamp %s: far future time", t)
+		}
+		if _, exists := stagedBook.OrderIndex[oID]; exists {
 			return fmt.Errorf("duplicate order_id %s in snapshot", oID)
 		}
+
+		// Structural order validation: Bids descending, Asks ascending, FIFO timestamps within price
+		side := SideType(o.Side)
+		switch side {
+		case SideBuy:
+			if seenAsks {
+				return fmt.Errorf("invalid snapshot structure: buy order appears after sell order")
+			}
+			if lastSide == SideBuy {
+				if price.GreaterThan(lastPrice) {
+					return fmt.Errorf("invalid snapshot structure: bids must be in descending price order (got %s after %s)", price, lastPrice)
+				}
+				if price.Equal(lastPrice) && t.Before(lastTime) {
+					return fmt.Errorf("invalid snapshot structure: bids at same price must obey FIFO timestamp order (%s < %s)", t, lastTime)
+				}
+			}
+		case SideSell:
+			seenAsks = true
+			if lastSide == SideSell {
+				if price.LessThan(lastPrice) {
+					return fmt.Errorf("invalid snapshot structure: asks must be in ascending price order (got %s after %s)", price, lastPrice)
+				}
+				if price.Equal(lastPrice) && t.Before(lastTime) {
+					return fmt.Errorf("invalid snapshot structure: asks at same price must obey FIFO timestamp order (%s < %s)", t, lastTime)
+				}
+			}
+		}
+		lastSide = side
+		lastPrice = price
+		lastTime = t
 
 		node := &OrderNode{
 			OrderID:       oID,
@@ -228,8 +280,14 @@ func Restore(
 			RemainingQty:  remQty,
 			Timestamp:     t,
 		}
-		InsertRestoredOrder(book, node)
+		InsertRestoredOrder(stagedBook, node)
 	}
+
+	// Atomic in-memory swap: All orders validated successfully, commit staged state to live book
+	book.Bids = stagedBook.Bids
+	book.Asks = stagedBook.Asks
+	book.OrderIndex = stagedBook.OrderIndex
+	book.Sequence = stagedBook.Sequence
 
 	return nil
 }

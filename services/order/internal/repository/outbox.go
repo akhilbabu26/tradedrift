@@ -22,4 +22,5 @@ type OutboxRepository interface {
 	GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]*OutboxEvent, error)
 	MarkOutboxEventAsPublished(ctx context.Context, id string) error
 	RecordOutboxPublishError(ctx context.Context, id string, errMsg string) error
+	PrunePublishedOutboxEvents(ctx context.Context, olderThan time.Duration, limit int) (int64, error)
 }

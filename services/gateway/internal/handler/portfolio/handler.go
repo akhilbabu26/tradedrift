@@ -61,3 +61,32 @@ func (h *Handler) GetPortfolioHoldings(w http.ResponseWriter, r *http.Request) {
 
 	response.WriteJSON(w, http.StatusOK, holdingsDTO(res))
 }
+
+// GetPortfolioHistory — GET /api/v1/portfolio/history?timeframe=7D
+func (h *Handler) GetPortfolioHistory(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.GetUserID(r)
+	if userID == "" {
+		response.WriteError(w, http.StatusUnauthorized, "AUTH_INVALID_TOKEN", "missing user identity")
+		return
+	}
+
+	timeframe := r.URL.Query().Get("timeframe")
+	if timeframe == "" {
+		timeframe = "7D"
+	}
+
+	ctx, cancel := common.OutgoingCtx(r, 5*time.Second)
+	defer cancel()
+
+	res, err := h.client.GetPortfolioHistory(ctx, &portfoliov1.GetPortfolioHistoryRequest{
+		UserId:    userID,
+		Timeframe: timeframe,
+	})
+	if err != nil {
+		common.WriteGRPCError(w, err)
+		return
+	}
+
+	response.WriteJSON(w, http.StatusOK, historyDTO(timeframe, res))
+}
+

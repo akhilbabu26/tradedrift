@@ -21,6 +21,7 @@ const _ = grpc.SupportPackageIsVersion9
 const (
 	PortfolioService_GetPortfolioSummary_FullMethodName  = "/tradedrift.portfolio.v1.PortfolioService/GetPortfolioSummary"
 	PortfolioService_GetPortfolioHoldings_FullMethodName = "/tradedrift.portfolio.v1.PortfolioService/GetPortfolioHoldings"
+	PortfolioService_GetPortfolioHistory_FullMethodName  = "/tradedrift.portfolio.v1.PortfolioService/GetPortfolioHistory"
 )
 
 // PortfolioServiceClient is the client API for PortfolioService service.
@@ -31,6 +32,8 @@ type PortfolioServiceClient interface {
 	GetPortfolioSummary(ctx context.Context, in *GetPortfolioSummaryRequest, opts ...grpc.CallOption) (*PortfolioSummaryResponse, error)
 	// Returns user's holding assets list with average entry costs and current values.
 	GetPortfolioHoldings(ctx context.Context, in *GetPortfolioHoldingsRequest, opts ...grpc.CallOption) (*PortfolioHoldingsResponse, error)
+	// Returns historical portfolio equity snapshots over a requested timeframe ("24H", "7D", "30D", "90D", "1Y").
+	GetPortfolioHistory(ctx context.Context, in *GetPortfolioHistoryRequest, opts ...grpc.CallOption) (*GetPortfolioHistoryResponse, error)
 }
 
 type portfolioServiceClient struct {
@@ -61,6 +64,16 @@ func (c *portfolioServiceClient) GetPortfolioHoldings(ctx context.Context, in *G
 	return out, nil
 }
 
+func (c *portfolioServiceClient) GetPortfolioHistory(ctx context.Context, in *GetPortfolioHistoryRequest, opts ...grpc.CallOption) (*GetPortfolioHistoryResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetPortfolioHistoryResponse)
+	err := c.cc.Invoke(ctx, PortfolioService_GetPortfolioHistory_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // PortfolioServiceServer is the server API for PortfolioService service.
 // All implementations must embed UnimplementedPortfolioServiceServer
 // for forward compatibility.
@@ -69,6 +82,8 @@ type PortfolioServiceServer interface {
 	GetPortfolioSummary(context.Context, *GetPortfolioSummaryRequest) (*PortfolioSummaryResponse, error)
 	// Returns user's holding assets list with average entry costs and current values.
 	GetPortfolioHoldings(context.Context, *GetPortfolioHoldingsRequest) (*PortfolioHoldingsResponse, error)
+	// Returns historical portfolio equity snapshots over a requested timeframe ("24H", "7D", "30D", "90D", "1Y").
+	GetPortfolioHistory(context.Context, *GetPortfolioHistoryRequest) (*GetPortfolioHistoryResponse, error)
 	mustEmbedUnimplementedPortfolioServiceServer()
 }
 
@@ -84,6 +99,9 @@ func (UnimplementedPortfolioServiceServer) GetPortfolioSummary(context.Context, 
 }
 func (UnimplementedPortfolioServiceServer) GetPortfolioHoldings(context.Context, *GetPortfolioHoldingsRequest) (*PortfolioHoldingsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetPortfolioHoldings not implemented")
+}
+func (UnimplementedPortfolioServiceServer) GetPortfolioHistory(context.Context, *GetPortfolioHistoryRequest) (*GetPortfolioHistoryResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetPortfolioHistory not implemented")
 }
 func (UnimplementedPortfolioServiceServer) mustEmbedUnimplementedPortfolioServiceServer() {}
 func (UnimplementedPortfolioServiceServer) testEmbeddedByValue()                          {}
@@ -142,6 +160,24 @@ func _PortfolioService_GetPortfolioHoldings_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
+func _PortfolioService_GetPortfolioHistory_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetPortfolioHistoryRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(PortfolioServiceServer).GetPortfolioHistory(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: PortfolioService_GetPortfolioHistory_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(PortfolioServiceServer).GetPortfolioHistory(ctx, req.(*GetPortfolioHistoryRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // PortfolioService_ServiceDesc is the grpc.ServiceDesc for PortfolioService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -156,6 +192,10 @@ var PortfolioService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetPortfolioHoldings",
 			Handler:    _PortfolioService_GetPortfolioHoldings_Handler,
+		},
+		{
+			MethodName: "GetPortfolioHistory",
+			Handler:    _PortfolioService_GetPortfolioHistory_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

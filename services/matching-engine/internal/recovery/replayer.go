@@ -272,11 +272,19 @@ func (r *Replayer) ReplayAll(ctx context.Context, engineWg *sync.WaitGroup) (ret
 			return fmt.Errorf("load market sequence for %s: %w", engine.MarketID, err)
 		}
 
-		if engine.GetSequence() != dbSeq {
-			return fmt.Errorf("recovery consistency mismatch for market %s: engine sequence %d != db sequence %d",
+		if engine.GetSequence() < dbSeq {
+			return fmt.Errorf("recovery consistency mismatch for market %s: engine sequence %d < db sequence %d",
 				engine.MarketID, engine.GetSequence(), dbSeq)
 		}
-		log.Printf("[recovery] asserted sequence consistency sequence=%d for market=%s", dbSeq, engine.MarketID)
+		if engine.GetSequence() > dbSeq {
+			log.Printf("[recovery] engine sequence %d advanced beyond stale DB sequence %d for market %s — updating DB",
+				engine.GetSequence(), dbSeq, engine.MarketID)
+			if err := r.saveMarketSequence(ctx, engine.MarketID, engine.GetSequence()); err != nil {
+				return fmt.Errorf("update market sequence for %s: %w", engine.MarketID, err)
+			}
+		} else {
+			log.Printf("[recovery] asserted sequence consistency sequence=%d for market=%s", dbSeq, engine.MarketID)
+		}
 
 		engine.SetLive()
 		log.Printf("[recovery] market=%s recovered — now LIVE", engine.MarketID)

@@ -190,3 +190,12 @@ func (s *TopUpService) GetTopUpByID(ctx context.Context, userID, orderID string)
 	}
 	return order, nil
 }
+
+// ListTopUps retrieves recent top-up orders for a user.
+func (s *TopUpService) ListTopUps(ctx context.Context, userID string, limit int) ([]*domain.TopUpOrder, error) {
+	if userID == "" {
+		return nil, domain.ErrUnauthorized
+	}
+	return s.orderRepo.ListByUserID(ctx, userID, limit)
+}
+

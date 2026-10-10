@@ -131,4 +131,27 @@ type Repository interface {
 
 	// MarkOutboxPublished updates outbox records to 'PUBLISHED' with published_at = NOW().
 	MarkOutboxPublished(ctx context.Context, ids []string) error
+
+	// RecordSnapshot saves a timestamped portfolio valuation snapshot.
+	RecordSnapshot(ctx context.Context, snapshot PortfolioSnapshot) error
+
+	// GetSnapshots returns strictly ascending sampled portfolio snapshots for a user since startTime.
+	GetSnapshots(ctx context.Context, userID string, startTime time.Time, bucketDuration time.Duration, limit int) ([]PortfolioSnapshot, error)
+
+	// GetActiveUserIDsWithHoldings returns distinct user IDs that have open non-zero holdings or recent trades.
+	GetActiveUserIDsWithHoldings(ctx context.Context) ([]string, error)
+}
+
+// PortfolioSnapshot represents a persistent equity snapshot at a single point in time.
+type PortfolioSnapshot struct {
+	ID            string          `json:"id"`
+	UserID        string          `json:"user_id"`
+	TotalEquity   decimal.Decimal `json:"total_equity"`
+	CashBalance   decimal.Decimal `json:"cash_balance"`
+	HoldingsValue decimal.Decimal `json:"holdings_value"`
+	UnrealizedPnL decimal.Decimal `json:"unrealized_pnl"`
+	RealizedPnL   decimal.Decimal `json:"realized_pnl"`
+	TriggerType   string          `json:"trigger_type"` // "TRADE" | "PERIODIC" | "INITIAL"
+	SnapshotAt    time.Time       `json:"snapshot_at"`
+	CreatedAt     time.Time       `json:"created_at"`
 }

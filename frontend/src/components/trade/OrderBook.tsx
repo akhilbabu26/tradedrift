@@ -8,6 +8,7 @@ interface OrderBookProps {
   isDemoData: boolean
   precision: number
   onPrecisionChange: (p: number) => void
+  onSelectPrice?: (price: string) => void
   lastPrice: string
   baseAsset: string   // e.g. "BTC"
   quoteAsset: string  // e.g. "USDT"
@@ -15,19 +16,34 @@ interface OrderBookProps {
 
 const PRECISIONS = [2, 1, 0]
 
-function DepthRow({ level, side }: { level: OrderBookLevel; side: 'ask' | 'bid' }) {
+function DepthRow({
+  level,
+  side,
+  onSelectPrice,
+}: {
+  level: OrderBookLevel
+  side: 'ask' | 'bid'
+  onSelectPrice?: (price: string) => void
+}) {
   const isAsk      = side === 'ask'
   const barColor   = isAsk ? 'rgba(239,68,68,0.12)' : 'rgba(16,185,129,0.12)'
   const priceColor = isAsk ? 'text-[#ef4444]' : 'text-[#10b981]'
 
   return (
-    <div className="relative flex items-center h-[22px] px-2 hover:bg-white/[0.02] transition-colors cursor-default select-none">
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={() => onSelectPrice?.(level.price)}
+      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelectPrice?.(level.price) }}
+      title={`Click to use price ${formatPrice(level.price)}`}
+      className="relative flex items-center h-[22px] px-2 hover:bg-white/[0.06] active:bg-white/[0.1] transition-colors cursor-pointer select-none group"
+    >
       {/* Depth bar — right-aligned */}
       <div
         className="absolute right-0 top-0 h-full"
         style={{ width: `${level.depthPct ?? 0}%`, backgroundColor: barColor, transition: 'width 0.3s ease' }}
       />
-      <span className={`relative z-10 flex-1 text-[11px] font-mono font-medium ${priceColor} tabular-nums`}>
+      <span className={`relative z-10 flex-1 text-[11px] font-mono font-medium ${priceColor} tabular-nums group-hover:underline`}>
         {formatPrice(level.price)}
       </span>
       <span className="relative z-10 w-[72px] text-right text-[11px] font-mono text-slate-300 tabular-nums">
@@ -45,6 +61,7 @@ export default function OrderBook({
   isDemoData,
   precision,
   onPrecisionChange,
+  onSelectPrice,
   lastPrice,
   baseAsset,
   quoteAsset,
@@ -146,14 +163,20 @@ export default function OrderBook({
               </div>
             ) : (
               [...orderBook.asks].reverse().map((level, i) => (
-                <DepthRow key={`ask-${i}`} level={level} side="ask" />
+                <DepthRow key={`ask-${i}`} level={level} side="ask" onSelectPrice={onSelectPrice} />
               ))
             )}
           </div>
 
           {/* Mid price / spread */}
-          <div className="flex items-center justify-between px-2 py-1.5 bg-[#0d0e12] border-y border-[#1e2530] flex-shrink-0">
-            <span className="text-sm font-bold font-mono text-[#10b981] tabular-nums">{displayPrice}</span>
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={() => { if (lastPriceNum > 0) onSelectPrice?.(lastPriceNum.toString()) }}
+            title={lastPriceNum > 0 ? `Click to use price ${displayPrice}` : undefined}
+            className="flex items-center justify-between px-2 py-1.5 bg-[#0d0e12] border-y border-[#1e2530] flex-shrink-0 hover:bg-white/[0.03] transition-colors cursor-pointer select-none"
+          >
+            <span className="text-sm font-bold font-mono text-[#10b981] tabular-nums hover:underline">{displayPrice}</span>
             <span className="text-[10px] text-slate-500 font-mono">
               {orderBook.spread} ({orderBook.spreadPercent}%)
             </span>
@@ -167,7 +190,7 @@ export default function OrderBook({
               </div>
             ) : (
               orderBook.bids.map((level, i) => (
-                <DepthRow key={`bid-${i}`} level={level} side="bid" />
+                <DepthRow key={`bid-${i}`} level={level} side="bid" onSelectPrice={onSelectPrice} />
               ))
             )}
           </div>

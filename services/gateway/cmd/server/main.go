@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -167,8 +168,25 @@ func main() {
 	corsOrigin := config.GetEnv("CORS_ORIGIN", "http://localhost:5173")
 	wsH := ws.NewHandler(wsHub, jwtSecretStr, corsOrigin, appLogger)
 
+	rateLimitRPS := 50.0
+	if rpsStr := config.GetEnv("GATEWAY_RATE_LIMIT_RPS", "50"); rpsStr != "" {
+		if parsed, err := strconv.ParseFloat(rpsStr, 64); err == nil && parsed > 0 {
+			rateLimitRPS = parsed
+		}
+	}
+	rateLimitBurst := 100
+	if burstStr := config.GetEnv("GATEWAY_RATE_LIMIT_BURST", "100"); burstStr != "" {
+		if parsed, err := strconv.Atoi(burstStr); err == nil && parsed > 0 {
+			rateLimitBurst = parsed
+		}
+	}
+	appLogger.Info("Configured Gateway rate limiter",
+		zap.Float64("rps", rateLimitRPS),
+		zap.Int("burst", rateLimitBurst),
+	)
+
 	jwtValidator := platformjwt.NewHMACValidator([]byte(jwtSecretStr))
-	rateLimiter  := middleware.NewRateLimiter(ctx, rate.Every(time.Second), 20)
+	rateLimiter  := middleware.NewRateLimiter(ctx, rate.Limit(rateLimitRPS), rateLimitBurst)
 	authMW       := middleware.Auth(jwtValidator, redisClient, appLogger)
 
 	protected := func(h http.Handler) http.Handler {
@@ -233,6 +251,8 @@ func main() {
 	// Portfolio — protected
 	mux.Handle("GET /api/v1/portfolio/summary",  protected(http.HandlerFunc(portfolioH.GetPortfolioSummary)))
 	mux.Handle("GET /api/v1/portfolio/holdings", protected(http.HandlerFunc(portfolioH.GetPortfolioHoldings)))
+	mux.Handle("GET /api/v1/portfolio/history",  protected(http.HandlerFunc(portfolioH.GetPortfolioHistory)))
+
 
 	// Notifications — protected
 	mux.Handle("GET /api/v1/notifications",              protected(http.HandlerFunc(notificationH.ListNotifications)))

@@ -321,6 +321,194 @@ func (x *PortfolioHoldingsResponse) GetHoldings() []*HoldingDetail {
 	return nil
 }
 
+type GetPortfolioHistoryRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Timeframe     string                 `protobuf:"bytes,2,opt,name=timeframe,proto3" json:"timeframe,omitempty"` // "24H", "7D", "30D", "90D", "1Y"
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPortfolioHistoryRequest) Reset() {
+	*x = GetPortfolioHistoryRequest{}
+	mi := &file_portfolio_v1_portfolio_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPortfolioHistoryRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPortfolioHistoryRequest) ProtoMessage() {}
+
+func (x *GetPortfolioHistoryRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_portfolio_v1_portfolio_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPortfolioHistoryRequest.ProtoReflect.Descriptor instead.
+func (*GetPortfolioHistoryRequest) Descriptor() ([]byte, []int) {
+	return file_portfolio_v1_portfolio_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *GetPortfolioHistoryRequest) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *GetPortfolioHistoryRequest) GetTimeframe() string {
+	if x != nil {
+		return x.Timeframe
+	}
+	return ""
+}
+
+type PortfolioHistoryPoint struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Timestamp     int64                  `protobuf:"varint,1,opt,name=timestamp,proto3" json:"timestamp,omitempty"`                             // Unix seconds
+	TotalEquity   string                 `protobuf:"bytes,2,opt,name=total_equity,json=totalEquity,proto3" json:"total_equity,omitempty"`       // Decimal string
+	CashBalance   string                 `protobuf:"bytes,3,opt,name=cash_balance,json=cashBalance,proto3" json:"cash_balance,omitempty"`       // Decimal string
+	HoldingsValue string                 `protobuf:"bytes,4,opt,name=holdings_value,json=holdingsValue,proto3" json:"holdings_value,omitempty"` // Decimal string
+	UnrealizedPnl string                 `protobuf:"bytes,5,opt,name=unrealized_pnl,json=unrealizedPnl,proto3" json:"unrealized_pnl,omitempty"` // Decimal string
+	RealizedPnl   string                 `protobuf:"bytes,6,opt,name=realized_pnl,json=realizedPnl,proto3" json:"realized_pnl,omitempty"`       // Decimal string
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PortfolioHistoryPoint) Reset() {
+	*x = PortfolioHistoryPoint{}
+	mi := &file_portfolio_v1_portfolio_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PortfolioHistoryPoint) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PortfolioHistoryPoint) ProtoMessage() {}
+
+func (x *PortfolioHistoryPoint) ProtoReflect() protoreflect.Message {
+	mi := &file_portfolio_v1_portfolio_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PortfolioHistoryPoint.ProtoReflect.Descriptor instead.
+func (*PortfolioHistoryPoint) Descriptor() ([]byte, []int) {
+	return file_portfolio_v1_portfolio_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *PortfolioHistoryPoint) GetTimestamp() int64 {
+	if x != nil {
+		return x.Timestamp
+	}
+	return 0
+}
+
+func (x *PortfolioHistoryPoint) GetTotalEquity() string {
+	if x != nil {
+		return x.TotalEquity
+	}
+	return ""
+}
+
+func (x *PortfolioHistoryPoint) GetCashBalance() string {
+	if x != nil {
+		return x.CashBalance
+	}
+	return ""
+}
+
+func (x *PortfolioHistoryPoint) GetHoldingsValue() string {
+	if x != nil {
+		return x.HoldingsValue
+	}
+	return ""
+}
+
+func (x *PortfolioHistoryPoint) GetUnrealizedPnl() string {
+	if x != nil {
+		return x.UnrealizedPnl
+	}
+	return ""
+}
+
+func (x *PortfolioHistoryPoint) GetRealizedPnl() string {
+	if x != nil {
+		return x.RealizedPnl
+	}
+	return ""
+}
+
+type GetPortfolioHistoryResponse struct {
+	state         protoimpl.MessageState   `protogen:"open.v1"`
+	UserId        string                   `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	Points        []*PortfolioHistoryPoint `protobuf:"bytes,2,rep,name=points,proto3" json:"points,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetPortfolioHistoryResponse) Reset() {
+	*x = GetPortfolioHistoryResponse{}
+	mi := &file_portfolio_v1_portfolio_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetPortfolioHistoryResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetPortfolioHistoryResponse) ProtoMessage() {}
+
+func (x *GetPortfolioHistoryResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_portfolio_v1_portfolio_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetPortfolioHistoryResponse.ProtoReflect.Descriptor instead.
+func (*GetPortfolioHistoryResponse) Descriptor() ([]byte, []int) {
+	return file_portfolio_v1_portfolio_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *GetPortfolioHistoryResponse) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *GetPortfolioHistoryResponse) GetPoints() []*PortfolioHistoryPoint {
+	if x != nil {
+		return x.Points
+	}
+	return nil
+}
+
 var File_portfolio_v1_portfolio_proto protoreflect.FileDescriptor
 
 const file_portfolio_v1_portfolio_proto_rawDesc = "" +
@@ -347,10 +535,24 @@ const file_portfolio_v1_portfolio_proto_rawDesc = "" +
 	"\x0eunrealized_pnl\x18\x05 \x01(\tR\runrealizedPnl\"x\n" +
 	"\x19PortfolioHoldingsResponse\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12B\n" +
-	"\bholdings\x18\x02 \x03(\v2&.tradedrift.portfolio.v1.HoldingDetailR\bholdings2\x94\x02\n" +
+	"\bholdings\x18\x02 \x03(\v2&.tradedrift.portfolio.v1.HoldingDetailR\bholdings\"S\n" +
+	"\x1aGetPortfolioHistoryRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x1c\n" +
+	"\ttimeframe\x18\x02 \x01(\tR\ttimeframe\"\xec\x01\n" +
+	"\x15PortfolioHistoryPoint\x12\x1c\n" +
+	"\ttimestamp\x18\x01 \x01(\x03R\ttimestamp\x12!\n" +
+	"\ftotal_equity\x18\x02 \x01(\tR\vtotalEquity\x12!\n" +
+	"\fcash_balance\x18\x03 \x01(\tR\vcashBalance\x12%\n" +
+	"\x0eholdings_value\x18\x04 \x01(\tR\rholdingsValue\x12%\n" +
+	"\x0eunrealized_pnl\x18\x05 \x01(\tR\runrealizedPnl\x12!\n" +
+	"\frealized_pnl\x18\x06 \x01(\tR\vrealizedPnl\"~\n" +
+	"\x1bGetPortfolioHistoryResponse\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12F\n" +
+	"\x06points\x18\x02 \x03(\v2..tradedrift.portfolio.v1.PortfolioHistoryPointR\x06points2\x97\x03\n" +
 	"\x10PortfolioService\x12}\n" +
 	"\x13GetPortfolioSummary\x123.tradedrift.portfolio.v1.GetPortfolioSummaryRequest\x1a1.tradedrift.portfolio.v1.PortfolioSummaryResponse\x12\x80\x01\n" +
-	"\x14GetPortfolioHoldings\x124.tradedrift.portfolio.v1.GetPortfolioHoldingsRequest\x1a2.tradedrift.portfolio.v1.PortfolioHoldingsResponseB6Z4tradedrift/platform/api/gen/portfolio/v1;portfoliov1b\x06proto3"
+	"\x14GetPortfolioHoldings\x124.tradedrift.portfolio.v1.GetPortfolioHoldingsRequest\x1a2.tradedrift.portfolio.v1.PortfolioHoldingsResponse\x12\x80\x01\n" +
+	"\x13GetPortfolioHistory\x123.tradedrift.portfolio.v1.GetPortfolioHistoryRequest\x1a4.tradedrift.portfolio.v1.GetPortfolioHistoryResponseB6Z4tradedrift/platform/api/gen/portfolio/v1;portfoliov1b\x06proto3"
 
 var (
 	file_portfolio_v1_portfolio_proto_rawDescOnce sync.Once
@@ -364,25 +566,31 @@ func file_portfolio_v1_portfolio_proto_rawDescGZIP() []byte {
 	return file_portfolio_v1_portfolio_proto_rawDescData
 }
 
-var file_portfolio_v1_portfolio_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_portfolio_v1_portfolio_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_portfolio_v1_portfolio_proto_goTypes = []any{
 	(*GetPortfolioSummaryRequest)(nil),  // 0: tradedrift.portfolio.v1.GetPortfolioSummaryRequest
 	(*PortfolioSummaryResponse)(nil),    // 1: tradedrift.portfolio.v1.PortfolioSummaryResponse
 	(*GetPortfolioHoldingsRequest)(nil), // 2: tradedrift.portfolio.v1.GetPortfolioHoldingsRequest
 	(*HoldingDetail)(nil),               // 3: tradedrift.portfolio.v1.HoldingDetail
 	(*PortfolioHoldingsResponse)(nil),   // 4: tradedrift.portfolio.v1.PortfolioHoldingsResponse
+	(*GetPortfolioHistoryRequest)(nil),  // 5: tradedrift.portfolio.v1.GetPortfolioHistoryRequest
+	(*PortfolioHistoryPoint)(nil),       // 6: tradedrift.portfolio.v1.PortfolioHistoryPoint
+	(*GetPortfolioHistoryResponse)(nil), // 7: tradedrift.portfolio.v1.GetPortfolioHistoryResponse
 }
 var file_portfolio_v1_portfolio_proto_depIdxs = []int32{
 	3, // 0: tradedrift.portfolio.v1.PortfolioHoldingsResponse.holdings:type_name -> tradedrift.portfolio.v1.HoldingDetail
-	0, // 1: tradedrift.portfolio.v1.PortfolioService.GetPortfolioSummary:input_type -> tradedrift.portfolio.v1.GetPortfolioSummaryRequest
-	2, // 2: tradedrift.portfolio.v1.PortfolioService.GetPortfolioHoldings:input_type -> tradedrift.portfolio.v1.GetPortfolioHoldingsRequest
-	1, // 3: tradedrift.portfolio.v1.PortfolioService.GetPortfolioSummary:output_type -> tradedrift.portfolio.v1.PortfolioSummaryResponse
-	4, // 4: tradedrift.portfolio.v1.PortfolioService.GetPortfolioHoldings:output_type -> tradedrift.portfolio.v1.PortfolioHoldingsResponse
-	3, // [3:5] is the sub-list for method output_type
-	1, // [1:3] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	6, // 1: tradedrift.portfolio.v1.GetPortfolioHistoryResponse.points:type_name -> tradedrift.portfolio.v1.PortfolioHistoryPoint
+	0, // 2: tradedrift.portfolio.v1.PortfolioService.GetPortfolioSummary:input_type -> tradedrift.portfolio.v1.GetPortfolioSummaryRequest
+	2, // 3: tradedrift.portfolio.v1.PortfolioService.GetPortfolioHoldings:input_type -> tradedrift.portfolio.v1.GetPortfolioHoldingsRequest
+	5, // 4: tradedrift.portfolio.v1.PortfolioService.GetPortfolioHistory:input_type -> tradedrift.portfolio.v1.GetPortfolioHistoryRequest
+	1, // 5: tradedrift.portfolio.v1.PortfolioService.GetPortfolioSummary:output_type -> tradedrift.portfolio.v1.PortfolioSummaryResponse
+	4, // 6: tradedrift.portfolio.v1.PortfolioService.GetPortfolioHoldings:output_type -> tradedrift.portfolio.v1.PortfolioHoldingsResponse
+	7, // 7: tradedrift.portfolio.v1.PortfolioService.GetPortfolioHistory:output_type -> tradedrift.portfolio.v1.GetPortfolioHistoryResponse
+	5, // [5:8] is the sub-list for method output_type
+	2, // [2:5] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_portfolio_v1_portfolio_proto_init() }
@@ -396,7 +604,7 @@ func file_portfolio_v1_portfolio_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_portfolio_v1_portfolio_proto_rawDesc), len(file_portfolio_v1_portfolio_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

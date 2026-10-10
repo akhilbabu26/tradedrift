@@ -506,12 +506,13 @@ func TestOrdersCommands_CreatePartialFillThenCancel(t *testing.T) {
 	<-engine.OutputQueue // Seq 1
 
 	// 2. Taker Buy 1.5 BTC @ 50,000 (1.0 fills, 0.5 rests)
+	takerUserID := uuid.New()
 	engine.InputQueue <- market.InputEvent{
 		EventID: uuid.New(),
 		Type:    market.EventOrderCreated,
 		OrderCreated: &market.OrderCreatedPayload{
 			OrderID:   takerID,
-			UserID:    uuid.New(),
+			UserID:    takerUserID,
 			MarketID:  "BTC-USDT",
 			Side:      orderbook.SideBuy,
 			OrderType: orderbook.OrderTypeLimit,
@@ -536,7 +537,7 @@ func TestOrdersCommands_CreatePartialFillThenCancel(t *testing.T) {
 		Type:    market.EventOrderCancel,
 		OrderCancel: &market.OrderCancelPayload{
 			OrderID:  takerID,
-			UserID:   uuid.New(),
+			UserID:   takerUserID,
 			MarketID: "BTC-USDT",
 		},
 		Topic:  "orders.commands",
@@ -554,7 +555,7 @@ func TestOrdersCommands_CreatePartialFillThenCancel(t *testing.T) {
 	}
 }
 
-func TestOrdersCommands_DuplicateEventID_FailClosed(t *testing.T) {
+func TestOrdersCommands_DuplicateEventID_IdempotentSkip(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -591,14 +592,17 @@ func TestOrdersCommands_DuplicateEventID_FailClosed(t *testing.T) {
 		t.Fatalf("expected Sequence=1, got %d", res1.DepthSnapshot.Sequence)
 	}
 
-	// Redelivery with same event_id but higher offset -> HaltCallback must be triggered!
+	// Redelivery with same event_id but higher offset -> Idempotently skipped without halting!
 	event.Offset = 101
 	engine.InputQueue <- event
 
-	// Wait a bit or assert haltCalled
+	// Wait a bit or assert halt NOT called
 	time.Sleep(100 * time.Millisecond)
-	if !haltCalled {
-		t.Fatal("expected HaltCallback to be called on duplicate event_id")
+	if haltCalled {
+		t.Fatal("expected duplicate event_id to be idempotently skipped without halting")
+	}
+	if engine.GetLastAppliedOffset() != 101 {
+		t.Fatalf("expected last applied offset to advance to 101, got %d", engine.GetLastAppliedOffset())
 	}
 }
 
@@ -867,5 +871,441 @@ func TestSnapshot_DeterministicSerialization(t *testing.T) {
 		t.Fatalf("expected identical SHA256 checksums across snapshots, got %x vs %x", hash1, hash2)
 	}
 }
+
+func TestValidTickAndLot_MarketOrderProtection(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	engine := newTestEngine("BTC-USDT") // TickSize=0.01, LotSize=0.001
+	go engine.Run(ctx)
+
+	// 1. Unrestricted MARKET order (Price = 0) -> should be accepted (cancelled as ioc_expired on empty book)
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCreated,
+		OrderCreated: &market.OrderCreatedPayload{
+			OrderID:   uuid.New(),
+			UserID:    uuid.New(),
+			MarketID:  "BTC-USDT",
+			Side:      orderbook.SideBuy,
+			OrderType: orderbook.OrderTypeMarket,
+			Price:     decimal.Zero,
+			Quantity:  decimal.RequireFromString("0.100"),
+		},
+		Topic:  "orders.commands",
+		Offset: 1,
+	}
+	res1 := <-engine.OutputQueue
+	if res1.CancelResult == nil || res1.CancelResult.Reason != "ioc_expired" {
+		t.Fatalf("expected unrestricted market order to be accepted and ioc_expired, got: %+v", res1.CancelResult)
+	}
+
+	// 2. MARKET order with on-tick protection price (Price = 65000.50, on tick 0.01) -> accepted
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCreated,
+		OrderCreated: &market.OrderCreatedPayload{
+			OrderID:   uuid.New(),
+			UserID:    uuid.New(),
+			MarketID:  "BTC-USDT",
+			Side:      orderbook.SideBuy,
+			OrderType: orderbook.OrderTypeMarket,
+			Price:     decimal.RequireFromString("65000.50"),
+			Quantity:  decimal.RequireFromString("0.100"),
+		},
+		Topic:  "orders.commands",
+		Offset: 2,
+	}
+	res2 := <-engine.OutputQueue
+	if res2.CancelResult == nil || res2.CancelResult.Reason != "ioc_expired" {
+		t.Fatalf("expected on-tick market order to be accepted and ioc_expired, got: %+v", res2.CancelResult)
+	}
+
+	// 3. MARKET order with OFF-TICK protection price (Price = 65000.505, off tick 0.01) -> rejected with invalid_order_parameters
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCreated,
+		OrderCreated: &market.OrderCreatedPayload{
+			OrderID:   uuid.New(),
+			UserID:    uuid.New(),
+			MarketID:  "BTC-USDT",
+			Side:      orderbook.SideBuy,
+			OrderType: orderbook.OrderTypeMarket,
+			Price:     decimal.RequireFromString("65000.505"),
+			Quantity:  decimal.RequireFromString("0.100"),
+		},
+		Topic:  "orders.commands",
+		Offset: 3,
+	}
+	res3 := <-engine.OutputQueue
+	if res3.CancelResult == nil || res3.CancelResult.Reason != "invalid_order_parameters" {
+		t.Fatalf("expected off-tick market order to be rejected with invalid_order_parameters, got: %+v", res3.CancelResult)
+	}
+}
+
+func TestApplyEvent_MarketOwnershipValidation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	engine := newTestEngine("BTC-USDT")
+	go engine.Run(ctx)
+
+	// 1. OrderCreated with mismatched MarketID ("ETH-USDT" on BTC engine) -> rejected with invalid_market_id
+	orderID := uuid.New()
+	userID := uuid.New()
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCreated,
+		OrderCreated: &market.OrderCreatedPayload{
+			OrderID:   orderID,
+			UserID:    userID,
+			MarketID:  "ETH-USDT",
+			Side:      orderbook.SideBuy,
+			OrderType: orderbook.OrderTypeLimit,
+			Price:     decimal.RequireFromString("3000.00"),
+			Quantity:  decimal.RequireFromString("1.000"),
+		},
+		Topic:  "orders.commands",
+		Offset: 1,
+	}
+	res1 := <-engine.OutputQueue
+	if res1.CancelResult == nil || res1.CancelResult.Reason != "invalid_market_id" || res1.CancelResult.CancelStatus != orderbook.CancelStatusInvalidRequest {
+		t.Fatalf("expected market mismatch create to be rejected with invalid_market_id and CancelStatusInvalidRequest, got: %+v", res1.CancelResult)
+	}
+	if engine.GetSequence() != 0 {
+		t.Fatalf("expected engine sequence to remain 0 after rejected market mismatch, got %d", engine.GetSequence())
+	}
+
+	// 2. OrderCancel with mismatched MarketID -> rejected with invalid_market_id
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCancel,
+		OrderCancel: &market.OrderCancelPayload{
+			OrderID:  orderID,
+			UserID:   userID,
+			MarketID: "ETH-USDT",
+		},
+		Topic:  "orders.commands",
+		Offset: 2,
+	}
+	res2 := <-engine.OutputQueue
+	if res2.CancelResult == nil || res2.CancelResult.Reason != "invalid_market_id" || res2.CancelResult.CancelStatus != orderbook.CancelStatusInvalidRequest {
+		t.Fatalf("expected market mismatch cancel to be rejected with invalid_market_id and CancelStatusInvalidRequest, got: %+v", res2.CancelResult)
+	}
+}
+
+func TestApplyEvent_AuthoritativeOccurredAtPropagation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	engine := newTestEngine("BTC-USDT")
+	go engine.Run(ctx)
+
+	historicalTime := time.Date(2025, 5, 1, 12, 30, 0, 0, time.UTC)
+	orderID := uuid.New()
+
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCreated,
+		OrderCreated: &market.OrderCreatedPayload{
+			OrderID:    orderID,
+			UserID:     uuid.New(),
+			MarketID:   "BTC-USDT",
+			Side:       orderbook.SideSell,
+			OrderType:  orderbook.OrderTypeLimit,
+			Price:      decimal.RequireFromString("65000.00"),
+			Quantity:   decimal.RequireFromString("1.000"),
+			OccurredAt: historicalTime,
+		},
+		Topic:  "orders.commands",
+		Offset: 1,
+	}
+	res := <-engine.OutputQueue
+
+	if res.Snapshot == nil {
+		t.Fatal("expected snapshot on first event")
+	}
+	if len(res.Snapshot.Orders) != 1 {
+		t.Fatalf("expected 1 order in snapshot, got %d", len(res.Snapshot.Orders))
+	}
+	parsedTime, err := time.Parse(time.RFC3339Nano, res.Snapshot.Orders[0].Timestamp)
+	if err != nil {
+		t.Fatalf("failed to parse snapshot order timestamp: %v", err)
+	}
+	if !parsedTime.Equal(historicalTime) {
+		t.Fatalf("expected order timestamp to equal OccurredAt %s, got %s", historicalTime, parsedTime)
+	}
+}
+
+// TestEngine_UnprotectedMarketOrder_LotValidation verifies that unprotected MARKET orders (Price == 0)
+// remain valid and bypass tick size checks, but strictly enforce lot-size divisibility rules.
+func TestEngine_UnprotectedMarketOrder_LotValidation(t *testing.T) {
+	cfg := market.MarketConfig{
+		MarketID: "BTC-USDT",
+		TickSize: decimal.RequireFromString("0.10"),
+		LotSize:  decimal.RequireFromString("0.05"), // 0.05 lot size
+	}
+
+	engine := market.NewMarketEngine(cfg)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go engine.Run(ctx)
+	engine.SetLive()
+
+	// 1. Unprotected MARKET order with compliant lot size (0.15 % 0.05 == 0) -> ACCEPTED (IOC expired)
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCreated,
+		OrderCreated: &market.OrderCreatedPayload{
+			OrderID:   uuid.New(),
+			UserID:    uuid.New(),
+			MarketID:  "BTC-USDT",
+			Side:      orderbook.SideBuy,
+			OrderType: orderbook.OrderTypeMarket,
+			Price:     decimal.Zero, // unprotected
+			Quantity:  decimal.RequireFromString("0.15"),
+		},
+		Topic:  "orders.commands",
+		Offset: 1,
+	}
+	res1 := <-engine.OutputQueue
+	if res1.CancelResult == nil || res1.CancelResult.Reason != "ioc_expired" {
+		t.Fatalf("expected valid lot-size unprotected market order to be accepted and ioc_expired, got: %+v", res1.CancelResult)
+	}
+
+	// 2. Unprotected MARKET order with non-compliant lot size (0.12 % 0.05 != 0) -> REJECTED (invalid_order_parameters)
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCreated,
+		OrderCreated: &market.OrderCreatedPayload{
+			OrderID:   uuid.New(),
+			UserID:    uuid.New(),
+			MarketID:  "BTC-USDT",
+			Side:      orderbook.SideBuy,
+			OrderType: orderbook.OrderTypeMarket,
+			Price:     decimal.Zero, // unprotected
+			Quantity:  decimal.RequireFromString("0.12"), // off-lot
+		},
+		Topic:  "orders.commands",
+		Offset: 2,
+	}
+	res2 := <-engine.OutputQueue
+	if res2.CancelResult == nil || res2.CancelResult.Reason != "invalid_order_parameters" {
+		t.Fatalf("expected off-lot market order to be rejected with invalid_order_parameters, got: %+v", res2.CancelResult)
+	}
+}
+
+func TestEngine_WrongUser_PreservesSequenceAndBook(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	engine := newTestEngine("BTC-USDT")
+	go engine.Run(ctx)
+
+	userA := uuid.New()
+	userB := uuid.New()
+	orderA := uuid.New()
+
+	// 1. User A places resting limit buy order
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCreated,
+		OrderCreated: &market.OrderCreatedPayload{
+			OrderID:   orderA,
+			UserID:    userA,
+			MarketID:  "BTC-USDT",
+			Side:      orderbook.SideBuy,
+			OrderType: orderbook.OrderTypeLimit,
+			Price:     decimal.RequireFromString("30000.00"),
+			Quantity:  decimal.RequireFromString("1.000"),
+		},
+		Topic:  "orders.commands",
+		Offset: 1,
+	}
+
+	res1 := <-engine.OutputQueue
+	if len(res1.Fills) != 0 {
+		t.Fatalf("expected 0 fills for resting limit order")
+	}
+	seqAfterInsert := engine.GetSequence()
+	if seqAfterInsert != 1 {
+		t.Fatalf("expected sequence=1 after resting insert, got %d", seqAfterInsert)
+	}
+
+	// 2. User B attempts to cancel User A's order -> unauthorized cancel
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCancel,
+		OrderCancel: &market.OrderCancelPayload{
+			OrderID:  orderA,
+			UserID:   userB,
+			MarketID: "BTC-USDT",
+		},
+		Topic:  "orders.commands",
+		Offset: 2,
+	}
+
+	res2 := <-engine.OutputQueue
+	if res2.CancelResult == nil {
+		t.Fatal("expected non-nil CancelResult for unauthorized cancel")
+	}
+	if res2.CancelResult.CancelStatus != orderbook.CancelStatusUserMismatch {
+		t.Fatalf("expected CancelStatusUserMismatch, got %q", res2.CancelResult.CancelStatus)
+	}
+	if res2.CancelResult.Reason != "user_mismatch" {
+		t.Fatalf("expected reason user_mismatch, got %q", res2.CancelResult.Reason)
+	}
+	if res2.CancelResult.OrderID != orderA {
+		t.Fatalf("expected OrderID=%s, got %s", orderA, res2.CancelResult.OrderID)
+	}
+	if res2.CancelResult.UserID != userA {
+		t.Fatalf("expected authoritative owner UserID=%s, got %s", userA, res2.CancelResult.UserID)
+	}
+
+	// Invariant: Sequence MUST NOT increment on USER_MISMATCH
+	if engine.GetSequence() != seqAfterInsert {
+		t.Fatalf("expected sequence to remain %d, got %d", seqAfterInsert, engine.GetSequence())
+	}
+
+	// Invariant: Order A must remain active and intact in book depth
+	depth := engine.GetDepth(10)
+	if len(depth.Bids) != 1 {
+		t.Fatalf("expected 1 bid level remaining in depth, got %d", len(depth.Bids))
+	}
+	if depth.Bids[0].Quantity.String() != "1" {
+		t.Fatalf("expected bid quantity 1, got %s", depth.Bids[0].Quantity.String())
+	}
+
+	// 3. User A sends legitimate cancel -> succeeds and increments sequence
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCancel,
+		OrderCancel: &market.OrderCancelPayload{
+			OrderID:  orderA,
+			UserID:   userA,
+			MarketID: "BTC-USDT",
+		},
+		Topic:  "orders.commands",
+		Offset: 3,
+	}
+
+	res3 := <-engine.OutputQueue
+	if res3.CancelResult == nil {
+		t.Fatal("expected non-nil CancelResult for legitimate cancel")
+	}
+	if res3.CancelResult.CancelStatus != orderbook.CancelStatusRemovedFromBook {
+		t.Fatalf("expected CancelStatusRemovedFromBook, got %q", res3.CancelResult.CancelStatus)
+	}
+
+	// Invariant: Sequence MUST increment on REMOVED_FROM_BOOK
+	if engine.GetSequence() != seqAfterInsert+1 {
+		t.Fatalf("expected sequence=%d after legitimate cancel, got %d", seqAfterInsert+1, engine.GetSequence())
+	}
+
+	// Invariant: Book depth is now empty
+	emptyDepth := engine.GetDepth(10)
+	if len(emptyDepth.Bids) != 0 {
+		t.Fatalf("expected 0 bid levels after cancel, got %d", len(emptyDepth.Bids))
+	}
+}
+
+func TestMarketMaker_UserIDConsistency_WithCancelOwnership(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	engine := newTestEngine("BTC-USDT")
+	go engine.Run(ctx)
+
+	// Market Maker system UserID (CTS-3 / LE-2)
+	mmUserID := uuid.MustParse("00000000-0000-0000-0000-000000000001")
+	attackerUserID := uuid.New()
+	mmOrderID := uuid.New()
+
+	// 1. Market Maker places resting limit order with MM UserID
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCreated,
+		OrderCreated: &market.OrderCreatedPayload{
+			OrderID:   mmOrderID,
+			UserID:    mmUserID,
+			MarketID:  "BTC-USDT",
+			Side:      orderbook.SideBuy,
+			OrderType: orderbook.OrderTypeLimit,
+			Price:     decimal.RequireFromString("40000.00"),
+			Quantity:  decimal.RequireFromString("2.000"),
+		},
+		Topic:  "orders.commands",
+		Offset: 1,
+	}
+
+	res1 := <-engine.OutputQueue
+	if len(res1.Fills) != 0 {
+		t.Fatalf("expected 0 fills for resting limit order")
+	}
+	seqAfterInsert := engine.GetSequence()
+	if seqAfterInsert != 1 {
+		t.Fatalf("expected sequence=1 after resting insert, got %d", seqAfterInsert)
+	}
+
+	// 2. Attacker attempts to cancel MM order -> USER_MISMATCH
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCancel,
+		OrderCancel: &market.OrderCancelPayload{
+			OrderID:  mmOrderID,
+			UserID:   attackerUserID,
+			MarketID: "BTC-USDT",
+		},
+		Topic:  "orders.commands",
+		Offset: 2,
+	}
+
+	res2 := <-engine.OutputQueue
+	if res2.CancelResult == nil {
+		t.Fatal("expected non-nil CancelResult for unauthorized cancel")
+	}
+	if res2.CancelResult.CancelStatus != orderbook.CancelStatusUserMismatch {
+		t.Fatalf("expected CancelStatusUserMismatch, got %q", res2.CancelResult.CancelStatus)
+	}
+	if res2.CancelResult.Reason != "user_mismatch" {
+		t.Fatalf("expected reason user_mismatch, got %q", res2.CancelResult.Reason)
+	}
+	if res2.CancelResult.OrderID != mmOrderID {
+		t.Fatalf("expected OrderID=%s, got %s", mmOrderID, res2.CancelResult.OrderID)
+	}
+	if res2.CancelResult.UserID != mmUserID {
+		t.Fatalf("expected authoritative owner UserID=%s, got %s", mmUserID, res2.CancelResult.UserID)
+	}
+
+	// Invariant: Sequence MUST NOT increment on USER_MISMATCH
+	if engine.GetSequence() != seqAfterInsert {
+		t.Fatalf("expected sequence to remain %d, got %d", seqAfterInsert, engine.GetSequence())
+	}
+
+	// Invariant: MM order remains active in book depth
+	depth := engine.GetDepth(10)
+	if len(depth.Bids) != 1 || depth.Bids[0].Quantity.String() != "2" {
+		t.Fatalf("expected 1 bid level remaining with qty 2, got %v", depth.Bids)
+	}
+
+	// 3. MM sends legitimate cancel with MM UserID -> REMOVED_FROM_BOOK
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCancel,
+		OrderCancel: &market.OrderCancelPayload{
+			OrderID:  mmOrderID,
+			UserID:   mmUserID,
+			MarketID: "BTC-USDT",
+		},
+		Topic:  "orders.commands",
+		Offset: 3,
+	}
+
+	res3 := <-engine.OutputQueue
+	if res3.CancelResult == nil {
+		t.Fatal("expected non-nil CancelResult for legitimate cancel")
+	}
+	if res3.CancelResult.CancelStatus != orderbook.CancelStatusRemovedFromBook {
+		t.Fatalf("expected CancelStatusRemovedFromBook, got %q", res3.CancelResult.CancelStatus)
+	}
+
+	// Invariant: Sequence MUST increment on REMOVED_FROM_BOOK
+	if engine.GetSequence() != seqAfterInsert+1 {
+		t.Fatalf("expected sequence=%d after legitimate cancel, got %d", seqAfterInsert+1, engine.GetSequence())
+	}
+
+	// Invariant: Book depth is now empty
+	emptyDepth := engine.GetDepth(10)
+	if len(emptyDepth.Bids) != 0 {
+		t.Fatalf("expected 0 bid levels after cancel, got %d", len(emptyDepth.Bids))
+	}
+}
+
 
 

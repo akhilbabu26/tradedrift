@@ -47,6 +47,10 @@ func (m *mockEngineMetrics) IncDuplicateMMLevel(marketID string)                
 func (m *mockEngineMetrics) IncRebaseGenerationFailure(marketID, levelID string)  {}
 func (m *mockEngineMetrics) IncExpiryGenerationFailure(marketID string)           {}
 func (m *mockEngineMetrics) IncQuantityInvariantViolation(marketID string)        {}
+func (m *mockEngineMetrics) IncCreateBlocked(marketID, reason string)              {}
+func (m *mockEngineMetrics) IncRefresh(marketID, reason string)                    {}
+func (m *mockEngineMetrics) SetExposure(marketID string, bidUSDT, askBase, bidCap, askCap decimal.Decimal) {}
+func (m *mockEngineMetrics) IncRepriceEvent(marketID, action string)               {}
 func (m *mockEngineMetrics) SetEngineState(state string)                          {}
 func (m *mockEngineMetrics) SetLevelCount(marketID, side string, count int)       {}
 func (m *mockEngineMetrics) ObserveReconcileDuration(marketID string, ms float64) {}
@@ -65,6 +69,15 @@ func (m *mockEngineMetrics) IncMarketPause(marketID, action string) {
 		m.marketResumes++
 	}
 }
+func (m *mockEngineMetrics) ObserveRebaseDuration(marketID, action string, seconds float64) {}
+func (m *mockEngineMetrics) IncRebaseTargetChanges(marketID string)                         {}
+func (m *mockEngineMetrics) SetRebaseLevelsRemaining(marketID string, count int)            {}
+func (m *mockEngineMetrics) IncRebaseLevelsRepriced(marketID, zone string)                  {}
+func (m *mockEngineMetrics) IncCancelOSFailure(marketID string)                              {}
+func (m *mockEngineMetrics) IncCancelMEPublish(marketID string)                              {}
+func (m *mockEngineMetrics) IncSpreadBreach(marketID string)                                {}
+func (m *mockEngineMetrics) ObserveSpreadRecoveryDuration(marketID string, seconds float64) {}
+func (m *mockEngineMetrics) SetInsideSpreadBps(marketID string, bps float64)                {}
 
 func TestPendingTimeoutDoesNotAffectMELiveness(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -478,3 +491,178 @@ func TestEngine_HandleTrade_Overfill_ClampsToZeroAndRemoves(t *testing.T) {
 		t.Errorf("expected level %s to be removed from tracker on overfill, but found: %+v", levelID, ord)
 	}
 }
+
+func TestEngine_CheckSpreadBreach_ConfiguredThreshold(t *testing.T) {
+	cfg := &config.Config{
+		Markets: []config.MarketConfig{
+			{
+				MarketID: "BTC-USDT",
+				Repricing: config.RepricingConfig{
+					SpreadBreachBps: 30, // Configured explicitly to 30 bps
+				},
+				BidZones: config.DefaultZoneConfig(),
+			},
+		},
+	}
+	tracker := order.NewTracker()
+	eng := NewEngine(cfg, tracker, inventory.NewManager(tracker, zap.NewNop()), nil, nil, nil, nil, nil, nil, &mockEngineMetrics{}, zap.NewNop())
+
+	// 1. Spread = 20 bps (100.00 to 100.20) -> should NOT breach (< 30 bps)
+	tracker.SetPending("BID-1", "b1", "cb1", 1, pricing.PriceLevel{MarketID: "BTC-USDT", Side: "BUY", Price: decimal.RequireFromString("100.00"), Quantity: decimal.NewFromInt(1)})
+	tracker.SetResting("BID-1", "b1", decimal.NewFromInt(1), decimal.NewFromInt(1))
+
+	tracker.SetPending("ASK-1", "a1", "ca1", 1, pricing.PriceLevel{MarketID: "BTC-USDT", Side: "SELL", Price: decimal.RequireFromString("100.20"), Quantity: decimal.NewFromInt(1)})
+	tracker.SetResting("ASK-1", "a1", decimal.NewFromInt(1), decimal.NewFromInt(1))
+
+	if eng.CheckSpreadBreach("BTC-USDT") {
+		t.Fatalf("expected CheckSpreadBreach to return false for 20 bps spread when threshold is 30 bps")
+	}
+
+	// 2. Spread = 40 bps (100.00 to 100.40) -> SHOULD breach (> 30 bps)
+	tracker.Remove("ASK-1")
+	tracker.SetPending("ASK-2", "a2", "ca2", 1, pricing.PriceLevel{MarketID: "BTC-USDT", Side: "SELL", Price: decimal.RequireFromString("100.40"), Quantity: decimal.NewFromInt(1)})
+	tracker.SetResting("ASK-2", "a2", decimal.NewFromInt(1), decimal.NewFromInt(1))
+
+	if !eng.CheckSpreadBreach("BTC-USDT") {
+		t.Fatalf("expected CheckSpreadBreach to return true for 40 bps spread when threshold is 30 bps")
+	}
+}
+
+func TestEngine_CheckSpreadBreach_DerivedFallback(t *testing.T) {
+	cfg := &config.Config{
+		Markets: []config.MarketConfig{
+			{
+				MarketID: "BTC-USDT",
+				Repricing: config.RepricingConfig{
+					SpreadBreachBps: 0, // Unconfigured: should derive fallback from Mid.MaxBps * 2
+				},
+				BidZones: config.ZoneConfig{
+					Mid: config.ZoneBand{MinBps: 15, MaxBps: 35, Count: 4}, // 35 * 2 = 70 bps fallback
+				},
+			},
+		},
+	}
+	tracker := order.NewTracker()
+	eng := NewEngine(cfg, tracker, inventory.NewManager(tracker, zap.NewNop()), nil, nil, nil, nil, nil, nil, &mockEngineMetrics{}, zap.NewNop())
+
+	tracker.SetPending("BID-1", "b1", "cb1", 1, pricing.PriceLevel{MarketID: "BTC-USDT", Side: "BUY", Price: decimal.RequireFromString("100.00"), Quantity: decimal.NewFromInt(1)})
+	tracker.SetResting("BID-1", "b1", decimal.NewFromInt(1), decimal.NewFromInt(1))
+
+	// 1. Spread = 50 bps (100.00 to 100.50) -> should NOT breach (< 70 bps fallback)
+	tracker.SetPending("ASK-1", "a1", "ca1", 1, pricing.PriceLevel{MarketID: "BTC-USDT", Side: "SELL", Price: decimal.RequireFromString("100.50"), Quantity: decimal.NewFromInt(1)})
+	tracker.SetResting("ASK-1", "a1", decimal.NewFromInt(1), decimal.NewFromInt(1))
+
+	if eng.CheckSpreadBreach("BTC-USDT") {
+		t.Fatalf("expected CheckSpreadBreach to return false for 50 bps spread under 70 bps fallback")
+	}
+
+	// 2. Spread = 80 bps (100.00 to 100.80) -> SHOULD breach (> 70 bps fallback)
+	tracker.Remove("ASK-1")
+	tracker.SetPending("ASK-2", "a2", "ca2", 1, pricing.PriceLevel{MarketID: "BTC-USDT", Side: "SELL", Price: decimal.RequireFromString("100.80"), Quantity: decimal.NewFromInt(1)})
+	tracker.SetResting("ASK-2", "a2", decimal.NewFromInt(1), decimal.NewFromInt(1))
+
+	if !eng.CheckSpreadBreach("BTC-USDT") {
+		t.Fatalf("expected CheckSpreadBreach to return true for 80 bps spread under 70 bps fallback")
+	}
+}
+
+func TestEngine_CheckSpreadBreach_DepletedSide(t *testing.T) {
+	cfg := &config.Config{
+		Markets: []config.MarketConfig{
+			{
+				MarketID:  "BTC-USDT",
+				Repricing: config.RepricingConfig{SpreadBreachBps: 50},
+			},
+		},
+	}
+	tracker := order.NewTracker()
+	eng := NewEngine(cfg, tracker, inventory.NewManager(tracker, zap.NewNop()), nil, nil, nil, nil, nil, nil, &mockEngineMetrics{}, zap.NewNop())
+
+	// Only bids, zero asks -> depleted side must return true (spread breach)
+	tracker.SetPending("BID-1", "b1", "cb1", 1, pricing.PriceLevel{MarketID: "BTC-USDT", Side: "BUY", Price: decimal.RequireFromString("100.00"), Quantity: decimal.NewFromInt(1)})
+	tracker.SetResting("BID-1", "b1", decimal.NewFromInt(1), decimal.NewFromInt(1))
+
+	if !eng.CheckSpreadBreach("BTC-USDT") {
+		t.Fatalf("expected CheckSpreadBreach to return true when ask side is depleted")
+	}
+}
+
+func TestEngine_SpreadBreach_TriggersTargetedReconcile(t *testing.T) {
+	cfg := &config.Config{
+		TargetedReconcileDebounce: 50 * time.Millisecond,
+		Markets: []config.MarketConfig{
+			{
+				MarketID:  "BTC-USDT",
+				Repricing: config.RepricingConfig{SpreadBreachBps: 30},
+			},
+		},
+	}
+	tracker := order.NewTracker()
+	eng := NewEngine(cfg, tracker, inventory.NewManager(tracker, zap.NewNop()), nil, nil, nil, nil, nil, nil, &mockEngineMetrics{}, zap.NewNop())
+
+	// Set resting bid and ask with a wide spread (50 bps > 30 bps)
+	tracker.SetPending("BID-1", "b1", "cb1", 1, pricing.PriceLevel{MarketID: "BTC-USDT", Side: "BUY", Price: decimal.RequireFromString("100.00"), Quantity: decimal.NewFromInt(1)})
+	tracker.SetResting("BID-1", "b1", decimal.NewFromInt(1), decimal.NewFromInt(1))
+	tracker.SetPending("ASK-1", "a1", "ca1", 1, pricing.PriceLevel{MarketID: "BTC-USDT", Side: "SELL", Price: decimal.RequireFromString("100.50"), Quantity: decimal.NewFromInt(1)})
+	tracker.SetResting("ASK-1", "a1", decimal.NewFromInt(1), decimal.NewFromInt(1))
+
+	// Send a trade event (even non-MM trade)
+	eng.handleTrade(kafka.TradeEnvelope{
+		Event: kafka.TradeEvent{
+			TradeID:      "trade-ext-1",
+			MarketID:     "BTC-USDT",
+			MakerOrderID: "external-order-1",
+			MMSide:       "BUY",
+			Quantity:     decimal.NewFromFloat(0.1),
+		},
+	})
+
+	// INVARIANT: Spread breach must flag dirtyMarkets and schedule targeted reconcile
+	if !eng.dirtyMarkets["BTC-USDT"] {
+		t.Fatalf("expected dirtyMarkets[BTC-USDT] to be set to true on spread breach")
+	}
+	if eng.targetedDebounceTimer == nil {
+		t.Fatalf("expected targetedDebounceTimer to be scheduled on spread breach")
+	}
+}
+
+func TestEngine_SpreadBelowThreshold_NoTargetedReconcile(t *testing.T) {
+	cfg := &config.Config{
+		TargetedReconcileDebounce: 50 * time.Millisecond,
+		Markets: []config.MarketConfig{
+			{
+				MarketID:  "BTC-USDT",
+				Repricing: config.RepricingConfig{SpreadBreachBps: 30},
+			},
+		},
+	}
+	tracker := order.NewTracker()
+	eng := NewEngine(cfg, tracker, inventory.NewManager(tracker, zap.NewNop()), nil, nil, nil, nil, nil, nil, &mockEngineMetrics{}, zap.NewNop())
+
+	// Set resting bid and ask with tight spread (20 bps < 30 bps threshold)
+	tracker.SetPending("BID-1", "b1", "cb1", 1, pricing.PriceLevel{MarketID: "BTC-USDT", Side: "BUY", Price: decimal.RequireFromString("100.00"), Quantity: decimal.NewFromInt(1)})
+	tracker.SetResting("BID-1", "b1", decimal.NewFromInt(1), decimal.NewFromInt(1))
+	tracker.SetPending("ASK-1", "a1", "ca1", 1, pricing.PriceLevel{MarketID: "BTC-USDT", Side: "SELL", Price: decimal.RequireFromString("100.20"), Quantity: decimal.NewFromInt(1)})
+	tracker.SetResting("ASK-1", "a1", decimal.NewFromInt(1), decimal.NewFromInt(1))
+
+	// Send an external (non-MM) trade event
+	eng.handleTrade(kafka.TradeEnvelope{
+		Event: kafka.TradeEvent{
+			TradeID:      "trade-ext-2",
+			MarketID:     "BTC-USDT",
+			MakerOrderID: "external-order-2",
+			MMSide:       "BUY",
+			Quantity:     decimal.NewFromFloat(0.1),
+		},
+	})
+
+	// INVARIANT: Spread < threshold must NOT flag dirtyMarkets or schedule targeted reconcile
+	if eng.dirtyMarkets["BTC-USDT"] {
+		t.Fatalf("expected dirtyMarkets[BTC-USDT] to remain false when spread (20 bps) is below threshold (30 bps)")
+	}
+	if eng.targetedDebounceTimer != nil {
+		t.Fatalf("expected targetedDebounceTimer to remain nil when spread is below threshold")
+	}
+}
+
+

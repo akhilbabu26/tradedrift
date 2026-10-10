@@ -1416,4 +1416,132 @@ func TestPAUSED_AllIndependentPaths_ZeroMutations(t *testing.T) {
 	}
 }
 
+// TestInvariant_CumulativeReferenceDrift_TriggersRebaseWithoutTickClobber verifies that
+// small gradual price movements (e.g. 2 bps per tick, each < SmallBps 10 bps) correctly
+// accumulate against ActiveGenerationRef / LastRepriceRef until triggering repricing,
+// instead of being wiped out by tick-by-tick LastRef overwriting.
+func TestInvariant_CumulativeReferenceDrift_TriggersRebaseWithoutTickClobber(t *testing.T) {
+	marketID := "BTC-USDT"
+	rec, tracker, cfg, prod, _ := newInvTestRec(t, marketID)
+	mc := &cfg.Markets[0]
+	mc.Repricing = config.RepricingConfig{
+		SmallBps: 10,
+		LargeBps: 100,
+		MaxBatch: 4,
+	}
+
+	mockProv := &mockRefProvider{entries: make(map[string]refprice.Entry)}
+	rec.SetRefProvider(mockProv)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		var meOrders []meclient.MMOrderSummary
+		for _, o := range tracker.All(marketID) {
+			if o.Status == order.StatusResting {
+				meOrders = append(meOrders, meclient.MMOrderSummary{
+					LevelID:           o.LevelID,
+					OrderID:           o.OrderID,
+					ClientOrderID:     o.ClientOrderID,
+					Side:              o.Side,
+					Price:             o.Price.String(),
+					RemainingQuantity: o.RemainingQty.String(),
+				})
+			}
+		}
+		_ = json.NewEncoder(w).Encode(meclient.MarketSnapshot{
+			MarketID: marketID,
+			State:    "LIVE",
+			Orders:   meOrders,
+		})
+	}))
+	defer srv.Close()
+	rec.SetMEClient(meclient.New(srv.URL, zap.NewNop()))
+
+	// Create 4 HIGH orders resting at base 100.00
+	levels := []struct {
+		id   string
+		zone string
+		side string
+	}{
+		{"MM-BTC-USDT-BID-12", "HIGH", "BUY"},
+		{"MM-BTC-USDT-BID-11", "HIGH", "BUY"},
+		{"MM-BTC-USDT-ASK-12", "HIGH", "SELL"},
+		{"MM-BTC-USDT-ASK-11", "HIGH", "SELL"},
+	}
+
+	for i, l := range levels {
+		p := decimal.RequireFromString("95.00")
+		if l.side == "SELL" {
+			p = decimal.RequireFromString("105.00")
+		}
+		coid := fmt.Sprintf("%s-G001", l.id)
+		oid := fmt.Sprintf("order-%d", i+1)
+		tracker.SetPending(l.id, oid, coid, 1, pricing.PriceLevel{
+			LevelID:    l.id,
+			MarketID:   marketID,
+			Side:       l.side,
+			Price:      p,
+			Quantity:   decimal.RequireFromString("1.0"),
+			Zone:       l.zone,
+			RefVersion: 1,
+		})
+		tracker.SetResting(l.id, oid, decimal.RequireFromString("1.0"), decimal.RequireFromString("1.0"))
+	}
+
+	// Establish baseline reference at 100.00
+	rec.SetRefState(marketID, &reconciler.RefState{
+		LastRef:             decimal.RequireFromString("100.00"),
+		LastVersion:         1,
+		LastUpdated:         time.Now(),
+		Freshness:           reconciler.FreshnessFresh,
+		ActiveGenerationRef: decimal.RequireFromString("100.00"),
+		LastRepriceRef:      decimal.RequireFromString("100.00"),
+	})
+
+	ctx := context.Background()
+
+	// Simulate 4 ticks, each moving by 2 bps (100.02, 100.04, 100.06, 100.08).
+	// Under SmallBps = 10 bps, cumulative drift is 8 bps (< 10 bps) -> 0 cancels.
+	for i := 1; i <= 4; i++ {
+		priceStr := fmt.Sprintf("100.%02d", i*2)
+		mockProv.entries[marketID] = refprice.Entry{
+			MarketID:  marketID,
+			Price:     decimal.RequireFromString(priceStr),
+			Version:   int64(i + 1),
+			FetchedAt: time.Now(),
+			State:     refprice.StateFresh,
+		}
+		prod.cancelledOrders = nil
+		_, err := rec.ReconcileMarket(ctx, marketID, 12, 12)
+		if err != nil {
+			t.Fatalf("tick %d failed: %v", i, err)
+		}
+		if len(prod.cancelledOrders) != 0 {
+			t.Fatalf("tick %d: expected 0 cancels before 10 bps cumulative threshold, got %d", i, len(prod.cancelledOrders))
+		}
+	}
+
+	// Tick 5: Price moves to 100.12 (cumulative drift from 100.00 is 12 bps, which is >= SmallBps 10 bps!)
+	// Even though this step was only 4 bps from 100.08, cumulative drift exceeds SmallBps!
+	mockProv.entries[marketID] = refprice.Entry{
+		MarketID:  marketID,
+		Price:     decimal.RequireFromString("100.12"),
+		Version:   6,
+		FetchedAt: time.Now(),
+		State:     refprice.StateFresh,
+	}
+	prod.cancelledOrders = nil
+	_, err := rec.ReconcileMarket(ctx, marketID, 12, 12)
+	if err != nil {
+		t.Fatalf("tick 5 failed: %v", err)
+	}
+	if len(prod.cancelledOrders) == 0 {
+		t.Fatalf("tick 5: expected repricing cancels once cumulative drift exceeded 10 bps, got 0")
+	}
+	refState := rec.GetRefState(marketID)
+	if !refState.RebaseActive {
+		t.Fatalf("tick 5: expected RebaseActive to be true")
+	}
+}
+
 

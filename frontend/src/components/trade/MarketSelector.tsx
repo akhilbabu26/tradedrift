@@ -2,15 +2,24 @@ import { useState, useRef, useEffect } from 'react'
 import { ChevronDown, Check } from 'lucide-react'
 import type { Market } from '../../types/trade'
 import { getMarketMetadata } from '../../utils/marketMetadata'
+import Sparkline from '../common/Sparkline'
 
 interface MarketSelectorProps {
   markets: Market[]
   selectedMarketId: string
   onSelect: (marketId: string) => void
+  marketTrends?: Record<string, number[]>
+  defaultOpen?: boolean
 }
 
-export default function MarketSelector({ markets, selectedMarketId, onSelect }: MarketSelectorProps) {
-  const [open, setOpen] = useState(false)
+export default function MarketSelector({
+  markets,
+  selectedMarketId,
+  onSelect,
+  marketTrends,
+  defaultOpen = false,
+}: MarketSelectorProps) {
+  const [open, setOpen] = useState(defaultOpen)
   const ref = useRef<HTMLDivElement>(null)
 
   const selected = getMarketMetadata(selectedMarketId)
@@ -76,7 +85,7 @@ export default function MarketSelector({ markets, selectedMarketId, onSelect }: 
         <div
           role="listbox"
           aria-label="Market selection"
-          className="absolute top-full left-0 mt-1.5 w-52 bg-[#111318] border border-[#1e2530] rounded-lg shadow-2xl z-50 overflow-hidden"
+          className="absolute top-full left-0 mt-1.5 w-72 bg-[#111318] border border-[#1e2530] rounded-lg shadow-2xl z-50 overflow-hidden"
         >
           <div className="px-3 py-1.5 border-b border-[#1e2530]">
             <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Select Market</p>
@@ -85,6 +94,7 @@ export default function MarketSelector({ markets, selectedMarketId, onSelect }: 
             {displayList.map((m) => {
               const meta = getMarketMetadata(m.id)
               const isActive = m.id === selectedMarketId
+              const trendData = marketTrends?.[m.id]
               return (
                 <button
                   key={m.id}
@@ -104,11 +114,23 @@ export default function MarketSelector({ markets, selectedMarketId, onSelect }: 
                   <div className={`w-6 h-6 rounded-full ${meta.baseMeta.iconBg} border ${meta.baseMeta.iconBorder} flex items-center justify-center flex-shrink-0`}>
                     <span className={`text-[11px] font-black ${meta.baseMeta.iconColor}`}>{meta.baseMeta.symbol}</span>
                   </div>
-                  <div className="flex-1 text-left">
-                    <p className="font-semibold">{meta.pair}</p>
-                    <p className="text-[10px] text-slate-500">{meta.name}</p>
+                  <div className="flex-1 text-left min-w-0">
+                    <p className="font-semibold truncate">{meta.pair}</p>
+                    <p className="text-[10px] text-slate-500 truncate">{meta.name}</p>
                   </div>
-                  {isActive && <Check size={13} className="text-[#10b981] flex-shrink-0" />}
+                  <div className="flex-shrink-0 px-1">
+                    <Sparkline
+                      data={trendData}
+                      width={64}
+                      height={22}
+                      ariaLabel={`${meta.pair} 24h trend`}
+                    />
+                  </div>
+                  {isActive ? (
+                    <Check size={13} className="text-[#10b981] flex-shrink-0" />
+                  ) : (
+                    <div className="w-[13px] flex-shrink-0" />
+                  )}
                 </button>
               )
             })}

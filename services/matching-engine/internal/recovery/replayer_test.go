@@ -468,6 +468,136 @@ func TestRecovery_CrashAfterTradePublish(t *testing.T) {
 	if originalTradeID != replayTradeID {
 		t.Errorf("expected trade ID on replay to match original trade ID: %s vs %s", originalTradeID, replayTradeID)
 	}
+
+	// Invariant: Order book sequence must be identical between initial execution and replay
+	if book1.Sequence != book2.Sequence {
+		t.Errorf("expected sequence on replay to match original sequence: %d vs %d", book1.Sequence, book2.Sequence)
+	}
+
+	// Invariant: Depth and order index must be identical between initial execution and replay
+	if len(book1.OrderIndex) != len(book2.OrderIndex) {
+		t.Errorf("expected order index length to match: %d vs %d", len(book1.OrderIndex), len(book2.OrderIndex))
+	}
+	if len(book1.Bids.SortedPrices) != len(book2.Bids.SortedPrices) || len(book1.Asks.SortedPrices) != len(book2.Asks.SortedPrices) {
+		t.Errorf("expected book price level count to match: bids(%d vs %d), asks(%d vs %d)",
+			len(book1.Bids.SortedPrices), len(book2.Bids.SortedPrices), len(book1.Asks.SortedPrices), len(book2.Asks.SortedPrices))
+	}
+
+	// 3. ModeRecovery execution suppresses trade output but achieves identical internal state
+	book3 := orderbook.NewOrderBook("BTC-USDT")
+	sell3 := &orderbook.OrderNode{
+		OrderID:      sellOrderID,
+		MarketID:     "BTC-USDT",
+		Side:         orderbook.SideSell,
+		OrderType:    orderbook.OrderTypeLimit,
+		Price:        decimal.RequireFromString("100"),
+		OriginalQty:  decimal.RequireFromString("1"),
+		RemainingQty: decimal.RequireFromString("1"),
+	}
+	matcher.Insert(book3, sell3)
+	buy3 := &orderbook.OrderNode{
+		OrderID:      buyOrderID,
+		MarketID:     "BTC-USDT",
+		Side:         orderbook.SideBuy,
+		OrderType:    orderbook.OrderTypeLimit,
+		Price:        decimal.RequireFromString("100"),
+		OriginalQty:  decimal.RequireFromString("1"),
+		RemainingQty: decimal.RequireFromString("1"),
+	}
+	recoveryFills := matcher.Match(book3, buy3, matcher.ModeRecovery, eventID)
+	if recoveryFills != nil {
+		t.Fatalf("expected ModeRecovery to suppress trade fills output (got %d fills)", len(recoveryFills))
+	}
+	if book3.Sequence != book1.Sequence {
+		t.Errorf("expected recovery book sequence to match live sequence: %d vs %d", book3.Sequence, book1.Sequence)
+	}
+	if len(book3.OrderIndex) != len(book1.OrderIndex) {
+		t.Errorf("expected recovery book order index to match live: %d vs %d", len(book3.OrderIndex), len(book1.OrderIndex))
+	}
+}
+
+// TestRecovery_DeterministicSequenceProgression verifies that order book mutations
+// (trades, resting limit orders, and cancellations) advance book.Sequence deterministically
+// across recovery replays.
+func TestRecovery_DeterministicSequenceProgression(t *testing.T) {
+	const initialSequence uint64 = 500
+	book := orderbook.NewOrderBook("BTC-USDT")
+	book.Sequence = initialSequence
+
+	eventID := uuid.New()
+	sellID := uuid.New()
+	buyID := uuid.New()
+	restingID := uuid.New()
+
+	// 1. Initial resting sell order
+	sell := &orderbook.OrderNode{
+		OrderID:      sellID,
+		MarketID:     "BTC-USDT",
+		Side:         orderbook.SideSell,
+		OrderType:    orderbook.OrderTypeLimit,
+		Price:        decimal.RequireFromString("100"),
+		OriginalQty:  decimal.RequireFromString("1"),
+		RemainingQty: decimal.RequireFromString("1"),
+	}
+	matcher.Insert(book, sell)
+	// Resting insertion advances sequence by 0 if using raw Insert, or +1 through event loop / Match.
+	// We'll track explicitly.
+	currentSeq := book.Sequence
+
+	// 2. Incoming buy matches resting sell -> +1 sequence for fill
+	buy := &orderbook.OrderNode{
+		OrderID:      buyID,
+		MarketID:     "BTC-USDT",
+		Side:         orderbook.SideBuy,
+		OrderType:    orderbook.OrderTypeLimit,
+		Price:        decimal.RequireFromString("100"),
+		OriginalQty:  decimal.RequireFromString("1"),
+		RemainingQty: decimal.RequireFromString("1"),
+	}
+	fills := matcher.Match(book, buy, matcher.ModeLive, eventID)
+	if len(fills) != 1 {
+		t.Fatalf("expected 1 fill, got %d", len(fills))
+	}
+	if book.Sequence != currentSeq+1 {
+		t.Fatalf("expected sequence after 1 fill to be %d, got %d", currentSeq+1, book.Sequence)
+	}
+	currentSeq = book.Sequence
+
+	// 3. Non-crossing limit order rests on book -> +1 sequence
+	restingUser := uuid.New()
+	resting := &orderbook.OrderNode{
+		OrderID:      restingID,
+		UserID:       restingUser,
+		MarketID:     "BTC-USDT",
+		Side:         orderbook.SideBuy,
+		OrderType:    orderbook.OrderTypeLimit,
+		Price:        decimal.RequireFromString("90"),
+		OriginalQty:  decimal.RequireFromString("2"),
+		RemainingQty: decimal.RequireFromString("2"),
+	}
+	restingFills := matcher.Match(book, resting, matcher.ModeLive, uuid.New())
+	if len(restingFills) != 0 {
+		t.Fatalf("expected 0 fills for non-crossing order")
+	}
+	if book.Sequence != currentSeq+1 {
+		t.Fatalf("expected sequence after resting insert to be %d, got %d", currentSeq+1, book.Sequence)
+	}
+	currentSeq = book.Sequence
+
+	// 4. Cancel resting order -> +1 sequence
+	outcome := matcher.Cancel(book, restingID, restingUser)
+	if outcome.Status != orderbook.CancelStatusRemovedFromBook {
+		t.Fatalf("expected CancelStatusRemovedFromBook, got %s", outcome.Status)
+	}
+	book.Sequence++ // cancellation in event loop increments sequence
+	if book.Sequence != currentSeq+1 {
+		t.Fatalf("expected sequence after cancel to be %d, got %d", currentSeq+1, book.Sequence)
+	}
+
+	// Invariant: Total sequence advanced by exactly 3 (1 trade + 1 resting insert + 1 cancel)
+	if book.Sequence != initialSequence+3 {
+		t.Fatalf("expected final deterministic sequence to be %d, got %d", initialSequence+3, book.Sequence)
+	}
 }
 
 func TestRecovery_MultiMarketBarrier(t *testing.T) {

@@ -12,7 +12,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { portfolioApi } from '../api/portfolio'
 import { walletApi } from '../api/wallet'
-import { marketApi } from '../api/market'
+import { marketApi, type MarketOverview } from '../api/market'
+import { wsService, WsChannels } from '../api/ws'
+import { useAuthStore } from '../store/authStore'
 import { toDecimal } from '../utils/decimal'
 import { getAssetMetadata } from '../utils/marketMetadata'
 import type {
@@ -37,6 +39,7 @@ interface UsePortfolioDataReturn {
   setTimeframe: (tf: TimeframeOption) => void
   showBtcBenchmark: boolean
   setShowBtcBenchmark: (v: boolean) => void
+  refetch: () => Promise<void>
 }
 
 const DEFAULT_METRICS: PortfolioExecutiveMetrics = {
@@ -69,6 +72,9 @@ const DEFAULT_INSIGHTS: PortfolioInsightsData = {
 }
 
 export function usePortfolioData(): UsePortfolioDataReturn {
+  const user = useAuthStore((s) => s.user)
+  const userId = user?.userId
+
   const [loading, setLoading] = useState(true)
   const [isDemoData, setIsDemoData] = useState(false)
   const [isEmptyPortfolio, setIsEmptyPortfolio] = useState(false)
@@ -86,20 +92,56 @@ export function usePortfolioData(): UsePortfolioDataReturn {
 
     try {
       // ── 1. Fetch authentic backend portfolio and market data in parallel ──
-      const [summaryRes, holdingsRes, walletRes, btcTicker, ethTicker, solTicker] = await Promise.all([
+      const [summaryRes, holdingsRes, walletRes, overviewRes] = await Promise.all([
         portfolioApi.getSummary(),
         portfolioApi.getHoldings(),
         walletApi.getAllBalances().catch(() => []),
-        marketApi.getTicker('BTC-USDT').catch(() => null),
-        marketApi.getTicker('ETH-USDT').catch(() => null),
-        marketApi.getTicker('SOL-USDT').catch(() => null),
+        marketApi.getMarketsOverview().catch(() => [] as MarketOverview[]),
       ])
+
+      const overviewMap: Record<string, MarketOverview> = {}
+      overviewRes.forEach((ov) => {
+        overviewMap[ov.market_id] = ov
+      })
 
       const livePrices: Record<string, string> = {
         USDT: '1.00',
-        BTC: btcTicker?.last_price || '96450.00',
-        ETH: ethTicker?.last_price || '2780.50',
-        SOL: solTicker?.last_price || '188.20',
+        BTC: overviewMap['BTC-USDT']?.last_price || '96450.00',
+        ETH: overviewMap['ETH-USDT']?.last_price || '2780.50',
+        SOL: overviewMap['SOL-USDT']?.last_price || '188.20',
+      }
+
+      const marketTrends: Record<string, number[]> = {}
+      overviewRes.forEach((ov) => {
+        if (ov.trend && ov.trend.length > 0) {
+          const valid = ov.trend
+            .map((v) => parseFloat(v))
+            .filter((v) => !isNaN(v) && isFinite(v) && v > 0)
+          if (valid.length > 0) {
+            marketTrends[ov.market_id] = valid.slice(-24)
+          }
+        }
+      })
+
+      // If any supported market is missing trend from overview, fetch candles fallback
+      const missingTrendMarkets = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT'].filter(
+        (mId) => !marketTrends[mId] || marketTrends[mId].length === 0
+      )
+      if (missingTrendMarkets.length > 0) {
+        const candleResults = await Promise.allSettled(
+          missingTrendMarkets.map((mId) => marketApi.getCandles(mId, '1h', 24))
+        )
+        missingTrendMarkets.forEach((mId, idx) => {
+          const res = candleResults[idx]
+          if (res.status === 'fulfilled' && res.value.length > 0) {
+            const valid = res.value
+              .map((c) => parseFloat(c.close))
+              .filter((v) => !isNaN(v) && isFinite(v) && v > 0)
+            if (valid.length > 0) {
+              marketTrends[mId] = valid.slice(-24)
+            }
+          }
+        })
       }
 
       // ── 2. Determine authentic cash balance ────────────────────────────────
@@ -133,6 +175,7 @@ export function usePortfolioData(): UsePortfolioDataReturn {
         unrealizedPnl: ReturnType<typeof toDecimal>
         unrealizedPnlPct: string
         realizedPnl: string
+        sparklinePoints?: number[]
       }
 
       const rows: RowData[] = []
@@ -148,9 +191,15 @@ export function usePortfolioData(): UsePortfolioDataReturn {
             unrealizedPnl: toDecimal(0),
             unrealizedPnlPct: '+0.00',
             realizedPnl: '+0.00',
+            sparklinePoints: undefined,
           })
           continue
         }
+
+        const marketId = `${asset}-USDT`
+        const assetTrend = marketTrends[marketId] && marketTrends[marketId].length > 0
+          ? marketTrends[marketId]
+          : undefined
 
         const liveH = holdingsRes.holdings.find(
           (h) => h.asset.toUpperCase() === asset && toDecimal(h.totalQuantity || '0').gt(0)
@@ -177,6 +226,7 @@ export function usePortfolioData(): UsePortfolioDataReturn {
             unrealizedPnl: unPnl,
             unrealizedPnlPct: `${pnlSign}${unPnlPct}`,
             realizedPnl: summaryRes.realizedPnl || '-0.77',
+            sparklinePoints: assetTrend,
           })
         } else {
           // Authentic zero holding for unowned assets — no mock injection!
@@ -189,6 +239,7 @@ export function usePortfolioData(): UsePortfolioDataReturn {
             unrealizedPnl: toDecimal(0),
             unrealizedPnlPct: '+0.00',
             realizedPnl: '+0.00',
+            sparklinePoints: assetTrend,
           })
         }
       }
@@ -222,6 +273,7 @@ export function usePortfolioData(): UsePortfolioDataReturn {
             ? r.realizedPnl
             : `+${r.realizedPnl}`,
           weightPct,
+          sparklinePoints: r.sparklinePoints,
         }
       })
 
@@ -250,8 +302,8 @@ export function usePortfolioData(): UsePortfolioDataReturn {
         .reduce((sum, r) => sum.plus(r.unrealizedPnl), toDecimal(0))
       const totalPnlSign = totalUnrealPnl.gte(0) ? '+' : '-'
 
-      // 24h change from BTC ticker
-      const btc24hPct = parseFloat(btcTicker?.price_change_24h_percent || '0')
+      // 24h change from BTC market overview
+      const btc24hPct = parseFloat(overviewMap['BTC-USDT']?.price_change_24h_percent || '0')
       const btcMv = rows.find((r) => r.asset === 'BTC')?.marketValue || toDecimal(0)
       const dailyChangeVal = btcMv.times(btc24hPct).dividedBy(100)
       const dailyChangeSign = dailyChangeVal.gte(0) ? '+' : '-'
@@ -319,6 +371,146 @@ export function usePortfolioData(): UsePortfolioDataReturn {
     loadData()
   }, [loadData])
 
+  // ── 7. WebSocket live ticker updates, user streams, reconnect, and focus ──
+  useEffect(() => {
+    const supportedMarkets = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT']
+    const unsubs: Array<() => void> = []
+
+    supportedMarkets.forEach((marketId) => {
+      const channel = WsChannels.ticker(marketId)
+      const unsub = wsService.subscribe(channel, (payload: any) => {
+        if (!payload) return
+        const rawLast = payload.lastPrice ?? payload.last_price
+        if (rawLast === undefined || rawLast === null) return
+        const numPrice = parseFloat(String(rawLast))
+        if (isNaN(numPrice) || !isFinite(numPrice) || numPrice <= 0) return
+
+        const asset = marketId.split('-')[0] // 'BTC', 'ETH', 'SOL'
+
+        setHoldings((prevHoldings) => {
+          if (!prevHoldings || prevHoldings.length === 0) return prevHoldings
+          const targetIndex = prevHoldings.findIndex((h) => h.asset === asset)
+          if (targetIndex === -1) return prevHoldings
+
+          const h = prevHoldings[targetIndex]
+          const priceDec = toDecimal(numPrice)
+          const qty = toDecimal(h.quantity || '0')
+          const mv = qty.times(priceDec)
+          const avgCost = toDecimal(h.averageCost || '0')
+          const cb = qty.times(avgCost)
+          const unPnl = mv.minus(cb)
+          const unPnlPct = cb.gt(0)
+            ? unPnl.dividedBy(cb).times(100).toFixed(2)
+            : '0.00'
+          const pnlSign = unPnl.gte(0) ? '+' : '-'
+
+          let updatedSparkline = h.sparklinePoints
+          if (updatedSparkline && updatedSparkline.length > 0) {
+            const lastIdx = updatedSparkline.length - 1
+            if (updatedSparkline[lastIdx] !== numPrice) {
+              updatedSparkline = [...updatedSparkline.slice(0, lastIdx), numPrice]
+            }
+          }
+
+          const updatedHolding: PortfolioHolding = {
+            ...h,
+            currentPrice: priceDec.toFixed(2),
+            marketValue: mv.toFixed(2),
+            unrealizedPnl: unPnl.isZero() ? '0.00' : `${pnlSign}${Math.abs(unPnl.toNumber()).toFixed(2)}`,
+            unrealizedPnlPct: `${pnlSign}${unPnlPct}`,
+            sparklinePoints: updatedSparkline,
+          }
+
+          const next = [...prevHoldings]
+          next[targetIndex] = updatedHolding
+
+          // Recalculate total value and weights
+          const newTotalMarketValue = next.reduce(
+            (sum, item) => sum.plus(toDecimal(item.marketValue)),
+            toDecimal(0)
+          )
+
+          const reweighted = next.map((item) => ({
+            ...item,
+            weightPct: newTotalMarketValue.gt(0)
+              ? toDecimal(item.marketValue).dividedBy(newTotalMarketValue).times(100).toFixed(1)
+              : '0.0',
+          }))
+
+          // Update allocation
+          const nonZeroRows = reweighted.filter((item) => toDecimal(item.marketValue).gt(0))
+          const allocSource = nonZeroRows.length > 0 ? nonZeroRows : reweighted
+          const nextAllocation: AssetAllocationItem[] = allocSource.map((item) => {
+            const meta = getAssetMetadata(item.asset as any)
+            const pct = newTotalMarketValue.gt(0)
+              ? toDecimal(item.marketValue).dividedBy(newTotalMarketValue).times(100).toFixed(1)
+              : '0.0'
+            return {
+              asset: item.asset,
+              name: meta.name,
+              percentage: pct,
+              valueUSDT: toDecimal(item.marketValue).toFixed(2),
+              hexColor: meta.hexColor,
+              exposureType: item.asset === 'USDT' ? 'cash' : 'crypto',
+            }
+          })
+          setAllocation(nextAllocation)
+
+          // Update metrics
+          const totalUnrealPnl = reweighted
+            .filter((item) => item.asset !== 'USDT')
+            .reduce((sum, item) => sum.plus(toDecimal(item.unrealizedPnl || '0')), toDecimal(0))
+          const totalPnlSign = totalUnrealPnl.gte(0) ? '+' : '-'
+
+          const totalCostBasis = reweighted.reduce((sum, item) => {
+            if (item.asset === 'USDT') return sum.plus(toDecimal(item.marketValue))
+            return sum.plus(toDecimal(item.quantity || '0').times(toDecimal(item.averageCost || '0')))
+          }, toDecimal(0))
+
+          const unPnlPctTotal = totalCostBasis.gt(0)
+            ? totalUnrealPnl.dividedBy(totalCostBasis).times(100).toFixed(2)
+            : '0.00'
+
+          setMetrics((prev) => ({
+            ...prev,
+            totalValue: newTotalMarketValue.toFixed(2),
+            unrealizedPnl: `${totalPnlSign}${Math.abs(totalUnrealPnl.toNumber()).toFixed(2)}`,
+            unrealizedPnlPct: `${totalPnlSign}${Math.abs(parseFloat(unPnlPctTotal)).toFixed(2)}`,
+          }))
+
+          return reweighted
+        })
+      })
+      unsubs.push(unsub)
+    })
+
+    if (userId) {
+      unsubs.push(
+        wsService.subscribe(WsChannels.userPortfolio(userId), () => {
+          loadData()
+        })
+      )
+      unsubs.push(
+        wsService.subscribe(WsChannels.userNotifications(userId), () => {
+          loadData()
+        })
+      )
+    }
+
+    const unsubReconnect = wsService.onReconnect(() => {
+      loadData()
+    })
+    const onFocus = () => {
+      loadData()
+    }
+    window.addEventListener('focus', onFocus)
+    unsubs.push(unsubReconnect, () => window.removeEventListener('focus', onFocus))
+
+    return () => {
+      unsubs.forEach((unsub) => unsub())
+    }
+  }, [loadData, userId])
+
   // ── 8. Live Performance Chart Curves ──────────────────────────────────────
   useEffect(() => {
     let isCancelled = false
@@ -338,6 +530,35 @@ export function usePortfolioData(): UsePortfolioDataReturn {
       const btcQty = parseFloat(btcRow?.quantity || '0.02')
       const cashVal = parseFloat(holdings.find((h) => h.asset === 'USDT')?.marketValue || '8069.47')
 
+      // ── Priority 1: Authentic backend portfolio equity snapshots ─────────
+      try {
+        const historyRes = await portfolioApi.getHistory(timeframe === 'ALL' ? '1Y' : timeframe)
+        if (!isCancelled && historyRes.points && historyRes.points.length > 0) {
+          const nowSec = Math.floor(Date.now() / 1000)
+          const pts: PerformanceDataPoint[] = historyRes.points.map((p) => {
+            const val = parseFloat(p.totalEquity)
+            return {
+              time: p.timestamp,
+              portfolioValue: val,
+              btcBenchmarkValue: val,
+            }
+          })
+          const lastPt = pts[pts.length - 1]
+          if (lastPt && nowSec - lastPt.time > 60 && totalValNum > 0) {
+            pts.push({
+              time: nowSec,
+              portfolioValue: totalValNum,
+              btcBenchmarkValue: totalValNum,
+            })
+          }
+          setPerformanceData(pts)
+          return
+        }
+      } catch (err) {
+        console.warn('[usePortfolioData] Snapshot history fetch failed:', err)
+      }
+
+      // ── Priority 2: Fallback to candle revaluation if no snapshots recorded yet ─
       try {
         const candles = await marketApi.getCandles('BTC-USDT', cfg.resolution, cfg.limit)
 
@@ -365,6 +586,7 @@ export function usePortfolioData(): UsePortfolioDataReturn {
       } catch (err) {
         console.warn('[usePortfolioData] Candle fetch failed, generating baseline:', err)
       }
+
 
       // Clean fallback anchored to authentic total value
       if (!isCancelled) {
@@ -402,6 +624,7 @@ export function usePortfolioData(): UsePortfolioDataReturn {
     setTimeframe,
     showBtcBenchmark,
     setShowBtcBenchmark,
+    refetch: loadData,
   }
 }
 

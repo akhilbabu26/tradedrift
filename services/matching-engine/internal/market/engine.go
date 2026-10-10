@@ -58,6 +58,7 @@ type OrderCreatedPayload struct {
 	Price         decimal.Decimal // zero for MARKET orders
 	Quantity      decimal.Decimal
 	ClientOrderID string
+	OccurredAt    time.Time
 }
 
 // OrderCancelPayload is the deserialized form of the Kafka OrderCancelRequested event.

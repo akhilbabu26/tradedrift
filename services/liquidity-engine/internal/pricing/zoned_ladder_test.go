@@ -33,7 +33,7 @@ func btcMarketConfig() *config.MarketConfig {
 		MarketID:    "BTC-USDT",
 		TickSize:    decimal.RequireFromString("0.01"),
 		LotSize:     decimal.RequireFromString("0.00001"),
-		QtyPerLevel: decimal.RequireFromString("0.85"),
+		QtyPerLevel: decimal.RequireFromString("0.15"),
 		BidZones:    config.DefaultZoneConfig(),
 		AskZones:    config.DefaultZoneConfig(),
 	}
@@ -335,7 +335,7 @@ func TestGenerateZonedDesired_DefaultZones(t *testing.T) {
 		MarketID:    "BTC-USDT",
 		TickSize:    decimal.RequireFromString("0.01"),
 		LotSize:     decimal.RequireFromString("0.00001"),
-		QtyPerLevel: decimal.RequireFromString("0.85"),
+		QtyPerLevel: decimal.RequireFromString("0.15"),
 		// BidZones and AskZones are zero-value
 	}
 	ref := btcRef()
@@ -560,4 +560,186 @@ func TestGenerateLevelPrice_NarrowZoneBoundaryCheck(t *testing.T) {
 		t.Fatalf("expected price within [990.00, 990.50], got %s", price)
 	}
 }
+
+func TestGenerateZonedDesired_DepthDependentQuantityScaling(t *testing.T) {
+	mc := btcMarketConfig()
+	ref := btcRef()
+	tracker := &mockTracker{activeLevels: map[string]*ActiveLevel{}}
+
+	levels, err := GenerateZonedDesired(mc, ref, tracker, mc.BidZones, mc.AskZones, 1, 12, 12, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var bid01Qty, bid07Qty, bid12Qty decimal.Decimal
+	for _, l := range levels {
+		if l.LevelID == "MM-BTC-USDT-BID-01" {
+			bid01Qty = l.Quantity
+		}
+		if l.LevelID == "MM-BTC-USDT-BID-07" {
+			bid07Qty = l.Quantity
+		}
+		if l.LevelID == "MM-BTC-USDT-BID-12" {
+			bid12Qty = l.Quantity
+		}
+		if l.Quantity.LessThan(mc.MinOrderSize) {
+			t.Errorf("level %s quantity %s < MinOrderSize %s", l.LevelID, l.Quantity, mc.MinOrderSize)
+		}
+		// Verify lot size alignment: qty mod LotSize == 0
+		if !mc.LotSize.IsZero() {
+			rem := l.Quantity.Mod(mc.LotSize)
+			if !rem.IsZero() {
+				t.Errorf("level %s quantity %s not aligned to LotSize %s", l.LevelID, l.Quantity, mc.LotSize)
+			}
+		}
+	}
+
+	if bid01Qty.IsZero() || bid07Qty.IsZero() || bid12Qty.IsZero() {
+		t.Fatalf("missing expected levels: bid01=%s bid07=%s bid12=%s", bid01Qty, bid07Qty, bid12Qty)
+	}
+
+	// Verify depth gradient: L1 (inside spread) is thinner than outer LOW (L7) and backstop HIGH (L12)
+	if !bid01Qty.LessThan(bid07Qty) {
+		t.Errorf("expected L1 quantity %s < outer LOW quantity %s", bid01Qty, bid07Qty)
+	}
+	if !bid07Qty.LessThan(bid12Qty) {
+		t.Errorf("expected outer LOW quantity %s < HIGH backstop quantity %s", bid07Qty, bid12Qty)
+	}
+}
+
+func TestGenerateZonedDesired_LocksExistingQuantity(t *testing.T) {
+	mc := btcMarketConfig()
+	ref := btcRef()
+	lockedPrice := decimal.NewFromFloat(96200.00)
+	lockedQty := decimal.RequireFromString("0.4321")
+
+	tracker := &mockTracker{
+		activeLevels: map[string]*ActiveLevel{
+			"MM-BTC-USDT-BID-01": {
+				Status:     "RESTING",
+				Price:      lockedPrice,
+				Quantity:   lockedQty,
+				RefVersion: 42,
+			},
+		},
+	}
+
+	levels, err := GenerateZonedDesired(mc, ref, tracker, mc.BidZones, mc.AskZones, 99, 12, 12, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found := false
+	for _, l := range levels {
+		if l.LevelID == "MM-BTC-USDT-BID-01" {
+			found = true
+			if !l.Quantity.Equal(lockedQty) {
+				t.Errorf("expected locked quantity %s, got %s", lockedQty, l.Quantity)
+			}
+			if !l.Price.Equal(lockedPrice) {
+				t.Errorf("expected locked price %s, got %s", lockedPrice, l.Price)
+			}
+			if l.RefVersion != 42 {
+				t.Errorf("expected locked RefVersion 42, got %d", l.RefVersion)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("level MM-BTC-USDT-BID-01 not found in desired levels")
+	}
+}
+
+func TestBTCZonedLadder_QuantityProgressionAndL1Bounds(t *testing.T) {
+	mc := btcMarketConfig()
+	ref := btcRef()
+
+	// 1. Verify fallback when mc.QtyPerLevel is zero
+	mcFallback := &config.MarketConfig{
+		MarketID: "BTC-USDT",
+		TickSize: decimal.RequireFromString("0.01"),
+		LotSize:  decimal.RequireFromString("0.00001"),
+		BidZones: config.DefaultZoneConfig(),
+		AskZones: config.DefaultZoneConfig(),
+	}
+	levelsFallback, err := GenerateZonedDesired(mcFallback, ref, emptyTracker(), mcFallback.BidZones, mcFallback.AskZones, 1, 12, 12, nil)
+	if err != nil {
+		t.Fatalf("unexpected error with fallback: %v", err)
+	}
+
+	// 2. Verify explicit 0.15 baseQty
+	levelsExplicit, err := GenerateZonedDesired(mc, ref, emptyTracker(), mc.BidZones, mc.AskZones, 1, 12, 12, nil)
+	if err != nil {
+		t.Fatalf("unexpected error with explicit baseQty: %v", err)
+	}
+
+	for _, levels := range [][24]PriceLevel{
+		func() [24]PriceLevel { var arr [24]PriceLevel; copy(arr[:], levelsFallback); return arr }(),
+		func() [24]PriceLevel { var arr [24]PriceLevel; copy(arr[:], levelsExplicit); return arr }(),
+	} {
+		var bidLevels, askLevels []PriceLevel
+		for _, l := range levels {
+			if l.Side == "BUY" {
+				bidLevels = append(bidLevels, l)
+			} else {
+				askLevels = append(askLevels, l)
+			}
+		}
+
+		if len(bidLevels) != 12 || len(askLevels) != 12 {
+			t.Fatalf("expected 12 bids and 12 asks, got %d and %d", len(bidLevels), len(askLevels))
+		}
+
+		// Verify L1 bounds on both sides (slot 0: 0.40 * 0.15 * [0.94, 1.06] = [0.0564, 0.0636])
+		minL1 := decimal.RequireFromString("0.055")
+		maxL1 := decimal.RequireFromString("0.065")
+
+		bidL1 := bidLevels[0]
+		askL1 := askLevels[0]
+
+		if bidL1.Quantity.LessThan(minL1) || bidL1.Quantity.GreaterThan(maxL1) {
+			t.Errorf("expected Bid L1 quantity in [%s, %s], got %s", minL1, maxL1, bidL1.Quantity)
+		}
+		if askL1.Quantity.LessThan(minL1) || askL1.Quantity.GreaterThan(maxL1) {
+			t.Errorf("expected Ask L1 quantity in [%s, %s], got %s", minL1, maxL1, askL1.Quantity)
+		}
+
+		// Verify lot-size alignment and strictly positive quantities across all levels
+		var totalBidDepth, totalAskDepth decimal.Decimal
+		lotSize := mc.LotSize
+
+		for i, l := range bidLevels {
+			totalBidDepth = totalBidDepth.Add(l.Quantity)
+			rem := l.Quantity.Mod(lotSize)
+			if !rem.IsZero() {
+				t.Errorf("bid level %d qty %s not aligned to lot size %s", i, l.Quantity, lotSize)
+			}
+			if !l.Quantity.GreaterThan(decimal.Zero) {
+				t.Errorf("bid level %d qty %s not positive", i, l.Quantity)
+			}
+		}
+
+		for i, l := range askLevels {
+			totalAskDepth = totalAskDepth.Add(l.Quantity)
+			rem := l.Quantity.Mod(lotSize)
+			if !rem.IsZero() {
+				t.Errorf("ask level %d qty %s not aligned to lot size %s", i, l.Quantity, lotSize)
+			}
+			if !l.Quantity.GreaterThan(decimal.Zero) {
+				t.Errorf("ask level %d qty %s not positive", i, l.Quantity)
+			}
+		}
+
+		// Verify total resting side depth is within [1.20, 1.60] BTC (~$100k-$130k)
+		minTotal := decimal.RequireFromString("1.20")
+		maxTotal := decimal.RequireFromString("1.60")
+		if totalBidDepth.LessThan(minTotal) || totalBidDepth.GreaterThan(maxTotal) {
+			t.Errorf("expected total bid depth in [%s, %s], got %s", minTotal, maxTotal, totalBidDepth)
+		}
+		if totalAskDepth.LessThan(minTotal) || totalAskDepth.GreaterThan(maxTotal) {
+			t.Errorf("expected total ask depth in [%s, %s], got %s", minTotal, maxTotal, totalAskDepth)
+		}
+	}
+}
+
+
 

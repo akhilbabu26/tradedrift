@@ -75,7 +75,7 @@ func (r *TopUpOrderRepo) GetByProviderOrderID(ctx context.Context, provider, pro
 		       claim_until, claimed_at, attempt_count, last_error, expires_at,
 		       completed_at, created_at, updated_at
 		FROM topup_orders
-		WHERE provider = $1 AND provider_order_id = $2;
+		WHERE UPPER(provider) = UPPER($1) AND provider_order_id = $2;
 	`
 	row := r.db.QueryRow(ctx, query, provider, providerOrderID)
 	return scanOrder(row)
@@ -278,7 +278,7 @@ func (r *TopUpOrderRepo) TransitionToCreditPending(ctx context.Context, orderID,
 		    updated_at = NOW()
 		WHERE id       = $2
 		  AND status   = 'PAYMENT_PENDING'
-		  AND provider = $3;
+		  AND UPPER(provider) = UPPER($3);
 	`
 	tag, err := r.db.Exec(ctx, query, paymentID, orderID, provider)
 	if err != nil {
@@ -300,7 +300,7 @@ func (r *TopUpOrderRepo) TransitionToRefundRequired(ctx context.Context, orderID
 		    updated_at = NOW()
 		WHERE id       = $3
 		  AND status   = 'PAYMENT_PENDING'
-		  AND provider = $4;
+		  AND UPPER(provider) = UPPER($4);
 	`
 	tag, err := r.db.Exec(ctx, query, paymentID, reason, orderID, provider)
 	if err != nil {
@@ -311,6 +311,42 @@ func (r *TopUpOrderRepo) TransitionToRefundRequired(ctx context.Context, orderID
 	}
 	return nil
 }
+
+// ListByUserID retrieves recent top-up orders for a specific user, ordered newest first.
+func (r *TopUpOrderRepo) ListByUserID(ctx context.Context, userID string, limit int) ([]*domain.TopUpOrder, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	query := `
+		SELECT id, user_id, idempotency_key, inr_amount, usdt_amount, reservation_date,
+		       provider, provider_order_id, payment_id, status, claim_token,
+		       claim_until, claimed_at, attempt_count, last_error, expires_at,
+		       completed_at, created_at, updated_at
+		FROM topup_orders
+		WHERE user_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2;
+	`
+	rows, err := r.db.Query(ctx, query, userID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query topup orders: %w", err)
+	}
+	defer rows.Close()
+
+	var orders []*domain.TopUpOrder
+	for rows.Next() {
+		o, err := scanOrderFromRows(rows)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan topup order: %w", err)
+		}
+		orders = append(orders, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating topup orders: %w", err)
+	}
+	return orders, nil
+}
+
 
 func scanOrder(row pgx.Row) (*domain.TopUpOrder, error) {
 	var o domain.TopUpOrder

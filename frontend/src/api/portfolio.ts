@@ -35,6 +35,21 @@ export interface PortfolioHoldingsResponse {
   holdings: HoldingDetail[]
 }
 
+export interface PortfolioHistoryPoint {
+  timestamp: number
+  totalEquity: string
+  cashBalance: string
+  holdingsValue: string
+  unrealizedPnl: string
+  realizedPnl: string
+}
+
+export interface PortfolioHistoryResponse {
+  userId: string
+  timeframe: string
+  points: PortfolioHistoryPoint[]
+}
+
 // ── API client ────────────────────────────────────────────────────────────────
 
 export const portfolioApi = {
@@ -57,4 +72,16 @@ export const portfolioApi = {
     const res = await client.get<PortfolioHoldingsResponse>('/api/v1/portfolio/holdings')
     return res.data
   },
+
+  /**
+   * GET /api/v1/portfolio/history?timeframe={24H|7D|30D|90D|1Y}
+   * Returns chronological snapshot points for charting.
+   */
+  getHistory: async (timeframe: string = '7D'): Promise<PortfolioHistoryResponse> => {
+    const res = await client.get<PortfolioHistoryResponse>('/api/v1/portfolio/history', {
+      params: { timeframe },
+    })
+    return res.data
+  },
 }
+

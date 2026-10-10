@@ -41,6 +41,43 @@ type DepthSnapshot struct {
 	SnapshotAt time.Time
 }
 
+// BestBid returns the top-of-book bid level, if present.
+func (s *DepthSnapshot) BestBid() (DepthLevel, bool) {
+	if s == nil || len(s.Bids) == 0 {
+		return DepthLevel{}, false
+	}
+	return s.Bids[0], true
+}
+
+// BestAsk returns the top-of-book ask level, if present.
+func (s *DepthSnapshot) BestAsk() (DepthLevel, bool) {
+	if s == nil || len(s.Asks) == 0 {
+		return DepthLevel{}, false
+	}
+	return s.Asks[0], true
+}
+
+// Spread returns the difference between BestAsk and BestBid.
+func (s *DepthSnapshot) Spread() (decimal.Decimal, bool) {
+	bid, okBid := s.BestBid()
+	ask, okAsk := s.BestAsk()
+	if !okBid || !okAsk {
+		return decimal.Zero, false
+	}
+	return ask.Price.Sub(bid.Price), true
+}
+
+// MidPrice returns (BestBid + BestAsk) / 2.
+func (s *DepthSnapshot) MidPrice() (decimal.Decimal, bool) {
+	bid, okBid := s.BestBid()
+	ask, okAsk := s.BestAsk()
+	if !okBid || !okAsk {
+		return decimal.Zero, false
+	}
+	return bid.Price.Add(ask.Price).Div(decimal.NewFromInt(2)), true
+}
+
+
 type depthLevelDTO struct {
 	Price    string `json:"price"`
 	Quantity string `json:"quantity"`
@@ -54,14 +91,25 @@ type depthSnapshotDTO struct {
 	SnapshotAt string          `json:"snapshot_at"`
 }
 
+const DefaultMaxDepthAge = 5 * time.Second
+
 // Reader reads depth snapshots from Redis.
 type Reader struct {
-	client *redis.Client
-	logger *zap.Logger
+	client      *redis.Client
+	logger      *zap.Logger
+	maxDepthAge time.Duration
 }
 
-// NewReader creates a new Redis depth reader.
+// NewReader creates a new Redis depth reader with DefaultMaxDepthAge (5s).
 func NewReader(redisAddr string, logger *zap.Logger) (*Reader, error) {
+	return NewReaderWithMaxAge(redisAddr, DefaultMaxDepthAge, logger)
+}
+
+// NewReaderWithMaxAge creates a new Redis depth reader with custom max depth staleness threshold.
+func NewReaderWithMaxAge(redisAddr string, maxAge time.Duration, logger *zap.Logger) (*Reader, error) {
+	if maxAge <= 0 {
+		maxAge = DefaultMaxDepthAge
+	}
 	client := redis.NewClient(&redis.Options{
 		Addr: redisAddr,
 	})
@@ -74,8 +122,9 @@ func NewReader(redisAddr string, logger *zap.Logger) (*Reader, error) {
 	}
 
 	return &Reader{
-		client: client,
-		logger: logger,
+		client:      client,
+		logger:      logger,
+		maxDepthAge: maxAge,
 	}, nil
 }
 
@@ -102,11 +151,19 @@ func (r *Reader) GetDepth(ctx context.Context, marketID string) (*DepthSnapshot,
 		return nil, fmt.Errorf("read %s from Redis: %w", key, err)
 	}
 
-	return ParseSnapshotJSON(marketID, []byte(val))
+	return ParseSnapshotJSONWithMaxAge(marketID, []byte(val), r.maxDepthAge)
 }
 
-// ParseSnapshotJSON parses and strictly validates raw snapshot JSON bytes for marketID.
+// ParseSnapshotJSON parses and strictly validates raw snapshot JSON bytes using DefaultMaxDepthAge.
 func ParseSnapshotJSON(marketID string, raw []byte) (*DepthSnapshot, error) {
+	return ParseSnapshotJSONWithMaxAge(marketID, raw, DefaultMaxDepthAge)
+}
+
+// ParseSnapshotJSONWithMaxAge parses and strictly validates raw snapshot JSON bytes for marketID against maxAge.
+func ParseSnapshotJSONWithMaxAge(marketID string, raw []byte, maxAge time.Duration) (*DepthSnapshot, error) {
+	if maxAge <= 0 {
+		maxAge = DefaultMaxDepthAge
+	}
 	var dto depthSnapshotDTO
 	if err := json.Unmarshal(raw, &dto); err != nil {
 		metrics.DepthReadErrors.WithLabelValues(marketID, "unmarshal_error").Inc()
@@ -135,9 +192,9 @@ func ParseSnapshotJSON(marketID string, raw []byte) (*DepthSnapshot, error) {
 	}
 
 	now := time.Now()
-	if now.Sub(snapshotTime) > 5*time.Second {
+	if now.Sub(snapshotTime) > maxAge {
 		metrics.DepthReadErrors.WithLabelValues(marketID, "stale").Inc()
-		return nil, fmt.Errorf("%w for %s: %s old", ErrStaleSnapshot, marketID, now.Sub(snapshotTime))
+		return nil, fmt.Errorf("%w for %s: %s old (max allowed: %s)", ErrStaleSnapshot, marketID, now.Sub(snapshotTime), maxAge)
 	}
 	if snapshotTime.Sub(now) > 1*time.Second {
 		metrics.DepthReadErrors.WithLabelValues(marketID, "future_timestamp").Inc()
@@ -196,3 +253,82 @@ func ParseSnapshotJSON(marketID string, raw []byte) (*DepthSnapshot, error) {
 		SnapshotAt: snapshotTime,
 	}, nil
 }
+
+// RefPriceAnchor represents external reference price context published to Redis by LE.
+type RefPriceAnchor struct {
+	MarketID  string          `json:"market_id"`
+	Price     decimal.Decimal `json:"price"`
+	Version   int64           `json:"version"`
+	State     string          `json:"state"`
+	FetchedAt time.Time       `json:"fetched_at"`
+}
+
+type refPriceAnchorDTO struct {
+	MarketID  string `json:"market_id"`
+	Price     string `json:"price"`
+	Version   int64  `json:"version"`
+	FetchedAt string `json:"fetched_at"`
+	Source    string `json:"source"`
+	State     string `json:"state"`
+}
+
+// GetAnchor reads the current reference price anchor for marketID from Redis.
+// Returns (nil, nil) if no anchor is found.
+// Enforces market identity, FRESH state, and freshness of the fetched_at timestamp.
+func (r *Reader) GetAnchor(ctx context.Context, marketID string) (*RefPriceAnchor, error) {
+	key := "refprice:anchor:" + marketID
+	val, err := r.client.Get(ctx, key).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read anchor %s: %w", key, err)
+	}
+
+	var dto refPriceAnchorDTO
+	if err := json.Unmarshal([]byte(val), &dto); err != nil {
+		return nil, fmt.Errorf("unmarshal anchor %s: %w", key, err)
+	}
+
+	if dto.MarketID != marketID {
+		return nil, fmt.Errorf("anchor market mismatch: requested %s, got %s", marketID, dto.MarketID)
+	}
+
+	if dto.State != "FRESH" {
+		return nil, fmt.Errorf("anchor state %q is not FRESH for %s", dto.State, marketID)
+	}
+
+	price, err := decimal.NewFromString(dto.Price)
+	if err != nil || !price.GreaterThan(decimal.Zero) {
+		return nil, fmt.Errorf("invalid anchor price %q", dto.Price)
+	}
+
+	var fetchedAt time.Time
+	if dto.FetchedAt != "" {
+		if t, err := time.Parse(time.RFC3339Nano, dto.FetchedAt); err == nil {
+			fetchedAt = t
+		} else if t, err := time.Parse(time.RFC3339, dto.FetchedAt); err == nil {
+			fetchedAt = t
+		}
+	}
+
+	if fetchedAt.IsZero() {
+		return nil, fmt.Errorf("missing or unparseable fetched_at timestamp for anchor %s", marketID)
+	}
+	now := time.Now()
+	if now.Sub(fetchedAt) > 60*time.Second {
+		return nil, fmt.Errorf("anchor for %s is stale: fetched %s ago", marketID, now.Sub(fetchedAt))
+	}
+	if fetchedAt.Sub(now) > 1*time.Second {
+		return nil, fmt.Errorf("anchor for %s has future fetched_at: %s ahead", marketID, fetchedAt.Sub(now))
+	}
+
+	return &RefPriceAnchor{
+		MarketID:  dto.MarketID,
+		Price:     price,
+		Version:   dto.Version,
+		State:     dto.State,
+		FetchedAt: fetchedAt,
+	}, nil
+}
+

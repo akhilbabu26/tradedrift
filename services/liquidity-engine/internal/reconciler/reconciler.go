@@ -74,6 +74,9 @@ type Reconciler struct {
 
 	// rebaseFailureCount tracks consecutive level price generation failures during rebase
 	rebaseFailureCount map[string]int // levelID → consecutive failure count
+
+	// Smart Refresh cooldown tracking: levelID → timestamp when order was last refreshed/cancelled
+	lastRefreshByLevel map[string]time.Time
 }
 
 type orphanCancelRecord struct {
@@ -83,7 +86,7 @@ type orphanCancelRecord struct {
 
 const (
 	notFoundThreshold    = 3 // consecutive NOT_FOUND before counting as liveness failure
-	inFlightGracePeriod  = 10 * time.Second
+	inFlightGracePeriod  = 45 * time.Second
 	orphanCancelCooldown = 5 * time.Second
 )
 
@@ -99,6 +102,16 @@ type ReconcilerMetrics interface {
 	IncRebaseGenerationFailure(marketID, levelID string)
 	IncExpiryGenerationFailure(marketID string)
 	IncQuantityInvariantViolation(marketID string)
+	IncCreateBlocked(marketID, reason string)
+	IncRefresh(marketID, reason string)
+	SetExposure(marketID string, bidUSDT, askBase, bidCap, askCap decimal.Decimal)
+	IncRepriceEvent(marketID, action string)
+	ObserveRebaseDuration(marketID, action string, seconds float64)
+	IncRebaseTargetChanges(marketID string)
+	SetRebaseLevelsRemaining(marketID string, count int)
+	IncRebaseLevelsRepriced(marketID, zone string)
+	IncCancelOSFailure(marketID string)
+	IncCancelMEPublish(marketID string)
 }
 
 // NewReconciler creates a new Reconciler.
@@ -128,6 +141,7 @@ func NewReconciler(
 		rng:                        rand.New(rand.NewSource(time.Now().UnixNano())),
 		refStates:                  make(map[string]*RefState),
 		rebaseFailureCount:         make(map[string]int),
+		lastRefreshByLevel:         make(map[string]time.Time),
 	}
 }
 
@@ -188,25 +202,54 @@ func (r *Reconciler) ReconcileMarket(ctx context.Context, marketID string, bidCo
 	}
 
 	// 1. Fetch Reference Price and Classify Movement
-	prevRefState := r.refStates[marketID]
-	var prevRef decimal.Decimal
-	if prevRefState != nil {
-		prevRef = prevRefState.LastRef
-	}
-
 	refSnap := r.currentReference(mc)
 	ref := refSnap.Price
 	refVersion := refSnap.Version
 	freshness := refSnap.Freshness
+
 	refState := r.refStates[marketID]
-
-	action := ClassifyMovement(prevRef, ref, freshness, mc.Repricing)
-
-	// Record or update refState tracking
 	if refState == nil {
 		refState = &RefState{}
 		r.refStates[marketID] = refState
 	}
+
+	// Initialize reference anchors if not yet established
+	if refState.ActiveGenerationRef.IsZero() {
+		if !refState.LastRef.IsZero() {
+			refState.ActiveGenerationRef = refState.LastRef
+		} else if !ref.IsZero() {
+			refState.ActiveGenerationRef = ref
+		}
+	}
+	if refState.LastRepriceRef.IsZero() {
+		if !refState.LastRef.IsZero() {
+			refState.LastRepriceRef = refState.LastRef
+		} else if !ref.IsZero() {
+			refState.LastRepriceRef = ref
+		}
+	}
+
+	// Classify movement:
+	// 1. Check if cumulative drift from base generation anchor (ActiveGenerationRef) requires ControlledRebase (>= LargeBps).
+	// 2. Otherwise check if drift from last repriced anchor (LastRepriceRef) requires SelectiveReprice (>= SmallBps).
+	var action RepricingAction
+	if freshness != FreshnessFresh {
+		action = ClassifyMovement(refState.ActiveGenerationRef, ref, freshness, mc.Repricing)
+	} else {
+		baseAction := ClassifyMovement(refState.ActiveGenerationRef, ref, freshness, mc.Repricing)
+		if baseAction == ActionControlledRebase {
+			action = ActionControlledRebase
+		} else {
+			repriceAction := ClassifyMovement(refState.LastRepriceRef, ref, freshness, mc.Repricing)
+			if repriceAction == ActionSelectiveReprice || repriceAction == ActionControlledRebase {
+				action = ActionSelectiveReprice
+			} else {
+				action = ActionKeep
+			}
+		}
+	}
+
+	// Record or update refState tracking
 	refState.LastRef = ref
 	refState.LastVersion = refVersion
 	refState.Freshness = freshness
@@ -218,14 +261,14 @@ func (r *Reconciler) ReconcileMarket(ctx context.Context, marketID string, bidCo
 
 	// ARCHITECTURAL INVARIANT: PAUSED SEMANTICS
 	// ------------------------------------------------------------------------------------
+	// ReconcileMarket(ActionPause) performs zero mutations.
 	// When reference price is PAUSED (or Matching Engine is unavailable/non-LIVE):
 	//   1. NO new creates: ReconcileMarket halts before ME snapshot sync and ladder generation.
-	//   2. NO new replacements: Expiry cancel-replace is halted; queued corrections on
-	//      CANCELLING/absent orders are dropped/skipped.
+	//   2. NO new replacements: Expiry cancel-replace is halted; queued corrections are skipped.
 	//   3. NO rebase repricing: Ladder rebase is halted; resting orders remain resting.
-	//   4. IN-FLIGHT RETRIES ONLY: Unconfirmed PENDING orders (Kafka publish previously failed)
-	//      MAY retry their exact original create command (same orderID, clientOrderID, OriginalQty)
-	//      to guarantee idempotent create delivery without altering quantities.
+	//   4. Zero mutations in ReconcileMarket: Returns immediately (0, nil).
+	//   NOTE: Pending-order recovery (Kafka publish retry / OS registration) is handled
+	//         separately by the periodic pending-check mechanism (CheckPendingTimeouts).
 	// ------------------------------------------------------------------------------------
 	if action == ActionPause {
 		r.logger.Warn("[REFPRICE_PAUSED] reference price PAUSED — skipping reconcile cycle (zero mutations)",
@@ -261,6 +304,12 @@ func (r *Reconciler) ReconcileMarket(ctx context.Context, marketID string, bidCo
 	}
 
 	r.syncWithMESnapshot(ctx, marketID, snap, mc)
+
+	// Update active capital exposure metrics and cap utilization
+	bidExposure := r.tracker.CommittedQuote(marketID)
+	askExposure := r.tracker.CommittedBase(marketID)
+	r.metrics.SetExposure(marketID, bidExposure, askExposure, mc.MaxBidExposureUSDT, mc.MaxAskExposureBase)
+
 	if action == ActionHold {
 		r.logger.Info("reference price STALE — maintaining existing liquidity, skipping reprice",
 			zap.String("market_id", marketID))
@@ -269,6 +318,11 @@ func (r *Reconciler) ReconcileMarket(ctx context.Context, marketID string, bidCo
 	// Controlled rebase or selective repricing under significant reference move
 	if freshness == FreshnessFresh {
 		if action == ActionControlledRebase || action == ActionSelectiveReprice {
+			if !refState.RebaseActive {
+				refState.RebaseStartTime = time.Now()
+			} else if refVersion > refState.RebaseTargetVer {
+				r.metrics.IncRebaseTargetChanges(marketID)
+			}
 			refState.RebaseActive = true
 			refState.RebaseTargetRef = ref
 			refState.RebaseTargetVer = refVersion
@@ -276,6 +330,7 @@ func (r *Reconciler) ReconcileMarket(ctx context.Context, marketID string, bidCo
 		} else if refState.RebaseActive {
 			// Invariant: RebaseTargetVer must always represent newest accepted reference version
 			if refVersion > refState.RebaseTargetVer {
+				r.metrics.IncRebaseTargetChanges(marketID)
 				refState.RebaseTargetRef = ref
 				refState.RebaseTargetVer = refVersion
 			}

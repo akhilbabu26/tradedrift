@@ -16,6 +16,8 @@ type HealthChecker interface {
 	MarketStates() map[string]string
 	InventoryLastRefresh() time.Time
 	MaxBalanceStaleness() time.Duration
+	ReadyBids(marketID string) int
+	ReadyAsks(marketID string) int
 }
 
 // Server provides /healthz (liveness), /readyz (readiness), and /status endpoints.
@@ -68,10 +70,20 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	stale := s.checker.MaxBalanceStaleness()
 	isStale := lastRefresh.IsZero() || time.Since(lastRefresh) > stale
 
+	mStates := s.checker.MarketStates()
+	activeBids := make(map[string]int, len(mStates))
+	activeAsks := make(map[string]int, len(mStates))
+	for m := range mStates {
+		activeBids[m] = s.checker.ReadyBids(m)
+		activeAsks[m] = s.checker.ReadyAsks(m)
+	}
+
 	resp := map[string]interface{}{
 		"state":                  s.checker.State().String(),
 		"ready":                  s.checker.IsReady(),
-		"markets":                s.checker.MarketStates(),
+		"markets":                mStates,
+		"active_bids":            activeBids,
+		"active_asks":            activeAsks,
 		"inventory_last_refresh": lastRefresh.Format(time.RFC3339),
 		"inventory_stale":        isStale,
 		"uptime_s":               time.Since(startTime).Seconds(),

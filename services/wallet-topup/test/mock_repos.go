@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -191,7 +192,7 @@ func (m *MockTopUpOrderRepo) GetByProviderOrderID(ctx context.Context, provider,
 	defer m.mu.Unlock()
 
 	for _, o := range m.orders {
-		if o.Provider == provider && o.ProviderOrderID != nil && *o.ProviderOrderID == providerOrderID {
+		if strings.EqualFold(o.Provider, provider) && o.ProviderOrderID != nil && *o.ProviderOrderID == providerOrderID {
 			copy := *o
 			return &copy, nil
 		}
@@ -313,6 +314,24 @@ func (m *MockTopUpOrderRepo) TransitionToRefundRequired(ctx context.Context, ord
 	o.LastError = &reason
 	return nil
 }
+
+func (m *MockTopUpOrderRepo) ListByUserID(ctx context.Context, userID string, limit int) ([]*domain.TopUpOrder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	var result []*domain.TopUpOrder
+	for _, o := range m.orders {
+		if o.UserID == userID {
+			copy := *o
+			result = append(result, &copy)
+			if limit > 0 && len(result) >= limit {
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
 
 // MockWebhookEventRepo provides in-memory verified deduplication.
 type MockWebhookEventRepo struct {

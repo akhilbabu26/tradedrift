@@ -92,6 +92,16 @@ func (invNoopMetrics) IncDuplicateMMLevel(_ string)            {}
 func (invNoopMetrics) IncRebaseGenerationFailure(_, _ string)  {}
 func (invNoopMetrics) IncExpiryGenerationFailure(_ string)     {}
 func (invNoopMetrics) IncQuantityInvariantViolation(_ string)  {}
+func (invNoopMetrics) IncCreateBlocked(_, _ string)             {}
+func (invNoopMetrics) IncRefresh(_, _ string)                   {}
+func (invNoopMetrics) SetExposure(_ string, _, _, _, _ decimal.Decimal) {}
+func (invNoopMetrics) IncRepriceEvent(_, _ string)              {}
+func (invNoopMetrics) ObserveRebaseDuration(_, _ string, _ float64) {}
+func (invNoopMetrics) IncRebaseTargetChanges(_ string)              {}
+func (invNoopMetrics) SetRebaseLevelsRemaining(_ string, _ int)     {}
+func (invNoopMetrics) IncRebaseLevelsRepriced(_, _ string)          {}
+func (invNoopMetrics) IncCancelOSFailure(_ string)                  {}
+func (invNoopMetrics) IncCancelMEPublish(_ string)                  {}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -563,3 +573,24 @@ func TestInvariant_LargeRefMovement_TriggersControlledRebase(t *testing.T) {
 	assert.Equal(t, ActionControlledRebase, action,
 		"200 bps move above LargeBps=100 must trigger CONTROLLED_REBASE")
 }
+
+// ── INV-C13: PAUSED reference → ReconcileMarket zero mutations ────────────────
+func TestInvariant_PausedReference_ReconcileMarket_ZeroMutations(t *testing.T) {
+	r, prod, _ := invNewReconciler(t)
+	invSetPaused(r, "117.01", 1)
+	mc := invSolMarketConfig()
+
+	// Initial resting orders in tracker
+	r.tracker.SetPending("MM-SOL-USDT-BID-01", "ord-1", "coid-1", 1, pricing.PriceLevel{
+		LevelID: "MM-SOL-USDT-BID-01", MarketID: mc.MarketID, Side: "BUY", Price: decimal.RequireFromString("116.00"), Quantity: decimal.NewFromInt(1),
+	})
+	r.tracker.SetResting("MM-SOL-USDT-BID-01", "ord-1", decimal.NewFromInt(1), decimal.NewFromInt(1))
+
+	ctx := context.Background()
+	cmds, err := r.ReconcileMarket(ctx, mc.MarketID, 12, 12)
+	assert.NoError(t, err)
+	assert.Equal(t, 0, cmds, "ReconcileMarket must return 0 commands when reference is PAUSED")
+	assert.Equal(t, 0, prod.creates, "ReconcileMarket must perform zero creates when PAUSED")
+	assert.Equal(t, 0, prod.cancels, "ReconcileMarket must perform zero cancels when PAUSED")
+}
+

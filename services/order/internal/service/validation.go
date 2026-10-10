@@ -52,5 +52,15 @@ func parseMarketID(market string) (base, quote string, err error) {
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", ErrInvalidMarket
 	}
-	return parts[0], parts[1], nil
+	base = strings.ToUpper(parts[0])
+	quote = strings.ToUpper(parts[1])
+	if quote != "USDT" {
+		return "", "", ErrInvalidMarket
+	}
+	switch base {
+	case "BTC", "ETH", "SOL":
+		return base, quote, nil
+	default:
+		return "", "", ErrInvalidMarket
+	}
 }

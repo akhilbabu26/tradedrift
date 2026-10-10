@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -88,14 +89,36 @@ func ProcessUserStreamPayload(
 	}
 
 	// Invariant: Channel must conform to a strictly valid user private stream
-	streamType, _, ok := protocol.ValidateStream(channel)
+	streamType, target, ok := protocol.ValidateStream(channel)
 	if !ok || (streamType != protocol.StreamTypeNotification && streamType != protocol.StreamTypePortfolio) {
 		return nil, "", fmt.Errorf("%w: %q", ErrInvalidStreamChannel, channel)
 	}
 
 	// Invariant: If envelope specifies an internal channel, it must match the subscribed Redis topic
-	if env.Channel != "" && env.Channel != channel {
-		return nil, "", fmt.Errorf("%w: topic=%q payload=%q", ErrChannelMismatch, channel, env.Channel)
+	// and preserve strict per-user isolation:
+	if env.Channel != "" {
+		if env.Channel == channel {
+			// Canonical exact match (e.g. "user:notifications:<target>" == "user:notifications:<target>")
+		} else if (streamType == protocol.StreamTypeNotification && env.Channel == "user:notifications") ||
+			(streamType == protocol.StreamTypePortfolio && env.Channel == "user:portfolio") {
+			// Valid unqualified stream-type prefix matching topic stream type
+		} else {
+			// Mismatched user UUID, mismatched stream type, or malformed channel is rejected
+			return nil, "", fmt.Errorf("%w: topic=%q payload=%q", ErrChannelMismatch, channel, env.Channel)
+		}
+	}
+
+	// Defense-in-depth: Strict per-user isolation guarantee.
+	// If the payload Data contains an explicit user_id field, it MUST match the stream target UUID.
+	if len(env.Data) > 0 && string(env.Data) != "null" {
+		var userProbe struct {
+			UserID string `json:"user_id"`
+		}
+		if err := json.Unmarshal(env.Data, &userProbe); err == nil && userProbe.UserID != "" {
+			if !strings.EqualFold(userProbe.UserID, target) {
+				return nil, "", fmt.Errorf("%w: payload user_id=%q does not match stream target=%q", ErrChannelMismatch, userProbe.UserID, target)
+			}
+		}
 	}
 
 	// Type-specific validation and deduplication rules

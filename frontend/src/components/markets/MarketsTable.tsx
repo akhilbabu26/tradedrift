@@ -43,6 +43,15 @@ export default function MarketsTable({
   filter,
   hasSearch,
 }: MarketsTableProps) {
+  const maxTrendHours = Math.max(...entries.map((e) => e.trendHours || 0), 0)
+  const trendHeader = maxTrendHours >= 168
+    ? '7D Trend'
+    : maxTrendHours >= 24
+    ? '24h Trend'
+    : maxTrendHours > 0
+    ? `Trend (${maxTrendHours}h)`
+    : 'Trend'
+
   return (
     <div className="bg-[#111318] border border-[#1e2530] rounded-lg overflow-hidden mb-4">
       <div className="overflow-x-auto">
@@ -66,10 +75,11 @@ export default function MarketsTable({
               <th className="py-3 pr-4 text-right font-medium">24h High / Low</th>
               {/* Volume */}
               <th className="py-3 pr-4 text-right font-medium">24h Volume</th>
-              {/* 7D Trend */}
-              <th className="py-3 pr-4 text-right font-medium">7D Trend</th>
+              {/* Trend */}
+              <th className="w-36 py-3 pr-4 text-right font-medium">{trendHeader}</th>
               {/* Action */}
               <th className="py-3 pr-4 text-right font-medium">Action</th>
+
             </tr>
           </thead>
 
@@ -181,17 +191,18 @@ export default function MarketsTable({
                       {row.volume24h}
                     </td>
 
-                    {/* 7D Sparkline */}
+                    {/* 24h Trend Sparkline */}
                     <td className="py-3.5 pr-4 text-right">
-                      <div className="flex justify-end">
+                      <div className="flex items-center justify-end">
                         <Sparkline
-                          points={row.sparklinePoints}
-                          positive={row.positive}
-                          width={72}
-                          height={26}
+                          data={row.sparklinePoints}
+                          width={120}
+                          height={34}
+                          ariaLabel={row.trendLabel ? `${row.pair} ${row.trendLabel}` : `${row.pair} price trend`}
                         />
                       </div>
                     </td>
+
 
                     {/* Action */}
                     <td className="py-3.5 pr-4 text-right">

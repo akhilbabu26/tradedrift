@@ -14,6 +14,7 @@ interface TradeMarketHeaderProps {
   isDemoData: boolean
   usdtBalance: Balance
   baseBalance: Balance
+  marketTrends?: Record<string, number[]>
 }
 
 function StatCell({ label, value, valueClass = '' }: { label: string; value: string; valueClass?: string }) {
@@ -35,6 +36,7 @@ export default function TradeMarketHeader({
   isDemoData,
   usdtBalance,
   baseBalance,
+  marketTrends,
 }: TradeMarketHeaderProps) {
   const navigate = useNavigate()
   const meta = getMarketMetadata(selectedMarketId)
@@ -70,6 +72,7 @@ export default function TradeMarketHeader({
           markets={markets}
           selectedMarketId={selectedMarketId}
           onSelect={onSelectMarket}
+          marketTrends={marketTrends}
         />
       </div>
 

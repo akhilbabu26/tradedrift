@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { ChevronUp, ChevronDown } from 'lucide-react'
 import type { OrderSide, OrderType, Market, Balance, CreateOrderRequest } from '../../types/trade'
 import { toDecimal, multiply, divide } from '../../utils/decimal'
@@ -9,6 +9,9 @@ interface OrderFormProps {
   orderType: OrderType
   market: Market
   lastPrice: string
+  bestAsk?: string
+  bestBid?: string
+  selectedPrice?: string | null
   availableQuote: Balance   // USDT for BTC/USDT
   availableBase: Balance    // BTC for BTC/USDT
   submitting: boolean
@@ -100,6 +103,9 @@ export default function OrderForm({
   orderType,
   market,
   lastPrice,
+  bestAsk,
+  bestBid,
+  selectedPrice,
   availableQuote,
   availableBase,
   submitting,
@@ -108,6 +114,31 @@ export default function OrderForm({
   const [price,  setPrice]  = useState(lastPrice || '')
   const [amount, setAmount] = useState('')
   const [error,  setError]  = useState<string | null>(null)
+  const userEditedPriceRef = useRef(false)
+
+  // Reset order state when switching markets
+  useEffect(() => {
+    setPrice(lastPrice || '')
+    setAmount('')
+    setError(null)
+    userEditedPriceRef.current = false
+  }, [market.id])
+
+  // Populate initial price when lastPrice arrives if user has not entered a custom price
+  useEffect(() => {
+    if (!userEditedPriceRef.current && lastPrice && !price) {
+      setPrice(lastPrice)
+    }
+  }, [lastPrice, price])
+
+  // When a price is clicked in the Order Book, update the price input
+  useEffect(() => {
+    if (selectedPrice) {
+      setPrice(selectedPrice)
+      userEditedPriceRef.current = true
+      setError(null)
+    }
+  }, [selectedPrice])
 
   const baseAsset  = market.base_asset
   const quoteAsset = market.quote_asset
@@ -115,8 +146,34 @@ export default function OrderForm({
   const isBuy      = side === 'BUY'
   const isLimit    = orderType === 'LIMIT'
 
+  // ── Market reference & slippage boundary resolution ───────────────────────
+  const hasAsk = Boolean(bestAsk && toDecimal(bestAsk).gt(0))
+  const hasBid = Boolean(bestBid && toDecimal(bestBid).gt(0))
+
+  // Mid-price reference used by Order Service for the 5% pre-trade price band
+  const refMid = (hasAsk && hasBid)
+    ? toDecimal(bestAsk!).plus(toDecimal(bestBid!)).div(2)
+    : (hasAsk ? toDecimal(bestAsk!) : (hasBid ? toDecimal(bestBid!) : toDecimal(lastPrice || '0')))
+
+  const minPriceBand = refMid.gt(0) ? refMid.times(0.95) : null
+  const maxPriceBand = refMid.gt(0) ? refMid.times(1.05) : null
+
+  // Market order worst-acceptable execution boundaries (1% slippage cap):
+  //   Market BUY:  Order Service requires price >= bestAsk and price <= midPrice * 1.05.
+  //                We pass bestAsk * 1.01 (or lastPrice * 1.01 fallback).
+  //   Market SELL: Order Service requires non-empty price and price <= bestBid and price >= midPrice * 0.95.
+  //                We pass bestBid * 0.99 (or lastPrice * 0.99 fallback).
+  const marketBuyRef = hasAsk ? toDecimal(bestAsk!) : toDecimal(lastPrice || '0')
+  const marketBuyPrice = marketBuyRef.gt(0) ? marketBuyRef.times(1.01).toFixed(2) : ''
+
+  const marketSellRef = hasBid ? toDecimal(bestBid!) : toDecimal(lastPrice || '0')
+  const marketSellPrice = marketSellRef.gt(0) ? marketSellRef.times(0.99).toFixed(2) : ''
+
   // ── Derived financials (all via decimal.js) ────────────────────────────────
-  const priceNum  = isLimit ? toDecimal(price  || '0') : toDecimal(lastPrice || '0')
+  const priceNum = isLimit
+    ? toDecimal(price || '0')
+    : (isBuy ? toDecimal(marketBuyPrice || '0') : toDecimal(marketSellPrice || '0'))
+
   const amountNum = toDecimal(amount || '0')
   const orderValue = priceNum.gt(0) && amountNum.gt(0)
     ? multiply(priceNum, amountNum).toFixed(2)
@@ -133,7 +190,7 @@ export default function OrderForm({
       if (isBuy) {
         // BUY: pct of available USDT → convert to base quantity
         const usdtToUse = availableQuoteNum.times(pct)
-        const effectivePrice = isLimit ? priceNum : toDecimal(lastPrice || '0')
+        const effectivePrice = isLimit ? priceNum : toDecimal(marketBuyPrice || lastPrice || '0')
         if (effectivePrice.gt(0)) {
           const qty = divide(usdtToUse, effectivePrice)
           setAmount(qty.toFixed(4))
@@ -144,13 +201,25 @@ export default function OrderForm({
         setAmount(qty.toFixed(4))
       }
     } catch { /* ignore bad input */ }
-  }, [isBuy, availableQuoteNum, availableBaseNum, priceNum, isLimit, lastPrice])
+  }, [isBuy, availableQuoteNum, availableBaseNum, priceNum, isLimit, marketBuyPrice, lastPrice])
 
   // ── Validation ────────────────────────────────────────────────────────────
   const validate = (): string | null => {
-    if (isLimit && (!price || priceNum.lte(0))) return 'Price is required and must be > 0'
-    if (!amount || amountNum.lte(0))            return 'Amount is required and must be > 0'
-    if (amountNum.lt(minQty))                   return `Minimum amount is ${minQty.toFixed(4)} ${baseAsset}`
+    if (isLimit) {
+      if (!price || priceNum.lte(0)) return 'Price is required and must be > 0'
+      if (minPriceBand && maxPriceBand) {
+        if (priceNum.lt(minPriceBand) || priceNum.gt(maxPriceBand)) {
+          return `Price outside allowed ±5% band (${formatPrice(minPriceBand.toFixed(2))} - ${formatPrice(maxPriceBand.toFixed(2))})`
+        }
+      }
+    } else {
+      if (isBuy && !marketBuyPrice) return 'Market price unavailable. Please place a Limit order.'
+      if (!isBuy && !marketSellPrice) return 'Market price unavailable. Please place a Limit order.'
+    }
+
+    if (!amount || amountNum.lte(0)) return 'Amount is required and must be > 0'
+    if (amountNum.lt(minQty))        return `Minimum amount is ${minQty.toFixed(4)} ${baseAsset}`
+
     if (isBuy) {
       if (toDecimal(orderValue).gt(availableQuoteNum)) return `Insufficient ${quoteAsset} balance`
     } else {
@@ -166,18 +235,19 @@ export default function OrderForm({
     setError(null)
 
     // Price logic:
-    //   LIMIT  orders → user-entered price (always required)
-    //   MARKET BUY    → lastPrice as the reservation cap (backend requires
-    //                   price × quantity to reserve USDT from the wallet)
-    //   MARKET SELL   → no price (backend only needs the quantity to reserve base)
+    //   LIMIT orders:  user-entered price
+    //   MARKET BUY:    bestAsk * 1.01 (slippage boundary >= bestAsk, reserves quote)
+    //   MARKET SELL:   bestBid * 0.99 (slippage boundary <= bestBid, crosses immediately)
+    const submittedPrice = isLimit
+      ? priceNum.toFixed(2)
+      : (isBuy ? marketBuyPrice : marketSellPrice)
+
     const req: CreateOrderRequest = {
       market_id:  market.id,
       side,
       order_type: orderType,
       quantity:   amountNum.toFixed(8),
-      ...(isLimit
-        ? { price: priceNum.toFixed(2) }
-        : (isBuy && lastPrice ? { price: toDecimal(lastPrice).toFixed(2) } : {})),
+      price:      submittedPrice,
     }
 
     const ok = await onSubmit(req)
@@ -193,23 +263,39 @@ export default function OrderForm({
     <div className="flex flex-col gap-3 px-3 py-3">
       {/* Price (Limit only) */}
       {isLimit && (
-        <NumericInput
-          id="order-price"
-          label={`Price (${quoteAsset})`}
-          suffix={quoteAsset}
-          value={price}
-          onChange={(v) => { setPrice(v); setError(null) }}
-          placeholder={lastPrice || '0.00'}
-          step={parseFloat(market.tick_size || '0.01')}
-        />
+        <div className="flex flex-col gap-1">
+          <NumericInput
+            id="order-price"
+            label={`Price (${quoteAsset})`}
+            suffix={quoteAsset}
+            value={price}
+            onChange={(v) => {
+              userEditedPriceRef.current = true
+              setPrice(v)
+              setError(null)
+            }}
+            placeholder={lastPrice || '0.00'}
+            step={parseFloat(market.tick_size || '0.01')}
+          />
+          {minPriceBand && maxPriceBand && (
+            <p className="text-[10px] text-slate-500 font-mono flex items-center justify-between px-0.5">
+              <span>Band (±5%):</span>
+              <span>{formatPrice(minPriceBand.toFixed(2))} – {formatPrice(maxPriceBand.toFixed(2))}</span>
+            </p>
+          )}
+        </div>
       )}
 
       {/* Market order info */}
       {!isLimit && (
         <div className="px-2.5 py-2 rounded-md bg-[#0a0b0e] border border-[#1e2530]">
-          <p className="text-[11px] text-slate-500">Market Price</p>
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] text-slate-500">Market Price ({isBuy ? 'Best Ask' : 'Best Bid'})</span>
+            <span className="text-[10px] text-slate-600 font-mono">1% slippage cap</span>
+          </div>
           <p className="text-sm font-mono font-semibold text-[#f5f7fa] mt-0.5">
-            {lastPrice ? formatPrice(lastPrice) : '—'} <span className="text-slate-600 text-xs">{quoteAsset}</span>
+            {formatPrice(isBuy ? (bestAsk || lastPrice || '0') : (bestBid || lastPrice || '0'))}{' '}
+            <span className="text-slate-600 text-xs">{quoteAsset}</span>
           </p>
         </div>
       )}

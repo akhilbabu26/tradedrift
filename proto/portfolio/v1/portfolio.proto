@@ -10,6 +10,9 @@ service PortfolioService {
 
     // Returns user's holding assets list with average entry costs and current values.
     rpc GetPortfolioHoldings(GetPortfolioHoldingsRequest) returns (PortfolioHoldingsResponse);
+
+    // Returns historical portfolio equity snapshots over a requested timeframe ("24H", "7D", "30D", "90D", "1Y").
+    rpc GetPortfolioHistory(GetPortfolioHistoryRequest) returns (GetPortfolioHistoryResponse);
 }
 
 message GetPortfolioSummaryRequest {
@@ -40,4 +43,23 @@ message HoldingDetail {
 message PortfolioHoldingsResponse {
     string user_id                  = 1;
     repeated HoldingDetail holdings = 2;
+}
+
+message GetPortfolioHistoryRequest {
+    string user_id   = 1;
+    string timeframe = 2; // "24H", "7D", "30D", "90D", "1Y"
+}
+
+message PortfolioHistoryPoint {
+    int64  timestamp      = 1; // Unix seconds
+    string total_equity   = 2; // Decimal string
+    string cash_balance   = 3; // Decimal string
+    string holdings_value = 4; // Decimal string
+    string unrealized_pnl = 5; // Decimal string
+    string realized_pnl   = 6; // Decimal string
+}
+
+message GetPortfolioHistoryResponse {
+    string user_id                        = 1;
+    repeated PortfolioHistoryPoint points = 2;
 }

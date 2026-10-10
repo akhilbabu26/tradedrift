@@ -61,6 +61,8 @@ type ActiveLevel struct {
 	Status string
 	// Price is the locked price for this generation. Returned unchanged for active levels.
 	Price decimal.Decimal
+	// Quantity is the locked quantity for this generation. Returned unchanged for active levels.
+	Quantity decimal.Decimal
 	// RefVersion is the refprice.Entry.Version that was active when this level was created.
 	RefVersion int64
 }
@@ -140,19 +142,19 @@ func GenerateZonedDesired(
 		rng = rand.New(rand.NewSource(time.Now().UnixNano()))
 	}
 
-	qty := resolveQtyPerLevel(mc)
+	baseQty := resolveQtyPerLevel(mc)
 
 	levels := make([]PriceLevel, 0, effBidZones.TotalLevels()+effAskZones.TotalLevels())
 
 	takenBid := make(map[string]bool, effBidZones.TotalLevels())
-	bidLevels, err := generateSide(mc, ref, "BUY", effBidZones, qty, tracker, takenBid, refVersion, rng)
+	bidLevels, err := generateSide(mc, ref, "BUY", effBidZones, baseQty, tracker, takenBid, refVersion, rng)
 	if err != nil {
 		return nil, fmt.Errorf("BID side for %s: %w", mc.MarketID, err)
 	}
 	levels = append(levels, bidLevels...)
 
 	takenAsk := make(map[string]bool, effAskZones.TotalLevels())
-	askLevels, err := generateSide(mc, ref, "SELL", effAskZones, qty, tracker, takenAsk, refVersion, rng)
+	askLevels, err := generateSide(mc, ref, "SELL", effAskZones, baseQty, tracker, takenAsk, refVersion, rng)
 	if err != nil {
 		return nil, fmt.Errorf("ASK side for %s: %w", mc.MarketID, err)
 	}
@@ -161,13 +163,76 @@ func GenerateZonedDesired(
 	return levels, nil
 }
 
+// ResolveLevelQuantity calculates depth-dependent quantity for a level in a zone.
+//
+// Depth Scaling Model:
+//   - LOW zone (closest to spread): thin near inside spread (slot 0: ~0.40x baseQty) scaling up to ~0.85x at slot N-1.
+//     This avoids monolithic walls at L1, allowing natural sweeps and realistic micro-movements.
+//   - MID zone: medium depth (~0.75x to ~1.10x baseQty).
+//   - HIGH zone: thicker backstop depth (~1.30x baseQty).
+//
+// A small bounded jitter (+/-6%) is applied so adjacent levels have realistic variance.
+// The result is rounded to LotSize and clamped to at least MinOrderSize.
+func ResolveLevelQuantity(
+	mc *config.MarketConfig,
+	baseQty decimal.Decimal,
+	zone string,
+	slot int,
+	slotCount int,
+	rng *rand.Rand,
+) decimal.Decimal {
+	if baseQty.IsZero() || baseQty.IsNegative() {
+		baseQty = resolveQtyPerLevel(mc)
+	}
+
+	var scale float64
+	switch zone {
+	case "LOW":
+		if slotCount <= 1 {
+			scale = 0.50
+		} else {
+			ratio := float64(slot) / float64(slotCount-1)
+			scale = 0.40 + (0.85-0.40)*ratio
+		}
+	case "MID":
+		if slotCount <= 1 {
+			scale = 0.90
+		} else {
+			ratio := float64(slot) / float64(slotCount-1)
+			scale = 0.75 + (1.10-0.75)*ratio
+		}
+	case "HIGH":
+		if slotCount <= 1 {
+			scale = 1.30
+		} else {
+			ratio := float64(slot) / float64(slotCount-1)
+			scale = 1.20 + (1.50-1.20)*ratio
+		}
+	default:
+		scale = 1.0
+	}
+
+	jitter := 1.0
+	if rng != nil {
+		jitter = 0.94 + 0.12*rng.Float64()
+	}
+
+	totalScale := decimal.NewFromFloat(scale * jitter)
+	qty := roundToLot(baseQty.Mul(totalScale), mc.LotSize)
+
+	if !mc.MinOrderSize.IsZero() && qty.LessThan(mc.MinOrderSize) {
+		qty = mc.MinOrderSize
+	}
+	return qty
+}
+
 // generateSide produces all levels for one side (BUY or SELL).
 func generateSide(
 	mc *config.MarketConfig,
 	ref decimal.Decimal,
 	side string,
 	zones config.ZoneConfig,
-	qty decimal.Decimal,
+	baseQty decimal.Decimal,
 	tracker TrackerReader,
 	taken map[string]bool,
 	refVersion int64,
@@ -190,14 +255,19 @@ func generateSide(
 
 			existing := tracker.GetActive(levelID)
 			if existing != nil && isActivePricingStatus(existing.Status) {
-				// LOCK: return the tracker's current generation price unchanged.
+				// LOCK: return the tracker's current generation price and quantity unchanged.
 				// Diff() compares this exact price and produces KEEP.
+				lockedQty := existing.Quantity
+				if lockedQty.IsZero() {
+					lockedQty = ResolveLevelQuantity(mc, baseQty, zoneName, slot, band.Count, rng)
+				}
+
 				levels = append(levels, PriceLevel{
 					LevelID:    levelID,
 					MarketID:   mc.MarketID,
 					Side:       side,
 					Price:      existing.Price,
-					Quantity:   qty,
+					Quantity:   lockedQty,
 					Zone:       zoneName,
 					RefVersion: existing.RefVersion,
 				})
@@ -205,19 +275,21 @@ func generateSide(
 				// slot in this call cannot draw the same tick-rounded price.
 				taken[existing.Price.String()] = true
 			} else {
-				// GENERATE: pick a new unique random price in this zone band.
+				// GENERATE: pick a new unique random price and depth-scaled quantity in this zone band.
 				price, err := GenerateLevelPrice(mc, ref, side, band, taken, rng)
 				if err != nil {
 					return nil, fmt.Errorf("level %s (zone=%s): %w", levelID, zoneName, err)
 				}
 				taken[price.String()] = true
 
+				levelQty := ResolveLevelQuantity(mc, baseQty, zoneName, slot, band.Count, rng)
+
 				levels = append(levels, PriceLevel{
 					LevelID:    levelID,
 					MarketID:   mc.MarketID,
 					Side:       side,
 					Price:      price,
-					Quantity:   qty,
+					Quantity:   levelQty,
 					Zone:       zoneName,
 					RefVersion: refVersion,
 				})
@@ -345,7 +417,7 @@ func resolveQtyPerLevel(mc *config.MarketConfig) decimal.Decimal {
 	}
 	switch mc.MarketID {
 	case "BTC-USDT":
-		return roundToLot(decimal.RequireFromString("0.85"), mc.LotSize)
+		return roundToLot(decimal.RequireFromString("0.15"), mc.LotSize)
 	case "ETH-USDT":
 		return roundToLot(decimal.RequireFromString("1.5"), mc.LotSize)
 	case "SOL-USDT":

@@ -5,6 +5,8 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -26,7 +28,7 @@ func NewWebhookHandler(webhookService *service.WebhookService, log *zap.Logger) 
 
 // HandleProviderWebhook handles POST /api/v1/webhooks/payment/{provider}
 func (h *WebhookHandler) HandleProviderWebhook(w http.ResponseWriter, r *http.Request) {
-	provider := r.PathValue("provider")
+	provider := strings.ToUpper(strings.TrimSpace(r.PathValue("provider")))
 	if provider == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "provider path parameter required"})
 		return
@@ -41,18 +43,12 @@ func (h *WebhookHandler) HandleProviderWebhook(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	var timestamp int64
-	tsStr := r.Header.Get("X-Webhook-Timestamp")
-	if tsStr == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing X-Webhook-Timestamp header"})
-		return
+	var timestamp int64 = time.Now().Unix()
+	if tsStr := r.Header.Get("X-Webhook-Timestamp"); tsStr != "" {
+		if val, err := strconv.ParseInt(tsStr, 10, 64); err == nil && val > 0 {
+			timestamp = val
+		}
 	}
-	val, err := strconv.ParseInt(tsStr, 10, 64)
-	if err != nil || val <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid X-Webhook-Timestamp header"})
-		return
-	}
-	timestamp = val
 
 	// Enforce 64 KB maximum request body size to prevent memory exhaustion
 	r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
@@ -81,7 +77,6 @@ func (h *WebhookHandler) HandleProviderWebhook(w http.ResponseWriter, r *http.Re
 		}
 		return
 	}
-
 
 	// Fast 200 OK
 	writeJSON(w, http.StatusOK, map[string]string{"status": "SUCCESS"})

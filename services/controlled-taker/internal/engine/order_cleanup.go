@@ -13,21 +13,31 @@ import (
 	"tradedrift/services/controlled-taker/internal/metrics"
 )
 
-// awaitOrderCleanup handles post-submission verification and autonomous cancellation of unfilled remainder.
-// CRITICAL INVARIANT: Once CreateCrossingOrder succeeds, the order is active in the matching pipeline.
-// We MUST enter an independent cleanup context detached from worker cancellation (e.g. shutdown)
-// so that CTS guarantees any unfilled remainder is cancelled and never rests as a maker order.
+// awaitOrderCleanup handles post-submission verification for MARKET IOC orders.
+// For MARKET orders, the Matching Engine executes immediately and expires any unfilled
+// remainder as ioc_expired. This function polls briefly (~2.0s normal target) for Order Service
+// to reflect the terminal status (FILLED or CANCELLED) and retrieves the final filled quantity.
+// If unresolved past ResidualGracePeriod (default 4.0s), a defensive cancel is issued.
+// If unresolved past ResidualDeadline (default 8.0s), verification fails closed.
 // Returns the resolved terminal OrderResult and true on success, or nil and false if verification fails closed.
 func (w *MarketWorker) awaitOrderCleanup(orderID string) (*orderservice.OrderResult, bool) {
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	gracePeriod := w.cfg.ResidualGracePeriod
+	if gracePeriod <= 0 {
+		gracePeriod = 4 * time.Second
+	}
+	timeout := w.cfg.ResidualDeadline
+	if timeout <= gracePeriod {
+		timeout = 2 * gracePeriod
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), timeout)
 	defer cleanupCancel()
 
 	crossingDelay := w.cfg.CrossingDelay
-	if crossingDelay <= 0 {
-		crossingDelay = 300 * time.Millisecond
+	if crossingDelay <= 0 || crossingDelay > 500*time.Millisecond {
+		crossingDelay = 100 * time.Millisecond
 	}
 
-	// Crossing delay gives the Matching Engine an opportunity to cross against resting MM quotes
+	// Brief delay for the Matching Engine & Trade settlement pipeline to propagate
 	select {
 	case <-cleanupCtx.Done():
 	case <-time.After(crossingDelay):
@@ -36,22 +46,19 @@ func (w *MarketWorker) awaitOrderCleanup(orderID string) (*orderservice.OrderRes
 	var orderState *orderservice.OrderResult
 	var cancelSent bool
 	var consecutiveReadErrors int
-	var graceDeadline time.Time
 	deadlineExceeded := false
 
 	pollInterval := w.cfg.ResidualPollInterval
-	if pollInterval <= 0 {
+	if pollInterval <= 0 || pollInterval > 200*time.Millisecond {
 		pollInterval = 100 * time.Millisecond
 	}
-	gracePeriod := w.cfg.ResidualGracePeriod
-	if gracePeriod <= 0 {
-		gracePeriod = 500 * time.Millisecond
-	}
+
+	startTime := time.Now()
 
 	// Bounded cleanup polling loop
 cleanupLoop:
 	for {
-		if cleanupCtx.Err() != nil {
+		if cleanupCtx.Err() != nil || time.Since(startTime) >= timeout {
 			deadlineExceeded = true
 			break cleanupLoop
 		}
@@ -64,14 +71,11 @@ cleanupLoop:
 				zap.Int("consecutive_read_errors", consecutiveReadErrors),
 				zap.Error(err),
 			)
-			// INVARIANT: Never cancel an order solely because GetOrder is failing.
-			// Read errors control retry polling only; if errors persist until cleanupCtx deadline,
-			// the loop exits and fails closed (tripping circuit breaker) without unsafe premature cancellation.
 			select {
 			case <-cleanupCtx.Done():
 				deadlineExceeded = true
 				break cleanupLoop
-			case <-time.After(100 * time.Millisecond):
+			case <-time.After(50 * time.Millisecond):
 			}
 			continue
 		}
@@ -85,50 +89,26 @@ cleanupLoop:
 			break cleanupLoop
 
 		case strings.HasSuffix(orderState.Status, "CANCELLED"), strings.HasSuffix(orderState.Status, "REJECTED"):
-			// CANCELLED / REJECTED -> terminal state achieved; do not attempt cancellation again
+			// CANCELLED (e.g. ioc_expired) / REJECTED -> terminal state achieved
 			break cleanupLoop
 
 		case strings.HasSuffix(orderState.Status, "CANCELLING"):
 			// CANCELLING -> cancel is actively being processed by Order Service / Matching Engine.
-			// Mark cancelSent to avoid redundant cancels, and continue polling for terminal state.
 			cancelSent = true
 
 		case strings.HasSuffix(orderState.Status, "OPEN"), strings.Contains(orderState.Status, "PARTIALLY"):
-			// Authoritative observation that order remains OPEN or PARTIALLY_FILLED.
-			if graceDeadline.IsZero() {
-				graceDeadline = time.Now().Add(gracePeriod)
-			}
-
-			if time.Now().Before(graceDeadline) {
-				// Within grace period: allow multi-hop asynchronous trade settlement to propagate to Order Service.
-				select {
-				case <-cleanupCtx.Done():
-					deadlineExceeded = true
-					break cleanupLoop
-				case <-time.After(pollInterval):
-				}
-				continue
-			}
-
-			// Grace deadline reached + order authoritatively confirmed still OPEN / PARTIALLY_FILLED
-			if !cancelSent {
-				w.logger.Info("Order not completely filled after grace period; cancelling residual to prevent maker resting",
+			// Order is still in-flight through outbox -> Kafka -> ME -> DB pipeline.
+			// Since MARKET orders are IOC, ME automatically executes and expires remainder.
+			// Only as a defensive safety fallback when exceeding gracePeriod do we issue CancelOrder.
+			if time.Since(startTime) > gracePeriod && !cancelSent {
+				w.logger.Info("MARKET order still unresolved after grace period; defensively issuing cancel",
 					zap.String("order_id", orderID),
 					zap.String("status", orderState.Status),
-					zap.String("remaining_qty", orderState.RemainingQty),
 					zap.Duration("grace_period", gracePeriod),
 				)
 				if _, cancelErr := w.ordersClient.CancelOrder(cleanupCtx, orderID); cancelErr != nil {
 					if isNotCancellableError(cancelErr) {
-						w.logger.Info("Order no longer in cancellable state during residual cleanup (likely filled concurrently)",
-							zap.String("order_id", orderID),
-						)
 						cancelSent = true
-					} else {
-						w.logger.Warn("Failed to send CancelOrder for residual; will retry in loop",
-							zap.String("order_id", orderID),
-							zap.Error(cancelErr),
-						)
 					}
 				} else {
 					cancelSent = true
@@ -137,14 +117,12 @@ cleanupLoop:
 			}
 
 		default:
-			// UNKNOWN / unexpected -> log warning, do NOT cancel blindly without authoritative state
-			w.logger.Warn("Encountered unexpected or transitional order status during cleanup",
+			w.logger.Debug("Encountered transitional order status during cleanup",
 				zap.String("order_id", orderID),
 				zap.String("status", orderState.Status),
 			)
 		}
 
-		// Wait briefly before next status query in a context-aware manner
 		select {
 		case <-cleanupCtx.Done():
 			deadlineExceeded = true
@@ -153,11 +131,40 @@ cleanupLoop:
 		}
 	}
 
+	// Drain remaining budget only if genuinely available before the hard deadline (ResidualDeadline)
+	// and the order was actively in-flight cancellation.
+	// If the deadline has already expired, fail closed immediately — do NOT extend the deadline.
+	remainingBudget := timeout - time.Since(startTime)
+	if !deadlineExceeded && remainingBudget > 0 && cleanupCtx.Err() == nil && (orderState != nil && strings.HasSuffix(orderState.Status, "CANCELLING")) && cancelSent {
+		drainCtx, drainCancel := context.WithTimeout(cleanupCtx, remainingBudget)
+		defer drainCancel()
+		for drainCtx.Err() == nil {
+			st, err := w.ordersClient.GetOrder(drainCtx, orderID)
+			if err == nil && st != nil {
+				orderState = st
+				if strings.HasSuffix(st.Status, "FILLED") || strings.HasSuffix(st.Status, "CANCELLED") || strings.HasSuffix(st.Status, "REJECTED") {
+					break
+				}
+			}
+			select {
+			case <-drainCtx.Done():
+				deadlineExceeded = true
+			case <-time.After(pollInterval):
+			}
+		}
+	}
+
 	// Fail closed if cleanup deadline expired without confirming terminal status
-	if deadlineExceeded || orderState == nil || (!strings.HasSuffix(orderState.Status, "FILLED") && !strings.HasSuffix(orderState.Status, "CANCELLED")) {
-		w.logger.Error("CRITICAL: order residual could not be verified cancelled before cleanup deadline",
+	isTerminal := orderState != nil && (strings.HasSuffix(orderState.Status, "FILLED") ||
+		strings.HasSuffix(orderState.Status, "CANCELLED") ||
+		strings.HasSuffix(orderState.Status, "REJECTED"))
+
+	if deadlineExceeded || cleanupCtx.Err() != nil || time.Since(startTime) >= timeout || !isTerminal {
+		w.logger.Error("CRITICAL: MARKET order could not be verified in terminal status before cleanup deadline",
 			zap.String("order_id", orderID),
 			zap.Any("order_state", orderState),
+			zap.Duration("elapsed", time.Since(startTime)),
+			zap.Duration("deadline", timeout),
 		)
 		metrics.UnresolvedResiduals.WithLabelValues(w.market.MarketID).Inc()
 		w.safetyMgr.RecordFailure() // Fail closed: trip breaker

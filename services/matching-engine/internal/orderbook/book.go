@@ -13,7 +13,10 @@ import (
 // by ID in O(1) without knowing which side it's on.
 type OrderBook struct {
 	MarketID   string
-	Sequence   uint64                   // Monotonically increasing sequence per market
+	// Sequence is the authoritative monotonically increasing order-book mutation sequence per market
+	// (increments +1 for each trade fill, +1 for each resting LIMIT insert, +1 for each successful cancel).
+	// It is NOT a trade counter.
+	Sequence   uint64
 	Bids       Side                     // buy side — sorted highest → lowest
 	Asks       Side                     // sell side — sorted lowest → highest
 	OrderIndex map[uuid.UUID]*OrderNode // O(1) cancel lookup

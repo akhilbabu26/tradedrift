@@ -129,6 +129,9 @@ func (e *Engine) runReconcileMarket(ctx context.Context, marketID string) {
 	e.metrics.SetLevelCount(mc.MarketID, "BUY", skew.BidCount)
 	e.metrics.SetLevelCount(mc.MarketID, "SELL", skew.AskCount)
 
+	// Smart Refresh: inspect and cancel any orders heavily consumed by taker fills
+	e.reconciler.CheckConsumedOrders(ctx, mc.MarketID)
+
 	cmds, err := e.reconciler.ReconcileMarket(ctx, mc.MarketID, skew.BidCount, skew.AskCount)
 	if err != nil {
 		e.logger.Error("targeted reconcile failed",

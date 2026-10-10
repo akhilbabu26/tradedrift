@@ -65,9 +65,9 @@ type Config struct {
 	MaxSpreadPercent       decimal.Decimal
 	CircuitBreakerFailures int
 	WarmupDelay            time.Duration
-	HighCooldown           time.Duration
 	CrossingDelay          time.Duration
 	ResidualGracePeriod    time.Duration
+	ResidualDeadline       time.Duration
 	ResidualPollInterval   time.Duration
 	ResidualMaxReadRetries int
 
@@ -75,10 +75,12 @@ type Config struct {
 	InventoryModerateBiasUSDT decimal.Decimal
 	InventoryHeavyBiasUSDT    decimal.Decimal
 
-	// Profile Timing
-	LowInterval  IntervalConfig
-	MidInterval  IntervalConfig
-	HighInterval IntervalConfig
+	// Sweep Behavior & Simulation Controls
+	HighSweepProbability       float64
+	MaxSweepLevels             int
+	MaxVisibleDepthConsumption decimal.Decimal
+	MaxDepthAge                time.Duration
+	RNGSeed                    int64
 
 	// Ports
 	HealthPort  string
@@ -136,19 +138,23 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("WARMUP_DELAY: %w", err)
 	}
 
-	highCooldown, err := platformconfig.GetEnvAsDuration("HIGH_COOLDOWN", 300*time.Second)
-	if err != nil {
-		return Config{}, fmt.Errorf("HIGH_COOLDOWN: %w", err)
-	}
 
 	crossingDelay, err := platformconfig.GetEnvAsDuration("CROSSING_DELAY", 300*time.Millisecond)
 	if err != nil {
 		return Config{}, fmt.Errorf("CROSSING_DELAY: %w", err)
 	}
 
-	residualGracePeriod, err := platformconfig.GetEnvAsDuration("CTS_RESIDUAL_GRACE_PERIOD", 500*time.Millisecond)
+	residualGracePeriod, err := platformconfig.GetEnvAsDuration("CTS_RESIDUAL_GRACE_PERIOD", 4*time.Second)
 	if err != nil {
 		return Config{}, fmt.Errorf("CTS_RESIDUAL_GRACE_PERIOD: %w", err)
+	}
+
+	residualDeadline, err := platformconfig.GetEnvAsDuration("CTS_RESIDUAL_DEADLINE", 2*residualGracePeriod)
+	if err != nil {
+		return Config{}, fmt.Errorf("CTS_RESIDUAL_DEADLINE: %w", err)
+	}
+	if residualDeadline <= residualGracePeriod {
+		residualDeadline = 2 * residualGracePeriod
 	}
 
 	residualPollInterval, err := platformconfig.GetEnvAsDuration("CTS_RESIDUAL_POLL_INTERVAL", 100*time.Millisecond)
@@ -201,44 +207,61 @@ func Load() (Config, error) {
 		},
 	}
 
+	highSweepProbStr := platformconfig.GetEnv("CTS_HIGH_SWEEP_PROBABILITY", "0.70")
+	highSweepProb, err := strconv.ParseFloat(highSweepProbStr, 64)
+	if err != nil {
+		return Config{}, fmt.Errorf("CTS_HIGH_SWEEP_PROBABILITY: %w", err)
+	}
+
+	maxSweepLevels, err := platformconfig.GetEnvAsInt("CTS_MAX_SWEEP_LEVELS", 3)
+	if err != nil {
+		return Config{}, fmt.Errorf("CTS_MAX_SWEEP_LEVELS: %w", err)
+	}
+
+	maxVisibleDepthConsumption, err := getEnvDecimal("CTS_MAX_VISIBLE_DEPTH_CONSUMPTION", "0.90")
+	if err != nil {
+		return Config{}, fmt.Errorf("CTS_MAX_VISIBLE_DEPTH_CONSUMPTION: %w", err)
+	}
+
+	maxDepthAge, err := platformconfig.GetEnvAsDuration("CTS_MAX_DEPTH_AGE", 5*time.Second)
+	if err != nil || maxDepthAge <= 0 {
+		maxDepthAge = 5 * time.Second
+	}
+
+	rngSeedStr := platformconfig.GetEnv("CTS_RNG_SEED", "0")
+	rngSeed, err := strconv.ParseInt(rngSeedStr, 10, 64)
+	if err != nil {
+		return Config{}, fmt.Errorf("CTS_RNG_SEED: %w", err)
+	}
+
 	cfg := Config{
-		OrderGRPCAddr:             orderGRPC,
-		RedisAddr:                 redisAddr,
-		Enabled:                   enabled,
-		Markets:                   markets,
-		MaxOrderNotionalUSDT:      maxNotional,
-		MaxSlippageBps:            maxSlippage,
-		MaxHourlyVolumeUSDT:       maxHourly,
-		MaxDailyVolumeUSDT:        maxDaily,
-		MaxTradesPerHour:          maxTradesHour,
-		MaxSpreadPercent:          maxSpread,
-		CircuitBreakerFailures:    cbFailures,
-		WarmupDelay:               warmupDelay,
-		HighCooldown:              highCooldown,
-		CrossingDelay:             crossingDelay,
-		ResidualGracePeriod:       residualGracePeriod,
-		ResidualPollInterval:      residualPollInterval,
-		ResidualMaxReadRetries:    residualMaxReadRetries,
-		InventoryModerateBiasUSDT: modBias,
-		InventoryHeavyBiasUSDT:    heavyBias,
-		LowInterval: IntervalConfig{
-			MinInterval:  45 * time.Second,
-			BaseInterval: 75 * time.Second,
-			MaxInterval:  120 * time.Second,
-		},
-		MidInterval: IntervalConfig{
-			MinInterval:  120 * time.Second,
-			BaseInterval: 240 * time.Second,
-			MaxInterval:  360 * time.Second,
-		},
-		HighInterval: IntervalConfig{
-			MinInterval:  900 * time.Second,
-			BaseInterval: 1800 * time.Second,
-			MaxInterval:  2700 * time.Second,
-		},
-		HealthPort:  healthPort,
-		MetricsPort: metricsPort,
-		LogLevel:    logLevel,
+		OrderGRPCAddr:              orderGRPC,
+		RedisAddr:                  redisAddr,
+		Enabled:                    enabled,
+		Markets:                    markets,
+		MaxOrderNotionalUSDT:       maxNotional,
+		MaxSlippageBps:             maxSlippage,
+		MaxHourlyVolumeUSDT:        maxHourly,
+		MaxDailyVolumeUSDT:         maxDaily,
+		MaxTradesPerHour:           maxTradesHour,
+		MaxSpreadPercent:           maxSpread,
+		CircuitBreakerFailures:     cbFailures,
+		WarmupDelay:                warmupDelay,
+		CrossingDelay:              crossingDelay,
+		ResidualGracePeriod:        residualGracePeriod,
+		ResidualDeadline:           residualDeadline,
+		ResidualPollInterval:       residualPollInterval,
+		ResidualMaxReadRetries:     residualMaxReadRetries,
+		InventoryModerateBiasUSDT:  modBias,
+		InventoryHeavyBiasUSDT:     heavyBias,
+		HighSweepProbability:       highSweepProb,
+		MaxSweepLevels:             maxSweepLevels,
+		MaxVisibleDepthConsumption: maxVisibleDepthConsumption,
+		MaxDepthAge:                maxDepthAge,
+		RNGSeed:                    rngSeed,
+		HealthPort:                 healthPort,
+		MetricsPort:                metricsPort,
+		LogLevel:                   logLevel,
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -250,6 +273,12 @@ func Load() (Config, error) {
 
 // Validate checks all configuration constraints and invariants at service initialization.
 func (c Config) Validate() error {
+	if c.MaxDepthAge <= 0 {
+		return fmt.Errorf("CTS_MAX_DEPTH_AGE must be > 0, got %s", c.MaxDepthAge)
+	}
+	if c.MaxVisibleDepthConsumption.LessThanOrEqual(decimal.Zero) || c.MaxVisibleDepthConsumption.GreaterThan(decimal.NewFromInt(1)) {
+		return fmt.Errorf("CTS_MAX_VISIBLE_DEPTH_CONSUMPTION must be in (0, 1], got %s", c.MaxVisibleDepthConsumption)
+	}
 	if c.MaxOrderNotionalUSDT.LessThanOrEqual(decimal.Zero) {
 		return fmt.Errorf("MAX_ORDER_NOTIONAL_USDT must be > 0, got %s", c.MaxOrderNotionalUSDT)
 	}
@@ -283,11 +312,11 @@ func (c Config) Validate() error {
 	if c.WarmupDelay < 0 {
 		return fmt.Errorf("WARMUP_DELAY must be >= 0, got %s", c.WarmupDelay)
 	}
-	if c.HighCooldown < 0 {
-		return fmt.Errorf("HIGH_COOLDOWN must be >= 0, got %s", c.HighCooldown)
-	}
 	if c.ResidualGracePeriod <= 0 {
 		return fmt.Errorf("CTS_RESIDUAL_GRACE_PERIOD must be > 0, got %s", c.ResidualGracePeriod)
+	}
+	if c.ResidualDeadline <= c.ResidualGracePeriod {
+		return fmt.Errorf("CTS_RESIDUAL_DEADLINE (%s) must be greater than CTS_RESIDUAL_GRACE_PERIOD (%s)", c.ResidualDeadline, c.ResidualGracePeriod)
 	}
 	if c.ResidualPollInterval <= 0 {
 		return fmt.Errorf("CTS_RESIDUAL_POLL_INTERVAL must be > 0, got %s", c.ResidualPollInterval)
@@ -297,6 +326,12 @@ func (c Config) Validate() error {
 	}
 	if c.ResidualMaxReadRetries < 0 {
 		return fmt.Errorf("CTS_RESIDUAL_MAX_READ_RETRIES must be >= 0, got %d", c.ResidualMaxReadRetries)
+	}
+	if c.HighSweepProbability < 0.0 || c.HighSweepProbability > 1.0 {
+		return fmt.Errorf("CTS_HIGH_SWEEP_PROBABILITY must be between 0.0 and 1.0, got %f", c.HighSweepProbability)
+	}
+	if c.MaxSweepLevels <= 0 {
+		return fmt.Errorf("CTS_MAX_SWEEP_LEVELS must be > 0, got %d", c.MaxSweepLevels)
 	}
 	if c.HealthPort == "" {
 		return errors.New("HEALTH_PORT must not be empty")
@@ -338,21 +373,6 @@ func (c Config) Validate() error {
 		}
 	}
 
-	for name, interval := range map[string]IntervalConfig{
-		"LOW":  c.LowInterval,
-		"MID":  c.MidInterval,
-		"HIGH": c.HighInterval,
-	} {
-		if interval.MinInterval <= 0 {
-			return fmt.Errorf("%s profile MinInterval must be > 0, got %s", name, interval.MinInterval)
-		}
-		if interval.MinInterval > interval.BaseInterval {
-			return fmt.Errorf("%s profile MinInterval (%s) cannot exceed BaseInterval (%s)", name, interval.MinInterval, interval.BaseInterval)
-		}
-		if interval.BaseInterval > interval.MaxInterval {
-			return fmt.Errorf("%s profile BaseInterval (%s) cannot exceed MaxInterval (%s)", name, interval.BaseInterval, interval.MaxInterval)
-		}
-	}
 
 	if err := platformconfig.ValidateLogLevel(c.LogLevel); err != nil {
 		return err

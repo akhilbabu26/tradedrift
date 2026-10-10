@@ -40,6 +40,8 @@ export interface PortfolioHolding {
   realizedPnl: string
   /** Portfolio weight percentage (0-100) */
   weightPct: string
+  /** 24h price history sparkline observations (if market pair exists) */
+  sparklinePoints?: number[]
 }
 
 // ── Executive Metrics ───────────────────────────────────────────────────────

@@ -16,4 +16,8 @@ var (
 	ErrMarketHalted              = errors.New("market is currently halted for trading")
 	ErrMarketStateUnavailable   = errors.New("market status verification service is temporarily unavailable")
 	ErrMarketEnforcementNotReady = errors.New("market enforcement state is not ready")
+	ErrInvalidUserID            = errors.New("user ID must be a valid UUID")
+	ErrInvalidQuantityPrecision = errors.New("quantity exceeds maximum precision for asset")
+	ErrInvalidPricePrecision    = errors.New("price exceeds maximum supported decimal precision")
+	ErrUnsupportedAsset         = errors.New("unsupported asset precision")
 )

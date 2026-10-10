@@ -35,21 +35,19 @@ func testDefaultConfig() config.Config {
 		MaxSpreadPercent:       decimal.NewFromFloat(0.01),
 		MaxSlippageBps:         15,
 		CircuitBreakerFailures: 3,
-		HighCooldown:           time.Minute,
 		CrossingDelay:          10 * time.Millisecond,
 		ResidualGracePeriod:    50 * time.Millisecond,
+		ResidualDeadline:       100 * time.Millisecond,
 		ResidualPollInterval:   10 * time.Millisecond,
 		ResidualMaxReadRetries: 3,
-		LowInterval:            config.IntervalConfig{MinInterval: 10 * time.Millisecond, BaseInterval: 20 * time.Millisecond, MaxInterval: 30 * time.Millisecond},
-		MidInterval:            config.IntervalConfig{MinInterval: 10 * time.Millisecond, BaseInterval: 20 * time.Millisecond, MaxInterval: 30 * time.Millisecond},
-		HighInterval:           config.IntervalConfig{MinInterval: 10 * time.Millisecond, BaseInterval: 20 * time.Millisecond, MaxInterval: 30 * time.Millisecond},
 	}
 }
 
 type mockDepthReader struct {
-	mu       sync.Mutex
-	snapshot *redisdepth.DepthSnapshot
-	err      error
+	mu                sync.Mutex
+	snapshot          *redisdepth.DepthSnapshot
+	err               error
+	preserveTimestamp bool
 }
 
 func (m *mockDepthReader) GetDepth(ctx context.Context, marketID string) (*redisdepth.DepthSnapshot, error) {
@@ -57,6 +55,11 @@ func (m *mockDepthReader) GetDepth(ctx context.Context, marketID string) (*redis
 	defer m.mu.Unlock()
 	if m.err != nil {
 		return nil, m.err
+	}
+	if m.snapshot != nil && !m.preserveTimestamp && !m.snapshot.SnapshotAt.IsZero() {
+		fresh := *m.snapshot
+		fresh.SnapshotAt = time.Now()
+		return &fresh, nil
 	}
 	return m.snapshot, nil
 }

@@ -225,6 +225,8 @@ func TestService_HandleTradeSettled_CounterpartyPrivacyIsolation(t *testing.T) {
 	require.NoError(t, json.Unmarshal(sellerOutbox.Payload, &sellerEnv))
 	assert.Equal(t, eventID, sellerEnv.EventID) // same source event ID
 	assert.Equal(t, sellerNotif.ID, sellerEnv.NotificationID)
+	assert.Equal(t, "user:notifications:"+sellerID, sellerEnv.Channel)
+	assert.Equal(t, "user:notifications:"+buyerID, buyerEnv.Channel)
 }
 
 func TestService_HandleTradeSettled_IdempotentSkip(t *testing.T) {
@@ -340,6 +342,7 @@ func TestService_HandleOrderCancelled(t *testing.T) {
 	require.NoError(t, json.Unmarshal(outbox.Payload, &env))
 	assert.Equal(t, cancelEventID, env.EventID) // source event ID, not order ID
 	assert.Equal(t, notif.ID, env.NotificationID)
+	assert.Equal(t, "user:notifications:"+cancelUserID, env.Channel)
 }
 
 func TestService_HandlePortfolioUpdated_EphemeralNoInbox(t *testing.T) {
@@ -371,6 +374,7 @@ func TestService_HandlePortfolioUpdated_EphemeralNoInbox(t *testing.T) {
 	assert.Equal(t, pfEventID, env.EventID)
 	assert.Empty(t, env.NotificationID) // Empty because there is no persistent notification row
 	assert.Equal(t, "portfolio.updated", env.Type)
+	assert.Equal(t, "user:portfolio:"+pfUserID, env.Channel)
 }
 
 func TestService_CreateNotification_Validation(t *testing.T) {

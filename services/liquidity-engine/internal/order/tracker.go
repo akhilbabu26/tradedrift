@@ -184,6 +184,7 @@ func (t *Tracker) GetActive(levelID string) *pricing.ActiveLevel {
 	return &pricing.ActiveLevel{
 		Status:     string(o.Status),
 		Price:      o.Price,
+		Quantity:   o.OriginalQty,
 		RefVersion: o.RefVersion,
 	}
 }
@@ -232,6 +233,30 @@ func (t *Tracker) RestingCount(marketID, side string) int {
 		}
 	}
 	return count
+}
+
+// InsideSpread returns the best (highest) resting bid and best (lowest) resting ask for a market.
+// Returns ok=true if both sides have at least one resting order with remaining quantity > 0.
+func (t *Tracker) InsideSpread(marketID string) (bestBid, bestAsk decimal.Decimal, ok bool) {
+	hasBid := false
+	hasAsk := false
+	for _, o := range t.orders {
+		if o.MarketID != marketID || o.Status != StatusResting || o.RemainingQty.IsZero() {
+			continue
+		}
+		if o.Side == "BUY" {
+			if !hasBid || o.Price.GreaterThan(bestBid) {
+				bestBid = o.Price
+				hasBid = true
+			}
+		} else if o.Side == "SELL" {
+			if !hasAsk || o.Price.LessThan(bestAsk) {
+				bestAsk = o.Price
+				hasAsk = true
+			}
+		}
+	}
+	return bestBid, bestAsk, hasBid && hasAsk
 }
 
 // PendingCount returns the count of PENDING and OS_REGISTERED orders for a market.

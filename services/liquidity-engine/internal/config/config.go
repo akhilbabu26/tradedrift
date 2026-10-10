@@ -38,15 +38,15 @@ func (z ZoneConfig) TotalLevels() int {
 	return z.Low.Count + z.Mid.Count + z.High.Count
 }
 
-// DefaultZoneConfig returns the 7/4/1 zone split with production-safe bps defaults.
-// LOW : 5–50 bps  (7 levels)   — tightly around the reference price
-// MID : 50–150 bps (4 levels)  — moderate distance
-// HIGH: 150–300 bps (1 level)  — outer sentinel
+// DefaultZoneConfig returns the 7/4/1 zone split with realistic spread defaults.
+// LOW : 1–15 bps  (7 levels)   — tight top-of-book touch (starts at 1 bps, ~$8.50 on BTC)
+// MID : 15–45 bps (4 levels)   — normal market depth
+// HIGH: 45–100 bps (1 level)  — outer sentinel
 func DefaultZoneConfig() ZoneConfig {
 	return ZoneConfig{
-		Low:  ZoneBand{MinBps: 5, MaxBps: 50, Count: 7},
-		Mid:  ZoneBand{MinBps: 50, MaxBps: 150, Count: 4},
-		High: ZoneBand{MinBps: 150, MaxBps: 300, Count: 1},
+		Low:  ZoneBand{MinBps: 1, MaxBps: 15, Count: 7},
+		Mid:  ZoneBand{MinBps: 15, MaxBps: 45, Count: 4},
+		High: ZoneBand{MinBps: 45, MaxBps: 100, Count: 1},
 	}
 }
 
@@ -63,10 +63,13 @@ func DefaultZoneConfig() ZoneConfig {
 // OrderLifetime is how long a RESTING level is kept before being expired and replaced
 // with a fresh generation at a newly randomised price within its zone.
 type RepricingConfig struct {
-	SmallBps      int           // movement below this → no action (default: 10 bps)
-	LargeBps      int           // movement at or above this → full regeneration (default: 100 bps)
-	MaxBatch      int           // max levels repriced per 60-second evaluation cycle (default: 4)
-	OrderLifetime time.Duration // max age of a resting level before expiry-replace (default: 30m)
+	SmallBps                    int             // movement below this → no action (default: 10 bps)
+	LargeBps                    int             // movement at or above this → full regeneration (default: 100 bps)
+	MaxBatch                    int             // max levels repriced per 60-second evaluation cycle (default: 4)
+	SpreadBreachBps             int             // inside spread threshold in bps triggering targeted reconcile (0 = derived fallback)
+	OrderLifetime               time.Duration   // max age of a resting level before expiry-replace (default: 30m)
+	RefreshCooldown             time.Duration   // minimum interval between refreshes of the same level (default: 5s)
+	RefreshConsumptionThreshold decimal.Decimal // consumption fraction to trigger smart refresh (default: 0.50, bounds: [0.10, 0.90])
 }
 
 // ── RefPrice provider config ──────────────────────────────────────────────────

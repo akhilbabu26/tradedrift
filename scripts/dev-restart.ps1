@@ -23,8 +23,8 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 
-Write-Host "==> Stopping all containers..." -ForegroundColor Cyan
-docker compose -f "$ProjectRoot\docker-compose.yml" down --remove-orphans
+Write-Host "==> Stopping all containers and wiping volumes..." -ForegroundColor Cyan
+docker compose -f "$ProjectRoot\docker-compose.yml" down -v --remove-orphans
 
 if ($Build) {
     Write-Host "==> Rebuilding images..." -ForegroundColor Cyan
@@ -58,7 +58,10 @@ if ($ResetDB) {
     )
     foreach ($db in $dbs) {
         try {
-            psql -h localhost -p 5432 -U postgres -d $db -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO postgres; GRANT ALL ON SCHEMA public TO public;" 2>$null | Out-Null
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "SilentlyContinue"
+            & psql -h localhost -p 5432 -U postgres -d $db -q -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public; GRANT ALL ON SCHEMA public TO postgres; GRANT ALL ON SCHEMA public TO public;" 2>&1 | Out-Null
+            $ErrorActionPreference = $prevEAP
             Write-Host "    Reset schema for: $db" -ForegroundColor Green
         } catch {
             Write-Host "    Skipped (DB may not exist yet): $db" -ForegroundColor DarkGray

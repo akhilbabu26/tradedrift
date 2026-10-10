@@ -96,8 +96,6 @@ func TestT16_TransientMEOutage_ZeroMutations(t *testing.T) {
 	recoveringSnap := &meclient.MarketSnapshot{
 		MarketID: marketID,
 		State:    "RECOVERING",
-		Sequence: 0,
-		Orders:   nil,
 	}
 
 	// In ReconcileMarket, if snap.State != LIVE it returns 0, nil without calling sync or Diff

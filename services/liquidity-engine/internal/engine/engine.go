@@ -90,6 +90,9 @@ type EngineMetrics interface {
 	IncMELivenessTimeout(marketID string)
 	IncMEHealthProbe(status string)
 	IncMarketPause(marketID, action string)
+	IncSpreadBreach(marketID string)
+	ObserveSpreadRecoveryDuration(marketID string, seconds float64)
+	SetInsideSpreadBps(marketID string, bps float64)
 }
 
 // Engine is the main Liquidity Engine orchestrator.
@@ -120,6 +123,7 @@ type Engine struct {
 	// Fix 5 (v4): Dirty markets coalescing map for targeted reconciliation
 	dirtyMarkets          map[string]bool
 	targetedDebounceTimer *time.Timer
+	spreadBreachTimes     map[string]time.Time
 }
 
 // NewEngine creates a fully wired Engine.
@@ -156,6 +160,7 @@ func NewEngine(
 		tradeHistory:          make([]string, 0, 1000),
 		maxTradeHistory:       1000,
 		dirtyMarkets:          make(map[string]bool),
+		spreadBreachTimes:     make(map[string]time.Time),
 	}
 	e.publishSnapshot()
 	return e

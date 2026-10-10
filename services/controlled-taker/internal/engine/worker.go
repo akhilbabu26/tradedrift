@@ -3,7 +3,9 @@ package engine
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"math/rand"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,14 +33,17 @@ type OrderSubmitter interface {
 
 // MarketWorker runs an autonomous, isolated taker loop for a single market.
 type MarketWorker struct {
-	market       config.MarketConfig
-	cfg          config.Config
-	ordersClient OrderSubmitter
-	redisReader  DepthReader
-	safetyMgr    *SafetyManager
-	selector     *DirectionSelector
-	lastHighAt   time.Time
-	logger       *zap.Logger
+	market                   config.MarketConfig
+	cfg                      config.Config
+	ordersClient             OrderSubmitter
+	redisReader              DepthReader
+	safetyMgr                *SafetyManager
+	selector                 *DirectionSelector
+	regimeMgr                *RegimeManager
+	adaptivePostHighCooldown time.Duration
+	postHighCooldownSampler  func(severity HighSweepSeverity, rng *rand.Rand) time.Duration
+	rng                      *rand.Rand
+	logger                   *zap.Logger
 }
 
 // NewMarketWorker creates an isolated worker for the given trading pair.
@@ -60,16 +65,34 @@ func NewMarketWorker(
 		cfg.MaxDailyVolumeUSDT,
 		cfg.MaxTradesPerHour,
 		cfg.MaxSpreadPercent,
+		cfg.MaxVisibleDepthConsumption,
 	)
 
+	now := time.Now()
+	var seed int64
+	if cfg.RNGSeed != 0 {
+		seed = cfg.RNGSeed
+	} else {
+		seed = now.UnixNano()
+	}
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(market.MarketID))
+	workerSeed := seed ^ int64(h.Sum64())
+	workerRNG := rand.New(rand.NewSource(workerSeed))
+
+	regimeMgr := NewRegimeManager(now, workerRNG, nil)
+
 	return &MarketWorker{
-		market:       market,
-		cfg:          cfg,
-		ordersClient: ordersClient,
-		redisReader:  redisReader,
-		safetyMgr:    safetyMgr,
-		selector:     selector,
-		logger:       marketLogger,
+		market:                  market,
+		cfg:                     cfg,
+		ordersClient:            ordersClient,
+		redisReader:             redisReader,
+		safetyMgr:               safetyMgr,
+		selector:                selector,
+		regimeMgr:               regimeMgr,
+		postHighCooldownSampler: SamplePostHighCooldown,
+		rng:                     workerRNG,
+		logger:                  marketLogger,
 	}
 }
 
@@ -84,28 +107,53 @@ func (w *MarketWorker) Run(ctx context.Context, startupDelay time.Duration) {
 	case <-time.After(startupDelay):
 	}
 
-	w.logger.Info("Market worker started active execution loop")
+	w.logger.Info("Market worker started active execution loop",
+		zap.String("initial_regime", string(w.regimeMgr.CurrentRegime())),
+		zap.Time("dwell_until", w.regimeMgr.DwellUntil()),
+	)
+	metrics.SetCurrentRegime(w.market.MarketID, string(w.regimeMgr.CurrentRegime()))
 
 	for {
-		// 1. Choose Activity Profile
-		profile := w.chooseProfile()
-
-		// 2. Compute Next Bounded Jitter Interval
-		var intervalCfg config.IntervalConfig
-		switch profile {
-		case config.ProfileHigh:
-			intervalCfg = w.cfg.HighInterval
-		case config.ProfileMid:
-			intervalCfg = w.cfg.MidInterval
-		default:
-			intervalCfg = w.cfg.LowInterval
+		// 1. Evaluate Macro Activity Regime lifecycle
+		// RegimeManager.Tick evaluates transitions strictly when the active dwell timer expires.
+		prevRegime := w.regimeMgr.CurrentRegime()
+		currentRegime, transitioned := w.regimeMgr.Tick(time.Now(), w.rng)
+		if transitioned {
+			metrics.RegimeTransitions.WithLabelValues(w.market.MarketID, string(prevRegime), string(currentRegime)).Inc()
+			metrics.SetCurrentRegime(w.market.MarketID, string(currentRegime))
+			w.logger.Info("Market regime transitioned",
+				zap.String("market", w.market.MarketID),
+				zap.String("new_regime", string(currentRegime)),
+				zap.Time("dwell_until", w.regimeMgr.DwellUntil()),
+			)
 		}
-		nextWait := calculateNextInterval(intervalCfg)
 
-		// 3. Execute Order Cycle
+		// 2. Choose Activity Profile based entirely on active regime distribution
+		profile := w.chooseProfile()
+		metrics.ProfileSelected.WithLabelValues(w.market.MarketID, string(currentRegime), string(profile)).Inc()
+
+		// 3. Execute Order Cycle first
 		w.ExecuteCycle(ctx, profile)
 
-		// 4. Wait for Next Interval
+		// 4. Compute Next Interval using active regime's interval configuration
+		// Sampled via Log-Normal distribution (sigma=0.4) for human-like arrival pacing
+		nextWait := SampleLogNormalInterval(w.rng, w.regimeMgr.ActiveIntervalConfig())
+		metrics.InterarrivalSeconds.WithLabelValues(w.market.MarketID, string(currentRegime)).Observe(nextWait.Seconds())
+
+		// 5. Apply adaptive post-HIGH cooldown as minimum wait floor before the NEXT order
+		if w.adaptivePostHighCooldown > 0 {
+			if w.adaptivePostHighCooldown > nextWait {
+				w.logger.Info("Applying adaptive post-HIGH pacing floor",
+					zap.String("market", w.market.MarketID),
+					zap.Duration("regime_wait", nextWait),
+					zap.Duration("adaptive_floor", w.adaptivePostHighCooldown),
+				)
+				nextWait = w.adaptivePostHighCooldown
+			}
+			w.adaptivePostHighCooldown = 0
+		}
+
+		// 6. Wait before the NEXT cycle can execute
 		select {
 		case <-ctx.Done():
 			w.logger.Info("Market worker stopping (context cancelled)")
@@ -120,25 +168,35 @@ func (w *MarketWorker) SafetyManager() *SafetyManager {
 	return w.safetyMgr
 }
 
-func (w *MarketWorker) chooseProfile() config.ProfileType {
-	// Respect HIGH profile cooldown
-	canHigh := time.Since(w.lastHighAt) >= w.cfg.HighCooldown
+// RegimeManager returns the worker's regime manager instance.
+func (w *MarketWorker) RegimeManager() *RegimeManager {
+	return w.regimeMgr
+}
 
-	r := rand.Float64()
-	if canHigh && r < 0.08 {
-		return config.ProfileHigh // 8% chance when off cooldown
-	} else if r < 0.35 {
-		return config.ProfileMid // 27% chance
-	}
-	return config.ProfileLow // 65% baseline heartbeat
+// AdaptivePostHighCooldown returns the currently pending adaptive post-HIGH cooldown.
+func (w *MarketWorker) AdaptivePostHighCooldown() time.Duration {
+	return w.adaptivePostHighCooldown
+}
+
+// SetAdaptivePostHighCooldown overrides the pending adaptive post-HIGH cooldown (primarily for testing).
+func (w *MarketWorker) SetAdaptivePostHighCooldown(cd time.Duration) {
+	w.adaptivePostHighCooldown = cd
+}
+
+// SetPostHighCooldownSampler allows unit tests to inject a custom/scaled cooldown sampler.
+func (w *MarketWorker) SetPostHighCooldownSampler(fn func(severity HighSweepSeverity, rng *rand.Rand) time.Duration) {
+	w.postHighCooldownSampler = fn
+}
+
+// chooseProfile delegates profile selection to RegimeManager.
+// The macro regime owns profile probability (WeightLow, WeightMid, WeightHigh).
+func (w *MarketWorker) chooseProfile() config.ProfileType {
+	return w.regimeMgr.ChooseProfile(w.rng, true, true)
 }
 
 // ExecuteCycle executes an autonomous taker order cycle for this market.
 func (w *MarketWorker) ExecuteCycle(ctx context.Context, profile config.ProfileType) {
-	// Step 1: Select Direction with Balance Bias
-	side := w.selector.SelectSide(w.market.MarketID)
-
-	// Step 2: Read Live Depth from Redis
+	// Step 1: Read Live Depth from Redis (Immediate Order-Book Reality)
 	depthCtx, depthCancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	depth, err := w.redisReader.GetDepth(depthCtx, w.market.MarketID)
 	depthCancel()
@@ -149,25 +207,54 @@ func (w *MarketWorker) ExecuteCycle(ctx context.Context, profile config.ProfileT
 		metrics.OrdersFailed.WithLabelValues(w.market.MarketID, "depth_read_error").Inc()
 		return
 	}
+	if depth != nil && !depth.SnapshotAt.IsZero() {
+		metrics.DepthAgeSeconds.WithLabelValues(w.market.MarketID, "read").Observe(time.Since(depth.SnapshotAt).Seconds())
+	}
 
-	// Step 3: Compute Quantity Dynamically from CURRENT Live Depth
-	params, err := CalculateOrderParameters(
+	// Step 2: Read External Reference Anchor (Context Only)
+	var refPrice decimal.Decimal
+	if ar, ok := w.redisReader.(interface {
+		GetAnchor(ctx context.Context, marketID string) (*redisdepth.RefPriceAnchor, error)
+	}); ok {
+		anchorCtx, anchorCancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		anchor, anchorErr := ar.GetAnchor(anchorCtx, w.market.MarketID)
+		anchorCancel()
+		if anchorErr == nil && anchor != nil && anchor.State == "FRESH" {
+			refPrice = anchor.Price
+		}
+	}
+
+	// Step 3: Select Direction with Inventory Bias + RefPrice Gravity + Order-Book Imbalance
+	midPrice, _ := depth.MidPrice()
+	side := w.selector.SelectSideWithDepth(w.market.MarketID, midPrice, refPrice, depth, w.rng)
+
+	// Step 4: Compute Quantity Dynamically from CURRENT Live Depth
+	opts := SizingOptions{
+		RNG:                        w.rng,
+		HighSweepProbability:       w.cfg.HighSweepProbability,
+		HasHighSweepProbability:    true,
+		MaxSweepLevels:             w.cfg.MaxSweepLevels,
+		MaxVisibleDepthConsumption: &w.cfg.MaxVisibleDepthConsumption,
+		MaxDepthAge:                w.cfg.MaxDepthAge,
+	}
+	params, err := CalculateOrderParametersWithOptions(
 		profile,
 		depth,
 		side,
 		w.market,
 		w.cfg.MaxOrderNotionalUSDT,
 		w.cfg.MaxSlippageBps,
+		opts,
 	)
 	if err != nil {
-		w.logger.Debug("Skipping order cycle during parameter calculation", zap.String("reason", err.Error()))
+		w.logger.Warn("Skipping order cycle during parameter calculation", zap.String("market", w.market.MarketID), zap.Error(err))
 		metrics.OrdersFailed.WithLabelValues(w.market.MarketID, "parameter_calc_error").Inc()
 		return
 	}
 
-	// Step 4: Validate Pre-Order Safety Constraints
-	if err := w.safetyMgr.ValidatePreOrder(depth, side, params.Quantity, params.PriceCap); err != nil {
-		w.logger.Debug("Safety guard prevented order submission", zap.String("reason", err.Error()))
+	// Step 4: Validate Pre-Order Safety Constraints (using ConservativePrice for side-safe notional checks)
+	if err := w.safetyMgr.ValidatePreOrder(depth, side, params.Quantity, params.ProtectionPrice, params.ConservativePrice); err != nil {
+		w.logger.Warn("Safety guard prevented order submission", zap.String("market", w.market.MarketID), zap.Error(err))
 		metrics.OrdersFailed.WithLabelValues(w.market.MarketID, "safety_guard_rejected").Inc()
 		return
 	}
@@ -187,6 +274,29 @@ func (w *MarketWorker) ExecuteCycle(ctx context.Context, profile config.ProfileT
 	}
 	idempotencyKey := fmt.Sprintf("CTS-%s-%s", w.market.MarketID, orderUUID.String())
 
+	// CTS-1: Final pre-submission depth freshness check (fail-closed)
+	// Guarantees that depth is valid, non-zero timestamp, and within MaxDepthAge immediately before submission.
+	if depth == nil || depth.SnapshotAt.IsZero() {
+		w.logger.Warn("Missing or zero depth timestamp before order submission; skipping cycle",
+			zap.String("market", w.market.MarketID),
+		)
+		w.safetyMgr.ReleaseProbe()
+		metrics.OrdersFailed.WithLabelValues(w.market.MarketID, "invalid_depth_pre_submit").Inc()
+		return
+	}
+	depthAge := time.Since(depth.SnapshotAt)
+	metrics.DepthAgeSeconds.WithLabelValues(w.market.MarketID, "submit").Observe(depthAge.Seconds())
+	if w.cfg.MaxDepthAge > 0 && depthAge > w.cfg.MaxDepthAge {
+		w.logger.Warn("Depth became stale before order submission; skipping cycle",
+			zap.String("market", w.market.MarketID),
+			zap.Duration("age", depthAge),
+			zap.Duration("max_age", w.cfg.MaxDepthAge),
+		)
+		w.safetyMgr.ReleaseProbe()
+		metrics.OrdersFailed.WithLabelValues(w.market.MarketID, "stale_depth_pre_submit").Inc()
+		return
+	}
+
 	startTime := time.Now()
 	orderCtx, orderCancel := context.WithTimeout(ctx, 3*time.Second)
 	defer orderCancel()
@@ -195,10 +305,11 @@ func (w *MarketWorker) ExecuteCycle(ctx context.Context, profile config.ProfileT
 		orderCtx,
 		w.market.MarketID,
 		side,
-		params.PriceCap.String(),
+		params.ProtectionPrice.String(),
 		params.Quantity.String(),
 		idempotencyKey,
 	)
+	metrics.SubmissionLatencySeconds.WithLabelValues(w.market.MarketID, string(profile)).Observe(time.Since(startTime).Seconds())
 	if err != nil {
 		errType := classifySubmissionError(ctx, err)
 		switch errType {
@@ -291,6 +402,10 @@ func (w *MarketWorker) ExecuteCycle(ctx context.Context, profile config.ProfileT
 	}
 
 	metrics.OrdersSubmitted.WithLabelValues(w.market.MarketID, side, string(profile)).Inc()
+	if params.Mode == ExecutionSweep {
+		metrics.SweepOrders.WithLabelValues(w.market.MarketID, string(profile), side).Inc()
+		metrics.SweepLevels.WithLabelValues(w.market.MarketID, string(profile), strconv.Itoa(params.ReachableLevels)).Inc()
+	}
 
 	// Step 6: Autonomous Post-Submission Verification & Residual Cleanup (Option A)
 	orderState, ok := w.awaitOrderCleanup(res.OrderID)
@@ -322,10 +437,18 @@ func (w *MarketWorker) ExecuteCycle(ctx context.Context, profile config.ProfileT
 			metrics.OrdersPartiallyFilled.WithLabelValues(w.market.MarketID).Inc()
 		}
 
+		if params.Mode == ExecutionSweep {
+			metrics.SweepQuantity.WithLabelValues(w.market.MarketID, string(profile)).Add(filledQty.InexactFloat64())
+		}
+
 		w.logger.Info("Controlled taker order fill processed",
+			zap.String("market", w.market.MarketID),
 			zap.String("order_id", res.OrderID),
 			zap.String("side", side),
 			zap.String("profile", string(profile)),
+			zap.String("mode", params.Mode.String()),
+			zap.Int("reachable_levels", params.ReachableLevels),
+			zap.String("protection_price", params.ProtectionPrice.String()),
 			zap.String("requested_qty", params.Quantity.String()),
 			zap.String("filled_qty", filledQty.String()),
 			zap.String("status", orderState.Status),
@@ -339,26 +462,39 @@ func (w *MarketWorker) ExecuteCycle(ctx context.Context, profile config.ProfileT
 		)
 	}
 
-	// Update HIGH profile cooldown on any terminal resolution (filled or cancelled)
-	// to ensure repeated large sweep attempts are kept deliberately infrequent
+	// Update adaptive pacing cooldown on terminal resolution if HIGH filled > 0
 	if profile == config.ProfileHigh {
-		w.lastHighAt = time.Now()
+		if filledQty.GreaterThan(decimal.Zero) {
+			var oppositeLevels []redisdepth.DepthLevel
+			if side == "BUY" {
+				oppositeLevels = depth.Asks
+			} else {
+				oppositeLevels = depth.Bids
+			}
+			severity := DetermineSweepSeverity(filledQty, oppositeLevels)
+			sampler := w.postHighCooldownSampler
+			if sampler == nil {
+				sampler = SamplePostHighCooldown
+			}
+			w.adaptivePostHighCooldown = sampler(severity, w.rng)
+			metrics.PostHighCooldownSeconds.WithLabelValues(w.market.MarketID, severity.String()).Observe(w.adaptivePostHighCooldown.Seconds())
+
+			w.logger.Info("Adaptive post-HIGH cooldown calculated",
+				zap.String("market", w.market.MarketID),
+				zap.String("severity", severity.String()),
+				zap.String("filled_qty", filledQty.String()),
+				zap.Duration("cooldown", w.adaptivePostHighCooldown),
+			)
+		} else {
+			// Zero fill: no sweep occurred, no post-HIGH cooldown
+			w.adaptivePostHighCooldown = 0
+			w.logger.Info("HIGH order zero-fill — skipping post-sweep cooldown",
+				zap.String("market", w.market.MarketID),
+				zap.String("order_id", res.OrderID),
+			)
+		}
 	}
 
 	metrics.OrderLatency.WithLabelValues(w.market.MarketID, string(profile)).Observe(time.Since(startTime).Seconds())
 }
 
-
-
-func calculateNextInterval(cfg config.IntervalConfig) time.Duration {
-	jitterPercent := (rand.Float64() * 0.50) - 0.25 // -25% to +25%
-	interval := time.Duration(float64(cfg.BaseInterval) * (1.0 + jitterPercent))
-
-	if interval < cfg.MinInterval {
-		return cfg.MinInterval
-	}
-	if interval > cfg.MaxInterval {
-		return cfg.MaxInterval
-	}
-	return interval
-}

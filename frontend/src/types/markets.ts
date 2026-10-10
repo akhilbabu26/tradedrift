@@ -15,10 +15,14 @@ export interface MarketEntry {
   high24h: string         // "68400.00"
   low24h: string          // "66120.00"
   volume24h: string       // "$1.42B"  (pre-formatted for display)
-  sparklinePoints: number[] // normalized 0–1 values for 7D sparkline
+  sparklinePoints: number[] // normalized 0–1 values for sparkline
   iconColor: string       // "#f7931a"
   iconLabel: string       // "₿"
+  trendStatus?: 'accumulating' | 'provisional' | 'partial' | 'full'
+  trendLabel?: string
+  trendHours?: number
 }
+
 
 /** Data for a single highlight card (Top Gainer / Top Loser / Volume Leader) */
 export interface MarketHighlight {

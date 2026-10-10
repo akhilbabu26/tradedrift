@@ -71,12 +71,84 @@ func (e *Engine) handleTrade(env kafka.TradeEnvelope) {
 		}
 	}
 
-	// Fix 5 (v4): Coalesced zero-drop targeted reconciliation after fill
-	if mmOrderMatched {
+	// Fix 5 (v4): Coalesced zero-drop targeted reconciliation after fill or spread breach
+	spreadBreached := e.CheckSpreadBreach(ev.MarketID)
+	if mmOrderMatched || spreadBreached {
+		if spreadBreached {
+			e.logger.Info("spread breach detected after trade — scheduling targeted reconciliation",
+				zap.String("market_id", ev.MarketID))
+		}
 		e.dirtyMarkets[ev.MarketID] = true
 		e.scheduleTargetedReconcile()
 		e.publishSnapshot()
 	}
+}
+
+// CheckSpreadBreach evaluates whether the market inside spread exceeds the acceptable threshold
+// or if either side of resting liquidity is completely depleted.
+func (e *Engine) CheckSpreadBreach(marketID string) bool {
+	mc := e.cfg.ForMarket(marketID)
+	if mc == nil {
+		return false
+	}
+	bestBid, bestAsk, ok := e.tracker.InsideSpread(marketID)
+	if !ok || bestBid.IsZero() || bestAsk.LessThanOrEqual(bestBid) {
+		// Missing liquidity or crossed book is a spread breach
+		if e.spreadBreachTimes != nil {
+			if _, active := e.spreadBreachTimes[marketID]; !active {
+				e.spreadBreachTimes[marketID] = time.Now()
+				if e.metrics != nil {
+					e.metrics.IncSpreadBreach(marketID)
+				}
+			}
+		}
+		return true
+	}
+	// Spread in basis points: ((bestAsk - bestBid) / bestBid) * 10000
+	spread := bestAsk.Sub(bestBid)
+	spreadBps := spread.Div(bestBid).Mul(decimal.NewFromInt(10000))
+	if e.metrics != nil {
+		e.metrics.SetInsideSpreadBps(marketID, spreadBps.InexactFloat64())
+	}
+
+	// Threshold: use configured SpreadBreachBps if > 0, otherwise derive fallback and log
+	var thresholdBps int64
+	if mc.Repricing.SpreadBreachBps > 0 {
+		thresholdBps = int64(mc.Repricing.SpreadBreachBps)
+	} else {
+		if mc.BidZones.Mid.MaxBps > 0 {
+			thresholdBps = int64(mc.BidZones.Mid.MaxBps * 2)
+		} else {
+			thresholdBps = 50
+		}
+		e.logger.Debug("using derived fallback for SpreadBreachBps",
+			zap.String("market_id", marketID),
+			zap.Int64("fallback_bps", thresholdBps),
+		)
+	}
+
+	breached := spreadBps.GreaterThan(decimal.NewFromInt(thresholdBps))
+	if breached {
+		if e.spreadBreachTimes != nil {
+			if _, active := e.spreadBreachTimes[marketID]; !active {
+				e.spreadBreachTimes[marketID] = time.Now()
+				if e.metrics != nil {
+					e.metrics.IncSpreadBreach(marketID)
+				}
+			}
+		}
+	} else {
+		if e.spreadBreachTimes != nil {
+			if breachStart, active := e.spreadBreachTimes[marketID]; active {
+				if e.metrics != nil {
+					e.metrics.ObserveSpreadRecoveryDuration(marketID, time.Since(breachStart).Seconds())
+				}
+				delete(e.spreadBreachTimes, marketID)
+			}
+		}
+	}
+
+	return breached
 }
 
 func (e *Engine) scheduleTargetedReconcile() {
@@ -218,7 +290,12 @@ func (e *Engine) handleCancellingCheck(ctx context.Context) {
 func (e *Engine) handleExpiryCheck(ctx context.Context) {
 	for _, mc := range e.cfg.Markets {
 		if !e.marketPaused[mc.MarketID] {
+			e.reconciler.CheckConsumedOrders(ctx, mc.MarketID)
 			e.reconciler.CheckExpiredOrders(ctx, mc.MarketID)
+			if e.CheckSpreadBreach(mc.MarketID) {
+				e.dirtyMarkets[mc.MarketID] = true
+				e.scheduleTargetedReconcile()
+			}
 		}
 	}
 }

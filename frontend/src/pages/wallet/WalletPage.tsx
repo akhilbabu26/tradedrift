@@ -17,6 +17,8 @@ export default function WalletPage() {
     topUpHistory,
     loading,
     isDemoData,
+    error,
+    refetch,
     submittingTopUp,
     initiateTopUp,
   } = useWalletData()
@@ -37,6 +39,23 @@ export default function WalletPage() {
   return (
     <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa] flex flex-col justify-between">
       <div className="max-w-[1600px] w-full mx-auto px-4 lg:px-6 py-6 flex flex-col gap-6">
+        {/* Error banner when wallet balances cannot be loaded */}
+        {error && (
+          <div className="bg-[#111318] border border-red-500/30 rounded-lg px-4 py-3 flex items-center justify-between text-xs text-red-400">
+            <span className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
+              Failed to load wallet balances: {error}
+            </span>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              className="px-3 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-300 rounded font-medium transition-colors cursor-pointer"
+            >
+              Retry
+            </button>
+          </div>
+        )}
+
         {/* Demo Data Banner when offline/fallback */}
         {isDemoData && (
           <div className="bg-[#111318] border border-amber-500/30 rounded-lg px-4 py-2.5 flex items-center justify-between text-xs text-amber-400">

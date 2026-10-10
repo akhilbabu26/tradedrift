@@ -4,12 +4,125 @@ import (
 	"context"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 
 	"tradedrift/services/liquidity-engine/internal/config"
 	"tradedrift/services/liquidity-engine/internal/order"
 	"tradedrift/services/liquidity-engine/internal/pricing"
 )
+
+// CheckConsumedOrders inspects RESTING orders and triggers smart replenishment for levels
+// where quantity has been significantly consumed by taker activity:
+// 1. RemainingQty <= 0.50 * OriginalQty (consumed by 50% or more) OR RemainingQty < MinOrderSize.
+// 2. Cooldown Guard: at least RefreshCooldown (default 5s) has elapsed since last refresh for this level.
+// 3. Rate Limiting: at most mc.Repricing.MaxBatch (default 4) orders are refreshed per call.
+//
+// Consumed residual orders are cancelled via DiffCancel without QueueCorrection. Once the cancellation
+// confirms in the Matching Engine, ReconcileMarket detects that the level is absent from the tracker
+// and cleanly creates a fresh level with full target quantity (resolveQtyPerLevel) and a new unique price.
+func (r *Reconciler) CheckConsumedOrders(ctx context.Context, marketID string) (replenishedCount int) {
+	mc := r.cfg.ForMarket(marketID)
+	if mc == nil {
+		return 0
+	}
+
+	snap := r.currentReference(mc)
+	freshness := snap.Freshness
+	if freshness != FreshnessFresh {
+		r.logger.Debug("skipping consumed orders check — reference not FRESH",
+			zap.String("market_id", marketID),
+			zap.String("freshness", freshness.String()))
+		return 0
+	}
+
+	refreshCooldown := mc.Repricing.RefreshCooldown
+	if refreshCooldown <= 0 {
+		refreshCooldown = 5 * time.Second
+	}
+	maxBatch := mc.Repricing.MaxBatch
+	if maxBatch <= 0 {
+		maxBatch = 4
+	}
+
+	allOrders := r.tracker.All(marketID)
+	now := time.Now()
+	type consumedCandidate struct {
+		order  *order.LiveOrder
+		reason string
+	}
+	var consumed []consumedCandidate
+
+	for _, o := range allOrders {
+		if o.Status != order.StatusResting {
+			continue
+		}
+
+		// Check consumption condition: remaining <= threshold of original, or below min order size
+		reason := ""
+		threshold := mc.Repricing.RefreshConsumptionThreshold
+		if threshold.IsZero() {
+			threshold = decimal.NewFromFloat(0.50)
+		}
+		if o.OriginalQty.GreaterThan(decimal.Zero) {
+			thresholdQty := o.OriginalQty.Mul(threshold)
+			if o.RemainingQty.LessThanOrEqual(thresholdQty) {
+				reason = "consumption"
+			}
+		}
+		if !mc.MinOrderSize.IsZero() && o.RemainingQty.LessThan(mc.MinOrderSize) {
+			reason = "dust" // dust takes precedence if below min order size
+		}
+
+		if reason == "" {
+			continue
+		}
+
+		// Enforce refresh cooldown per level
+		if lastRefresh, ok := r.lastRefreshByLevel[o.LevelID]; ok {
+			if now.Sub(lastRefresh) < refreshCooldown {
+				continue
+			}
+		}
+
+		consumed = append(consumed, consumedCandidate{order: o, reason: reason})
+		if len(consumed) >= maxBatch {
+			break
+		}
+	}
+
+	for _, c := range consumed {
+		o := c.order
+		r.logger.Info("order consumed by taker activity — cancelling to trigger smart replenishment",
+			zap.String("market_id", mc.MarketID),
+			zap.String("level_id", o.LevelID),
+			zap.String("side", o.Side),
+			zap.String("reason", c.reason),
+			zap.String("remaining_qty", o.RemainingQty.String()),
+			zap.String("original_qty", o.OriginalQty.String()))
+
+		diffEntry := order.DiffEntry{
+			Action:       order.DiffCancel,
+			LevelID:      o.LevelID,
+			ExistingOID:  o.OrderID,
+			ExistingCOID: o.ClientOrderID,
+		}
+
+		if err := r.applyCancel(ctx, diffEntry, mc); err != nil {
+			r.logger.Warn("failed to apply cancel for consumed order",
+				zap.String("level_id", o.LevelID),
+				zap.Error(err))
+			continue
+		}
+
+		r.lastRefreshByLevel[o.LevelID] = now
+		r.metrics.IncReconcileCancel(mc.MarketID)
+		r.metrics.IncRefresh(mc.MarketID, c.reason)
+		replenishedCount++
+	}
+
+	return replenishedCount
+}
 
 // CheckExpiredOrders examines RESTING orders and expires those older than OrderLifetime.
 // Expired orders are cancelled, and a replacement price is generated for the specific slot's zone
@@ -124,6 +237,7 @@ func (r *Reconciler) CheckExpiredOrders(ctx context.Context, marketID string) (e
 				ExistingCOID: o.ClientOrderID,
 			}
 			_ = r.applyCancel(ctx, diffEntry, mc)
+			r.lastRefreshByLevel[o.LevelID] = now
 			continue
 		}
 
@@ -148,6 +262,7 @@ func (r *Reconciler) CheckExpiredOrders(ctx context.Context, marketID string) (e
 				ExistingCOID: o.ClientOrderID,
 			}
 			_ = r.applyCancel(ctx, diffEntry, mc)
+			r.lastRefreshByLevel[o.LevelID] = now
 			continue
 		}
 
@@ -182,6 +297,7 @@ func (r *Reconciler) CheckExpiredOrders(ctx context.Context, marketID string) (e
 			continue
 		}
 
+		r.lastRefreshByLevel[o.LevelID] = now
 		newLevel := pricing.PriceLevel{
 			LevelID:    o.LevelID,
 			MarketID:   mc.MarketID,
@@ -193,6 +309,8 @@ func (r *Reconciler) CheckExpiredOrders(ctx context.Context, marketID string) (e
 		}
 		r.tracker.QueueCorrection(o.LevelID, newLevel)
 		r.metrics.IncReconcileCorrect(mc.MarketID)
+		r.metrics.IncRepriceEvent(mc.MarketID, "expiry_refresh")
+		r.metrics.IncRefresh(mc.MarketID, "age")
 		expiredCount++
 	}
 

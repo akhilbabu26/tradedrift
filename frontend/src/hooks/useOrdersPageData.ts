@@ -4,12 +4,6 @@ import { walletApi } from '../api/wallet'
 import { tradesApi } from '../api/trades'
 import { wsService, WsChannels, type ConnectionStatus } from '../api/ws'
 import { useAuthStore } from '../store/authStore'
-import {
-  MOCK_ORDERS_KPIS,
-  MOCK_OPEN_ORDERS,
-  MOCK_ORDER_HISTORY,
-  MOCK_TRADE_FILLS,
-} from '../data/ordersMock'
 import type {
   OpenOrderItem,
   OrderHistoryItem,
@@ -19,7 +13,18 @@ import type {
 } from '../types/orders'
 import { toDecimal } from '../utils/decimal'
 import { formatPrice, formatQuantity, formatDate } from '../utils/formatters'
+import { extractApiError } from '../utils/apiError'
 import toast from 'react-hot-toast'
+
+const DEFAULT_ORDERS_KPIS: OrdersKPIs = {
+  activeOrders: 0,
+  todayExecutions: 0,
+  todayExecutionsChange: '+0%',
+  tradedVolume24h: '0.00',
+  tradedVolume24hChange: '+0%',
+  fundsLocked: '0.00',
+  fundsLockedOrderCount: 0,
+}
 
 /** Normalizes backend status strings (including ORDER_STATUS_* enums) to UI display labels and badges */
 export function normalizeOrderStatus(rawStatus: string): OrderStatusUI {
@@ -60,8 +65,9 @@ export function useOrdersPageData() {
   const [openOrders, setOpenOrders] = useState<OpenOrderItem[]>([])
   const [orderHistory, setOrderHistory] = useState<OrderHistoryItem[]>([])
   const [tradeFills, setTradeFills] = useState<TradeFillItem[]>([])
-  const [kpis, setKpis] = useState<OrdersKPIs>(MOCK_ORDERS_KPIS)
+  const [kpis, setKpis] = useState<OrdersKPIs>(DEFAULT_ORDERS_KPIS)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [isDemoData, setIsDemoData] = useState(false)
   const [cancellingId, setCancellingId] = useState<string | null>(null)
   const [wsStatus, setWsStatus] = useState<ConnectionStatus>('connecting')
@@ -69,6 +75,7 @@ export function useOrdersPageData() {
   // ── 1. Fetch Orders, History, and Authoritative KPI Sources ─────────────────
   const loadOrders = useCallback(async () => {
     setLoading(true)
+    setError(null)
 
     try {
       // 1. Fetch orders from authoritative Order API (retrieve up to 100 for user overview)
@@ -205,32 +212,53 @@ export function useOrdersPageData() {
         fundsLockedOrderCount: openCount,
       })
     } catch (err) {
-      console.warn('Orders API unreachable, falling back to deterministic mock dataset', err)
-      setIsDemoData(true)
-      setOpenOrders(MOCK_OPEN_ORDERS)
-      setOrderHistory(MOCK_ORDER_HISTORY)
-      setTradeFills(MOCK_TRADE_FILLS)
-      setKpis(MOCK_ORDERS_KPIS)
+      const errText = extractApiError(err)
+      console.warn('Orders API unreachable:', err)
+      setError(errText)
+      setIsDemoData(false)
+      setOpenOrders([])
+      setOrderHistory([])
+      setTradeFills([])
+      setKpis(DEFAULT_ORDERS_KPIS)
     } finally {
       setLoading(false)
     }
   }, [])
 
-  // ── 2. WebSocket Subscription for Live Order Push Events ───────────────────
+  // ── 2. WebSocket Subscription for Live Order Push Events, Reconnect & Focus ──
   useEffect(() => {
     loadOrders()
 
+    const unsubs: Array<() => void> = []
+
     const unsubWs = wsService.onStatus((_connected, status) => setWsStatus(status))
+    unsubs.push(unsubWs)
+
     const userId = useAuthStore.getState().user?.userId
-    const unsubOrders = userId
-      ? wsService.subscribe(WsChannels.userNotifications(userId), () => {
+    if (userId) {
+      unsubs.push(
+        wsService.subscribe(WsChannels.userNotifications(userId), () => {
           loadOrders()
         })
-      : () => {}
+      )
+      unsubs.push(
+        wsService.subscribe(WsChannels.userPortfolio(userId), () => {
+          loadOrders()
+        })
+      )
+    }
+
+    const unsubReconnect = wsService.onReconnect(() => {
+      loadOrders()
+    })
+    const onFocus = () => {
+      loadOrders()
+    }
+    window.addEventListener('focus', onFocus)
+    unsubs.push(unsubReconnect, () => window.removeEventListener('focus', onFocus))
 
     return () => {
-      unsubWs()
-      unsubOrders()
+      unsubs.forEach((u) => u())
     }
   }, [loadOrders])
 
@@ -295,6 +323,7 @@ export function useOrdersPageData() {
     tradeFills,
     kpis,
     loading,
+    error,
     isDemoData,
     cancellingId,
     wsStatus,

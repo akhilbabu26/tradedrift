@@ -47,6 +47,20 @@ func marketNode(side orderbook.SideType, qty string) *orderbook.OrderNode {
 	}
 }
 
+func marketNodeWithProtection(side orderbook.SideType, qty, protectionPrice string) *orderbook.OrderNode {
+	return &orderbook.OrderNode{
+		OrderID:      uuid.New(),
+		UserID:       uuid.New(),
+		MarketID:     "BTC-USDT",
+		Side:         side,
+		OrderType:    orderbook.OrderTypeMarket,
+		Price:        decimal.RequireFromString(protectionPrice),
+		OriginalQty:  decimal.RequireFromString(qty),
+		RemainingQty: decimal.RequireFromString(qty),
+		Timestamp:    time.Now(),
+	}
+}
+
 func d(s string) decimal.Decimal { return decimal.RequireFromString(s) }
 
 // ─── Insert Tests ─────────────────────────────────────────────────────────────
@@ -132,7 +146,7 @@ func TestCancel_RemovesFromBook(t *testing.T) {
 	node := limitNode(orderbook.SideBuy, "100", "1")
 	matcher.Insert(book, node)
 
-	result := matcher.Cancel(book, node.OrderID)
+	result := matcher.Cancel(book, node.OrderID, node.UserID)
 
 	if result.Status != orderbook.CancelStatusRemovedFromBook {
 		t.Fatalf("expected REMOVED_FROM_BOOK, got %q", result.Status)
@@ -151,9 +165,49 @@ func TestCancel_RemovesFromBook(t *testing.T) {
 	}
 }
 
+func TestCancel_WrongUser_DoesNotRemoveOrder(t *testing.T) {
+	book := newBook()
+	node := limitNode(orderbook.SideBuy, "100", "1")
+	matcher.Insert(book, node)
+
+	wrongUser := uuid.New()
+	result := matcher.Cancel(book, node.OrderID, wrongUser)
+
+	if result.Status != orderbook.CancelStatusUserMismatch {
+		t.Fatalf("expected USER_MISMATCH, got %q", result.Status)
+	}
+	if result.OrderID != node.OrderID {
+		t.Fatalf("expected OrderID=%s, got %s", node.OrderID, result.OrderID)
+	}
+	if result.UserID != node.UserID {
+		t.Fatalf("expected authoritative owner UserID=%s, got %s", node.UserID, result.UserID)
+	}
+
+	// Invariant: Order must remain active in the book
+	if book.OrderIndex[node.OrderID] == nil {
+		t.Fatal("expected node to still exist in OrderIndex")
+	}
+	level := book.Bids.PriceLevels["100"]
+	if level == nil || level.Orders.Len() != 1 {
+		t.Fatal("expected price level to still contain the order")
+	}
+	if !level.TotalQty.Equal(d("1")) {
+		t.Fatalf("expected level TotalQty=1, got %s", level.TotalQty)
+	}
+
+	// Verify order remains cancellable by legitimate owner
+	legitResult := matcher.Cancel(book, node.OrderID, node.UserID)
+	if legitResult.Status != orderbook.CancelStatusRemovedFromBook {
+		t.Fatalf("expected legitimate cancel to succeed with REMOVED_FROM_BOOK, got %q", legitResult.Status)
+	}
+	if book.OrderIndex[node.OrderID] != nil {
+		t.Fatal("expected order removed after legitimate owner cancel")
+	}
+}
+
 func TestCancel_NotFound_ReturnsAlreadyAbsent(t *testing.T) {
 	book := newBook()
-	result := matcher.Cancel(book, uuid.New())
+	result := matcher.Cancel(book, uuid.New(), uuid.New())
 	if result.Status != orderbook.CancelStatusAlreadyAbsent {
 		t.Fatalf("expected ALREADY_ABSENT for unknown order ID, got %q", result.Status)
 	}
@@ -164,8 +218,8 @@ func TestCancel_Idempotent(t *testing.T) {
 	node := limitNode(orderbook.SideBuy, "100", "1")
 	matcher.Insert(book, node)
 
-	first := matcher.Cancel(book, node.OrderID)
-	second := matcher.Cancel(book, node.OrderID) // second cancel of same order
+	first := matcher.Cancel(book, node.OrderID, node.UserID)
+	second := matcher.Cancel(book, node.OrderID, node.UserID) // second cancel of same order
 
 	if first.Status != orderbook.CancelStatusRemovedFromBook {
 		t.Fatalf("expected first cancel to be REMOVED_FROM_BOOK, got %q", first.Status)
@@ -182,7 +236,7 @@ func TestCancel_LevelRetainedIfOtherOrdersExist(t *testing.T) {
 	matcher.Insert(book, a)
 	matcher.Insert(book, b)
 
-	matcher.Cancel(book, a.OrderID)
+	matcher.Cancel(book, a.OrderID, a.UserID)
 
 	level := book.Bids.PriceLevels["100"]
 	if level == nil {
@@ -618,6 +672,211 @@ func TestMatch_DeterministicTradeIDs(t *testing.T) {
 
 	if id1 == id3 {
 		t.Errorf("expected trade IDs to differ for different eventIDs: %s vs %s", id1, id3)
+	}
+}
+
+// ─── Protection Price (Slippage Boundary) Tests ───────────────────────────────
+
+func TestMarketOrder_BuyProtectionPrice_EnforcesCeiling(t *testing.T) {
+	book := newBook()
+	// Insert 4 ask levels
+	matcher.Insert(book, limitNode(orderbook.SideSell, "85020", "0.10"))
+	matcher.Insert(book, limitNode(orderbook.SideSell, "85040", "0.05"))
+	matcher.Insert(book, limitNode(orderbook.SideSell, "85060", "0.05"))
+	matcher.Insert(book, limitNode(orderbook.SideSell, "85080", "0.10"))
+
+	// Incoming BUY market order with protection price 85060 requesting 0.30
+	incoming := marketNodeWithProtection(orderbook.SideBuy, "0.30", "85060")
+	fills := match(book, incoming, matcher.ModeLive)
+
+	// Must match 85020, 85040, 85060 and STOP before 85080
+	if len(fills) != 3 {
+		t.Fatalf("expected exactly 3 fills, got %d", len(fills))
+	}
+
+	expectedPrices := []string{"85020", "85040", "85060"}
+	expectedQtys := []string{"0.10", "0.05", "0.05"}
+	for i, f := range fills {
+		if !f.Price.Equal(d(expectedPrices[i])) {
+			t.Errorf("fill %d price mismatch: want %s got %s", i, expectedPrices[i], f.Price.String())
+		}
+		if !f.Quantity.Equal(d(expectedQtys[i])) {
+			t.Errorf("fill %d qty mismatch: want %s got %s", i, expectedQtys[i], f.Quantity.String())
+		}
+	}
+
+	// Remaining uncrossed quantity must be 0.10 (0.30 - 0.20)
+	if !incoming.RemainingQty.Equal(d("0.10")) {
+		t.Fatalf("expected RemainingQty=0.10, got %s", incoming.RemainingQty.String())
+	}
+
+	// Level 85080 must remain untouched on the book
+	ask85080 := book.Asks.PriceLevels["85080"]
+	if ask85080 == nil || !ask85080.TotalQty.Equal(d("0.10")) {
+		t.Fatalf("level 85080 was modified unexpectedly: %v", ask85080)
+	}
+}
+
+func TestMarketOrder_SellProtectionPrice_EnforcesFloor(t *testing.T) {
+	book := newBook()
+	// Insert 4 bid levels
+	matcher.Insert(book, limitNode(orderbook.SideBuy, "84980", "0.10"))
+	matcher.Insert(book, limitNode(orderbook.SideBuy, "84960", "0.10"))
+	matcher.Insert(book, limitNode(orderbook.SideBuy, "84940", "0.05"))
+	matcher.Insert(book, limitNode(orderbook.SideBuy, "84920", "0.10"))
+
+	// Incoming SELL market order with protection price 84940 requesting 0.35
+	incoming := marketNodeWithProtection(orderbook.SideSell, "0.35", "84940")
+	fills := match(book, incoming, matcher.ModeLive)
+
+	// Must match 84980, 84960, 84940 and STOP before 84920
+	if len(fills) != 3 {
+		t.Fatalf("expected exactly 3 fills, got %d", len(fills))
+	}
+
+	expectedPrices := []string{"84980", "84960", "84940"}
+	expectedQtys := []string{"0.10", "0.10", "0.05"}
+	for i, f := range fills {
+		if !f.Price.Equal(d(expectedPrices[i])) {
+			t.Errorf("fill %d price mismatch: want %s got %s", i, expectedPrices[i], f.Price.String())
+		}
+		if !f.Quantity.Equal(d(expectedQtys[i])) {
+			t.Errorf("fill %d qty mismatch: want %s got %s", i, expectedQtys[i], f.Quantity.String())
+		}
+	}
+
+	// Remaining uncrossed quantity must be 0.10 (0.35 - 0.25)
+	if !incoming.RemainingQty.Equal(d("0.10")) {
+		t.Fatalf("expected RemainingQty=0.10, got %s", incoming.RemainingQty.String())
+	}
+
+	// Level 84920 must remain untouched on the book
+	bid84920 := book.Bids.PriceLevels["84920"]
+	if bid84920 == nil || !bid84920.TotalQty.Equal(d("0.10")) {
+		t.Fatalf("level 84920 was modified unexpectedly: %v", bid84920)
+	}
+}
+
+func TestMarketOrder_Unprotected_SweepsAllLevels(t *testing.T) {
+	book := newBook()
+	matcher.Insert(book, limitNode(orderbook.SideSell, "85020", "0.10"))
+	matcher.Insert(book, limitNode(orderbook.SideSell, "85040", "0.05"))
+	matcher.Insert(book, limitNode(orderbook.SideSell, "85060", "0.05"))
+	matcher.Insert(book, limitNode(orderbook.SideSell, "85080", "0.10"))
+
+	// Unprotected incoming BUY market order (price = 0)
+	incoming := marketNode(orderbook.SideBuy, "0.30")
+	fills := match(book, incoming, matcher.ModeLive)
+
+	// Must match all 4 levels including 85080
+	if len(fills) != 4 {
+		t.Fatalf("expected 4 fills, got %d", len(fills))
+	}
+	if incoming.RemainingQty.String() != "0" {
+		t.Fatalf("expected RemainingQty=0, got %s", incoming.RemainingQty.String())
+	}
+}
+
+// TestMicrostructureAcceptance_NaturalCandleFormedBySweptLevels validates the Phase 5 acceptance criterion:
+// When LE populates a ladder and CTS sweeps across multiple price levels with a MARKET order bounded by
+// a protection price, the trades emitted by ME naturally form a multi-price candle without any
+// artificial candle manufacturing.
+//
+// Reference: 85,000
+// LE Order Book:
+//   Best Ask: 0.10 @ 85,020
+//   L2 Ask:   0.05 @ 85,040
+//   L3 Ask:   0.03 @ 85,060
+// CTS:
+//   Profile:    MID/SWEEP
+//   Side:       BUY
+//   Qty:        0.18 BTC
+//   Protection: 85,070
+// ME Fills:
+//   0.10 @ 85,020
+//   0.05 @ 85,040
+//   0.03 @ 85,060
+// Natural Candle:
+//   Open: 85,020 | High: 85,060 | Low: 85,020 | Close: 85,060 | Volume: 0.18
+func TestMicrostructureAcceptance_NaturalCandleFormedBySweptLevels(t *testing.T) {
+	book := newBook()
+
+	// 1. LE provides depth across 3 distinct ask levels
+	matcher.Insert(book, limitNode(orderbook.SideSell, "85020", "0.10"))
+	matcher.Insert(book, limitNode(orderbook.SideSell, "85040", "0.05"))
+	matcher.Insert(book, limitNode(orderbook.SideSell, "85060", "0.03"))
+
+	// 2. CTS submits MARKET IOC order with quantity 0.18 BTC and protection price 85,070
+	incoming := marketNode(orderbook.SideBuy, "0.18")
+	incoming.Price = d("85070") // Hard execution protection ceiling
+
+	// 3. ME matches deterministically
+	fills := match(book, incoming, matcher.ModeLive)
+
+	if len(fills) != 3 {
+		t.Fatalf("expected 3 fills from multi-level sweep, got %d", len(fills))
+	}
+
+	expectedFills := []struct {
+		price string
+		qty   string
+	}{
+		{"85020", "0.10"},
+		{"85040", "0.05"},
+		{"85060", "0.03"},
+	}
+
+	for i, exp := range expectedFills {
+		if !fills[i].Price.Equal(d(exp.price)) {
+			t.Errorf("fill %d price mismatch: want %s, got %s", i, exp.price, fills[i].Price.String())
+		}
+		if !fills[i].Quantity.Equal(d(exp.qty)) {
+			t.Errorf("fill %d quantity mismatch: want %s, got %s", i, exp.qty, fills[i].Quantity.String())
+		}
+	}
+
+	// 4. Invariant: remaining quantity must be 0 (all filled within protection boundary)
+	if !incoming.RemainingQty.IsZero() {
+		t.Fatalf("expected entire 0.18 qty filled, remaining: %s", incoming.RemainingQty.String())
+	}
+
+	// 5. Construct candle purely from the emitted trades
+	var candleOpen, candleHigh, candleLow, candleClose, candleVolume decimal.Decimal
+	candleVolume = decimal.Zero
+
+	for i, trade := range fills {
+		candleVolume = candleVolume.Add(trade.Quantity)
+		if i == 0 {
+			candleOpen = trade.Price
+			candleHigh = trade.Price
+			candleLow = trade.Price
+			candleClose = trade.Price
+			continue
+		}
+		if trade.Price.GreaterThan(candleHigh) {
+			candleHigh = trade.Price
+		}
+		if trade.Price.LessThan(candleLow) {
+			candleLow = trade.Price
+		}
+		candleClose = trade.Price
+	}
+
+	// 6. Verify candle values match expected realistic candle
+	if !candleOpen.Equal(d("85020")) {
+		t.Errorf("candle Open: want 85020, got %s", candleOpen)
+	}
+	if !candleHigh.Equal(d("85060")) {
+		t.Errorf("candle High: want 85060, got %s", candleHigh)
+	}
+	if !candleLow.Equal(d("85020")) {
+		t.Errorf("candle Low: want 85020, got %s", candleLow)
+	}
+	if !candleClose.Equal(d("85060")) {
+		t.Errorf("candle Close: want 85060, got %s", candleClose)
+	}
+	if !candleVolume.Equal(d("0.18")) {
+		t.Errorf("candle Volume: want 0.18, got %s", candleVolume)
 	}
 }
 

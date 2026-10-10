@@ -4,6 +4,7 @@ package health
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -29,15 +30,20 @@ type Server struct {
 	redisReader RedisDepthPinger
 	orderClient OrderPinger
 	markets     []config.MarketConfig
+	maxDepthAge time.Duration
 	logger      *zap.Logger
 }
 
 // NewServer creates a new health probe server.
-func NewServer(port string, redisReader RedisDepthPinger, orderClient OrderPinger, markets []config.MarketConfig, logger *zap.Logger) *Server {
+func NewServer(port string, redisReader RedisDepthPinger, orderClient OrderPinger, markets []config.MarketConfig, maxDepthAge time.Duration, logger *zap.Logger) *Server {
+	if maxDepthAge <= 0 {
+		maxDepthAge = 5 * time.Second
+	}
 	s := &Server{
 		redisReader: redisReader,
 		orderClient: orderClient,
 		markets:     markets,
+		maxDepthAge: maxDepthAge,
 		logger:      logger,
 	}
 
@@ -130,7 +136,7 @@ func (s *Server) HandleReadyz(w http.ResponseWriter, r *http.Request) {
 		depth, err := s.redisReader.GetDepth(ctx, m.MarketID)
 		isMarketReady := false
 		if err == nil && depth != nil && len(depth.Bids) > 0 && len(depth.Asks) > 0 {
-			if !depth.SnapshotAt.IsZero() && time.Since(depth.SnapshotAt) <= 5*time.Second {
+			if !depth.SnapshotAt.IsZero() && time.Since(depth.SnapshotAt) <= s.maxDepthAge {
 				isMarketReady = true
 				anyMarketReady = true
 			}
@@ -144,7 +150,7 @@ func (s *Server) HandleReadyz(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ready":   false,
 			"markets": marketStatus,
-			"reason":  "no configured market has active and fresh (<5s) order book depth",
+			"reason":  fmt.Sprintf("no configured market has active and fresh (<%s) order book depth", s.maxDepthAge),
 		})
 		return
 	}

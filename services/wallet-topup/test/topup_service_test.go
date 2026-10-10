@@ -155,3 +155,40 @@ func TestCreateTopUp_ProviderFailureRollback(t *testing.T) {
 		t.Errorf("expected 10 remaining quota, got %d", usage.RemainingINR)
 	}
 }
+
+func TestListTopUps_Success(t *testing.T) {
+	svc, _, _, _, _, _ := setupTopUpService(10)
+
+	ctx := context.Background()
+	userID := "user-list-test"
+
+	// Create 2 top ups for this user
+	_, err := svc.CreateTopUp(ctx, userID, "key-1", 2)
+	if err != nil {
+		t.Fatalf("failed to create top up 1: %v", err)
+	}
+	_, err = svc.CreateTopUp(ctx, userID, "key-2", 3)
+	if err != nil {
+		t.Fatalf("failed to create top up 2: %v", err)
+	}
+
+	// Create a top up for another user to verify user isolation
+	_, err = svc.CreateTopUp(ctx, "other-user", "key-3", 1)
+	if err != nil {
+		t.Fatalf("failed to create top up for other user: %v", err)
+	}
+
+	orders, err := svc.ListTopUps(ctx, userID, 10)
+	if err != nil {
+		t.Fatalf("failed to list top ups: %v", err)
+	}
+
+	if len(orders) != 2 {
+		t.Fatalf("expected 2 orders for user %s, got %d", userID, len(orders))
+	}
+	for _, o := range orders {
+		if o.UserID != userID {
+			t.Errorf("expected user ID %s, got %s (isolation breach)", userID, o.UserID)
+		}
+	}
+}

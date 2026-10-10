@@ -23,9 +23,12 @@ type PortfolioOverviewProps = Pick<
   | 'allTimeProfit'
   | 'winRate'
   | 'totalTrades'
->
+> & {
+  activePeriod?: PeriodTab
+  onPeriodChange?: (period: PeriodTab) => void
+}
 
-const PERIOD_TABS: PeriodTab[] = ['7D', '30D', '90D', '1Y']
+const PERIOD_TABS: PeriodTab[] = ['24H', '7D', '30D', '90D', '1Y']
 
 /**
  * Full-width Portfolio Overview card.
@@ -51,8 +54,17 @@ export default function PortfolioOverview({
   allTimeProfit,
   winRate,
   totalTrades,
+  activePeriod: controlledPeriod,
+  onPeriodChange,
 }: PortfolioOverviewProps) {
-  const [activePeriod, setActivePeriod] = useState<PeriodTab>('7D')
+  const [localPeriod, setLocalPeriod] = useState<PeriodTab>('7D')
+  const activePeriod = controlledPeriod ?? localPeriod
+
+  const handlePeriodClick = (tab: PeriodTab) => {
+    setLocalPeriod(tab)
+    onPeriodChange?.(tab)
+  }
+
 
   return (
     <div className="bg-[#111318] border border-[#1e2530] rounded-lg p-5 mb-4">
@@ -70,7 +82,7 @@ export default function PortfolioOverview({
                 key={tab}
                 role="tab"
                 aria-selected={activePeriod === tab}
-                onClick={() => setActivePeriod(tab)}
+                onClick={() => handlePeriodClick(tab)}
                 className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
                   activePeriod === tab
                     ? 'bg-[#10b981] text-[#0a0b0e]'

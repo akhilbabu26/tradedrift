@@ -1,10 +1,13 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { OrderSide, OrderType, Market, Balance, CreateOrderRequest } from '../../types/trade'
 import OrderForm from './OrderForm'
 
 interface OrderEntryProps {
   market: Market
   lastPrice: string
+  bestAsk?: string
+  bestBid?: string
+  selectedPrice?: string | null
   quoteBalance: Balance
   baseBalance: Balance
   submitting: boolean
@@ -24,6 +27,9 @@ const ORDER_TYPES: { key: OrderType; label: string }[] = [
 export default function OrderEntry({
   market,
   lastPrice,
+  bestAsk,
+  bestBid,
+  selectedPrice,
   quoteBalance,
   baseBalance,
   submitting,
@@ -31,6 +37,13 @@ export default function OrderEntry({
 }: OrderEntryProps) {
   const [side,      setSide]      = useState<OrderSide>('BUY')
   const [orderType, setOrderType] = useState<OrderType>('LIMIT')
+
+  // When a price is clicked from the Order Book, automatically switch to LIMIT tab
+  useEffect(() => {
+    if (selectedPrice) {
+      setOrderType('LIMIT')
+    }
+  }, [selectedPrice])
 
   return (
     /*
@@ -96,6 +109,9 @@ export default function OrderEntry({
           orderType={orderType}
           market={market}
           lastPrice={lastPrice}
+          bestAsk={bestAsk}
+          bestBid={bestBid}
+          selectedPrice={selectedPrice}
           availableQuote={quoteBalance}
           availableBase={baseBalance}
           submitting={submitting}

@@ -121,3 +121,27 @@ func (h *TopUpHandler) HandleGetTopUpByID(w http.ResponseWriter, r *http.Request
 	writeJSON(w, http.StatusOK, ToTopUpDTO(order))
 }
 
+// HandleListTopUps handles GET /api/v1/topups
+func (h *TopUpHandler) HandleListTopUps(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromContext(r.Context())
+	if userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	orders, err := h.topupService.ListTopUps(r.Context(), userID, 50)
+	if err != nil {
+		h.log.Error("HandleListTopUps error", zap.Error(err))
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list top-up orders"})
+		return
+	}
+
+	dtos := make([]*CreateTopUpResponseDTO, 0, len(orders))
+	for _, o := range orders {
+		dtos = append(dtos, ToTopUpDTO(o))
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"topups": dtos})
+}
+
+

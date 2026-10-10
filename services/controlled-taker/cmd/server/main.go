@@ -40,8 +40,13 @@ func main() {
 		logger.Fatal("Failed to load configuration", zap.Error(err))
 	}
 
+	// 2b. Validate Regime Configuration at startup (CTS-3)
+	if err := engine.ValidateRegimeConfigs(engine.DefaultRegimeConfigs()); err != nil {
+		logger.Fatal("Failed to validate default regime configurations", zap.Error(err))
+	}
+
 	// 3. Connect to Redis Depth Reader
-	redisReader, err := redisdepth.NewReader(cfg.RedisAddr, logger)
+	redisReader, err := redisdepth.NewReaderWithMaxAge(cfg.RedisAddr, cfg.MaxDepthAge, logger)
 	if err != nil {
 		logger.Fatal("Failed to initialize Redis depth reader", zap.Error(err))
 	}
@@ -57,7 +62,7 @@ func main() {
 	logger.Info("Connected to Order Service gRPC", zap.String("addr", cfg.OrderGRPCAddr))
 
 	// 5. Start Health & Metrics Servers
-	healthServer := health.NewServer(cfg.HealthPort, redisReader, ordersClient, cfg.Markets, logger)
+	healthServer := health.NewServer(cfg.HealthPort, redisReader, ordersClient, cfg.Markets, cfg.MaxDepthAge, logger)
 	healthServer.Start()
 
 	metricsServer := metrics.NewServer(cfg.MetricsPort, logger)

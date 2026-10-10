@@ -86,12 +86,8 @@ func HandleOrderCommand(msg kafkago.Message, route routeFunc) (bool, error) {
 		if err != nil {
 			return false, fmt.Errorf("invalid user_id %q: %w", p.UserID, err)
 		}
-		price, err := decimal.NewFromString(p.Price)
-		if err != nil {
-			return false, fmt.Errorf("invalid price %q: %w", p.Price, err)
-		}
 		quantity, err := decimal.NewFromString(p.Quantity)
-		if err != nil {
+		if err != nil || !quantity.GreaterThan(decimal.Zero) {
 			return false, fmt.Errorf("invalid quantity %q: %w", p.Quantity, err)
 		}
 		side, err := parseSide(p.Side)
@@ -101,6 +97,25 @@ func HandleOrderCommand(msg kafkago.Message, route routeFunc) (bool, error) {
 		orderType, err := parseOrderType(p.OrderType)
 		if err != nil {
 			return false, err
+		}
+
+		var price decimal.Decimal
+		if p.Price != "" {
+			var err error
+			price, err = decimal.NewFromString(p.Price)
+			if err != nil || price.LessThan(decimal.Zero) {
+				return false, fmt.Errorf("invalid price %q: %w", p.Price, err)
+			}
+		}
+		if orderType == orderbook.OrderTypeLimit && !price.GreaterThan(decimal.Zero) {
+			return false, fmt.Errorf("limit order requires positive price, got %q", p.Price)
+		}
+
+		occurredAt := env.OccurredAt
+		if occurredAt.IsZero() {
+			occurredAt = time.Now().UTC()
+		} else if occurredAt.After(time.Now().Add(5 * time.Minute)) {
+			occurredAt = time.Now().UTC()
 		}
 
 		queue <- market.InputEvent{
@@ -115,6 +130,7 @@ func HandleOrderCommand(msg kafkago.Message, route routeFunc) (bool, error) {
 				Price:         price,
 				Quantity:      quantity,
 				ClientOrderID: p.ClientOrderID,
+				OccurredAt:    occurredAt,
 			},
 			Topic:     msg.Topic,
 			Partition: msg.Partition,

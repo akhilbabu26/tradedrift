@@ -60,17 +60,31 @@ func (m *MarketEngine) Run(ctx context.Context) {
 			}
 
 			if event.Offset <= m.lastAppliedOffset {
+				m.OutputQueue <- orderbook.MatchResult{
+					SourcePosition: orderbook.KafkaPosition{
+						Topic:     event.Topic,
+						Partition: event.Partition,
+						Offset:    event.Offset,
+					},
+					DepthSnapshot: matcher.GetDepth(m.book, 20),
+				}
 				continue // skip redelivery
 			}
 
-			// INVARIANT (Issue #10): Fail-Closed on logical duplicates.
-			if event.EventID != uuid.Nil {
-				if m.processedEvents[event.EventID] {
-					log.Printf("[market] FATAL: duplicate logical event_id detected (market=%s event_id=%s offset=%d) — fail-closed triggered",
-						m.MarketID, event.EventID, event.Offset)
-					m.TriggerFatalHalt()
-					return
+			// In-memory fast-path deduplication: drop duplicate events idempotently (at-least-once delivery)
+			if event.EventID != uuid.Nil && m.processedEvents[event.EventID] {
+				log.Printf("[market] WARN: duplicate logical event_id detected (market=%s event_id=%s offset=%d) — skipping redelivery",
+					m.MarketID, event.EventID, event.Offset)
+				m.lastAppliedOffset = event.Offset
+				m.OutputQueue <- orderbook.MatchResult{
+					SourcePosition: orderbook.KafkaPosition{
+						Topic:     event.Topic,
+						Partition: event.Partition,
+						Offset:    event.Offset,
+					},
+					DepthSnapshot: matcher.GetDepth(m.book, 20),
 				}
+				continue
 			}
 
 			res, err := m.applyEvent(event)
@@ -134,10 +148,10 @@ func (m *MarketEngine) Run(ctx context.Context) {
 					}
 
 					if event.EventID != uuid.Nil && m.processedEvents[event.EventID] {
-						log.Printf("[market] FATAL: duplicate logical event_id detected during shutdown (market=%s event_id=%s offset=%d)",
+						log.Printf("[market] WARN: duplicate logical event_id detected during shutdown (market=%s event_id=%s offset=%d) — skipping redelivery",
 							m.MarketID, event.EventID, event.Offset)
-						m.TriggerFatalHalt()
-						return
+						m.lastAppliedOffset = event.Offset
+						continue
 					}
 
 					res, err := m.applyEvent(event)
@@ -191,6 +205,37 @@ func (m *MarketEngine) applyEvent(event InputEvent) (*orderbook.MatchResult, err
 	switch event.Type {
 	case EventOrderCreated:
 		p := event.OrderCreated
+		if p.MarketID != m.MarketID {
+			log.Printf("[market] ERROR: market mismatch for order %s: payload market %q != engine %q",
+				p.OrderID, p.MarketID, m.MarketID)
+			return &orderbook.MatchResult{
+				CancelResult: &orderbook.CancelledOrder{
+					OrderID:           p.OrderID,
+					UserID:            p.UserID,
+					MarketID:          p.MarketID,
+					RemainingQuantity: p.Quantity,
+					Reason:            "invalid_market_id",
+					CancelStatus:      orderbook.CancelStatusInvalidRequest,
+					CancelledAt:       time.Now(),
+					SourceOffset:      event.Offset,
+				},
+				DepthSnapshot: matcher.GetDepth(m.book, 20),
+				SourcePosition: orderbook.KafkaPosition{
+					Topic:     event.Topic,
+					Partition: event.Partition,
+					Offset:    event.Offset,
+				},
+			}, nil
+		}
+
+		nodeTimestamp := p.OccurredAt
+		if nodeTimestamp.IsZero() {
+			nodeTimestamp = time.Now().UTC()
+		} else if nodeTimestamp.After(time.Now().Add(5 * time.Minute)) {
+			log.Printf("[event_loop] order %s has far-future OccurredAt %s — clamping to host time", p.OrderID, nodeTimestamp)
+			nodeTimestamp = time.Now().UTC()
+		}
+
 		node := &orderbook.OrderNode{
 			OrderID:       p.OrderID,
 			UserID:        p.UserID,
@@ -200,7 +245,7 @@ func (m *MarketEngine) applyEvent(event InputEvent) (*orderbook.MatchResult, err
 			Price:         p.Price,
 			OriginalQty:   p.Quantity,
 			RemainingQty:  p.Quantity,
-			Timestamp:     time.Now(),
+			Timestamp:     nodeTimestamp,
 			ClientOrderID: p.ClientOrderID,
 		}
 
@@ -270,13 +315,42 @@ func (m *MarketEngine) applyEvent(event InputEvent) (*orderbook.MatchResult, err
 
 	case EventOrderCancel:
 		p := event.OrderCancel
-		outcome := matcher.Cancel(m.book, p.OrderID)
+		if p.MarketID != m.MarketID {
+			log.Printf("[cancel] ERROR: market mismatch for cancel %s: payload market %q != engine %q",
+				p.OrderID, p.MarketID, m.MarketID)
+			return &orderbook.MatchResult{
+				CancelResult: &orderbook.CancelledOrder{
+					OrderID:      p.OrderID,
+					UserID:       p.UserID,
+					MarketID:     p.MarketID,
+					Reason:       "invalid_market_id",
+					CancelStatus: orderbook.CancelStatusInvalidRequest,
+					CancelledAt:  time.Now(),
+					SourceOffset: event.Offset,
+				},
+				DepthSnapshot: matcher.GetDepth(m.book, 20),
+				SourcePosition: orderbook.KafkaPosition{
+					Topic:     event.Topic,
+					Partition: event.Partition,
+					Offset:    event.Offset,
+				},
+			}, nil
+		}
 
+		outcome := matcher.Cancel(m.book, p.OrderID, p.UserID)
+
+		reason := "user_requested"
 		if outcome.Status == orderbook.CancelStatusRemovedFromBook {
 			// Order found and removed. Increment sequence to maintain monotonic book state.
 			m.book.Sequence++
 			log.Printf("[cancel] REMOVED_FROM_BOOK market=%s order=%s remaining=%s",
 				p.MarketID, outcome.OrderID, outcome.RemainingQuantity.String())
+		} else if outcome.Status == orderbook.CancelStatusUserMismatch {
+			// USER_MISMATCH: Order exists but does not belong to the requested user.
+			// Do NOT mutate order book. Do NOT increment sequence.
+			reason = "user_mismatch"
+			log.Printf("[cancel] USER_MISMATCH market=%s order=%s requested_user=%s owner_user=%s",
+				p.MarketID, outcome.OrderID, p.UserID, outcome.UserID)
 		} else {
 			// ALREADY_ABSENT: matcher.Cancel() cannot recover identity
 			// because the order is no longer in the book.
@@ -288,14 +362,14 @@ func (m *MarketEngine) applyEvent(event InputEvent) (*orderbook.MatchResult, err
 		}
 
 		// CancelResult is ALWAYS non-nil. The publisher emits OrderCancelOutcome
-		// for both statuses so Order Service always receives an authoritative answer.
+		// for all statuses so Order Service always receives an authoritative answer.
 		return &orderbook.MatchResult{
 			CancelResult: &orderbook.CancelledOrder{
 				OrderID:           outcome.OrderID,
 				UserID:            outcome.UserID,
 				MarketID:          outcome.MarketID,
 				RemainingQuantity: outcome.RemainingQuantity,
-				Reason:            "user_requested",
+				Reason:            reason,
 				CancelStatus:      outcome.Status,
 				CancelledAt:       time.Now(),
 				SourceOffset:      event.Offset,
@@ -314,7 +388,17 @@ func (m *MarketEngine) applyEvent(event InputEvent) (*orderbook.MatchResult, err
 }
 
 func validTickAndLot(node *orderbook.OrderNode, config MarketConfig) bool {
+	// LIMIT order price must align to TickSize
 	if node.OrderType == orderbook.OrderTypeLimit {
+		if config.TickSize.GreaterThan(decimal.Zero) {
+			remainder := node.Price.Mod(config.TickSize)
+			if !remainder.IsZero() {
+				return false
+			}
+		}
+	}
+	// MARKET order with protection price (> 0) must also align to TickSize
+	if node.OrderType == orderbook.OrderTypeMarket && node.Price.GreaterThan(decimal.Zero) {
 		if config.TickSize.GreaterThan(decimal.Zero) {
 			remainder := node.Price.Mod(config.TickSize)
 			if !remainder.IsZero() {

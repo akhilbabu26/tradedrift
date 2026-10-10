@@ -4,13 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
+	"fmt"
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
 	"go.uber.org/zap"
 
 	"tradedrift/services/order/internal/repository"
+	"tradedrift/services/order/internal/wallet"
 )
 
 type WalletClient interface {
@@ -74,61 +75,10 @@ func (c *CancelConsumer) Start(ctx context.Context) {
 			continue
 		}
 
-		var ev OrderCancelledEvent
-		if err := json.Unmarshal(msg.Value, &ev); err != nil {
-			c.logger.Error("Failed to deserialize OrderCancelled event",
-				zap.Int("partition", msg.Partition),
-				zap.Int64("offset", msg.Offset),
-				zap.Error(err),
-			)
-			if commitErr := c.reader.CommitMessages(ctx, msg); commitErr != nil {
-				c.logger.Error("Failed to commit offset for malformed cancel message", zap.Error(commitErr))
-			}
+		if err := c.ProcessMessage(ctx, msg); err != nil {
+			c.logger.Error("Failed to process cancel message — retrying", zap.Error(err))
+			time.Sleep(500 * time.Millisecond)
 			continue
-		}
-
-		if ev.OrderID != "" {
-			if ev.Status == "ALREADY_ABSENT" {
-				c.logger.Info("Order was already absent from matching engine (already filled or settled); skipping cancel and fund release",
-					zap.String("order_id", ev.OrderID),
-				)
-				if commitErr := c.reader.CommitMessages(ctx, msg); commitErr != nil {
-					c.logger.Error("Failed to commit offset for ALREADY_ABSENT cancel message", zap.Error(commitErr))
-				}
-				continue
-			}
-
-			// 1. Mark order as CANCELLED in database
-			if _, err := c.repo.MarkOrderCancelled(ctx, ev.OrderID); err != nil {
-				c.logger.Error("Failed to mark order as cancelled — retrying",
-					zap.String("order_id", ev.OrderID),
-					zap.Error(err),
-				)
-				continue
-			}
-
-			// 2. Release reserved funds in Wallet Service
-			if c.wallet != nil {
-				if err := c.wallet.ReleaseFunds(ctx, ev.OrderID); err != nil {
-					if strings.Contains(err.Error(), "reservation not found") {
-						c.logger.Debug("No reservation found to release for cancelled order (e.g. MM order)",
-							zap.String("order_id", ev.OrderID),
-						)
-					} else {
-						c.logger.Error("Failed to release funds for cancelled order — retrying",
-							zap.String("order_id", ev.OrderID),
-							zap.Error(err),
-						)
-						continue
-					}
-				}
-			}
-
-			c.logger.Info("Order cancelled and funds released successfully",
-				zap.String("order_id", ev.OrderID),
-				zap.String("user_id", ev.UserID),
-				zap.String("reason", ev.Reason),
-			)
 		}
 
 		if err := c.reader.CommitMessages(ctx, msg); err != nil {
@@ -138,6 +88,101 @@ func (c *CancelConsumer) Start(ctx context.Context) {
 			)
 		}
 	}
+}
+
+// ProcessMessage handles a single cancel message from Kafka.
+// Exported for unit testing and deterministic message replay.
+func (c *CancelConsumer) ProcessMessage(ctx context.Context, msg kafkago.Message) error {
+	var ev OrderCancelledEvent
+	if err := json.Unmarshal(msg.Value, &ev); err != nil {
+		c.logger.Error("Failed to deserialize OrderCancelled event",
+			zap.Int("partition", msg.Partition),
+			zap.Int64("offset", msg.Offset),
+			zap.Error(err),
+		)
+		return nil // skip malformed message
+	}
+
+	if ev.OrderID != "" {
+		if ev.Status == "USER_MISMATCH" {
+			c.logger.Warn("Order cancellation rejected by matching engine due to user mismatch — ignoring event without DB or wallet mutation",
+				zap.String("order_id", ev.OrderID),
+				zap.String("user_id", ev.UserID),
+				zap.String("market_id", ev.MarketID),
+			)
+			return nil
+		}
+
+		if ev.Status == "INVALID_REQUEST" {
+			c.logger.Warn("Matching engine rejected event due to invalid market routing — ignoring event without DB or wallet mutation",
+				zap.String("order_id", ev.OrderID),
+				zap.String("user_id", ev.UserID),
+				zap.String("market_id", ev.MarketID),
+				zap.String("reason", ev.Reason),
+			)
+			return nil
+		}
+
+		if ev.Status == "ALREADY_ABSENT" {
+			c.logger.Info("Order was already absent from matching engine; reconciling status based on filled quantity",
+				zap.String("order_id", ev.OrderID),
+			)
+			reconciled, err := c.repo.ReconcileAbsentOrder(ctx, ev.OrderID)
+			if err != nil {
+				return fmt.Errorf("reconcile absent order %s: %w", ev.OrderID, err)
+			}
+
+			// In both terminal outcomes (FILLED or CANCELLED), ReconcileAbsentOrder has already enqueued
+			// the durable intent into wallet_releases table inside the same DB transaction.
+			// Opportunistic immediate release attempt:
+			if reconciled != nil && c.wallet != nil {
+				if err := c.wallet.ReleaseFunds(ctx, ev.OrderID); err != nil {
+					if wallet.IsReservationAlreadyReleased(err) {
+						_ = c.repo.MarkWalletReleaseCompletedByOrderID(ctx, ev.OrderID)
+					} else {
+						c.logger.Warn("Immediate opportunistic wallet release failed for reconciled order; delegated to durable WalletReleaseWorker",
+							zap.String("order_id", ev.OrderID),
+							zap.String("status", string(reconciled.Status)),
+							zap.Error(err),
+						)
+					}
+				} else {
+					_ = c.repo.MarkWalletReleaseCompletedByOrderID(ctx, ev.OrderID)
+				}
+			}
+			return nil
+		}
+
+		// 1. Mark order as CANCELLED in database (durably enqueues wallet_releases inside the same tx)
+		cancelled, err := c.repo.MarkOrderCancelled(ctx, ev.OrderID)
+		if err != nil {
+			return fmt.Errorf("mark order cancelled %s: %w", ev.OrderID, err)
+		}
+
+		// 2. Opportunistic immediate release attempt in Wallet Service
+		if cancelled != nil && c.wallet != nil {
+			if err := c.wallet.ReleaseFunds(ctx, ev.OrderID); err != nil {
+				if wallet.IsReservationAlreadyReleased(err) {
+					_ = c.repo.MarkWalletReleaseCompletedByOrderID(ctx, ev.OrderID)
+				} else {
+					c.logger.Warn("Immediate opportunistic wallet release failed for cancelled order; delegated to durable WalletReleaseWorker",
+						zap.String("order_id", ev.OrderID),
+						zap.Error(err),
+					)
+				}
+			} else {
+				_ = c.repo.MarkWalletReleaseCompletedByOrderID(ctx, ev.OrderID)
+			}
+		}
+
+		c.logger.Info("Order cancelled and funds released successfully",
+			zap.String("order_id", ev.OrderID),
+			zap.String("user_id", ev.UserID),
+			zap.String("reason", ev.Reason),
+		)
+	}
+
+	return nil
 }
 
 func (c *CancelConsumer) Close() error {

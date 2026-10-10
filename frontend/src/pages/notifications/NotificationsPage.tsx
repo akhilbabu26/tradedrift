@@ -28,28 +28,28 @@ export default function NotificationsPage() {
   }, [loadNotifications, subscribeToWs])
 
   return (
-    <div className="flex-1 overflow-y-auto bg-[#0a0b0e]">
-      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-6 sm:py-8">
+    <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa] flex flex-col justify-between">
+      <div className="w-full max-w-[1400px] mx-auto px-4 sm:px-6 py-6 sm:py-8 flex flex-col flex-1">
         <NotificationsHeader />
         <NotificationCategoryTabs />
 
         {/* 2-Column Responsive Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start flex-1">
           {/* Left Column: Notifications Feed (7 / 8 cols) */}
           <div className="lg:col-span-7 xl:col-span-8">
             <NotificationsList />
           </div>
 
           {/* Right Column: Settings, Stats, Quick Actions (5 / 4 cols) */}
-          <div className="lg:col-span-5 xl:col-span-4 space-y-4">
+          <div className="lg:col-span-5 xl:col-span-4 space-y-4 lg:sticky lg:top-6 self-start">
             <NotificationSettingsCard />
             <NotificationStatsCard />
             <NotificationQuickActionsCard />
           </div>
         </div>
-
-        <NotificationsFooter />
       </div>
+
+      <NotificationsFooter />
     </div>
   )
 }

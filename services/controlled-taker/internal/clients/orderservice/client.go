@@ -1,4 +1,4 @@
-// Package orderservice provides a gRPC client for Order Service to submit aggressive crossing limit orders.
+// Package orderservice provides a gRPC client for Order Service to submit aggressive MARKET orders with slippage protection boundaries.
 package orderservice
 
 import (
@@ -88,7 +88,9 @@ func (c *Client) Ping(ctx context.Context) error {
 	return nil
 }
 
-// CreateCrossingOrder submits an aggressive limit order with slippage price cap/floor.
+// CreateCrossingOrder submits a MARKET order with a worst-acceptable execution
+// protection price derived from the live order book. Price is interpreted as a slippage
+// protection boundary by Order Service and Matching Engine (BUY: max acceptable price; SELL: min acceptable price).
 func (c *Client) CreateCrossingOrder(ctx context.Context, marketID, side, priceCap, quantity, idempotencyKey string) (*OrderResult, error) {
 	protoSide := orderv1.OrderSide_ORDER_SIDE_BUY
 	if side == "SELL" {
@@ -99,7 +101,7 @@ func (c *Client) CreateCrossingOrder(ctx context.Context, marketID, side, priceC
 		UserId:         account.WalletUUIDStr,
 		MarketId:       marketID,
 		Side:           protoSide,
-		OrderType:      orderv1.OrderType_ORDER_TYPE_LIMIT,
+		OrderType:      orderv1.OrderType_ORDER_TYPE_MARKET,
 		Price:          priceCap,
 		Quantity:       quantity,
 		IdempotencyKey: idempotencyKey,

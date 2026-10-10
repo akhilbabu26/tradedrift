@@ -93,9 +93,10 @@ export default function MarketHighlightCards({ highlights }: MarketHighlightCard
                 </span>
                 <Sparkline
                   points={h.sparklinePoints}
-                  positive={h.positive}
+                  positive={h.sparklinePoints && h.sparklinePoints.length >= 2 ? undefined : h.positive}
                   width={80}
                   height={28}
+                  ariaLabel={`${h.pair} trend`}
                 />
               </div>
             </div>

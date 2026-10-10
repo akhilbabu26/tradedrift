@@ -93,7 +93,7 @@ func main() {
 	)
 	marketGuard := service.NewRedisMarketGuard(redisClient)
 
-	orderSvc := service.NewService(orderRepo, walletClient, priceFilter, marketGuard, appLogger)
+	orderSvc := service.NewService(orderRepo, walletClient, priceFilter, marketGuard, cfg.MMUserID, appLogger)
 	grpcHandler := handler.NewGRPCHandler(orderSvc, appLogger)
 	kafkaProducer, err := publisher.NewKafkaProducer(cfg.KafkaBrokers, appLogger)
 	if err != nil {
@@ -103,17 +103,22 @@ func main() {
 
 	// 5. Background Workers Lifecycle Context with WaitGroup Sync
 	workerCtx, cancelWorkers := context.WithCancel(context.Background())
-	outboxPublisher := publisher.NewOutboxPublisher(orderRepo, kafkaProducer, appLogger, 200*time.Millisecond)
+	outboxPublisher := publisher.NewOutboxPublisherWithRetention(orderRepo, kafkaProducer, appLogger, 200*time.Millisecond, cfg.OutboxRetention, 10*time.Minute)
+	walletReleaseWorker := wallet.NewWalletReleaseWorker(orderRepo, walletClient, appLogger, 500*time.Millisecond)
 	tradeConsumer := orderconsumer.NewConsumer(cfg.KafkaBrokers, cfg.KafkaGroupID, cfg.TopicTradesSettled, orderRepo, walletClient, appLogger)
 	defer tradeConsumer.Close()
 	cancelConsumer := orderconsumer.NewCancelConsumer(cfg.KafkaBrokers, cfg.KafkaGroupID+"-cancel", cfg.TopicOrdersCancelled, orderRepo, walletClient, appLogger)
 	defer cancelConsumer.Close()
 
 	var wg sync.WaitGroup
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		outboxPublisher.Start(workerCtx)
+	}()
+	go func() {
+		defer wg.Done()
+		walletReleaseWorker.Start(workerCtx)
 	}()
 	go func() {
 		defer wg.Done()

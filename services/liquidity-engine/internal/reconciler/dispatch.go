@@ -19,40 +19,41 @@ import (
 // 4. MarketID matches configured market
 // 5. Quantity satisfies MinOrderSize and LotSize (if configured)
 // 6. Capital exposure does not exceed configured limits
+// Returns bounded structured reasons: invalid_price, invalid_quantity, bid_exposure, ask_exposure.
 func (r *Reconciler) canCreateLevel(mc *config.MarketConfig, level pricing.PriceLevel) (bool, string) {
 	if mc == nil {
 		return true, ""
 	}
 	if level.Price.IsZero() || level.Price.IsNegative() {
-		return false, fmt.Sprintf("invalid level price: %s <= 0", level.Price.String())
+		return false, "invalid_price"
 	}
 	if level.Quantity.IsZero() || level.Quantity.IsNegative() {
-		return false, fmt.Sprintf("invalid level quantity: %s <= 0", level.Quantity.String())
+		return false, "invalid_quantity"
 	}
 	if level.Side != "BUY" && level.Side != "SELL" {
-		return false, fmt.Sprintf("invalid level side: %s", level.Side)
+		return false, "invalid_quantity"
 	}
 	if level.MarketID == "" || level.MarketID != mc.MarketID {
-		return false, fmt.Sprintf("market mismatch: level market %q != configured %q", level.MarketID, mc.MarketID)
+		return false, "invalid_price"
 	}
 	if !mc.MinOrderSize.IsZero() && level.Quantity.LessThan(mc.MinOrderSize) {
-		return false, fmt.Sprintf("level quantity %s < min order size %s", level.Quantity.String(), mc.MinOrderSize.String())
+		return false, "invalid_quantity"
 	}
 	if !mc.LotSize.IsZero() && level.Quantity.LessThan(mc.LotSize) {
-		return false, fmt.Sprintf("level quantity %s < lot size %s", level.Quantity.String(), mc.LotSize.String())
+		return false, "invalid_quantity"
 	}
 
 	if level.Side == "BUY" && !mc.MaxBidExposureUSDT.IsZero() {
 		projected := r.tracker.CommittedQuote(mc.MarketID).
 			Add(level.Price.Mul(level.Quantity))
 		if projected.GreaterThan(mc.MaxBidExposureUSDT) {
-			return false, fmt.Sprintf("BID exposure cap reached: projected %s > max %s", projected.String(), mc.MaxBidExposureUSDT.String())
+			return false, "bid_exposure"
 		}
 	} else if level.Side == "SELL" && !mc.MaxAskExposureBase.IsZero() {
 		projected := r.tracker.CommittedBase(mc.MarketID).
 			Add(level.Quantity)
 		if projected.GreaterThan(mc.MaxAskExposureBase) {
-			return false, fmt.Sprintf("ASK exposure cap reached: projected %s > max %s", projected.String(), mc.MaxAskExposureBase.String())
+			return false, "ask_exposure"
 		}
 	}
 	return true, ""
@@ -116,6 +117,7 @@ func (r *Reconciler) applyEntry(ctx context.Context, e order.DiffEntry, mc *conf
 		}
 		r.tracker.QueueCorrection(e.LevelID, replacementLevel)
 		r.metrics.IncReconcileCorrect(mc.MarketID)
+		r.metrics.IncRepriceEvent(mc.MarketID, "diff_correct")
 		return true, nil
 
 	default:
@@ -131,12 +133,30 @@ func (r *Reconciler) applyCreate(ctx context.Context, e order.DiffEntry, mc *con
 		return false, fmt.Errorf("applyCreate called with nil DesiredLevel for %s", e.LevelID)
 	}
 
-	// Capital budget check: verify projected exposure stays within market limits
-	if allowed, reason := r.canCreateLevel(mc, *e.DesiredLevel); !allowed {
-		r.logger.Warn("skipping CREATE — "+reason,
+	// Architectural safety boundary: strictly block creating new liquidity if reference is not FRESH
+	if !r.allowsNewLiquidity(mc.MarketID) {
+		snap := r.currentReference(mc)
+		reason := "stale"
+		if snap.Freshness == FreshnessPaused {
+			reason = "paused"
+		}
+		r.logger.Warn("skipping CREATE — reference price is not FRESH",
 			zap.String("market_id", mc.MarketID),
 			zap.String("level_id", e.LevelID),
+			zap.String("reason", reason),
 		)
+		r.metrics.IncCreateBlocked(mc.MarketID, reason)
+		return false, nil
+	}
+
+	// Capital budget check: verify projected exposure stays within market limits
+	if allowed, reason := r.canCreateLevel(mc, *e.DesiredLevel); !allowed {
+		r.logger.Warn("skipping CREATE — safety invariant blocked creation",
+			zap.String("market_id", mc.MarketID),
+			zap.String("level_id", e.LevelID),
+			zap.String("reason", reason),
+		)
+		r.metrics.IncCreateBlocked(mc.MarketID, reason)
 		return false, nil
 	}
 
@@ -206,6 +226,7 @@ func (r *Reconciler) applyCancel(ctx context.Context, e order.DiffEntry, mc *con
 			r.logger.Warn("cancel MM order in OS failed (will still publish cancel to Kafka)",
 				zap.String("order_id", e.ExistingOID),
 				zap.Error(err))
+			r.metrics.IncCancelOSFailure(mc.MarketID)
 		}
 	}
 
@@ -214,6 +235,8 @@ func (r *Reconciler) applyCancel(ctx context.Context, e order.DiffEntry, mc *con
 	if err != nil {
 		return fmt.Errorf("publish OrderCancelRequested for %s (order_id=%s): %w", e.LevelID, e.ExistingOID, err)
 	}
+
+	r.metrics.IncCancelMEPublish(mc.MarketID)
 
 	r.tracker.SetCancelling(e.LevelID)
 	r.inFlightSince[e.LevelID] = time.Now()

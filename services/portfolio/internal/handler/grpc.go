@@ -111,3 +111,53 @@ func (h *Handler) GetPortfolioHoldings(
 		Holdings: protoHoldings,
 	}, nil
 }
+
+// GetPortfolioHistory returns historical equity snapshot points for the requested timeframe.
+func (h *Handler) GetPortfolioHistory(
+	ctx context.Context,
+	req *portfoliov1.GetPortfolioHistoryRequest,
+) (*portfoliov1.GetPortfolioHistoryResponse, error) {
+	start := time.Now()
+	var statusCode codes.Code = codes.OK
+	defer func() {
+		metrics.GRPCRequestsTotal.WithLabelValues("GetPortfolioHistory", statusCode.String()).Inc()
+		metrics.GRPCDurationSeconds.WithLabelValues("GetPortfolioHistory").Observe(time.Since(start).Seconds())
+	}()
+
+	userID := req.GetUserId()
+	if userID == "" {
+		statusCode = codes.InvalidArgument
+		return nil, status.Error(codes.InvalidArgument, "user_id is required")
+	}
+	if _, err := uuid.Parse(userID); err != nil {
+		statusCode = codes.InvalidArgument
+		return nil, status.Errorf(codes.InvalidArgument, "invalid user_id UUID: %v", err)
+	}
+
+	timeframe := req.GetTimeframe()
+	history, err := h.svc.GetPortfolioHistory(ctx, userID, timeframe)
+	if err != nil {
+		h.logger.Error("failed to get portfolio history", zap.String("user_id", userID), zap.String("timeframe", timeframe), zap.Error(err))
+		statusCode = codes.Internal
+		return nil, status.Errorf(codes.Internal, "failed to get portfolio history: %v", err)
+	}
+
+	protoPoints := make([]*portfoliov1.PortfolioHistoryPoint, 0, len(history.Points))
+	for _, p := range history.Points {
+		protoPoints = append(protoPoints, &portfoliov1.PortfolioHistoryPoint{
+			Timestamp:     p.Timestamp,
+			TotalEquity:   p.TotalEquity,
+			CashBalance:   p.CashBalance,
+			HoldingsValue: p.HoldingsValue,
+			UnrealizedPnl: p.UnrealizedPnL,
+			RealizedPnl:   p.RealizedPnL,
+		})
+	}
+
+	return &portfoliov1.GetPortfolioHistoryResponse{
+		UserId: userID,
+		Points: protoPoints,
+	}, nil
+
+}
+

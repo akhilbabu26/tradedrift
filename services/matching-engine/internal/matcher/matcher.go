@@ -71,7 +71,7 @@ func Insert(book *orderbook.OrderBook, node *orderbook.OrderNode) {
 //
 // This invariant holds per-market-partition only. There is no ordering
 // relationship between events on different partitions (different markets).
-func Cancel(book *orderbook.OrderBook, orderID uuid.UUID) orderbook.CancelOutcome {
+func Cancel(book *orderbook.OrderBook, orderID uuid.UUID, userID uuid.UUID) orderbook.CancelOutcome {
 	node := book.OrderIndex[orderID]
 	if node == nil {
 		// Not in book. Cannot determine why without a post-removal tracking ring.
@@ -79,6 +79,19 @@ func Cancel(book *orderbook.OrderBook, orderID uuid.UUID) orderbook.CancelOutcom
 		return orderbook.CancelOutcome{
 			Status:  orderbook.CancelStatusAlreadyAbsent,
 			OrderID: orderID,
+		}
+	}
+
+	// ME-1: Strict ownership validation. An order may only be cancelled by its creator.
+	// If UserID does not match, the book is NOT mutated, sequence is NOT incremented,
+	// and a USER_MISMATCH outcome is returned defensively.
+	if node.UserID != userID {
+		return orderbook.CancelOutcome{
+			Status:            orderbook.CancelStatusUserMismatch,
+			OrderID:           node.OrderID,
+			UserID:            node.UserID,
+			MarketID:          node.MarketID,
+			RemainingQuantity: node.RemainingQty,
 		}
 	}
 
@@ -218,6 +231,11 @@ func Match(book *orderbook.OrderBook, incoming *orderbook.OrderNode, mode Mode, 
 		// Advance authoritative monotonically increasing trade execution sequence
 		book.Sequence++
 
+		execTime := incoming.Timestamp
+		if execTime.IsZero() {
+			execTime = time.Now().UTC()
+		}
+
 		fills = append(fills, orderbook.Fill{
 			TradeID:      tradeID,
 			MarketID:     book.MarketID, // ← authoritative market identifier
@@ -230,6 +248,7 @@ func Match(book *orderbook.OrderBook, incoming *orderbook.OrderNode, mode Mode, 
 			SellerUserID: sellUserOf(incoming, best),
 			Price:        best.Price, // ALWAYS maker's price
 			Quantity:     fillQty,
+			ExecutedAt:   execTime,
 		})
 
 		if fillQty.Equal(best.RemainingQty) {
@@ -263,6 +282,16 @@ func Match(book *orderbook.OrderBook, incoming *orderbook.OrderNode, mode Mode, 
 
 func crossable(incoming, best *orderbook.OrderNode) bool {
 	if incoming.OrderType == orderbook.OrderTypeMarket {
+		// If protection price is specified (> 0), enforce slippage boundary:
+		// BUY: best ask must be <= protection price (never pay above protection price)
+		// SELL: best bid must be >= protection price (never sell below protection price)
+		if incoming.Price.GreaterThan(decimal.Zero) {
+			if incoming.Side == orderbook.SideBuy {
+				return best.Price.LessThanOrEqual(incoming.Price)
+			}
+			return best.Price.GreaterThanOrEqual(incoming.Price)
+		}
+		// Unprotected MARKET order (price == 0): cross any available depth
 		return true
 	}
 	if incoming.Side == orderbook.SideBuy {

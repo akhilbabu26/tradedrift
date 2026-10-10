@@ -9,10 +9,12 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { portfolioApi } from '../api/portfolio'
 import { tradesApi, type BackendTrade } from '../api/trades'
 import { marketApi } from '../api/market'
+import { wsService, WsChannels } from '../api/ws'
 import { useAuthStore } from '../store/authStore'
 import { toDecimal } from '../utils/decimal'
 import { getAssetMetadata } from '../utils/marketMetadata'
 import { formatPrice, formatQuantity, formatDate } from '../utils/formatters'
+import { extractApiError } from '../utils/apiError'
 import type {
   KpiCardItem,
   AssetPerformanceItem,
@@ -105,15 +107,63 @@ export function useAnalyticsData(dateRange: DateRangeOption) {
       }
       setMarketPrices(prices)
     } catch (err: any) {
-      setError(err?.message || 'Failed to load analytics data')
+      setError(extractApiError(err))
     } finally {
       setLoading(false)
     }
   }, [])
 
+  const userId = useAuthStore((s) => s.user?.userId)
+
   useEffect(() => {
     loadData()
-  }, [loadData])
+
+    const unsubs: Array<() => void> = []
+
+    // Subscribe to tickers for live currentPrices
+    const supported = ['BTC-USDT', 'ETH-USDT', 'SOL-USDT']
+    supported.forEach((mId) => {
+      const asset = mId.split('-')[0]
+      unsubs.push(
+        wsService.subscribe(WsChannels.ticker(mId), (payload: any) => {
+          if (!payload) return
+          const price = payload.lastPrice ?? payload.last_price
+          if (price) {
+            setMarketPrices((prev) => ({
+              ...prev,
+              [asset]: String(price),
+            }))
+          }
+        })
+      )
+    })
+
+    if (userId) {
+      unsubs.push(
+        wsService.subscribe(WsChannels.userNotifications(userId), () => {
+          loadData()
+        })
+      )
+      unsubs.push(
+        wsService.subscribe(WsChannels.userPortfolio(userId), () => {
+          loadData()
+        })
+      )
+    }
+
+    const unsubReconnect = wsService.onReconnect(() => {
+      loadData()
+    })
+    const onFocus = () => {
+      loadData()
+    }
+    window.addEventListener('focus', onFocus)
+    unsubs.push(unsubReconnect, () => window.removeEventListener('focus', onFocus))
+
+    return () => {
+      unsubs.forEach((u) => u())
+    }
+  }, [loadData, userId])
 
   // ── 0. Filter Trades by Date Range ────────────────────────────────────────
   const filteredTrades = useMemo(() => {

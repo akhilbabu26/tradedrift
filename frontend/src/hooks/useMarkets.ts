@@ -26,7 +26,9 @@ import { wsService, WsChannels, type ConnectionStatus } from '../api/ws'
 import { toDecimal } from '../utils/decimal'
 import { getAssetMetadata } from '../utils/marketMetadata'
 import { extractApiError } from '../utils/apiError'
+import { evaluateTrendCoverage, type TrendCoverage } from '../utils/trendCoverage'
 import type { MarketEntry, MarketHighlight, MarketStats } from '../types/markets'
+
 
 export type MarketFilter = 'all' | 'favorites'
 
@@ -69,7 +71,7 @@ function loadSavedFavorites(): Set<string> {
 }
 
 /** Normalize array of price string points into 0..1 values for Sparkline */
-function normalizeTrend(trend: string[] | undefined, targetPoints = 16): number[] {
+export function normalizeTrend(trend: string[] | undefined, targetPoints = 16): number[] {
   if (!trend || trend.length < 2) return [0.5, 0.5]
   const nums = trend.map((v) => parseFloat(v)).filter((v) => !isNaN(v) && v > 0)
   if (nums.length < 2) return [0.5, 0.5]
@@ -109,7 +111,8 @@ function buildEntry(
   market: Market,
   ticker: Ticker24h | undefined,
   rank: number,
-  trendPoints?: number[]
+  trendPoints?: number[],
+  coverage?: TrendCoverage
 ): MarketEntry {
   const base = market.base_asset.toUpperCase()
   const meta = ASSET_META[base] ?? { iconLabel: base[0], iconColor: '#64748b', name: base }
@@ -123,7 +126,9 @@ function buildEntry(
   const vol  = formatVolume(ticker?.quote_volume_24h)
   const pair = `${base}/${market.quote_asset}`
 
-  const sparklinePoints = (trendPoints && trendPoints.length >= 2) ? trendPoints : [0.5, 0.5]
+  const sparklinePoints = (trendPoints && trendPoints.length > 0)
+    ? trendPoints
+    : (price && parseFloat(price) > 0 ? [parseFloat(price)] : [])
 
   return {
     rank,
@@ -139,8 +144,12 @@ function buildEntry(
     sparklinePoints,
     iconColor: meta.iconColor,
     iconLabel: meta.iconLabel,
+    trendStatus: coverage?.status,
+    trendLabel: coverage?.label,
+    trendHours: coverage?.hoursCovered,
   }
 }
+
 
 /** Derive highlights from live entries */
 function deriveHighlights(
@@ -232,6 +241,7 @@ export function useMarkets(): UseMarketsReturn {
   const [markets, setMarkets]       = useState<Market[]>([])
   const [tickers, setTickers]       = useState<Record<string, Ticker24h>>({})
   const [trends, setTrends]         = useState<Record<string, number[]>>({})
+  const [trendCoverages, setTrendCoverages] = useState<Record<string, TrendCoverage>>({})
   const [loading, setLoading]       = useState(true)
   const [error, setError]           = useState<string | null>(null)
   const [isDemoData, setIsDemoData] = useState(false)
@@ -263,6 +273,7 @@ export function useMarkets(): UseMarketsReturn {
 
       const newTickers: Record<string, Ticker24h> = {}
       const newTrends: Record<string, number[]> = {}
+      const newCoverages: Record<string, TrendCoverage> = {}
 
       overviewList.forEach((ov) => {
         newTickers[ov.market_id] = {
@@ -274,8 +285,15 @@ export function useMarkets(): UseMarketsReturn {
           quote_volume_24h: ov.quote_volume_24h,
           price_change_24h_percent: ov.price_change_24h_percent,
         }
-        if (ov.trend && ov.trend.length >= 2) {
-          newTrends[ov.market_id] = normalizeTrend(ov.trend)
+        const coverage = evaluateTrendCoverage(ov.trend?.length || 0)
+        newCoverages[ov.market_id] = coverage
+        if (ov.trend && ov.trend.length > 0) {
+          const validFloats = ov.trend
+            .map((v) => parseFloat(v))
+            .filter((v) => !isNaN(v) && isFinite(v) && v > 0)
+          if (validFloats.length > 0) {
+            newTrends[ov.market_id] = validFloats.slice(-24)
+          }
         }
       })
 
@@ -290,22 +308,48 @@ export function useMarkets(): UseMarketsReturn {
       }
 
       // If any market is missing trend from overview, fetch candles
-      const missingTrends = marketList.filter((m) => !newTrends[m.id])
+      const missingTrends = marketList.filter((m) => !newTrends[m.id] || newTrends[m.id].length === 0)
       if (missingTrends.length > 0) {
         const candleResults = await Promise.allSettled(
-          missingTrends.map((m) => marketApi.getCandles(m.id, '1h', 168))
+          missingTrends.map((m) => marketApi.getCandles(m.id, '1h', 24))
         )
         missingTrends.forEach((m, i) => {
           const r = candleResults[i]
-          if (r.status === 'fulfilled' && r.value.length >= 2) {
-            const closes = r.value.map((c) => c.close)
-            newTrends[m.id] = normalizeTrend(closes)
+          if (r.status === 'fulfilled') {
+            const candles = r.value
+            const startCandle = candles[0]
+            const endCandle = candles[candles.length - 1]
+            const coverage = evaluateTrendCoverage(
+              candles.length,
+              startCandle?.start_time,
+              endCandle?.start_time
+            )
+            newCoverages[m.id] = coverage
+            if (candles.length > 0) {
+              const closes = candles
+                .map((c) => parseFloat(c.close))
+                .filter((v) => !isNaN(v) && isFinite(v) && v > 0)
+              if (closes.length > 0) {
+                newTrends[m.id] = closes.slice(-24)
+              }
+            }
           }
         })
       }
 
+      // If any market still has no historical series, initialize with last price
+      marketList.forEach((m) => {
+        if (!newTrends[m.id] || newTrends[m.id].length === 0) {
+          const p = parseFloat(newTickers[m.id]?.last_price || '0')
+          if (p > 0) {
+            newTrends[m.id] = [p]
+          }
+        }
+      })
+
       setTickers(newTickers)
       setTrends(newTrends)
+      setTrendCoverages(newCoverages)
       setIsDemoData(false)
     } catch (err) {
       const msg = extractApiError(err)
@@ -314,10 +358,12 @@ export function useMarkets(): UseMarketsReturn {
       setMarkets([])
       setTickers({})
       setTrends({})
+      setTrendCoverages({})
     } finally {
       setLoading(false)
     }
   }, [])
+
 
   // ── WebSocket: live ticker updates ────────────────────────────────────────
   useEffect(() => {
@@ -333,9 +379,29 @@ export function useMarkets(): UseMarketsReturn {
           const raw = payload as any
           if (!raw) return
 
+          const rawLast = raw.lastPrice ?? raw.last_price
+
+          // Update sparkline current candle with live price in real time
+          if (rawLast !== undefined && rawLast !== null) {
+            const numPrice = parseFloat(String(rawLast))
+            if (!isNaN(numPrice) && isFinite(numPrice) && numPrice > 0) {
+              setTrends((prev) => {
+                const current = prev[marketId]
+                if (!current || current.length === 0) {
+                  return { ...prev, [marketId]: [numPrice] }
+                }
+                const lastIdx = current.length - 1
+                if (current[lastIdx] === numPrice) {
+                  return prev
+                }
+                const updated = [...current.slice(0, lastIdx), numPrice]
+                return { ...prev, [marketId]: updated }
+              })
+            }
+          }
+
           setTickers((prev) => {
             const current = prev[marketId]
-            const rawLast = raw.lastPrice ?? raw.last_price
             const rawHigh = raw.high24h ?? raw.high_24h
             const rawLow = raw.low24h ?? raw.low_24h
             const rawVol = raw.volume24h ?? raw.volume_24h
@@ -368,8 +434,9 @@ export function useMarkets(): UseMarketsReturn {
   // ── Derived UI data ───────────────────────────────────────────────────────
   const allEntries = useMemo<MarketEntry[]>(() => {
     if (markets.length === 0) return []
-    return markets.map((m, i) => buildEntry(m, tickers[m.id], i + 1, trends[m.id]))
-  }, [markets, tickers, trends])
+    return markets.map((m, i) => buildEntry(m, tickers[m.id], i + 1, trends[m.id], trendCoverages[m.id]))
+  }, [markets, tickers, trends, trendCoverages])
+
 
   const stats = useMemo<MarketStats>(() => {
     let totalQuoteVol = toDecimal('0')

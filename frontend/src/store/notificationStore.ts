@@ -35,15 +35,18 @@ import type { NotificationItem, NotificationCategory } from '../types/notificati
 function mapBackendNotification(n: BackendNotification): NotificationItem {
   // Map backend type string to UI icon type
   const type = (n.type || '').toUpperCase()
+  const title = (n.title || '').toUpperCase()
+  const msg = (n.message || '').toUpperCase()
   let iconType: NotificationItem['iconType'] = 'partial_fill'
   let category: NotificationItem['category'] = 'system'
 
-  if (type.includes('ORDER_FILLED') || type.includes('BUY')) {
-    iconType = 'buy'
+  const isBuy = type.includes('BUY') || title.includes('BUY') || msg.includes('BUY')
+  const isSell = type.includes('SELL') || title.includes('SELL') || msg.includes('SELL')
+  const isTrade = type.includes('TRADE') || type.includes('FILL') || title.includes('TRADE') || title.includes('FILLED')
+
+  if (isTrade || isBuy || isSell) {
     category = 'trading'
-  } else if (type.includes('SELL')) {
-    iconType = 'sell'
-    category = 'trading'
+    iconType = isBuy ? 'buy' : isSell ? 'sell' : 'partial_fill'
   } else if (type.includes('ORDER_CANCELLED') || type.includes('ORDER')) {
     iconType = 'partial_fill'
     category = 'trading'
@@ -56,7 +59,7 @@ function mapBackendNotification(n: BackendNotification): NotificationItem {
   } else if (type.includes('PASSWORD') || type.includes('LOGIN') || type.includes('SECURITY')) {
     iconType = 'password'
     category = 'account'
-  } else if (type.includes('MARKET') || type.includes('SYSTEM') || type.includes('HALT')) {
+  } else if (type.includes('MARKET') || type.includes('HALT')) {
     iconType = 'market'
     category = 'system'
   } else if (type.includes('RISK')) {
@@ -103,6 +106,7 @@ export interface NotificationState {
 // ── Store ────────────────────────────────────────────────────────────────────
 
 let wsUnsub: (() => void) | null = null
+let wsSubscriptionCount = 0
 
 export const useNotificationStore = create<NotificationState>((set, get) => ({
   notifications: [],
@@ -220,35 +224,36 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   subscribeToWs: () => {
-    if (wsUnsub) {
-      wsUnsub()
-      wsUnsub = null
-    }
+    wsSubscriptionCount++
 
-    const user = useAuthStore.getState().user
-    const channel = WsChannels.userNotifications(user?.userId)
-    const handler = (data: unknown) => {
-      try {
-        const n = data as BackendNotification
-        if (!n?.id) return
-        const item = mapBackendNotification(n)
-        set((state) => {
-          // Avoid duplicates
-          if (state.notifications.some((x) => x.id === item.id)) return state
-          const updated = [item, ...state.notifications]
-          return {
-            notifications: updated,
-            unreadCount: updated.filter((x) => !x.isRead).length,
-          }
-        })
-      } catch {
-        // Ignore malformed WS payload
+    if (wsSubscriptionCount === 1) {
+      const user = useAuthStore.getState().user
+      const channel = WsChannels.userNotifications(user?.userId)
+      const handler = (data: unknown) => {
+        try {
+          const n = data as BackendNotification
+          if (!n?.id) return
+          const item = mapBackendNotification(n)
+          set((state) => {
+            // Avoid duplicates
+            if (state.notifications.some((x) => x.id === item.id)) return state
+            const updated = [item, ...state.notifications]
+            return {
+              notifications: updated,
+              unreadCount: updated.filter((x) => !x.isRead).length,
+            }
+          })
+        } catch {
+          // Ignore malformed WS payload
+        }
       }
+
+      wsUnsub = wsService.subscribe(channel, handler)
     }
 
-    wsUnsub = wsService.subscribe(channel, handler)
     return () => {
-      if (wsUnsub) {
+      wsSubscriptionCount = Math.max(0, wsSubscriptionCount - 1)
+      if (wsSubscriptionCount === 0 && wsUnsub) {
         wsUnsub()
         wsUnsub = null
       }
@@ -279,3 +284,10 @@ export const selectCategoryUnreadCount = (
   if (category === 'all') return state.unreadCount
   return state.notifications.filter((n) => n.category === category && !n.isRead).length
 }
+
+// Auto-resync notifications on WebSocket reconnection if logged in
+wsService.onReconnect(() => {
+  if (useAuthStore.getState().isAuthenticated) {
+    useNotificationStore.getState().loadNotifications(false)
+  }
+})

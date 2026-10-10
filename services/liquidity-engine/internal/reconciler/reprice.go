@@ -2,6 +2,9 @@ package reconciler
 
 import (
 	"context"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -40,13 +43,21 @@ func (r *Reconciler) currentReference(mc *config.MarketConfig) ReferenceSnapshot
 			}
 			if !exists {
 				state = &RefState{
-					LastRef:     entry.Price,
-					LastVersion: entry.Version,
+					LastRef:             entry.Price,
+					LastVersion:         entry.Version,
+					ActiveGenerationRef: entry.Price,
+					LastRepriceRef:      entry.Price,
 				}
 				r.refStates[marketID] = state
 			} else if state.LastRef.IsZero() {
 				state.LastRef = entry.Price
 				state.LastVersion = entry.Version
+				if state.ActiveGenerationRef.IsZero() {
+					state.ActiveGenerationRef = entry.Price
+				}
+				if state.LastRepriceRef.IsZero() {
+					state.LastRepriceRef = entry.Price
+				}
 			}
 			if !entry.FetchedAt.IsZero() {
 				state.LastUpdated = entry.FetchedAt
@@ -125,10 +136,12 @@ func (r *Reconciler) currentReference(mc *config.MarketConfig) ReferenceSnapshot
 	now := time.Now()
 	if !exists {
 		state = &RefState{
-			LastRef:     ref,
-			LastVersion: 0,
-			LastUpdated: now,
-			Freshness:   FreshnessFresh,
+			LastRef:             ref,
+			LastVersion:         0,
+			LastUpdated:         now,
+			Freshness:           FreshnessFresh,
+			ActiveGenerationRef: ref,
+			LastRepriceRef:      ref,
 		}
 		r.refStates[marketID] = state
 	}
@@ -154,9 +167,25 @@ func (r *Reconciler) isMarketPaused(marketID string) bool {
 	return snap.Freshness == FreshnessPaused
 }
 
+// allowsNewLiquidity checks whether the market allows creating new liquidity orders or replacements.
+// Architectural invariant:
+// FRESH  → true (new liquidity / replacement creations allowed)
+// STALE  → false (strictly forbidden from creating new liquidity)
+// PAUSED → false (strictly forbidden from creating new liquidity)
+func (r *Reconciler) allowsNewLiquidity(marketID string) bool {
+	mc := &config.MarketConfig{MarketID: marketID}
+	if r.cfg != nil {
+		if m := r.cfg.ForMarket(marketID); m != nil {
+			mc = m
+		}
+	}
+	snap := r.currentReference(mc)
+	return snap.Freshness == FreshnessFresh
+}
+
 // applyRefMovementReprice handles controlled rebase or selective repricing when reference price moves.
 // For ActionSelectiveReprice: reprices outermost levels (HIGH first, then MID), LOW remains anchored.
-// For ActionControlledRebase: reprices complete ladder (HIGH first, then MID, then LOW).
+// For ActionControlledRebase: reprices complete ladder (LOW first [top-of-book L1/L2/L3], then MID, then HIGH).
 // Batches up to MaxBatch levels per cycle. Updates refState.RebaseActive until all eligible levels have converged.
 func (r *Reconciler) applyRefMovementReprice(ctx context.Context, mc *config.MarketConfig, targetRef decimal.Decimal, targetVersion int64, action RepricingAction) int {
 	maxBatch := mc.Repricing.MaxBatch
@@ -180,21 +209,41 @@ func (r *Reconciler) applyRefMovementReprice(ctx context.Context, mc *config.Mar
 		}
 	}
 
-	// Reorder candidates: HIGH first, then MID, then LOW
+	// Reorder candidates based on action:
+	// - ActionControlledRebase: LOW (top-of-book L1/L2/L3) -> MID -> HIGH.
+	//   Prioritizes inside spread levels in Batch 1 so fresh top-of-book liquidity is
+	//   restored immediately, eliminating stale deep-generation liquidity exposure.
+	// - ActionSelectiveReprice: HIGH -> MID (outermost levels; LOW remains anchored).
 	reordered := make([]*order.LiveOrder, 0, len(candidates))
-	for _, o := range candidates {
-		if o.Zone == "HIGH" {
-			reordered = append(reordered, o)
-		}
-	}
-	for _, o := range candidates {
-		if o.Zone == "MID" {
-			reordered = append(reordered, o)
-		}
-	}
 	if action == ActionControlledRebase {
+		var lowOrders, midOrders, highOrders []*order.LiveOrder
 		for _, o := range candidates {
-			if o.Zone == "LOW" {
+			switch o.Zone {
+			case "LOW":
+				lowOrders = append(lowOrders, o)
+			case "MID":
+				midOrders = append(midOrders, o)
+			default:
+				highOrders = append(highOrders, o)
+			}
+		}
+
+		sortOrdersByLevelIndex(lowOrders)
+		sortOrdersByLevelIndex(midOrders)
+		sortOrdersByLevelIndex(highOrders)
+
+		reordered = append(reordered, lowOrders...)
+		reordered = append(reordered, midOrders...)
+		reordered = append(reordered, highOrders...)
+	} else {
+		// ActionSelectiveReprice: retain existing intended priority (HIGH first, then MID)
+		for _, o := range candidates {
+			if o.Zone == "HIGH" {
+				reordered = append(reordered, o)
+			}
+		}
+		for _, o := range candidates {
+			if o.Zone == "MID" {
 				reordered = append(reordered, o)
 			}
 		}
@@ -336,12 +385,18 @@ func (r *Reconciler) applyRefMovementReprice(ctx context.Context, mc *config.Mar
 		}
 		r.tracker.QueueCorrection(o.LevelID, newLevel)
 		r.metrics.IncReconcileCorrect(mc.MarketID)
+		r.metrics.IncRepriceEvent(mc.MarketID, action.String())
+		r.metrics.IncRebaseLevelsRepriced(mc.MarketID, o.Zone)
 		count++
 	}
 
 	// Update rebase state: check if all eligible levels have now been processed
 	if state, ok := r.refStates[mc.MarketID]; ok {
 		remaining := len(reordered) - count
+		if remaining < 0 {
+			remaining = 0
+		}
+		r.metrics.SetRebaseLevelsRemaining(mc.MarketID, remaining)
 		targetVer := state.RebaseTargetVer
 		if targetVer == 0 {
 			targetVer = targetVersion
@@ -360,11 +415,27 @@ func (r *Reconciler) applyRefMovementReprice(ctx context.Context, mc *config.Mar
 		}
 
 		if remaining <= 0 && !hasInFlightOlderVersions {
+			if !state.RebaseStartTime.IsZero() {
+				r.metrics.ObserveRebaseDuration(mc.MarketID, action.String(), time.Since(state.RebaseStartTime).Seconds())
+				state.RebaseStartTime = time.Time{}
+			}
 			state.RebaseActive = false
+			finalRef := state.RebaseTargetRef
+			if finalRef.IsZero() {
+				finalRef = targetRef
+			}
+			if state.RebaseAction == ActionControlledRebase {
+				state.ActiveGenerationRef = finalRef
+				state.LastRepriceRef = finalRef
+			} else {
+				state.LastRepriceRef = finalRef
+			}
 			r.rebaseFailureCount = make(map[string]int)
 			r.logger.Info("rebase completed — all eligible levels converged",
 				zap.String("market_id", mc.MarketID),
-				zap.Int64("target_version", targetVer))
+				zap.Int64("target_version", targetVer),
+				zap.String("active_generation_ref", state.ActiveGenerationRef.String()),
+				zap.String("last_reprice_ref", state.LastRepriceRef.String()))
 		} else {
 			state.RebaseActive = true
 			r.logger.Info("rebase batch processed — more levels pending",
@@ -382,4 +453,25 @@ func (r *Reconciler) applyRefMovementReprice(ctx context.Context, mc *config.Mar
 			zap.Int("orders_repriced", count))
 	}
 	return count
+}
+
+func sortOrdersByLevelIndex(orders []*order.LiveOrder) {
+	sort.SliceStable(orders, func(i, j int) bool {
+		idxI := levelIndexFromID(orders[i].LevelID)
+		idxJ := levelIndexFromID(orders[j].LevelID)
+		if idxI != idxJ {
+			return idxI < idxJ
+		}
+		return orders[i].LevelID < orders[j].LevelID
+	})
+}
+
+func levelIndexFromID(levelID string) int {
+	parts := strings.Split(levelID, "-")
+	if len(parts) > 0 {
+		if idx, err := strconv.Atoi(parts[len(parts)-1]); err == nil {
+			return idx
+		}
+	}
+	return 999
 }

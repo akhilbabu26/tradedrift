@@ -42,6 +42,7 @@ export default function TradePage() {
     setSelectedMarketId,
     selectedMarket,
     ticker,
+    marketTrends,
     isDemoData: marketDemoData,
     loading: marketLoading,
   } = useTradeMarket(initialMarket)
@@ -93,7 +94,17 @@ export default function TradePage() {
   const baseAsset = selectedMarket.base_asset
   const quoteAsset = selectedMarket.quote_asset
   const symbol = `${baseAsset}/${quoteAsset}`
-  const lastPrice = ticker?.last_price ?? orderBook.lastPrice ?? '0'
+
+  // Market Isolation Invariant: validate market ownership before resolving lastPrice
+  const isTickerMatching = ticker?.market_id === selectedMarketId
+  const isBookMatching   = orderBook.marketId === selectedMarketId && orderBook.lastPrice !== '0.00' && orderBook.lastPrice !== ''
+  const lastPrice = (isTickerMatching ? ticker?.last_price : null)
+    ?? (isBookMatching ? orderBook.lastPrice : null)
+    ?? ''
+
+  const bestAsk = isBookMatching && orderBook.asks.length > 0 ? orderBook.asks[0].price : ''
+  const bestBid = isBookMatching && orderBook.bids.length > 0 ? orderBook.bids[0].price : ''
+  const [selectedPrice, setSelectedPrice] = useState<string | null>(null)
 
   const quoteBalance = getBalance(quoteAsset)   // e.g. USDT
   const baseBalance = getBalance(baseAsset)    // e.g. BTC
@@ -121,10 +132,11 @@ export default function TradePage() {
           markets={markets}
           selectedMarketId={selectedMarketId}
           onSelectMarket={handleSelectMarket}
-          ticker={ticker}
+          ticker={isTickerMatching ? ticker : null}
           isDemoData={anyDemoData}
           usdtBalance={quoteBalance}
           baseBalance={baseBalance}
+          marketTrends={marketTrends}
         />
       </div>
 
@@ -146,6 +158,7 @@ export default function TradePage() {
         {/* Chart — grows to fill remaining width */}
         <div className="flex flex-col min-h-0 min-w-0 border-r border-[#1e2530]">
           <TradingChart
+            key={`${selectedMarketId}:${timeframe}`}
             marketId={selectedMarketId}
             symbol={symbol}
             lastPrice={lastPrice}
@@ -153,6 +166,7 @@ export default function TradePage() {
             loading={candlesLoading || marketLoading}
             isDemoData={candlesDemoData}
             timeframe={timeframe}
+            tickSize={selectedMarket?.tick_size}
             onTimeframeChange={setTimeframe}
             onRefreshCandles={refetchCandles}
           />
@@ -164,6 +178,7 @@ export default function TradePage() {
           isDemoData={obDemoData}
           precision={precision}
           onPrecisionChange={setPrecision}
+          onSelectPrice={setSelectedPrice}
           lastPrice={lastPrice}
           baseAsset={baseAsset}
           quoteAsset={quoteAsset}
@@ -173,6 +188,9 @@ export default function TradePage() {
         <OrderEntry
           market={selectedMarket}
           lastPrice={lastPrice}
+          bestAsk={bestAsk}
+          bestBid={bestBid}
+          selectedPrice={selectedPrice}
           quoteBalance={quoteBalance}
           baseBalance={baseBalance}
           submitting={submitting}

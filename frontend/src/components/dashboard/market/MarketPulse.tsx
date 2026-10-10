@@ -81,7 +81,7 @@ export default function MarketPulse({ rows }: MarketPulseProps) {
               <th className="text-left pb-2 font-medium">Pair</th>
               <th className="text-right pb-2 font-medium">Price</th>
               <th className="text-right pb-2 font-medium">24h Change</th>
-              <th className="text-right pb-2 font-medium">7D Trend</th>
+              <th className="text-right pb-2 font-medium">Trend</th>
               <th className="text-right pb-2 font-medium">Action</th>
             </tr>
           </thead>
@@ -109,12 +109,18 @@ export default function MarketPulse({ rows }: MarketPulseProps) {
                   <td className={`py-2.5 text-right font-mono font-semibold ${changeColor}`}>
                     {row.positive ? '+' : '-'}{formatPercentage(row.change24h, false)}
                   </td>
-                  {/* 7D Sparkline */}
+                  {/* Trend Sparkline */}
                   <td className="py-2.5 text-right">
-                    <div className="flex justify-end">
-                      <Sparkline points={row.sparklinePoints} positive={row.positive} />
+                    <div className="flex items-center justify-end">
+                      <Sparkline
+                        data={row.sparklinePoints}
+                        width={72}
+                        height={26}
+                        ariaLabel={`${row.pair} trend`}
+                      />
                     </div>
                   </td>
+
                   {/* Trade button */}
                   <td className="py-2.5 text-right pl-2">
                     <Link

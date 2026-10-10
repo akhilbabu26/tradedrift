@@ -92,11 +92,18 @@ func (r *Reconciler) SyncFromOrderService(ctx context.Context, marketID string) 
 						continue
 					}
 
-					// Invariant: PAUSED reference prevents new replacement creations
-					if r.isMarketPaused(mc.MarketID) {
-						r.logger.Warn("reference price is PAUSED — dropping queued replacement during resync",
+					// Invariant: Reference must be FRESH to create replacements (STALE and PAUSED strictly forbid new liquidity)
+					if !r.allowsNewLiquidity(mc.MarketID) {
+						snap := r.currentReference(mc)
+						reason := "stale"
+						if snap.Freshness == FreshnessPaused {
+							reason = "paused"
+						}
+						r.logger.Warn("reference price is not FRESH — dropping queued replacement during resync",
 							zap.String("market_id", mc.MarketID),
-							zap.String("level_id", tracked.LevelID))
+							zap.String("level_id", tracked.LevelID),
+							zap.String("reason", reason))
+						r.metrics.IncCreateBlocked(mc.MarketID, reason)
 						continue
 					}
 

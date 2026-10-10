@@ -11,6 +11,7 @@ func NewRouter(topupHandler *TopUpHandler, webhookHandler *WebhookHandler, log *
 
 	// TopUp user endpoints
 	mux.HandleFunc("POST /api/v1/topups", RequireAuth(topupHandler.HandleCreateTopUp))
+	mux.HandleFunc("GET /api/v1/topups", RequireAuth(topupHandler.HandleListTopUps))
 	mux.HandleFunc("GET /api/v1/topups/daily-usage", RequireAuth(topupHandler.HandleGetDailyUsage))
 	mux.HandleFunc("GET /api/v1/topups/{id}", RequireAuth(topupHandler.HandleGetTopUpByID))
 
@@ -22,5 +23,5 @@ func NewRouter(topupHandler *TopUpHandler, webhookHandler *WebhookHandler, log *
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
 
-	return LoggingMiddleware(log, mux)
+	return CORSMiddleware(LoggingMiddleware(log, mux))
 }

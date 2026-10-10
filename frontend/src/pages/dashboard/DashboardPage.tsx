@@ -20,7 +20,16 @@ import GlobalFooter from '../../components/layout/GlobalFooter'
  *   - Chart / System status: static demo data (no backend endpoint)
  */
 export default function DashboardPage() {
-  const { data, loading, error, isDemoData, refetch, cancelOrder } = useDashboardData()
+  const {
+    data,
+    loading,
+    error,
+    isDemoData,
+    refetch,
+    cancelOrder,
+    activePeriod,
+    setActivePeriod,
+  } = useDashboardData()
 
   return (
     <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa] flex flex-col justify-between">
@@ -76,7 +85,10 @@ export default function DashboardPage() {
         allTimeProfit={data.allTimeProfit}
         winRate={data.winRate}
         totalTrades={data.totalTrades}
+        activePeriod={activePeriod}
+        onPeriodChange={setActivePeriod}
       />
+
 
       {/* Lower two-column grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">

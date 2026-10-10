@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -50,6 +51,7 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 	eventID string,
 	dailyLimitINR int64,
 ) (*repository.PaymentConfirmationResult, error) {
+	provider = strings.ToUpper(strings.TrimSpace(provider))
 	tx, err := m.db.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin webhook transaction: %w", err)
@@ -64,7 +66,7 @@ func (m *PostgresTxManager) ProcessPaymentConfirmationTx(
 	var existingWebhookStatus string
 	err = tx.QueryRow(ctx, `
 		SELECT id, status FROM webhook_events
-		WHERE provider = $1 AND event_id = $2
+		WHERE UPPER(provider) = UPPER($1) AND event_id = $2
 		FOR UPDATE;
 	`, provider, eventID).Scan(&existingWebhookID, &existingWebhookStatus)
 

@@ -1,6 +1,7 @@
 package test
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/zap"
 	"tradedrift/services/controlled-taker/internal/clients/redisdepth"
+	"tradedrift/services/controlled-taker/internal/config"
 	"tradedrift/services/controlled-taker/internal/engine"
 )
 
@@ -180,17 +182,18 @@ func TestSafetyManager_CumulativeDepthGuard(t *testing.T) {
 	}
 
 	// Case 1: Target Qty 0.05 BTC.
-	// Required 1.5x depth = 0.05 * 1.5 = 0.075 BTC.
+	// Max allowed = 0.10 * 0.90 = 0.09 BTC.
 	// Available = 0.10 BTC. Should PASS.
-	err := sm.ValidatePreOrder(depth, "BUY", decimal.NewFromFloat(0.05), decimal.NewFromInt(96500))
+	priceCap := decimal.NewFromInt(96500)
+	err := sm.ValidatePreOrder(depth, "BUY", decimal.NewFromFloat(0.05), priceCap, priceCap)
 	if err != nil {
 		t.Errorf("expected pre-order validation to pass, got: %v", err)
 	}
 
-	// Case 2: Target Qty 0.08 BTC.
-	// Required 1.5x depth = 0.08 * 1.5 = 0.12 BTC.
-	// Available = 0.10 BTC. Should FAIL with ErrCumulativeDepthRatio.
-	err = sm.ValidatePreOrder(depth, "BUY", decimal.NewFromFloat(0.08), decimal.NewFromInt(96500))
+	// Case 2: Target Qty 0.095 BTC.
+	// Exceeds 90% depth consumption ceiling (0.095 > 0.09 BTC).
+	// Should FAIL with ErrCumulativeDepthRatio.
+	err = sm.ValidatePreOrder(depth, "BUY", decimal.NewFromFloat(0.095), priceCap, priceCap)
 	if err == nil {
 		t.Fatalf("expected ErrCumulativeDepthRatio, got nil")
 	}
@@ -218,7 +221,8 @@ func TestSafetyManager_SpreadAndVolumeLimits(t *testing.T) {
 		},
 	}
 
-	err := sm.ValidatePreOrder(wideDepth, "BUY", decimal.NewFromFloat(0.01), decimal.NewFromInt(100000))
+	widePriceCap := decimal.NewFromInt(100000)
+	err := sm.ValidatePreOrder(wideDepth, "BUY", decimal.NewFromFloat(0.01), widePriceCap, widePriceCap)
 	if err == nil {
 		t.Fatalf("expected wide spread to be rejected, got nil")
 	}
@@ -235,22 +239,23 @@ func TestSafetyManager_SpreadAndVolumeLimits(t *testing.T) {
 		},
 	}
 
+	normalPriceCap := decimal.NewFromInt(96500)
 	// Order 1: $4,000 notional (passes)
-	err = sm.ValidatePreOrder(normalDepth, "BUY", decimal.NewFromFloat(0.04), decimal.NewFromInt(96500))
+	err = sm.ValidatePreOrder(normalDepth, "BUY", decimal.NewFromFloat(0.04), normalPriceCap, normalPriceCap)
 	if err != nil {
 		t.Fatalf("expected normal order 1 to pass: %v", err)
 	}
 	sm.RecordOrderExecution(decimal.NewFromFloat(0.04).Mul(decimal.NewFromInt(96500)))
 
 	// Order 2: $4,000 notional (passes, total $8,000)
-	err = sm.ValidatePreOrder(normalDepth, "BUY", decimal.NewFromFloat(0.04), decimal.NewFromInt(96500))
+	err = sm.ValidatePreOrder(normalDepth, "BUY", decimal.NewFromFloat(0.04), normalPriceCap, normalPriceCap)
 	if err != nil {
 		t.Fatalf("expected normal order 2 to pass: %v", err)
 	}
 	sm.RecordOrderExecution(decimal.NewFromFloat(0.04).Mul(decimal.NewFromInt(96500)))
 
 	// Order 3: Exceeds max 2 trades per hour
-	err = sm.ValidatePreOrder(normalDepth, "BUY", decimal.NewFromFloat(0.01), decimal.NewFromInt(96500))
+	err = sm.ValidatePreOrder(normalDepth, "BUY", decimal.NewFromFloat(0.01), normalPriceCap, normalPriceCap)
 	if !errors.Is(err, engine.ErrTradesPerHourExceeded) {
 		t.Fatalf("expected ErrTradesPerHourExceeded, got: %v", err)
 	}
@@ -294,5 +299,86 @@ func TestCircuitBreaker_ConcurrencyStress(t *testing.T) {
 	state := cb.State()
 	if state != "CLOSED" && state != "OPEN" && state != "HALF_OPEN" {
 		t.Fatalf("unexpected circuit breaker state after concurrency stress: %s", state)
+	}
+}
+
+// TestSafetyManager_SELL_UsesConservativePrice_NotLowerPriceCap verifies that for SELL sweeps,
+// pre-order notional checks evaluate exposure using ConservativePrice (L1 Bid), not the lower PriceCap.
+func TestSafetyManager_SELL_UsesConservativePrice_NotLowerPriceCap(t *testing.T) {
+	cb := engine.NewCircuitBreaker(5, time.Minute, zap.NewNop())
+	sm := engine.NewSafetyManager(
+		cb,
+		decimal.NewFromInt(10000),   // Max hourly notional $10,000
+		decimal.NewFromInt(50000),   // Max daily notional $50,000
+		100,                         // Max trades per hour: 100
+		decimal.NewFromFloat(0.50),  // Wide spread tolerance for test
+	)
+
+	depth := &redisdepth.DepthSnapshot{
+		MarketID:   "BTC-USDT",
+		SnapshotAt: time.Now(),
+		Bids: []redisdepth.DepthLevel{
+			{Price: decimal.NewFromInt(100000), Quantity: decimal.NewFromFloat(1.0)}, // L1 Bid: ConservativePrice
+			{Price: decimal.NewFromInt(90000), Quantity: decimal.NewFromFloat(1.0)},  // L2 Bid
+			{Price: decimal.NewFromInt(80000), Quantity: decimal.NewFromFloat(1.0)},  // L3 Bid: PriceCap
+		},
+		Asks: []redisdepth.DepthLevel{
+			{Price: decimal.NewFromInt(100100), Quantity: decimal.NewFromFloat(1.0)},
+		},
+	}
+
+	targetQty := decimal.NewFromFloat(0.11)
+	priceCap := decimal.NewFromInt(80000)
+	conservativePrice := decimal.NewFromInt(100000)
+
+	// Under flawed calculation (targetQty * priceCap): 0.11 * 80,000 = $8,800 <= $10,000
+	// Under correct calculation (targetQty * conservativePrice): 0.11 * 100,000 = $11,000 > $10,000
+	err := sm.ValidatePreOrder(depth, "SELL", targetQty, priceCap, conservativePrice)
+	if !errors.Is(err, engine.ErrHourlyVolumeExceeded) {
+		t.Fatalf("expected ErrHourlyVolumeExceeded when SELL evaluated at conservative L1 price, got: %v", err)
+	}
+}
+
+// TestWorker_StaleDepthPreSubmit_AbortsWithoutOrder verifies the CTS-1 invariant:
+// If depth snapshot ages beyond MaxDepthAge prior to submission, the cycle aborts without submitting.
+func TestWorker_StaleDepthPreSubmit_AbortsWithoutOrder(t *testing.T) {
+	cfg := testDefaultConfig()
+	cfg.MaxDepthAge = 50 * time.Millisecond
+	cfg.MaxOrderNotionalUSDT = decimal.NewFromInt(10000)
+
+	depth := &redisdepth.DepthSnapshot{
+		MarketID:   "BTC-USDT",
+		SnapshotAt: time.Now().Add(-100 * time.Millisecond), // 100ms old > 50ms MaxDepthAge
+		Bids: []redisdepth.DepthLevel{
+			{Price: decimal.NewFromInt(96000), Quantity: decimal.NewFromFloat(1.0)},
+		},
+		Asks: []redisdepth.DepthLevel{
+			{Price: decimal.NewFromInt(96100), Quantity: decimal.NewFromFloat(1.0)},
+		},
+	}
+	depthReader := &mockDepthReader{
+		snapshot:          depth,
+		preserveTimestamp: true,
+	}
+	submitter := &mockOrderSubmitter{}
+	selector := engine.NewDirectionSelector()
+	market := config.MarketConfig{
+		MarketID:    "BTC-USDT",
+		BaseAsset:   "BTC",
+		QuoteAsset:  "USDT",
+		TickSize:    decimal.NewFromFloat(0.01),
+		LotSize:     decimal.NewFromFloat(0.0001),
+		MinQuantity: decimal.NewFromFloat(0.0001),
+		Partition:   0,
+	}
+	worker := engine.NewMarketWorker(market, cfg, submitter, depthReader, selector, zap.NewNop())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	worker.ExecuteCycle(ctx, config.ProfileLow)
+
+	if submitter.createAttempts != 0 {
+		t.Fatalf("expected 0 order submissions for stale pre-submit depth, got %d", submitter.createAttempts)
 	}
 }

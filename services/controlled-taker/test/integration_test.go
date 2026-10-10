@@ -67,13 +67,13 @@ func TestWorker_OrderLifecycleIntegration(t *testing.T) {
 		t.Errorf("expected IdempotencyKey prefix 'CTS-BTC-USDT-', got %s", order.IdempotencyKey)
 	}
 
-	// Invariant: Dynamic quantity from 0.50 BTC L1 (5%-15% is [0.0250, 0.0750])
+	// Invariant: Dynamic quantity from 0.50 BTC L1 (10%-25% is [0.0500, 0.1250])
 	qty, err := decimal.NewFromString(order.Quantity)
 	if err != nil {
 		t.Fatalf("invalid quantity decimal: %v", err)
 	}
-	if qty.LessThan(decimal.NewFromFloat(0.025)) || qty.GreaterThan(decimal.NewFromFloat(0.075)) {
-		t.Errorf("expected order quantity in [0.025, 0.075], got %s", qty)
+	if qty.LessThan(decimal.NewFromFloat(0.050)) || qty.GreaterThan(decimal.NewFromFloat(0.125)) {
+		t.Errorf("expected order quantity in [0.050, 0.125], got %s", qty)
 	}
 
 	// Invariant: Identity check
@@ -445,13 +445,17 @@ func TestWorker_DuplicateOrderPrevention_RecoveryNeverCreatesSecondOrder(t *test
 		t.Fatalf("expected 1 cancel call for residual, got %d", cancelledCountAfterCycle1)
 	}
 
-	// --- Cycle 2: Next cycle runs normally ---
+	// --- Cycle 2: Next cycle runs normally with fresh live depth ---
 	// Update submitter state for normal execution in cycle 2
 	orderSubmitter.mu.Lock()
 	orderSubmitter.status = "ORDER_STATUS_FILLED"
 	orderSubmitter.filledQty = "0.0100"
 	orderSubmitter.remainingQty = "0"
 	orderSubmitter.mu.Unlock()
+
+	depthReader.mu.Lock()
+	depth.SnapshotAt = time.Now()
+	depthReader.mu.Unlock()
 
 	worker.ExecuteCycle(ctx, config.ProfileLow)
 

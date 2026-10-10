@@ -106,7 +106,7 @@ func (s *Service) CreateNotification(ctx context.Context, input model.CreateNoti
 		EventID:        notifID,
 		NotificationID: notifID,
 		Type:           "notification.created",
-		Channel:        "user:notifications",
+		Channel:        "user:notifications:" + input.UserID,
 		Timestamp:      now,
 		Data:           notif,
 	}

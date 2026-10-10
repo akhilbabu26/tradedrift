@@ -264,6 +264,9 @@ func (f *redisPriceFilter) validateMMOrder(ctx context.Context, marketID string,
 	return nil
 }
 
+// ErrPriceReferenceUnavailable is returned when live depth projection in Redis is unreachable or corrupted.
+var ErrPriceReferenceUnavailable = errors.New("price reference unavailable: live depth projection is temporarily unreachable or corrupted")
+
 func (f *redisPriceFilter) validateRetailOrder(ctx context.Context, marketID string, side repository.OrderSide, orderType repository.OrderType, price decimal.Decimal) error {
 	key := "depth:" + marketID
 	val, err := f.redisClient.Get(ctx, key).Result()
@@ -272,14 +275,14 @@ func (f *redisPriceFilter) validateRetailOrder(ctx context.Context, marketID str
 			// No depth yet in book (market cold start) — allow order to seed the book
 			return nil
 		}
-		f.logger.Warn("Failed to read depth projection from Redis, bypassing price filter", zap.String("market", marketID), zap.Error(err))
-		return nil
+		f.logger.Error("Failed to read depth projection from Redis, failing closed", zap.String("market", marketID), zap.Error(err))
+		return ErrPriceReferenceUnavailable
 	}
 
 	var depth depthSnapshotDTO
 	if err := json.Unmarshal([]byte(val), &depth); err != nil {
-		f.logger.Warn("Failed to unmarshal depth projection, bypassing price filter", zap.String("market", marketID), zap.Error(err))
-		return nil
+		f.logger.Error("Failed to unmarshal depth projection, failing closed", zap.String("market", marketID), zap.Error(err))
+		return ErrPriceReferenceUnavailable
 	}
 
 	var hasBid, hasAsk bool

@@ -92,11 +92,8 @@ func NewProducer(brokers []string, markets []MarketPartition, logger *zap.Logger
 	}
 }
 
-// PublishCreate publishes an OrderCreated command for an MM order.
-func (p *Producer) PublishCreate(ctx context.Context, marketID string, partition int,
-	orderID, clientOrderID, side, price, quantity string) error {
-
-	payload, err := json.Marshal(orderCreatedPayload{
+func buildCreatePayload(orderID, clientOrderID, side, price, quantity string) ([]byte, error) {
+	return json.Marshal(orderCreatedPayload{
 		OrderID:       orderID,
 		UserID:        account.WalletUUIDStr, // ME validates user_id with uuid.Parse
 		Side:          side,
@@ -105,6 +102,20 @@ func (p *Producer) PublishCreate(ctx context.Context, marketID string, partition
 		Quantity:      quantity,
 		ClientOrderID: clientOrderID,
 	})
+}
+
+func buildCancelPayload(orderID string) ([]byte, error) {
+	return json.Marshal(orderCancelPayload{
+		OrderID: orderID,
+		UserID:  account.WalletUUIDStr, // ME validates user_id with uuid.Parse
+	})
+}
+
+// PublishCreate publishes an OrderCreated command for an MM order.
+func (p *Producer) PublishCreate(ctx context.Context, marketID string, partition int,
+	orderID, clientOrderID, side, price, quantity string) error {
+
+	payload, err := buildCreatePayload(orderID, clientOrderID, side, price, quantity)
 	if err != nil {
 		return fmt.Errorf("marshal OrderCreated payload: %w", err)
 	}
@@ -126,10 +137,7 @@ func (p *Producer) PublishCreate(ctx context.Context, marketID string, partition
 func (p *Producer) PublishCancel(ctx context.Context, marketID string, partition int,
 	orderID string) error {
 
-	payload, err := json.Marshal(orderCancelPayload{
-		OrderID: orderID,
-		UserID:  account.WalletUUIDStr, // ME validates user_id with uuid.Parse
-	})
+	payload, err := buildCancelPayload(orderID)
 	if err != nil {
 		return fmt.Errorf("marshal OrderCancelRequested payload: %w", err)
 	}

@@ -3,7 +3,7 @@ import ProfileAccountCard from '../../components/settings/ProfileAccountCard'
 import SecurityPasswordCard from '../../components/settings/SecurityPasswordCard'
 import ActiveSessionsCard from '../../components/settings/ActiveSessionsCard'
 import SignOutCard from '../../components/settings/SignOutCard'
-import SettingsFooter from '../../components/settings/SettingsFooter'
+import GlobalFooter from '../../components/layout/GlobalFooter'
 
 /**
  * Settings page — authenticated route at /settings.
@@ -21,7 +21,7 @@ export default function SettingsPage() {
         <SecurityPasswordCard />
         <ActiveSessionsCard />
         <SignOutCard />
-        <SettingsFooter />
+        <GlobalFooter />
       </div>
     </div>
   )

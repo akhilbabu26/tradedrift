@@ -1,4 +1,5 @@
 import { Flame, Sparkles, Activity } from 'lucide-react'
+import { RaisedSurface } from '../common/Surface'
 import type { ProfileInsightItem } from '../../types/profile'
 import { getAssetMetadata } from '../../utils/marketMetadata'
 
@@ -41,9 +42,10 @@ export default function ProfileInsightsSection({ insights }: ProfileInsightsSect
           }
 
           return (
-            <div
+            <RaisedSurface
               key={item.id}
-              className="p-4 bg-[#111318] border border-[#1e2530] rounded-xl hover:border-slate-700 transition-colors flex items-start justify-between gap-3"
+              variant="raised-subtle"
+              className="p-4 rounded-xl hover:border-white/10 transition-colors flex items-start justify-between gap-3"
             >
               <div>
                 <span className="block text-[11px] font-medium text-slate-400 mb-1">
@@ -73,7 +75,7 @@ export default function ProfileInsightsSection({ insights }: ProfileInsightsSect
                   </div>
                 )}
               </div>
-            </div>
+            </RaisedSurface>
           )
         })}
       </div>

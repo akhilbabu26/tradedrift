@@ -55,10 +55,11 @@ export default function Sparkline({
   const last = values[values.length - 1]
 
   const trendDirection = useMemo<'positive' | 'negative' | 'neutral'>(() => {
+    // Insufficient observations (< 2 valid prices) must ALWAYS be neutral
+    if (values.length < 2) return 'neutral'
     if (positive !== undefined) {
       return positive ? 'positive' : 'negative'
     }
-    if (values.length < 2) return 'neutral'
     if (last > first) return 'positive'
     if (last < first) return 'negative'
     return 'neutral'

@@ -12,33 +12,45 @@
   }
 
   html {
-    scroll-behavior: smooth;
+    /* Instant scroll to prevent SPA navigation jitter */
+    scroll-behavior: auto;
   }
 
   body {
-    background-color: #0a0b0e;
-    color: #f1f5f9;
+    background-color: #08090B;
+    color: #F2F3F5;
     font-family: 'Inter', sans-serif;
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
   }
 
   h1, h2, h3, h4, h5, h6 {
-    color: #f5f7fa;
+    color: #F2F3F5;
   }
 
   ::-webkit-scrollbar {
     width: 6px;
+    height: 4px;
+  }
+  ::-webkit-scrollbar-button,
+  ::-webkit-scrollbar-button:single-button,
+  ::-webkit-scrollbar-button:horizontal:decrement,
+  ::-webkit-scrollbar-button:horizontal:increment,
+  ::-webkit-scrollbar-button:vertical:decrement,
+  ::-webkit-scrollbar-button:vertical:increment {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
   }
   ::-webkit-scrollbar-track {
-    background: #0a0b0e;
+    background: #08090B;
   }
   ::-webkit-scrollbar-thumb {
-    background: #1e2530;
+    background: #202225;
     border-radius: 3px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #10b981;
+    background: #292C30;
   }
 }
 
@@ -74,6 +86,58 @@
 
   .glow-text {
     text-shadow: 0 0 30px rgba(16, 185, 129, 0.5);
+  }
+
+  /* Clean trading terminal chart styling: hide third-party attribution watermark */
+  div[class*="tv-attr"],
+  a[href*="tradingview.com"],
+  [id*="tv-attr"] {
+    display: none !important;
+    visibility: hidden !important;
+    pointer-events: none !important;
+  }
+
+  /* Thin sleek monochrome horizontal scrollbar for trading header & toolbars */
+  .trade-scrollbar-x {
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: #3f444e #0d0e12;
+  }
+  .trade-scrollbar-x::-webkit-scrollbar {
+    height: 4px;
+    width: 4px;
+  }
+  .trade-scrollbar-x::-webkit-scrollbar-button,
+  .trade-scrollbar-x::-webkit-scrollbar-button:single-button,
+  .trade-scrollbar-x::-webkit-scrollbar-button:horizontal:decrement,
+  .trade-scrollbar-x::-webkit-scrollbar-button:horizontal:increment {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+  }
+  .trade-scrollbar-x::-webkit-scrollbar-track {
+    background: #0d0e12;
+    border-radius: 2px;
+  }
+  .trade-scrollbar-x::-webkit-scrollbar-thumb {
+    background: #323741;
+    border-radius: 2px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+  }
+  .trade-scrollbar-x::-webkit-scrollbar-thumb:hover {
+    background: #4b5260;
+  }
+  .trade-scrollbar-x::-webkit-scrollbar-thumb:active {
+    background: #626a7a;
+  }
+
+  .scrollbar-none {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    display: none;
   }
 }
 

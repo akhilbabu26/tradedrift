@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { BarChart3, ChevronDown, Mail, TrendingUp, ShieldCheck, FileText, ArrowUp } from 'lucide-react'
 import { useNotificationStore } from '../../store/notificationStore'
+import { RaisedSurface } from '../common/Surface'
 
 export default function NotificationStatsCard() {
   const [range, setRange] = useState('Last 30 Days')
@@ -15,7 +16,7 @@ export default function NotificationStatsCard() {
   const system = notifications.filter((n) => n.category === 'system').length
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl p-4 sm:p-5">
+    <RaisedSurface variant="raised-subtle" className="rounded-xl p-4 sm:p-5">
       {/* Header */}
       <div className="flex items-center justify-between gap-2 mb-4">
         <div className="flex items-center gap-2.5">
@@ -128,6 +129,6 @@ export default function NotificationStatsCard() {
           </p>
         </div>
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

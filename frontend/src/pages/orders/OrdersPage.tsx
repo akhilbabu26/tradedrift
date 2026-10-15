@@ -5,7 +5,7 @@ import OrdersStats from '../../components/orders/OrdersStats'
 import OpenOrdersSection from '../../components/orders/OpenOrdersSection'
 import OrderHistorySection from '../../components/orders/OrderHistorySection'
 import TradeFillsSection from '../../components/orders/TradeFillsSection'
-import OrdersFooter from '../../components/orders/OrdersFooter'
+import GlobalFooter from '../../components/layout/GlobalFooter'
 
 export default function OrdersPage() {
   const {
@@ -84,7 +84,7 @@ export default function OrdersPage() {
         <TradeFillsSection fills={tradeFills} />
       </div>
 
-      <OrdersFooter />
+      <GlobalFooter />
     </div>
   )
 }

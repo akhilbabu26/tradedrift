@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { TrendingUp, Menu, X } from 'lucide-react'
+import { Menu, X } from 'lucide-react'
+import { TradeDriftSymbol } from './brand/TradeDriftLogo'
 
 export default function Navbar() {
   const [scrolled, setScrolled] = useState(false)
@@ -17,13 +18,16 @@ export default function Navbar() {
       }`}>
       <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
         {/* Logo */}
-        <Link to="/" className="flex items-center gap-2 group">
-          <div className="w-8 h-8 rounded-lg bg-brand flex items-center justify-center glow-green-sm group-hover:scale-110 transition-transform">
-            <TrendingUp size={16} className="text-black" strokeWidth={2.5} />
+        <Link to="/" className="flex items-center gap-2.5 group" aria-label="TradeDrift home">
+          <TradeDriftSymbol size={32} className="group-hover:scale-105 transition-transform" />
+          <div className="flex flex-col leading-none">
+            <span className="text-white font-bold text-lg tracking-tight">
+              Trade<span className="text-gradient">Drift</span>
+            </span>
+            <span className="text-[8px] font-semibold text-[#10b981] tracking-[0.12em] uppercase mt-0.5">
+              MARKETS · EXECUTION · INTELLIGENCE
+            </span>
           </div>
-          <span className="text-white font-bold text-lg tracking-tight">
-            Trade<span className="text-gradient">Drift</span>
-          </span>
         </Link>
 
         {/* Desktop nav */}

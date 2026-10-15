@@ -4,6 +4,7 @@ import { walletApi } from '../api/wallet'
 import { tradesApi } from '../api/trades'
 import { wsService, WsChannels, type ConnectionStatus } from '../api/ws'
 import { useAuthStore } from '../store/authStore'
+import { useWalletStore } from '../store/walletStore'
 import type {
   OpenOrderItem,
   OrderHistoryItem,
@@ -12,7 +13,7 @@ import type {
   OrderStatusUI,
 } from '../types/orders'
 import { toDecimal } from '../utils/decimal'
-import { formatPrice, formatQuantity, formatDate } from '../utils/formatters'
+import { formatPrice, formatQuantity, formatDate, calculateOrderProgress } from '../utils/formatters'
 import { extractApiError } from '../utils/apiError'
 import toast from 'react-hot-toast'
 
@@ -39,13 +40,8 @@ export function normalizeOrderStatus(rawStatus: string): OrderStatusUI {
   return 'Open'
 }
 
-/** Determines if an order is currently active (OPEN or PARTIALLY_FILLED) */
-export function isOrderActive(rawStatus: string): boolean {
-  const s = (rawStatus || '').toUpperCase()
-  if (s === 'ORDER_STATUS_OPEN' || s === 'OPEN' || s === 'PENDING') return true
-  if (s === 'ORDER_STATUS_PARTIALLY_FILLED' || s === 'PARTIALLY_FILLED') return true
-  return false
-}
+import { isOrderActive } from '../api/order'
+export { isOrderActive }
 
 /** Normalizes order side strings (ORDER_SIDE_BUY/SELL, BUY/SELL) */
 export function normalizeOrderSide(rawSide: string): 'BUY' | 'SELL' {
@@ -71,6 +67,9 @@ export function useOrdersPageData() {
   const [isDemoData, setIsDemoData] = useState(false)
   const [cancellingId, setCancellingId] = useState<string | null>(null)
   const [wsStatus, setWsStatus] = useState<ConnectionStatus>('connecting')
+
+  const user = useAuthStore((s) => s.user)
+  const userId = user?.userId || (user as any)?.user_id || (user as any)?.id
 
   // ── 1. Fetch Orders, History, and Authoritative KPI Sources ─────────────────
   const loadOrders = useCallback(async () => {
@@ -102,9 +101,7 @@ export function useOrdersPageData() {
         const remainingQty = totalQty.minus(filledQty).clamp(0, totalQty)
         const priceDec = toDecimal(o.price || '0')
 
-        const progress = totalQty.gt(0)
-          ? Math.min(100, Math.round(filledQty.dividedBy(totalQty).times(100).toNumber()))
-          : 0
+        const progress = calculateOrderProgress(o.filled_quantity || '0', o.quantity || '0')
 
         if (isOrderActive(rawStatus)) {
           openCount++
@@ -120,6 +117,8 @@ export function useOrdersPageData() {
             progress,
             status: 'Open',
             rawStatus: o.status,
+            rawFilledQuantity: o.filled_quantity,
+            rawQuantity: o.quantity,
           })
         } else {
           const statusUI = normalizeOrderStatus(rawStatus)
@@ -234,7 +233,6 @@ export function useOrdersPageData() {
     const unsubWs = wsService.onStatus((_connected, status) => setWsStatus(status))
     unsubs.push(unsubWs)
 
-    const userId = useAuthStore.getState().user?.userId
     if (userId) {
       unsubs.push(
         wsService.subscribe(WsChannels.userNotifications(userId), () => {
@@ -260,15 +258,16 @@ export function useOrdersPageData() {
     return () => {
       unsubs.forEach((u) => u())
     }
-  }, [loadOrders])
+  }, [loadOrders, userId])
 
   // ── 3. Cancel Order Action ────────────────────────────────────────────────
   const handleCancelOrder = useCallback(
     async (orderId: string): Promise<boolean> => {
       setCancellingId(orderId)
       try {
+        let authoritativeCancelledOrder: any = null
         if (!isDemoData) {
-          await orderApi.cancelOrder(orderId)
+          authoritativeCancelledOrder = await orderApi.cancelOrder(orderId)
         }
 
         // Optimistically remove from Open Orders & update KPIs
@@ -277,6 +276,12 @@ export function useOrdersPageData() {
           const remaining = prev.filter((o) => o.id !== orderId)
 
           if (target) {
+            const filledStr = authoritativeCancelledOrder?.filled_quantity ?? target.rawFilledQuantity ?? target.filledRemaining.split('/')[0].trim()
+            const totalStr = authoritativeCancelledOrder?.quantity ?? target.rawQuantity ?? target.amount.split(' ')[0].trim()
+            const filledDec = toDecimal(filledStr)
+            const priceDec = toDecimal(target.price.replace(/,/g, '') || '0')
+            const totalVal = filledDec.gt(0) ? filledDec.times(priceDec) : toDecimal(totalStr).times(priceDec)
+
             // Add to Order History as Canceled
             const canceledItem: OrderHistoryItem = {
               id: target.id,
@@ -287,8 +292,8 @@ export function useOrdersPageData() {
               type: target.type,
               side: target.side,
               avgFilledPrice: target.price,
-              executedTotal: target.filledRemaining,
-              totalValueUSDT: '0.00',
+              executedTotal: `${formatQuantity(filledStr, 4)} / ${formatQuantity(totalStr, 4)}`,
+              totalValueUSDT: formatPrice(totalVal.toString()),
               status: 'Canceled',
               rawStatus: 'CANCELLED',
             }
@@ -305,6 +310,7 @@ export function useOrdersPageData() {
         })
 
         toast.success('Order cancelled successfully')
+        useWalletStore.getState().invalidateBalances().catch(() => {})
         return true
       } catch (err: any) {
         const msg = err?.response?.data?.message || err?.message || 'Failed to cancel order'

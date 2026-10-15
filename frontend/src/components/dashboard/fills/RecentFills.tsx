@@ -19,7 +19,7 @@ export default function RecentFills({ fills }: RecentFillsProps) {
       <SectionHeader
         title="Recent Fills"
         action={
-          <Link to="/orders" className="flex items-center gap-0.5 text-xs text-slate-400 hover:text-[#10b981] transition-colors">
+          <Link to="/orders" className="flex items-center gap-0.5 text-xs text-[#777E87] hover:text-[#F2F3F5] transition-colors">
             View All <ArrowRight size={11} />
           </Link>
         }

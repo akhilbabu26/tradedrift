@@ -2,8 +2,13 @@ package service_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
+	"github.com/shopspring/decimal"
 
 	"tradedrift/services/market/internal/repository"
 	"tradedrift/services/market/internal/service"
@@ -183,3 +188,105 @@ func TestMarketService_GetMarketsOverview_LimitAndResolutionValidation(t *testin
 		}
 	})
 }
+
+func TestMarketService_RefreshAllTickers(t *testing.T) {
+	t.Run("Refreshes only active markets into Redis", func(t *testing.T) {
+		mr, err := miniredis.Run()
+		if err != nil {
+			t.Fatalf("failed to start miniredis: %v", err)
+		}
+		defer mr.Close()
+
+		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		defer rdb.Close()
+
+		refreshedMarkets := make(map[string]bool)
+		mRepo := &mockMarketRepo{
+			listMarketsFunc: func(ctx context.Context) ([]*repository.Market, error) {
+				return []*repository.Market{
+					{ID: "BTC-USDT", Status: "ACTIVE"},
+					{ID: "ETH-USDT", Status: "ACTIVE"},
+					{ID: "PAUSED-USDT", Status: "PAUSED"},
+				}, nil
+			},
+			getTicker24hFunc: func(ctx context.Context, marketID string) (*repository.Ticker24h, error) {
+				refreshedMarkets[marketID] = true
+				return &repository.Ticker24h{
+					MarketID:              marketID,
+					LastPrice:             decimal.NewFromInt(100),
+					High24h:               decimal.NewFromInt(105),
+					Low24h:                decimal.NewFromInt(95),
+					Volume24h:             decimal.NewFromInt(10),
+					QuoteVolume24h:        decimal.NewFromInt(1000),
+					PriceChange24hPercent: decimal.NewFromFloat(5.0),
+				}, nil
+			},
+		}
+
+		svc := service.NewMarketService(mRepo, &mockCandleRepo{}, rdb)
+		err = svc.RefreshAllTickers(context.Background())
+		if err != nil {
+			t.Fatalf("unexpected error refreshing tickers: %v", err)
+		}
+
+		if !refreshedMarkets["BTC-USDT"] || !refreshedMarkets["ETH-USDT"] {
+			t.Fatalf("expected active markets to be refreshed, got: %v", refreshedMarkets)
+		}
+		if refreshedMarkets["PAUSED-USDT"] {
+			t.Fatalf("paused market should not be refreshed")
+		}
+
+		// Verify keys exist in Redis
+		valBTC, err := rdb.Get(context.Background(), "ticker:BTC-USDT").Result()
+		if err != nil || valBTC == "" {
+			t.Fatalf("expected ticker:BTC-USDT in redis, got: %v", err)
+		}
+		valETH, err := rdb.Get(context.Background(), "ticker:ETH-USDT").Result()
+		if err != nil || valETH == "" {
+			t.Fatalf("expected ticker:ETH-USDT in redis, got: %v", err)
+		}
+		_, err = rdb.Get(context.Background(), "ticker:PAUSED-USDT").Result()
+		if err == nil {
+			t.Fatalf("did not expect ticker:PAUSED-USDT in redis")
+		}
+	})
+
+	t.Run("Failed refresh preserves existing legitimate cached data", func(t *testing.T) {
+		mr, err := miniredis.Run()
+		if err != nil {
+			t.Fatalf("failed to start miniredis: %v", err)
+		}
+		defer mr.Close()
+
+		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+		defer rdb.Close()
+
+		ctx := context.Background()
+		initialData := `{"marketId":"BTC-USDT","lastPrice":"82000"}`
+		if err := rdb.Set(ctx, "ticker:BTC-USDT", initialData, 24*time.Hour).Err(); err != nil {
+			t.Fatalf("failed to seed redis: %v", err)
+		}
+
+		// Mock repository returns an error on GetTicker24h
+		mRepo := &mockMarketRepo{
+			listMarketsFunc: func(ctx context.Context) ([]*repository.Market, error) {
+				return []*repository.Market{
+					{ID: "BTC-USDT", Status: "ACTIVE"},
+				}, nil
+			},
+			getTicker24hFunc: func(ctx context.Context, marketID string) (*repository.Ticker24h, error) {
+				return nil, errors.New("database connection failure")
+			},
+		}
+
+		svc := service.NewMarketService(mRepo, &mockCandleRepo{}, rdb)
+		_ = svc.RefreshAllTickers(ctx)
+
+		// Pre-existing valid cached data MUST not be deleted or corrupted
+		cached, err := rdb.Get(ctx, "ticker:BTC-USDT").Result()
+		if err != nil || cached != initialData {
+			t.Fatalf("expected legitimate cached data to be preserved, got err=%v data=%s", err, cached)
+		}
+	})
+}
+

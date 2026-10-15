@@ -33,16 +33,16 @@ export default function SimulatorBalance({
       {/* Allocation bar */}
       <div className="space-y-1.5">
         <div className="flex justify-between text-[11px]">
-          <span className="text-slate-400">
-            Available: <span className="text-[#f5f7fa] font-medium">{availablePercent}%</span>
+          <span className="text-[#A7ADB5]">
+            Available: <span className="text-[#F2F3F5] font-semibold">{availablePercent}%</span>
           </span>
-          <span className="text-slate-400">
-            In Orders: <span className="text-[#f5f7fa] font-medium">{inOrdersPercent}%</span>
+          <span className="text-[#A7ADB5]">
+            In Orders: <span className="text-[#F2F3F5] font-semibold">{inOrdersPercent}%</span>
           </span>
         </div>
-        <div className="flex h-1.5 rounded-full overflow-hidden bg-[#0a0b0e]">
+        <div className="flex h-1.5 rounded-full overflow-hidden bg-[#090A0C] border border-[#292C30] shadow-[inset_0_1px_2px_rgba(0,0,0,0.8)]">
           <div
-            className="bg-[#10b981] transition-all duration-500"
+            className="bg-[#10B981] transition-all duration-500"
             style={{ width: `${availablePercent}%` }}
             role="progressbar"
             aria-valuenow={availablePercent}
@@ -51,7 +51,7 @@ export default function SimulatorBalance({
             aria-label="Available balance"
           />
           <div
-            className="bg-[#3b82f6] transition-all duration-500"
+            className="bg-[#3B82F6] transition-all duration-500"
             style={{ width: `${inOrdersPercent}%` }}
             role="progressbar"
             aria-valuenow={inOrdersPercent}
@@ -61,8 +61,8 @@ export default function SimulatorBalance({
           />
         </div>
         <div className="flex justify-between text-[11px] font-mono">
-          <span className="text-[#10b981]">{formatUSDT(availableUsdt)}</span>
-          <span className="text-[#3b82f6]">{formatUSDT(inOrdersUsdt)}</span>
+          <span className="text-[#10B981]">{formatUSDT(availableUsdt)}</span>
+          <span className="text-[#3B82F6]">{formatUSDT(inOrdersUsdt)}</span>
         </div>
       </div>
     </div>

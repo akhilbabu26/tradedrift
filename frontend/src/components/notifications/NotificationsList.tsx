@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useNotificationStore } from '../../store/notificationStore'
+import { RaisedSurface } from '../common/Surface'
 import type { NotificationIconType, NotificationItem } from '../../types/notifications'
 import { formatRelativeTime } from '../../utils/formatters'
 
@@ -173,7 +174,7 @@ export default function NotificationsList() {
   }
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl overflow-hidden shadow-xs flex flex-col">
+    <RaisedSurface variant="raised-subtle" className="rounded-xl overflow-hidden shadow-xs flex flex-col">
       {isDemoData && (
         <div className="px-4 py-2 bg-amber-500/10 border-b border-amber-500/20">
           <p className="text-xs text-amber-400">⚠ Demo data — backend connection unavailable</p>
@@ -349,6 +350,6 @@ export default function NotificationsList() {
           </button>
         </div>
       )}
-    </div>
+    </RaisedSurface>
   )
 }

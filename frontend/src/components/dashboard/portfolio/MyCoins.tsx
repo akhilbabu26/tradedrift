@@ -1,4 +1,3 @@
-import { ArrowRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import type { CoinHolding } from '../../../types/dashboard'
 import {
@@ -25,15 +24,9 @@ export default function MyCoins({ holdings }: MyCoinsProps) {
   return (
     <div className="flex flex-col gap-2 min-w-0 flex-1">
       <div className="flex items-center justify-between">
-        <p className="text-[11px] font-medium text-slate-400 uppercase tracking-wider">
+        <p className="text-[11px] font-medium text-[#777E87] uppercase tracking-wider">
           My Coins ({holdings.length})
         </p>
-        <Link
-          to="/portfolio"
-          className="flex items-center gap-0.5 text-[11px] text-[#10b981] hover:text-[#34d399] transition-colors"
-        >
-          View Portfolio <ArrowRight size={11} />
-        </Link>
       </div>
 
       {holdings.length === 0 ? (

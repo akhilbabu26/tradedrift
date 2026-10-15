@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { ArrowRight, ChevronDown, Copy, Check } from 'lucide-react'
 import { useState } from 'react'
 import toast from 'react-hot-toast'
+import { RaisedSurface } from '../common/Surface'
 import type { ExecutionFillItem } from '../../types/analytics'
 
 interface Props {
@@ -23,7 +24,7 @@ export default function RecentExecutionFills({ fills }: Props) {
   }
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl overflow-hidden flex flex-col">
+    <RaisedSurface variant="raised-subtle" className="rounded-xl overflow-hidden flex flex-col">
       {/* Header */}
       <div className="px-5 py-4 border-b border-[#1e2530] flex items-center justify-between">
         <div>
@@ -37,7 +38,7 @@ export default function RecentExecutionFills({ fills }: Props) {
 
         <Link
           to="/orders"
-          className="text-xs text-[#10b981] hover:text-[#10b981]/80 transition-colors flex items-center gap-1 font-medium select-none"
+          className="text-xs text-[#777E87] hover:text-[#F2F3F5] transition-colors flex items-center gap-1 font-medium select-none"
         >
           <span>View all executions</span>
           <ArrowRight className="w-3.5 h-3.5" />
@@ -139,6 +140,6 @@ export default function RecentExecutionFills({ fills }: Props) {
           </tbody>
         </table>
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

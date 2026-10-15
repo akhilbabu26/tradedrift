@@ -4,7 +4,7 @@ import AnalyticsStats from '../../components/analytics/AnalyticsStats'
 import PortfolioPerformanceByAsset from '../../components/analytics/PortfolioPerformanceByAsset'
 import TradingActivity from '../../components/analytics/TradingActivity'
 import RecentExecutionFills from '../../components/analytics/RecentExecutionFills'
-import AnalyticsFooter from '../../components/analytics/AnalyticsFooter'
+import GlobalFooter from '../../components/layout/GlobalFooter'
 import { useAnalyticsData } from '../../hooks/useAnalyticsData'
 import type { DateRangeOption } from '../../types/analytics'
 
@@ -55,7 +55,7 @@ export default function AnalyticsPage() {
         <RecentExecutionFills fills={recentFills} />
       </div>
 
-      <AnalyticsFooter />
+      <GlobalFooter />
     </div>
   )
 }

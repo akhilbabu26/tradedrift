@@ -1,5 +1,7 @@
 import { Link } from 'react-router-dom'
-import { ArrowRight, TrendingUp } from 'lucide-react'
+import { ArrowRight } from 'lucide-react'
+import { TradeDriftSymbol } from './brand/TradeDriftLogo'
+import { RaisedSurface } from './common/Surface'
 
 export default function Footer() {
   return (
@@ -30,19 +32,22 @@ export default function Footer() {
       </section>
 
       {/* Footer */}
-      <footer className="border-t border-surface-border py-12 px-6">
-        <div className="max-w-7xl mx-auto">
+      <footer className="py-12 px-6">
+        <RaisedSurface variant="raised-subtle" className="max-w-7xl mx-auto rounded-2xl p-8 sm:p-12 mb-6">
           <div className="grid md:grid-cols-4 gap-8 mb-10">
             {/* Brand */}
             <div className="md:col-span-1">
-              <div className="flex items-center gap-2 mb-4">
-                <div className="w-7 h-7 rounded-lg bg-brand flex items-center justify-center">
-                  <TrendingUp size={14} className="text-black" strokeWidth={2.5} />
+              <div className="flex items-center gap-2.5 mb-4">
+                <TradeDriftSymbol size={28} />
+                <div className="flex flex-col leading-none">
+                  <span className="text-white font-bold text-base tracking-tight">Trade<span className="text-gradient">Drift</span></span>
+                  <span className="text-[7.5px] font-semibold text-[#10b981] tracking-[0.12em] uppercase mt-0.5">
+                    MARKETS · EXECUTION · INTELLIGENCE
+                  </span>
                 </div>
-                <span className="text-white font-bold">Trade<span className="text-gradient">Drift</span></span>
               </div>
-              <p className="text-slate-500 text-sm leading-relaxed">
-                A production-grade Crypto Exchange Simulation Environment.
+              <p className="text-slate-400 text-xs leading-relaxed">
+                Explore markets. Execute trades. Understand the engine.
               </p>
               <div className="flex gap-2 mt-4 flex-wrap">
                 {['Go', 'gRPC', 'Kafka', 'PostgreSQL', 'Redis'].map((t) => (
@@ -86,7 +91,7 @@ export default function Footer() {
             <p className="text-slate-600 text-sm">© 2026 TradeDrift. All virtual assets. Zero financial risk.</p>
             <p className="text-slate-700 text-xs font-mono">MIT License · Open Source</p>
           </div>
-        </div>
+        </RaisedSurface>
       </footer>
     </>
   )

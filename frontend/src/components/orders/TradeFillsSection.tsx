@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import type { TradeFillItem, OrderFilterState } from '../../types/orders'
 import OrderFilters from './OrderFilters'
+import { RaisedSurface } from '../common/Surface'
 
 interface TradeFillsSectionProps {
   fills: TradeFillItem[]
@@ -81,9 +82,10 @@ export default function TradeFillsSection({ fills }: TradeFillsSectionProps) {
   const paginatedFills = filteredFills.slice(startIndex, endIndex)
 
   return (
-    <div
+    <RaisedSurface
       id="trade-fills-section"
-      className="rounded-xl border border-[#1e2530] bg-[#111318] p-4 sm:p-5 flex flex-col gap-4 shadow-sm"
+      variant="raised-subtle"
+      className="flex flex-col gap-4 shadow-sm"
     >
       {/* ── Section Header + Filters ───────────────────────────────────────── */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-[#1e2530] pb-4">
@@ -241,7 +243,7 @@ export default function TradeFillsSection({ fills }: TradeFillsSectionProps) {
           </div>
         </div>
       )}
-    </div>
+    </RaisedSurface>
   )
 }
 

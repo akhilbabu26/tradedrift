@@ -18,6 +18,7 @@ export interface KpiCardItem {
   trendPeriod: string
   isPositive: boolean
   visualType: 'sparkline' | 'bars'
+  sparklinePoints?: number[]
 }
 
 export interface AssetPerformanceItem {

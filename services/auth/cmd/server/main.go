@@ -21,6 +21,7 @@ import (
 	"tradedrift/platform/postgres"
 	platformjwt "tradedrift/platform/jwt"
 	platformgrpc "tradedrift/platform/jwt/grpc"
+	"tradedrift/services/auth/internal/google"
 	"tradedrift/services/auth/internal/handler"
 	"tradedrift/services/auth/internal/mail"
 	"tradedrift/services/auth/internal/otp"
@@ -109,11 +110,18 @@ func main() {
 
 	// 6. Instantiate Repository Adapters
 	userRepo := postgresRepo.NewUserRepository(dbPool)
+	identityRepo := postgresRepo.NewIdentityRepository(dbPool)
 	tokenRepo := postgresRepo.NewTokenRepository(dbPool)
 
 	// 7. Instantiate Domain Core Services
 	otpMgr := otp.NewManager(rdb, 5*time.Minute)
 	mailer := mail.NewLogMailer()
+
+	googleClientID := config.GetEnv("GOOGLE_CLIENT_ID", "")
+	googleValidator := google.NewIDTokenValidator(googleClientID)
+	if googleClientID == "" {
+		appLogger.Warn("GOOGLE_CLIENT_ID is not configured; Google OAuth requests will fail validation")
+	}
 
 	// Connect to Wallet Service gRPC
 	walletAddr := config.GetEnv("WALLET_ADDR", "localhost:50052")
@@ -127,10 +135,12 @@ func main() {
 
 	authService := service.NewService(
 		userRepo,
+		identityRepo,
 		tokenRepo,
 		otpMgr,
 		mailer,
 		walletCl,
+		googleValidator,
 		rdb,
 		jwtSecret,
 		15*time.Minute,  // Access Token TTL
@@ -150,6 +160,8 @@ func main() {
 		"/tradedrift.auth.v1.AuthService/RefreshToken":           true,
 		"/tradedrift.auth.v1.AuthService/ForgotPassword":         true,
 		"/tradedrift.auth.v1.AuthService/ResetPassword":          true,
+		"/tradedrift.auth.v1.AuthService/GoogleLogin":            true,
+		"/tradedrift.auth.v1.AuthService/LinkGoogleAccount":      true,
 
 		// Internal RPCs (called service-to-service by Admin)
 		"/tradedrift.auth.v1.AuthService/InvalidateUserSessions": true,

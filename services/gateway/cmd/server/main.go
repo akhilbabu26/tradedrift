@@ -213,11 +213,14 @@ func main() {
 	mux.HandleFunc("POST /api/v1/auth/verify",          authH.VerifyEmail)
 	mux.HandleFunc("POST /api/v1/auth/resend",          authH.ResendVerification)
 	mux.HandleFunc("POST /api/v1/auth/login",           authH.Login)
+	mux.HandleFunc("POST /api/v1/auth/google",          authH.GoogleLogin)
+	mux.HandleFunc("POST /api/v1/auth/google/link",     authH.LinkGoogleAccount)
 	mux.HandleFunc("POST /api/v1/auth/refresh",         authH.RefreshToken)
 	mux.HandleFunc("POST /api/v1/auth/forgot-password", authH.ForgotPassword)
 	mux.HandleFunc("POST /api/v1/auth/reset-password",  authH.ResetPassword)
 
 	// Auth — protected
+	mux.Handle("POST /api/v1/auth/google/connect",  protected(http.HandlerFunc(authH.ConnectGoogleAccount)))
 	mux.Handle("POST /api/v1/auth/logout",          protected(http.HandlerFunc(authH.Logout)))
 	mux.Handle("POST /api/v1/auth/logout-all",      protected(http.HandlerFunc(authH.LogoutAll)))
 	mux.Handle("POST /api/v1/auth/change-password", protected(http.HandlerFunc(authH.ChangePassword)))

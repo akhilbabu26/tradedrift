@@ -4,6 +4,7 @@ import { Lock, Eye, EyeOff, ShieldCheck, CheckCircle2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { authApi } from '../../api/auth'
 import { useAuthStore } from '../../store/authStore'
+import { RaisedSurface } from '../common/Surface'
 
 export default function SecurityPasswordCard() {
   const navigate = useNavigate()
@@ -77,7 +78,7 @@ export default function SecurityPasswordCard() {
   }
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl p-5 sm:p-6 mb-5 transition-colors">
+    <RaisedSurface variant="raised-subtle" className="rounded-xl p-5 sm:p-6 mb-5 transition-colors">
       {/* Card Header */}
       <div className="flex items-center gap-3 mb-6">
         <div className="w-8 h-8 rounded-lg bg-[#10b981]/10 border border-[#10b981]/20 text-[#10b981] flex items-center justify-center flex-shrink-0">
@@ -228,6 +229,6 @@ export default function SecurityPasswordCard() {
           </ul>
         </div>
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

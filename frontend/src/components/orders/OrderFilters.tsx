@@ -8,9 +8,9 @@ interface OrderFiltersProps {
   searchPlaceholder?: string
 }
 
-export const MARKET_OPTIONS = ['All Markets', 'BTC/USDT', 'ETH/USDT', 'SOL/USDT']
-export const SIDE_OPTIONS = ['All Sides', 'BUY', 'SELL']
-export const TIME_OPTIONS = ['Last 7 Days', 'Last 30 Days', 'All Time']
+const MARKET_OPTIONS = ['All Markets', 'BTC/USDT', 'ETH/USDT', 'SOL/USDT']
+const SIDE_OPTIONS = ['All Sides', 'BUY', 'SELL']
+const TIME_OPTIONS = ['Last 7 Days', 'Last 30 Days', 'All Time']
 
 export default function OrderFilters({
   filters,

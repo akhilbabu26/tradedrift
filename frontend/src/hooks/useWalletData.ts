@@ -1,13 +1,10 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { walletApi, type Balance } from '../api/wallet'
 import { marketApi } from '../api/market'
 import { topupApi, type DailyUsage, type TopUpHistoryItem } from '../api/topup'
 import { useWalletStore } from '../store/walletStore'
+import { useMarketStore } from '../store/marketStore'
 import { wsService } from '../api/ws'
-import {
-  MOCK_DAILY_USAGE,
-  DEFAULT_ASSET_PRICES,
-} from '../data/walletMock'
 import { toDecimal } from '../utils/decimal'
 import { getAssetMetadata, type AssetMetadata } from '../utils/marketMetadata'
 import { extractApiError } from '../utils/apiError'
@@ -45,13 +42,18 @@ function loadSavedTopUps(): TopUpHistoryItem[] {
 
 export function useWalletData() {
   const [rawBalances, setRawBalances] = useState<Balance[]>([])
-  const [prices, setPrices] = useState<Record<string, string>>(DEFAULT_ASSET_PRICES)
-  const [dailyUsage, setDailyUsage] = useState<DailyUsage>(MOCK_DAILY_USAGE)
+  const [prices, setPrices] = useState<Record<string, string>>({ USDT: '1.00' })
+  const [dailyUsage, setDailyUsage] = useState<DailyUsage | null>(null)
   const [topUpHistory, setTopUpHistory] = useState<TopUpHistoryItem[]>(() => loadSavedTopUps())
   const [loading, setLoading] = useState(true)
   const [isDemoData, setIsDemoData] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [submittingTopUp, setSubmittingTopUp] = useState(false)
+
+  const pricesRef = useRef<Record<string, string>>(prices)
+  useEffect(() => {
+    pricesRef.current = prices
+  }, [prices])
 
   const storeBalances = useWalletStore((s) => s.balances)
 
@@ -86,7 +88,7 @@ export function useWalletData() {
     }
 
     // 2. Fetch live prices for non-USDT assets
-    const updatedPrices: Record<string, string> = { ...DEFAULT_ASSET_PRICES, USDT: '1.00' }
+    const updatedPrices: Record<string, string> = { USDT: '1.00' }
     const cryptoAssets = (loadedBalances.length > 0 ? loadedBalances : [
       { asset: 'BTC' }, { asset: 'ETH' }, { asset: 'SOL' }
     ]).filter((b) => b.asset?.toUpperCase() !== 'USDT')
@@ -95,13 +97,25 @@ export function useWalletData() {
       cryptoAssets.map(async (b) => {
         const symbol = b.asset.toUpperCase()
         const marketId = `${symbol}-USDT`
+        const cachedTicker = useMarketStore.getState().tickers[marketId]
+        if (cachedTicker?.last_price && parseFloat(cachedTicker.last_price) > 0) {
+          updatedPrices[symbol] = cachedTicker.last_price
+          return
+        }
         try {
           const ticker = await marketApi.getTicker(marketId)
           if (ticker?.last_price && parseFloat(ticker.last_price) > 0) {
             updatedPrices[symbol] = ticker.last_price
+          } else if (pricesRef.current[symbol]) {
+            // Preserve last known valid price if present (stale data policy)
+            updatedPrices[symbol] = pricesRef.current[symbol]
           }
         } catch {
-          // Keep default fallback price if ticker fetch fails
+          // If ticker fetch fails: preserve last known valid price if present;
+          // otherwise do NOT fabricate a fallback price.
+          if (pricesRef.current[symbol]) {
+            updatedPrices[symbol] = pricesRef.current[symbol]
+          }
         }
       })
     )
@@ -138,9 +152,11 @@ export function useWalletData() {
       const usage = await topupApi.getDailyUsage()
       if (usage) {
         setDailyUsage(usage)
+      } else {
+        setDailyUsage(null)
       }
     } catch {
-      setDailyUsage(MOCK_DAILY_USAGE)
+      setDailyUsage(null)
     }
 
     setLoading(false)
@@ -180,11 +196,19 @@ export function useWalletData() {
       const available = toDecimal(b.availableBalance || '0')
       const reserved = toDecimal(b.reservedBalance || '0')
       const total = available.plus(reserved)
-      const priceStr = prices[asset] || (asset === 'USDT' ? '1.00' : '0.00')
-      const price = toDecimal(priceStr)
-      const value = total.times(price)
+      const hasKnownPrice = asset === 'USDT' || Boolean(prices[asset])
+      const priceStr = asset === 'USDT' ? '1.00' : (prices[asset] || '—')
 
       const isZero = total.lte(0)
+      let valueUSDT: string
+      if (isZero) {
+        valueUSDT = '0.00'
+      } else if (!hasKnownPrice || priceStr === '—') {
+        valueUSDT = '—'
+      } else {
+        const price = toDecimal(priceStr)
+        valueUSDT = total.times(price).toFixed(2)
+      }
 
       return {
         asset,
@@ -194,7 +218,7 @@ export function useWalletData() {
         reservedBalance: reserved.toFixed(asset === 'USDT' ? 2 : 4),
         totalBalance: total.toFixed(asset === 'USDT' ? 2 : 4),
         price: priceStr,
-        valueUSDT: value.toFixed(2),
+        valueUSDT,
         isZeroBalance: isZero,
       }
     })
@@ -205,21 +229,45 @@ export function useWalletData() {
     let totalVal = toDecimal(0)
     let availVal = toDecimal(0)
     let lockVal = toDecimal(0)
+    let hasUnavailablePrice = false
 
     for (const b of rawBalances) {
       const asset = b.asset.toUpperCase()
-      const priceStr = prices[asset] || (asset === 'USDT' ? '1.00' : '0.00')
-      const price = toDecimal(priceStr)
-
       const avail = toDecimal(b.availableBalance || '0')
       const res = toDecimal(b.reservedBalance || '0')
+      const total = avail.plus(res)
 
-      const aVal = avail.times(price)
-      const rVal = res.times(price)
+      // Zero-balance holdings don't affect valuation
+      if (total.lte(0)) continue
 
-      availVal = availVal.plus(aVal)
-      lockVal = lockVal.plus(rVal)
-      totalVal = totalVal.plus(aVal).plus(rVal)
+      if (asset === 'USDT') {
+        availVal = availVal.plus(avail)
+        lockVal = lockVal.plus(res)
+        totalVal = totalVal.plus(total)
+      } else {
+        const priceStr = prices[asset]
+        if (!priceStr || priceStr === '—') {
+          hasUnavailablePrice = true
+        } else {
+          const price = toDecimal(priceStr)
+          const aVal = avail.times(price)
+          const rVal = res.times(price)
+
+          availVal = availVal.plus(aVal)
+          lockVal = lockVal.plus(rVal)
+          totalVal = totalVal.plus(aVal).plus(rVal)
+        }
+      }
+    }
+
+    if (hasUnavailablePrice) {
+      return {
+        totalWalletValue: '—',
+        availableValue: '—',
+        lockedValue: '—',
+        availablePct: 100,
+        lockedPct: 0,
+      }
     }
 
     let availablePct = 100
@@ -333,6 +381,13 @@ export function useWalletData() {
             `Top-up order created: ₹${order.inrAmount} for ${order.usdtAmount} USDT (${order.status}).`,
             { duration: 5000 }
           )
+          // Immediately refresh local data and invalidate shared wallet store
+          try {
+            await loadData()
+            await useWalletStore.getState().invalidateBalances()
+          } catch (e) {
+            console.warn('Auto-refresh wallet failed:', e)
+          }
         }
       } else {
         toast('Top-up service is currently simulated. No funds were debited.', {

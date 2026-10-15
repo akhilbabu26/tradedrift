@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { RaisedSurface } from '../../common/Surface'
 
 interface DashboardCardProps {
   children: ReactNode
@@ -8,7 +9,8 @@ interface DashboardCardProps {
 
 /**
  * Shared card wrapper for all dashboard lower-grid cards.
- * bg-[#111318] + 1px border + rounded-lg + consistent padding.
+ * Utilizes the shared 3D Surface system (raised-subtle variant)
+ * for depth and consistency with the approved sidebar.
  */
 export default function DashboardCard({
   children,
@@ -16,14 +18,12 @@ export default function DashboardCard({
   noPadding = false,
 }: DashboardCardProps) {
   return (
-    <div
-      className={`
-        bg-[#111318] border border-[#1e2530] rounded-lg
-        ${noPadding ? '' : 'p-4'}
-        ${className}
-      `}
+    <RaisedSurface
+      variant="raised-subtle"
+      noPadding={noPadding}
+      className={className}
     >
       {children}
-    </div>
+    </RaisedSurface>
   )
 }

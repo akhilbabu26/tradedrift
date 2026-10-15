@@ -1,4 +1,5 @@
 import { FileText, BarChart3, Database, Lock, ArrowUpRight } from 'lucide-react'
+import { RaisedSurface } from '../common/Surface'
 import type { OrdersKPIs } from '../../types/orders'
 import { formatPrice } from '../../utils/formatters'
 
@@ -12,9 +13,10 @@ export default function OrdersStats({ kpis, loading = false }: OrdersStatsProps)
     return (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {[1, 2, 3, 4].map((i) => (
-          <div
+          <RaisedSurface
             key={i}
-            className="rounded-xl border border-[#1e2530] bg-[#111318] p-5 h-28 animate-pulse"
+            variant="raised-subtle"
+            className="rounded-xl p-5 h-28 animate-pulse"
           />
         ))}
       </div>
@@ -24,7 +26,7 @@ export default function OrdersStats({ kpis, loading = false }: OrdersStatsProps)
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 select-none">
       {/* 1. Active Orders */}
-      <div className="rounded-xl border border-[#1e2530] bg-[#111318] p-5 flex items-start gap-4 shadow-sm hover:border-[#1e2530]/80 transition-colors">
+      <RaisedSurface variant="raised-subtle" className="rounded-xl p-5 flex items-start gap-4 shadow-sm hover:border-white/10 transition-colors">
         <div className="w-11 h-11 rounded-xl bg-white/[0.03] border border-white/10 flex items-center justify-center flex-shrink-0 text-slate-300">
           <FileText size={18} />
         </div>
@@ -39,10 +41,10 @@ export default function OrdersStats({ kpis, loading = false }: OrdersStatsProps)
             Open orders on the order book
           </span>
         </div>
-      </div>
+      </RaisedSurface>
 
       {/* 2. Today's Executions */}
-      <div className="rounded-xl border border-[#1e2530] bg-[#111318] p-5 flex items-start gap-4 shadow-sm hover:border-[#1e2530]/80 transition-colors">
+      <RaisedSurface variant="raised-subtle" className="rounded-xl p-5 flex items-start gap-4 shadow-sm hover:border-white/10 transition-colors">
         <div className="w-11 h-11 rounded-xl bg-white/[0.03] border border-white/10 flex items-center justify-center flex-shrink-0 text-slate-300">
           <BarChart3 size={18} />
         </div>
@@ -63,10 +65,10 @@ export default function OrdersStats({ kpis, loading = false }: OrdersStatsProps)
             Trades filled today
           </span>
         </div>
-      </div>
+      </RaisedSurface>
 
       {/* 3. 24h Traded Volume */}
-      <div className="rounded-xl border border-[#1e2530] bg-[#111318] p-5 flex items-start gap-4 shadow-sm hover:border-[#1e2530]/80 transition-colors">
+      <RaisedSurface variant="raised-subtle" className="rounded-xl p-5 flex items-start gap-4 shadow-sm hover:border-white/10 transition-colors">
         <div className="w-11 h-11 rounded-xl bg-white/[0.03] border border-white/10 flex items-center justify-center flex-shrink-0 text-slate-300">
           <Database size={18} />
         </div>
@@ -88,10 +90,10 @@ export default function OrdersStats({ kpis, loading = false }: OrdersStatsProps)
             Total executed volume (24h)
           </span>
         </div>
-      </div>
+      </RaisedSurface>
 
       {/* 4. Funds Locked */}
-      <div className="rounded-xl border border-[#1e2530] bg-[#111318] p-5 flex items-start gap-4 shadow-sm hover:border-[#1e2530]/80 transition-colors">
+      <RaisedSurface variant="raised-subtle" className="rounded-xl p-5 flex items-start gap-4 shadow-sm hover:border-white/10 transition-colors">
         <div className="w-11 h-11 rounded-xl bg-[#10b981]/10 border border-[#10b981]/20 flex items-center justify-center flex-shrink-0 text-[#10b981]">
           <Lock size={18} />
         </div>
@@ -107,7 +109,7 @@ export default function OrdersStats({ kpis, loading = false }: OrdersStatsProps)
             Across {kpis.fundsLockedOrderCount} open order{kpis.fundsLockedOrderCount === 1 ? '' : 's'}
           </span>
         </div>
-      </div>
+      </RaisedSurface>
     </div>
   )
 }

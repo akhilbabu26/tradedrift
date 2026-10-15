@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { LogOut } from 'lucide-react'
 import { authApi } from '../../api/auth'
 import { useAuthStore } from '../../store/authStore'
+import { RaisedSurface } from '../common/Surface'
 
 export default function SignOutCard() {
   const navigate = useNavigate()
@@ -22,7 +23,7 @@ export default function SignOutCard() {
   }
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl p-5 sm:p-6 mb-8 transition-colors">
+    <RaisedSurface variant="raised-subtle" className="rounded-xl p-5 sm:p-6 mb-8 transition-colors">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-[#ef4444]/10 border border-[#ef4444]/20 text-[#ef4444] flex items-center justify-center flex-shrink-0">
@@ -43,6 +44,6 @@ export default function SignOutCard() {
           {loading ? 'Signing Out...' : 'Sign Out'}
         </button>
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

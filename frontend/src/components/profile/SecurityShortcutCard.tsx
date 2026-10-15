@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom'
 import { Shield, Key, MailCheck, Laptop, ChevronRight } from 'lucide-react'
+import { RaisedSurface } from '../common/Surface'
 import type { SecurityShortcutInfo } from '../../types/profile'
 
 interface SecurityShortcutCardProps {
@@ -10,7 +11,7 @@ export default function SecurityShortcutCard({ security }: SecurityShortcutCardP
   const navigate = useNavigate()
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl p-5 flex flex-col justify-between transition-colors">
+    <RaisedSurface variant="raised-subtle" className="rounded-xl p-5 flex flex-col justify-between transition-colors">
       <div>
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
@@ -66,6 +67,6 @@ export default function SecurityShortcutCard({ security }: SecurityShortcutCardP
         <span>Manage Security</span>
         <ChevronRight size={13} className="text-slate-400" />
       </button>
-    </div>
+    </RaisedSurface>
   )
 }

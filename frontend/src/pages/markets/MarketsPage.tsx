@@ -3,7 +3,7 @@ import MarketStatsStrip     from '../../components/markets/MarketStatsStrip'
 import MarketHighlightCards from '../../components/markets/MarketHighlightCards'
 import MarketControls       from '../../components/markets/MarketControls'
 import MarketsTable         from '../../components/markets/MarketsTable'
-import MarketsFooter        from '../../components/markets/MarketsFooter'
+import GlobalFooter        from '../../components/layout/GlobalFooter'
 
 /**
  * Markets page — authenticated route at /markets.
@@ -11,9 +11,8 @@ import MarketsFooter        from '../../components/markets/MarketsFooter'
  * Layout is provided by MainLayout (App.tsx) via <Outlet />.
  * This component renders only Markets-specific page content.
  *
- * Data flows through useMarkets(), which currently reads from marketsMock.
- * Replacing mock data with real API + WebSocket calls requires only updating
- * useMarkets() — all sub-components are decoupled from the data source.
+ * Data flows through useMarkets(), backed by live API + WebSocket feeds.
+ * All sub-components are decoupled from the data source.
  */
 export default function MarketsPage() {
   const {
@@ -72,7 +71,7 @@ export default function MarketsPage() {
       />
       </div>
 
-      <MarketsFooter />
+      <GlobalFooter />
     </div>
   )
 }

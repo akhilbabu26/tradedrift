@@ -21,13 +21,15 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { portfolioApi } from '../api/portfolio'
 import { walletApi } from '../api/wallet'
 import { marketApi, type MarketOverview, type Candle } from '../api/market'
-import { orderApi, type Order } from '../api/order'
+import { orderApi, isOrderActive, type Order } from '../api/order'
 import { tradesApi } from '../api/trades'
 import { wsService, WsChannels } from '../api/ws'
 import { useAuthStore } from '../store/authStore'
+import { useMarketStore } from '../store/marketStore'
 import { toDecimal } from '../utils/decimal'
 import { extractApiError } from '../utils/apiError'
 import { evaluateTrendCoverage } from '../utils/trendCoverage'
+import { formatTurnover } from '../utils/formatters'
 
 import type {
   DashboardData,
@@ -71,17 +73,7 @@ export function normalizeTrend(trend: string[] | undefined, targetPoints = 16): 
   return sampled.map((v) => Math.round(((v - min) / range) * 1000) / 1000)
 }
 
-/** Format raw volume number to display string */
-function formatVolume(raw: string | undefined): string {
-  if (!raw) return '$0'
-  try {
-    const v = toDecimal(raw)
-    if (v.gte(1_000_000_000)) return `$${v.dividedBy(1_000_000_000).toFixed(2)}B`
-    if (v.gte(1_000_000))     return `$${v.dividedBy(1_000_000).toFixed(2)}M`
-    if (v.gte(1_000))         return `$${v.dividedBy(1_000).toFixed(1)}K`
-    return `$${v.toFixed(2)}`
-  } catch { return '$0' }
-}
+const formatVolume = formatTurnover
 
 function mapOrderToActiveOrder(o: Order): ActiveOrder {
   const isBuy = o.side?.toUpperCase() === 'BUY'
@@ -147,6 +139,9 @@ export interface UseDashboardDataReturn {
   cancelOrder: (orderId: string) => Promise<void>
   activePeriod: PeriodTab
   setActivePeriod: (period: PeriodTab) => void
+  isChartLoading: boolean
+  chartError: string | null
+  retryChart: () => void
 }
 
 export function useDashboardData(): UseDashboardDataReturn {
@@ -154,7 +149,12 @@ export function useDashboardData(): UseDashboardDataReturn {
   const [loading, setLoading]       = useState(true)
   const [error, setError]           = useState<string | null>(null)
   const [isDemoData, setIsDemoData] = useState(false)
-  const [activePeriod, setActivePeriod] = useState<PeriodTab>('7D')
+  const [activePeriod, setActivePeriodState] = useState<PeriodTab>('7D')
+  const [isChartLoading, setIsChartLoading] = useState(false)
+  const [chartError, setChartError] = useState<string | null>(null)
+
+  const historyCache = useRef<Partial<Record<PeriodTab, PortfolioDataPoint[]>>>({})
+  const latestTimeframeReqId = useRef(0)
 
   const userId = useAuthStore((s) => s.user?.userId)
   const livePrices = useRef<Record<string, string>>({})
@@ -174,17 +174,15 @@ export function useDashboardData(): UseDashboardDataReturn {
         portfolioApi.getHoldings().catch(() => ({ userId: '', holdings: [] })),
         walletApi.getAllBalances().catch(() => []),
         marketApi.getMarketsOverview().catch(() => [] as MarketOverview[]),
-        portfolioApi.getHistory(activePeriod).catch(() => ({ userId: '', timeframe: activePeriod, points: [] })),
+        portfolioApi.getHistory('7D').catch(() => ({ userId: '', timeframe: '7D', points: [] })),
         Promise.all(candlesPromises),
       ])
-
 
       // Map market overview data into lookup records
       const overviewMap: Record<string, MarketOverview> = {}
       overviewRes.forEach((ov) => {
         overviewMap[ov.market_id] = ov
       })
-
 
       // ── Step 2: Open orders + recent fills (non-critical) ─────────────────
       const [allOrders, tradesRes] = await Promise.allSettled([
@@ -197,8 +195,9 @@ export function useDashboardData(): UseDashboardDataReturn {
       const unrealizedPnl = toDecimal(summaryRes.unrealizedPnl || '0')
       const realizedPnl = toDecimal(summaryRes.realizedPnl || '0')
       const allTimePnl = unrealizedPnl.plus(realizedPnl)
-      const changePercent = totalValue.gt(0)
-        ? unrealizedPnl.dividedBy(totalValue).times(100).toFixed(2)
+      const startingValue = totalValue.minus(unrealizedPnl)
+      const changePercent = startingValue.gt(0)
+        ? unrealizedPnl.dividedBy(startingValue).times(100).toFixed(2)
         : '0.00'
 
       // ── Wallet balances (Simulator Cash = USDT) ───────────────────────────
@@ -309,7 +308,7 @@ export function useDashboardData(): UseDashboardDataReturn {
       const activeOrdersList: ActiveOrder[] =
         allOrders.status === 'fulfilled'
           ? allOrders.value
-              .filter((o) => o.status?.toUpperCase() === 'OPEN' || o.status?.toUpperCase() === 'PENDING')
+              .filter(isOrderActive)
               .slice(0, 5)
               .map(mapOrderToActiveOrder)
           : []
@@ -333,16 +332,29 @@ export function useDashboardData(): UseDashboardDataReturn {
       })
 
       const realTradesCount = userTrades.length
+
+      // ── Authentic Win Rate Calculation ──────────────────────────────────────
+      // Closed trades correspond to SELL executions where position was closed/reduced.
+      // Win Rate = (Profitable Closed Fills / Total Closed Fills) * 100.
+      const sellTrades = userTrades.filter((t) =>
+        currentUserId && t.seller_id
+          ? t.seller_id === currentUserId
+          : (t.taker_side || '').toUpperCase() === 'SELL'
+      )
+
       let winRate = 0
-      if (realTradesCount > 0) {
-        const realizedPnlNum = toDecimal(summaryRes.realizedPnl || '0').toNumber()
-        if (realizedPnlNum > 0) {
-          winRate = Math.min(100, Math.max(10, Math.round((realizedPnlNum / (realizedPnlNum + Math.abs(toDecimal(summaryRes.unrealizedPnl || '0').toNumber()) + 1)) * 100)))
-        } else if (realizedPnlNum === 0 && toDecimal(summaryRes.unrealizedPnl || '0').gt(0)) {
-          winRate = 100
-        } else {
-          winRate = 0
+      if (sellTrades.length > 0) {
+        let winningTradesCount = 0
+        for (const st of sellTrades) {
+          const baseAsset = (st.base_asset ?? st.market_id?.split('-')[0] ?? '').toUpperCase()
+          const holding = (holdingsRes.holdings || []).find((h) => h.asset.toUpperCase() === baseAsset)
+          const avgEntry = toDecimal(holding?.averageEntryPrice || '0')
+          const sellPrice = toDecimal(st.price || '0')
+          if (avgEntry.gt(0) && sellPrice.gt(avgEntry)) {
+            winningTradesCount++
+          }
         }
+        winRate = Math.round((winningTradesCount / sellTrades.length) * 100)
       }
 
       // ── Authentic Portfolio Snapshots Chart ────────────────────────────────
@@ -366,10 +378,14 @@ export function useDashboardData(): UseDashboardDataReturn {
       } else if (baselineVal > 0) {
         // Honest baseline: only current timestamp if no historical snapshots recorded yet
         chartPoints = [
-          { time: nowSec - 60, value: baselineVal },
-          { time: nowSec, value: baselineVal },
+          {
+            time: nowSec,
+            value: baselineVal,
+          },
         ]
       }
+
+      historyCache.current['7D'] = chartPoints
 
       // ── Final compiled state ───────────────────────────────────────────────
       const dashData: DashboardData = {
@@ -402,7 +418,79 @@ export function useDashboardData(): UseDashboardDataReturn {
     } finally {
       setLoading(false)
     }
-  }, [userId, activePeriod])
+  }, [userId])
+
+  // ── Smooth Timeframe Switching ─────────────────────────────────────────────
+  const changePeriod = useCallback(
+    async (newPeriod: PeriodTab): Promise<void> => {
+      // 1. Immediately update active period visual selection
+      setActivePeriodState(newPeriod)
+      setChartError(null)
+
+      // 2. Instant cache hit — reuse valid cached points without making a redundant request
+      const cached = historyCache.current[newPeriod]
+      if (cached && cached.length > 0) {
+        setData((prev) => ({
+          ...prev,
+          chartData: cached,
+        }))
+        return
+      }
+
+      // 3. Increment request ID to guard against out-of-order stale responses
+      const reqId = ++latestTimeframeReqId.current
+      setIsChartLoading(true)
+
+      try {
+        const res = await portfolioApi.getHistory(newPeriod)
+        // Discard if user has clicked another timeframe before this resolved
+        if (reqId !== latestTimeframeReqId.current) return
+
+        const baselineVal = toDecimal(data.portfolioValue || '0').toNumber()
+        const nowSec = Math.floor(Date.now() / 1000)
+        let points: PortfolioDataPoint[] = []
+
+        if (res.points && res.points.length > 0) {
+          points = res.points.map((pt) => ({
+            time: pt.timestamp,
+            value: parseFloat(pt.totalEquity),
+          }))
+          const lastPt = points[points.length - 1]
+          if (lastPt && nowSec - lastPt.time > 60 && baselineVal > 0) {
+            points.push({
+              time: nowSec,
+              value: baselineVal,
+            })
+          }
+        } else if (baselineVal > 0) {
+          points = [
+            { time: nowSec - 60, value: baselineVal },
+            { time: nowSec, value: baselineVal },
+          ]
+        }
+
+        // Cache points for this timeframe
+        historyCache.current[newPeriod] = points
+
+        setData((prev) => ({
+          ...prev,
+          chartData: points,
+        }))
+      } catch (err) {
+        if (reqId !== latestTimeframeReqId.current) return
+        setChartError(extractApiError(err))
+      } finally {
+        if (reqId === latestTimeframeReqId.current) {
+          setIsChartLoading(false)
+        }
+      }
+    },
+    [data.portfolioValue]
+  )
+
+  const retryChart = useCallback(() => {
+    changePeriod(activePeriod)
+  }, [changePeriod, activePeriod])
 
 
   // ── Cancel Order Action ────────────────────────────────────────────────────
@@ -414,99 +502,108 @@ export function useDashboardData(): UseDashboardDataReturn {
     [buildData]
   )
 
-  // ── WebSocket: subscribe to ticker channels for live price updates ─────────
+  // ── Centralized marketStore: subscribe to live ticker streams ──────────────
   useEffect(() => {
     const unsubs: Array<() => void> = []
 
+    // Subscribe to each dashboard market using reference-counted marketStore
     for (const m of DASHBOARD_MARKETS) {
-      const channel = WsChannels.ticker(m.id)
-      const unsub = wsService.subscribe(channel, (payload) => {
-        try {
-          const d = payload as {
-            lastPrice?: string
-            last_price?: string
-            priceChange24hPercent?: string
-            price_change_24h_percent?: string
-            price_change_percent?: string
-          }
-          const price = d?.lastPrice ?? d?.last_price
-          const change = d?.priceChange24hPercent ?? d?.price_change_24h_percent ?? d?.price_change_percent
-          if (price) {
-            livePrices.current[m.asset] = price
-            if (change !== undefined) {
-              livePrices.current[`${m.asset}_change`] = change
-            }
-            setData((prev) => {
-              const updatedMarketRows = prev.marketRows.map((row) =>
-                row.symbol === m.asset
-                  ? {
-                      ...row,
-                      price,
-                      change24h: toDecimal(change || '0').abs().toFixed(2),
-                      positive: toDecimal(change || '0').gte(0),
-                    }
-                  : row
-              )
-
-              // Reactively recalculate holdings value and unrealized PnL based on live ticker
-              let totalHoldingsVal = toDecimal(0)
-              let totalUnrealized = toDecimal(0)
-
-              const updatedHoldings = prev.holdings.map((h) => {
-                const currentPrice = h.asset.toUpperCase() === m.asset.toUpperCase()
-                  ? toDecimal(price)
-                  : toDecimal(livePrices.current[h.asset] || '0')
-                const qty = toDecimal(h.holdings)
-                const val = currentPrice.gt(0) ? qty.times(currentPrice) : toDecimal(h.valueUsdt)
-                const prevPnl = toDecimal(h.pnlUsdt)
-                const prevVal = toDecimal(h.valueUsdt)
-                const costBasis = prevVal.minus(prevPnl)
-                const newPnl = costBasis.gt(0) ? val.minus(costBasis) : prevPnl
-                const newPnlPct = costBasis.gt(0)
-                  ? newPnl.dividedBy(costBasis).times(100).toFixed(2)
-                  : h.pnlPercent
-
-                totalHoldingsVal = totalHoldingsVal.plus(val)
-                totalUnrealized = totalUnrealized.plus(newPnl)
-
-                return {
-                  ...h,
-                  valueUsdt: val.toFixed(2),
-                  pnlUsdt: (newPnl.gte(0) ? '+' : '') + newPnl.toFixed(2),
-                  pnlPercent: (newPnl.gte(0) ? '+' : '') + newPnlPct,
-                }
-              })
-
-              const cash = toDecimal(prev.availableUsdt)
-              const newTotalPortfolio = cash.plus(totalHoldingsVal)
-
-              const reallocatedHoldings = updatedHoldings.map((h) => ({
-                ...h,
-                allocation: newTotalPortfolio.gt(0)
-                  ? Math.round(toDecimal(h.valueUsdt).dividedBy(newTotalPortfolio).times(1000).toNumber()) / 10
-                  : h.allocation,
-              }))
-
-              const changePct = newTotalPortfolio.gt(0)
-                ? (totalUnrealized.gte(0) ? '+' : '') + totalUnrealized.dividedBy(newTotalPortfolio).times(100).toFixed(2) + '%'
-                : prev.portfolioChangePercent
-
-              return {
-                ...prev,
-                marketRows: updatedMarketRows,
-                holdings: reallocatedHoldings,
-                portfolioValue: newTotalPortfolio.gt(0) ? newTotalPortfolio.toFixed(2) : prev.portfolioValue,
-                portfolioChangeUsdt: (totalUnrealized.gte(0) ? '+' : '') + totalUnrealized.toFixed(2),
-                portfolioChangePercent: changePct,
-              }
-            })
-          }
-        } catch {
-          // Ignore malformed WS payloads
-        }
-      })
+      const unsub = useMarketStore.getState().subscribeTicker(m.id)
       unsubs.push(unsub)
     }
+
+    // Reactively update Dashboard state whenever marketStore updates tickers
+    const unsubStore = useMarketStore.subscribe((state) => {
+      let hasChange = false
+      for (const m of DASHBOARD_MARKETS) {
+        const t = state.tickers[m.id]
+        if (t && t.last_price && t.last_price !== livePrices.current[m.asset]) {
+          hasChange = true
+          livePrices.current[m.asset] = t.last_price
+          livePrices.current[`${m.asset}_change`] = t.price_change_24h_percent
+        }
+      }
+      if (!hasChange) return
+
+      setData((prev) => {
+        const updatedMarketRows = prev.marketRows.map((row) => {
+          const t = state.tickers[`${row.symbol}-USDT`]
+          if (!t) return row
+          const price = t.last_price
+          const change = t.price_change_24h_percent
+          const quoteVolNum = parseFloat(t.quote_volume_24h || '0')
+          const numPrice = parseFloat(price || '0')
+          let updatedSparkline = row.sparklinePoints
+          if (updatedSparkline && updatedSparkline.length > 0 && numPrice > 0) {
+            const lastIdx = updatedSparkline.length - 1
+            if (updatedSparkline[lastIdx] !== numPrice) {
+              updatedSparkline = [...updatedSparkline.slice(0, lastIdx), numPrice]
+            }
+          }
+          return {
+            ...row,
+            price,
+            change24h: toDecimal(change || '0').abs().toFixed(2),
+            positive: toDecimal(change || '0').gte(0),
+            sparklinePoints: updatedSparkline,
+            volume24h: formatTurnover(t.quote_volume_24h),
+            quoteVolume: isNaN(quoteVolNum) ? 0 : quoteVolNum,
+          }
+        })
+
+        // Reactively recalculate holdings value and unrealized PnL based on live ticker
+        let totalHoldingsVal = toDecimal(0)
+        let totalUnrealized = toDecimal(0)
+
+        const updatedHoldings = prev.holdings.map((h) => {
+          const currentPrice = toDecimal(livePrices.current[h.asset] || '0')
+          const qty = toDecimal(h.holdings)
+          const val = currentPrice.gt(0) ? qty.times(currentPrice) : toDecimal(h.valueUsdt)
+          const prevPnl = toDecimal(h.pnlUsdt)
+          const prevVal = toDecimal(h.valueUsdt)
+          const costBasis = prevVal.minus(prevPnl)
+          const newPnl = costBasis.gt(0) ? val.minus(costBasis) : prevPnl
+          const newPnlPct = costBasis.gt(0)
+            ? newPnl.dividedBy(costBasis).times(100).toFixed(2)
+            : h.pnlPercent
+
+          totalHoldingsVal = totalHoldingsVal.plus(val)
+          totalUnrealized = totalUnrealized.plus(newPnl)
+
+          return {
+            ...h,
+            valueUsdt: val.toFixed(2),
+            pnlUsdt: (newPnl.gte(0) ? '+' : '') + newPnl.toFixed(2),
+            pnlPercent: (newPnl.gte(0) ? '+' : '') + newPnlPct,
+          }
+        })
+
+        const cash = toDecimal(prev.availableUsdt)
+        const newTotalPortfolio = cash.plus(totalHoldingsVal)
+
+        const reallocatedHoldings = updatedHoldings.map((h) => ({
+          ...h,
+          allocation: newTotalPortfolio.gt(0)
+            ? Math.round(toDecimal(h.valueUsdt).dividedBy(newTotalPortfolio).times(1000).toNumber()) / 10
+            : h.allocation,
+        }))
+
+        const startingValue = newTotalPortfolio.minus(totalUnrealized)
+        const changePct = startingValue.gt(0)
+          ? totalUnrealized.dividedBy(startingValue).times(100).toFixed(2)
+          : '0.00'
+
+        return {
+          ...prev,
+          marketRows: updatedMarketRows,
+          holdings: reallocatedHoldings,
+          portfolioValue: newTotalPortfolio.gt(0) ? newTotalPortfolio.toFixed(2) : prev.portfolioValue,
+          portfolioChangeUsdt: (totalUnrealized.gte(0) ? '+' : '') + totalUnrealized.toFixed(2),
+          portfolioChangePercent: changePct,
+        }
+      })
+    })
+    unsubs.push(unsubStore)
 
     if (userId) {
       // User notification stream (trade fills, order updates)
@@ -546,7 +643,10 @@ export function useDashboardData(): UseDashboardDataReturn {
     refetch: buildData,
     cancelOrder,
     activePeriod,
-    setActivePeriod,
+    setActivePeriod: changePeriod,
+    isChartLoading,
+    chartError,
+    retryChart,
   }
 }
 

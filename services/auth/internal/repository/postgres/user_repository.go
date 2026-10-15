@@ -29,7 +29,7 @@ func (r *UserRepository) Create(ctx context.Context, u *repository.User) error {
 		INSERT INTO users (
 			id, email, username, password_hash, token_version, role, status,
 			failed_login_attempts, locked_until, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		) VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, $10, $11)
 	`
 	_, err := r.db.Exec(ctx, query,
 		u.ID, u.Email, u.Username, u.PasswordHash, u.TokenVersion, u.Role, u.Status,
@@ -43,7 +43,7 @@ func (r *UserRepository) Create(ctx context.Context, u *repository.User) error {
 
 func (r *UserRepository) GetByID(ctx context.Context, id string) (*repository.User, error) {
 	query := `
-		SELECT id, email, username, password_hash, token_version, role, status,
+		SELECT id, email, username, COALESCE(password_hash, '') AS password_hash, token_version, role, status,
 		       failed_login_attempts, locked_until, last_login_at, email_verified_at,
 		       created_at, updated_at
 		FROM users
@@ -66,11 +66,11 @@ func (r *UserRepository) GetByID(ctx context.Context, id string) (*repository.Us
 
 func (r *UserRepository) GetByIdentifier(ctx context.Context, identifier string) (*repository.User, error) {
 	query := `
-		SELECT id, email, username, password_hash, token_version, role, status,
+		SELECT id, email, username, COALESCE(password_hash, '') AS password_hash, token_version, role, status,
 		       failed_login_attempts, locked_until, last_login_at, email_verified_at,
 		       created_at, updated_at
 		FROM users
-		WHERE email = $1 OR username = $1
+		WHERE LOWER(email) = LOWER($1) OR username = $1
 	`
 	var u repository.User
 	err := r.db.QueryRow(ctx, query, identifier).Scan(
@@ -99,7 +99,7 @@ func (r *UserRepository) VerifyEmail(ctx context.Context, email string, verified
 	updateQuery := `
 		UPDATE users
 		SET status = 'VERIFIED', email_verified_at = $1, updated_at = $1
-		WHERE email = $2 AND status = 'PENDING_VERIFICATION'
+		WHERE LOWER(email) = LOWER($2) AND status = 'PENDING_VERIFICATION'
 		RETURNING id
 	`
 	var userID string

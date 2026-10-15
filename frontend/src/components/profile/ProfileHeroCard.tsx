@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Edit2, Copy, Check, ShieldCheck, Database, Activity, CheckCircle2 } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuthStore } from '../../store/authStore'
+import { RaisedSurface } from '../common/Surface'
 import EditProfileModal from './EditProfileModal'
 
 export default function ProfileHeroCard() {
@@ -38,7 +39,7 @@ export default function ProfileHeroCard() {
 
   return (
     <>
-      <div className="bg-[#111318] border border-[#1e2530] rounded-xl p-5 sm:p-6 transition-colors">
+      <RaisedSurface variant="raised-subtle" className="rounded-xl p-5 sm:p-6 transition-colors">
         {/* Top Hero Section */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-5 pb-6 border-b border-[#1e2530]">
           <div className="flex items-center gap-4 sm:gap-5">
@@ -153,7 +154,7 @@ export default function ProfileHeroCard() {
             </div>
           </div>
         </div>
-      </div>
+      </RaisedSurface>
 
       <EditProfileModal isOpen={isEditOpen} onClose={() => setIsEditOpen(false)} />
     </>

@@ -7,7 +7,7 @@ interface StatusIndicatorProps {
 
 /**
  * Green/amber/red animated dot + optional label.
- * Used in MainNavbar (LIVE indicator), DashboardHeader, SystemStatus, MarketsStatsStrip, MarketsFooter.
+ * Used in AppHeader, DashboardHeader, SystemStatus, MarketStatsStrip, and GlobalFooter.
  */
 export default function StatusIndicator({
   status,

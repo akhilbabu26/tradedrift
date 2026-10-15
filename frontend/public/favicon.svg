@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="silver-fav" x1="0" y1="0" x2="0.9" y2="1">
+      <stop offset="0" stop-color="#F4F5F6"/>
+      <stop offset="0.48" stop-color="#D9DADD"/>
+      <stop offset="1" stop-color="#AEB2B8"/>
+    </linearGradient>
+  </defs>
+  <g fill="url(#silver-fav)">
+    <!-- T crossbar and stem -->
+    <path d="M19 27.5
+             Q19 22.5 24 22.5
+             H69.5
+             Q75.5 22.5 80 28
+             L84 33
+             H46.5
+             V67
+             Q46.5 71 42.5 71
+             H38.5
+             V33
+             H24
+             Q19 33 19 28.5 Z"/>
+    <!-- D bowl; the transparent counter keeps the mark crisp at small sizes -->
+    <path fill-rule="evenodd" d="M49.5 36.5
+             H62.5
+             C76.5 36.5 83 45 83 55
+             C83 66.5 75 73 62.5 73
+             H49.5 Z
+             M58 43.5
+             V66
+             H62.5
+             C71 66 76 61.5 76 55
+             C76 48 71.5 43.5 62.5 43.5 Z"/>
+    <!-- Small lower terminal on the T stem -->
+    <path d="M38.5 73.5 H46.5 V77
+             Q46.5 81 42.5 83
+             L38.5 85 Z"/>
+  </g>
+</svg>

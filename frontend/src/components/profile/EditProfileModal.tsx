@@ -2,19 +2,28 @@ import { useState, useEffect } from 'react'
 import { X, User as UserIcon, AlertCircle } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuthStore } from '../../store/authStore'
+import { useModalFocus } from '../../hooks/useModalFocus'
 
-interface EditProfileModalProps {
+export interface EditProfileModalProps {
   isOpen: boolean
   onClose: () => void
 }
 
+/**
+ * Shared modal dialog for editing user profile (display name / username)
+ * in the active session. Used across Profile and Settings pages.
+ */
 export default function EditProfileModal({ isOpen, onClose }: EditProfileModalProps) {
-  const { user, setUser } = useAuthStore()
-  const [displayName, setDisplayName] = useState(user?.username || 'Akhil Babu')
+  const storeUser = useAuthStore((s) => s.user)
+  const user = storeUser || (typeof useAuthStore.getState === 'function' ? useAuthStore.getState().user : null)
+  const setUser = useAuthStore((s) => s.setUser)
+  const [displayName, setDisplayName] = useState(() => user?.username || '')
+
+  const modalRef = useModalFocus<HTMLDivElement>({ isOpen, onClose })
 
   useEffect(() => {
     if (isOpen) {
-      setDisplayName(user?.username || 'Akhil Babu')
+      setDisplayName(user?.username || '')
     }
   }, [isOpen, user?.username])
 
@@ -32,18 +41,26 @@ export default function EditProfileModal({ isOpen, onClose }: EditProfileModalPr
       setUser({ ...user, username: trimmed })
     } else {
       setUser({
-        userId: 'usr_0191e4a2-7b3f-7120-9c4d-8e9a2b5c7d1e',
-        email: 'akhilbabu.go@gmail.com',
+        userId: 'usr_guest',
+        email: 'user@tradedrift.local',
         username: trimmed,
       })
     }
-    toast.success('Profile updated successfully')
+    toast.success('Display name updated for active session')
     onClose()
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          onClose()
+        }
+      }}
+    >
       <div
+        ref={modalRef}
         className="w-full max-w-md bg-[#111318] border border-[#1e2530] rounded-xl shadow-2xl overflow-hidden"
         role="dialog"
         aria-modal="true"
@@ -80,7 +97,7 @@ export default function EditProfileModal({ isOpen, onClose }: EditProfileModalPr
               type="text"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="e.g. Akhil Babu"
+              placeholder="e.g. Satoshi Nakamoto"
               className="w-full px-3 py-2 bg-[#0a0b0e] border border-[#1e2530] rounded-lg text-xs text-[#f5f7fa] placeholder-slate-600 focus:outline-none focus:border-[#10b981]/50 transition-colors"
               autoFocus
             />
@@ -93,7 +110,7 @@ export default function EditProfileModal({ isOpen, onClose }: EditProfileModalPr
             <input
               id="profile-email"
               type="email"
-              value={user?.email || 'akhilbabu.go@gmail.com'}
+              value={user?.email || '—'}
               disabled
               readOnly
               className="w-full px-3 py-2 bg-[#0a0b0e]/50 border border-[#1e2530]/60 rounded-lg text-xs text-slate-500 cursor-not-allowed"
@@ -102,10 +119,10 @@ export default function EditProfileModal({ isOpen, onClose }: EditProfileModalPr
           </div>
 
           {/* Session Notice */}
-          <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-lg flex items-start gap-2.5">
-            <AlertCircle size={14} className="text-emerald-400 mt-0.5 flex-shrink-0" />
-            <p className="text-[11px] text-emerald-200/90 leading-relaxed">
-              Profile changes are synchronized with your active trading session.
+          <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg flex items-start gap-2.5">
+            <AlertCircle size={14} className="text-amber-400 mt-0.5 flex-shrink-0" />
+            <p className="text-[11px] text-amber-200/90 leading-relaxed">
+              <strong>Local session notice:</strong> Profile changes are synchronized with your active browser session.
             </p>
           </div>
 

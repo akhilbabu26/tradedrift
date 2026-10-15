@@ -93,6 +93,10 @@ func (s *Service) ChangePassword(ctx context.Context, userID, oldPassword, newPa
 		return platformerrors.New(platformerrors.CodeNotFound, "user not found")
 	}
 
+	if u.PasswordHash == "" {
+		return platformerrors.New(platformerrors.CodeFailedPrecondition, "your account has no password set because you signed in with Google. Please use the password reset flow to set one.")
+	}
+
 	// Verify old password
 	err = s.compareBcrypt(u.PasswordHash, oldPassword)
 	if err != nil {

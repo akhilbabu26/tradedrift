@@ -1,7 +1,9 @@
 import { useState, useMemo } from 'react'
 import { X } from 'lucide-react'
 import type { OpenOrderItem, OrderFilterState } from '../../types/orders'
+import { formatOrderProgress } from '../../utils/formatters'
 import OrderFilters from './OrderFilters'
+import { RaisedSurface } from '../common/Surface'
 
 interface OpenOrdersSectionProps {
   orders: OpenOrderItem[]
@@ -48,9 +50,10 @@ export default function OpenOrdersSection({
   }, [orders, filters])
 
   return (
-    <div
+    <RaisedSurface
       id="open-orders-section"
-      className="rounded-xl border border-[#1e2530] bg-[#111318] p-4 sm:p-5 flex flex-col gap-4 shadow-sm"
+      variant="raised-subtle"
+      className="flex flex-col gap-4 shadow-sm"
     >
       {/* ── Top Tabs + Filter Bar ─────────────────────────────────────────── */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-[#1e2530] pb-4">
@@ -178,11 +181,11 @@ export default function OpenOrdersSection({
                         <div className="w-16 sm:w-20 h-1.5 rounded-full bg-[#1e2530] overflow-hidden">
                           <div
                             className="h-full bg-gradient-to-r from-[#10b981] to-[#06b6d4] transition-all duration-300"
-                            style={{ width: `${o.progress}%` }}
+                            style={{ width: `${Math.min(100, Math.max(0, o.progress))}%` }}
                           />
                         </div>
                         <span className="font-mono text-[11px] text-slate-400 min-w-[28px]">
-                          {o.progress}%
+                          {formatOrderProgress(o.progress)}
                         </span>
                       </div>
                     </td>
@@ -219,6 +222,6 @@ export default function OpenOrdersSection({
           </tbody>
         </table>
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

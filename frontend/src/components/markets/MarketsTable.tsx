@@ -1,7 +1,8 @@
 import { Star, ArrowRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
+import { RaisedSurface } from '../common/Surface'
 import type { MarketEntry } from '../../types/markets'
-import { formatPrice } from '../../utils/formatters'
+import { formatPrice, formatHighLow } from '../../utils/formatters'
 import Sparkline from '../dashboard/shared/Sparkline'
 
 interface MarketsTableProps {
@@ -53,7 +54,7 @@ export default function MarketsTable({
     : 'Trend'
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-lg overflow-hidden mb-4">
+    <RaisedSurface variant="raised-subtle" className="rounded-xl overflow-hidden mb-4">
       <div className="overflow-x-auto">
         <table className="w-full text-xs" aria-label="Markets table">
           {/* ── Header ─────────────────────────────────────────────────────── */}
@@ -170,25 +171,34 @@ export default function MarketsTable({
 
                     {/* 24h High / Low */}
                     <td className="py-3.5 pr-4 text-right">
-                      {parseFloat(row.high24h) > 0 ? (
+                      {formatHighLow(row.high24h) !== '—' ? (
                         <div className="flex flex-col items-end leading-tight gap-0.5">
                           <span className="font-mono text-slate-300 tabular-nums">
-                            ${formatPrice(row.high24h)}
+                            ${formatHighLow(row.high24h)}
                           </span>
                           <span className="font-mono text-slate-500 tabular-nums">
-                            ${formatPrice(row.low24h)}
+                            ${formatHighLow(row.low24h)}
                           </span>
                         </div>
                       ) : (
                         <span className="font-mono text-slate-500 tabular-nums">
-                          --
+                          —
                         </span>
                       )}
                     </td>
 
                     {/* 24h Volume */}
-                    <td className="py-3.5 pr-4 text-right font-mono text-slate-300 tabular-nums">
-                      {row.volume24h}
+                    <td className="py-3.5 pr-4 text-right">
+                      <div className="flex flex-col items-end leading-tight gap-0.5">
+                        <span className="font-mono text-slate-300 tabular-nums">
+                          {row.volume24h}
+                        </span>
+                        {row.baseVolume24h && (
+                          <span className="font-mono text-slate-500 text-[10px] tabular-nums">
+                            {row.baseVolume24h}
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* 24h Trend Sparkline */}
@@ -221,6 +231,6 @@ export default function MarketsTable({
           </tbody>
         </table>
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

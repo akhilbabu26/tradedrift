@@ -159,13 +159,21 @@ func (r *MarketRepository) GetTicker24h(ctx context.Context, marketID string) (*
 			SELECT price AS last_price
 			FROM market_trades
 			WHERE market_id = $1
-			ORDER BY executed_at DESC
+			ORDER BY executed_at DESC, id DESC
 			LIMIT 1
 		),
-		first_trade_24h AS (
-			SELECT price AS first_price
-			FROM trades_24h
-			ORDER BY executed_at ASC
+		ref_trade AS (
+			SELECT price AS ref_price
+			FROM market_trades
+			WHERE market_id = $1 AND executed_at <= NOW() - INTERVAL '24 hours'
+			ORDER BY executed_at DESC, id DESC
+			LIMIT 1
+		),
+		earliest_trade AS (
+			SELECT price AS earliest_price
+			FROM market_trades
+			WHERE market_id = $1
+			ORDER BY executed_at ASC, id ASC
 			LIMIT 1
 		)
 		SELECT 
@@ -175,7 +183,11 @@ func (r *MarketRepository) GetTicker24h(ctx context.Context, marketID string) (*
 			COALESCE(MIN(t.price), 0) AS low_24h,
 			COALESCE(SUM(t.quantity), 0) AS volume_24h,
 			COALESCE(SUM(t.price * t.quantity), 0) AS quote_volume_24h,
-			COALESCE((SELECT first_price FROM first_trade_24h), 0) AS first_price_24h
+			COALESCE(
+				(SELECT ref_price FROM ref_trade),
+				(SELECT earliest_price FROM earliest_trade),
+				0
+			) AS first_price_24h
 		FROM target_market m
 		LEFT JOIN trades_24h t ON TRUE
 		GROUP BY m.id
@@ -227,18 +239,26 @@ func (r *MarketRepository) GetMarketsOverview(ctx context.Context, resolution st
 				COALESCE((
 					SELECT price FROM market_trades
 					WHERE market_id = m.id
-					ORDER BY executed_at DESC LIMIT 1
+					ORDER BY executed_at DESC, id DESC LIMIT 1
 				), 0) AS last_price,
 				COALESCE(MAX(t.price), 0)              AS high_24h,
 				COALESCE(MIN(t.price), 0)              AS low_24h,
 				COALESCE(SUM(t.quantity), 0)           AS volume_24h,
 				COALESCE(SUM(t.price * t.quantity), 0) AS quote_volume_24h,
-				COALESCE((
-					SELECT price FROM market_trades
-					WHERE market_id = m.id
-					  AND executed_at >= NOW() - INTERVAL '24 hours'
-					ORDER BY executed_at ASC LIMIT 1
-				), 0) AS first_price_24h
+				COALESCE(
+					(
+						SELECT price FROM market_trades
+						WHERE market_id = m.id
+						  AND executed_at <= NOW() - INTERVAL '24 hours'
+						ORDER BY executed_at DESC, id DESC LIMIT 1
+					),
+					(
+						SELECT price FROM market_trades
+						WHERE market_id = m.id
+						ORDER BY executed_at ASC, id ASC LIMIT 1
+					),
+					0
+				) AS first_price_24h
 			FROM markets m
 			LEFT JOIN market_trades t
 				   ON t.market_id = m.id

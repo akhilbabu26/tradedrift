@@ -30,7 +30,7 @@ export interface WalletState {
   error: string | null
   lastFetchedAt: number
 
-  loadBalances: () => Promise<void>
+  loadBalances: (force?: boolean) => Promise<void>
   getBalance: (asset: string) => Balance
   subscribeToBalanceUpdates: () => () => void
   invalidateBalances: () => Promise<void>
@@ -48,10 +48,10 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   error: null,
   lastFetchedAt: 0,
 
-  loadBalances: async () => {
-    // Avoid redundant concurrent fetches if loaded in the last 200ms
+  loadBalances: async (force = false) => {
+    // Avoid redundant concurrent fetches if loaded in the last 200ms, unless explicitly forced
     const now = Date.now()
-    if (get().loading && now - get().lastFetchedAt < 200) {
+    if (!force && (get().loading || now - get().lastFetchedAt < 200)) {
       return
     }
 
@@ -92,7 +92,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   },
 
   invalidateBalances: async () => {
-    await get().loadBalances()
+    await get().loadBalances(true)
   },
 
   subscribeToBalanceUpdates: () => {

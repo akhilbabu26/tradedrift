@@ -41,7 +41,7 @@ export default function LiveOperations({ orders, onCancel }: LiveOperationsProps
           </span>
         }
         action={
-          <Link to="/orders" className="flex items-center gap-0.5 text-xs text-slate-400 hover:text-[#10b981] transition-colors">
+          <Link to="/orders" className="flex items-center gap-0.5 text-xs text-[#777E87] hover:text-[#F2F3F5] transition-colors">
             View All <ArrowRight size={11} />
           </Link>
         }
@@ -53,7 +53,7 @@ export default function LiveOperations({ orders, onCancel }: LiveOperationsProps
           <p className="text-xs text-slate-400 mb-1">No active orders</p>
           <Link
             to="/trade"
-            className="text-xs text-[#10b981] hover:text-[#34d399] transition-colors"
+            className="text-xs text-[#A7ADB5] hover:text-[#F2F3F5] transition-colors"
           >
             Place an order on the Trade page →
           </Link>
@@ -96,7 +96,11 @@ export default function LiveOperations({ orders, onCancel }: LiveOperationsProps
                     </td>
                     {/* Status */}
                     <td className="py-2.5 text-right">
-                      <span className="inline-block px-2 py-0.5 rounded text-[10px] font-semibold border text-[#10b981] border-[#10b981]/40 bg-[#10b981]/8">
+                      <span className={`inline-block px-2 py-0.5 rounded text-[10px] font-semibold border ${
+                        order.status === 'Partial'
+                          ? 'text-amber-400 border-amber-400/40 bg-amber-400/10'
+                          : 'text-[#10b981] border-[#10b981]/40 bg-[#10b981]/8'
+                      }`}>
                         {order.status}
                       </span>
                     </td>

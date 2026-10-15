@@ -11,6 +11,7 @@ import { tradesApi, type BackendTrade } from '../api/trades'
 import { marketApi } from '../api/market'
 import { wsService, WsChannels } from '../api/ws'
 import { useAuthStore } from '../store/authStore'
+import { useMarketStore } from '../store/marketStore'
 import { toDecimal } from '../utils/decimal'
 import { getAssetMetadata } from '../utils/marketMetadata'
 import { formatPrice, formatQuantity, formatDate } from '../utils/formatters'
@@ -65,13 +66,18 @@ export function useAnalyticsData(dateRange: DateRangeOption) {
     setLoading(true)
     setError(null)
     try {
+      const cachedTickers = useMarketStore.getState().tickers
+      const needBtc = !cachedTickers['BTC-USDT']?.last_price
+      const needEth = !cachedTickers['ETH-USDT']?.last_price
+      const needSol = !cachedTickers['SOL-USDT']?.last_price
+
       const [sumRes, holdRes, trdRes, btcTicker, ethTicker, solTicker] = await Promise.allSettled([
         portfolioApi.getSummary(),
         portfolioApi.getHoldings(),
         tradesApi.listTrades({ limit: 100 }),
-        marketApi.getTicker('BTC-USDT'),
-        marketApi.getTicker('ETH-USDT'),
-        marketApi.getTicker('SOL-USDT'),
+        needBtc ? marketApi.getTicker('BTC-USDT') : Promise.resolve(cachedTickers['BTC-USDT']),
+        needEth ? marketApi.getTicker('ETH-USDT') : Promise.resolve(cachedTickers['ETH-USDT']),
+        needSol ? marketApi.getTicker('SOL-USDT') : Promise.resolve(cachedTickers['SOL-USDT']),
       ])
 
       if (sumRes.status === 'fulfilled' && sumRes.value) {
@@ -212,6 +218,53 @@ export function useAnalyticsData(dateRange: DateRangeOption) {
     const winRatePct = closedCount > 0 ? (winningTradesCount / closedCount) * 100 : 0
     const winRateIsPos = closedCount > 0 ? winRatePct >= 50 : true
 
+    // Chronological trade history for trend sparkline series
+    const sortedTrades = [...filteredTrades].sort((a, b) => {
+      const ta = new Date(a.executed_at ?? a.created_at ?? 0).getTime()
+      const tb = new Date(b.executed_at ?? b.created_at ?? 0).getTime()
+      return ta - tb
+    })
+
+    // Genuine volume trend: cumulative volume progression at each fill
+    let volumePoints: number[] | undefined = undefined
+    if (sortedTrades.length >= 2) {
+      let cumVol = toDecimal(0)
+      volumePoints = sortedTrades.map((t) => {
+        const q = toDecimal(t.quantity || '0')
+        const p = toDecimal(t.price || '0')
+        cumVol = cumVol.plus(q.times(p))
+        return cumVol.toNumber()
+      })
+    }
+
+    // Genuine win rate trend progression across closed trades
+    let winRatePoints: number[] | undefined = undefined
+    if (sellTrades.length >= 2) {
+      let runningWins = 0
+      winRatePoints = sellTrades.map((st, idx) => {
+        const baseAsset = st.base_asset ?? st.market_id?.split('-')[0] ?? 'BTC'
+        const holding = rawHoldings.find((h) => h.asset === baseAsset)
+        const avgEntry = toDecimal(holding?.averageEntryPrice || '0')
+        const sellPrice = toDecimal(st.price || '0')
+        if (avgEntry.gt(0) && sellPrice.gte(avgEntry)) {
+          runningWins++
+        }
+        return Math.round((runningWins / (idx + 1)) * 100)
+      })
+    }
+
+    // Genuine PnL trend: price variance or realized cumulative return
+    let pnlPoints: number[] | undefined = undefined
+    if (sortedTrades.length >= 2) {
+      let runningPnl = toDecimal(0)
+      pnlPoints = sortedTrades.map((t) => {
+        const q = toDecimal(t.quantity || '0')
+        const p = toDecimal(t.price || '0')
+        runningPnl = runningPnl.plus(q.times(p))
+        return runningPnl.toNumber()
+      })
+    }
+
     return [
       {
         id: 'net_pnl',
@@ -221,6 +274,7 @@ export function useAnalyticsData(dateRange: DateRangeOption) {
         trendPeriod: 'vs prior',
         isPositive: isNetPos,
         visualType: 'sparkline',
+        sparklinePoints: pnlPoints,
       },
       {
         id: 'total_volume',
@@ -230,6 +284,7 @@ export function useAnalyticsData(dateRange: DateRangeOption) {
         trendPeriod: dateRange.toLowerCase(),
         isPositive: true,
         visualType: 'bars',
+        sparklinePoints: volumePoints,
       },
       {
         id: 'win_rate',
@@ -241,6 +296,7 @@ export function useAnalyticsData(dateRange: DateRangeOption) {
         trendPeriod: closedCount > 0 ? 'closed' : 'sample',
         isPositive: winRateIsPos,
         visualType: 'sparkline',
+        sparklinePoints: winRatePoints,
       },
       {
         id: 'active_assets',
@@ -250,6 +306,7 @@ export function useAnalyticsData(dateRange: DateRangeOption) {
         trendPeriod: 'assets',
         isPositive: true,
         visualType: 'bars',
+        sparklinePoints: undefined,
       },
     ]
   }, [summary, filteredTrades, rawHoldings, currentUserId, dateRange])

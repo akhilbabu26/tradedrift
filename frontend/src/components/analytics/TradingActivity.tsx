@@ -6,6 +6,7 @@ import type {
   ByAssetFillItem,
   ByMonthFillItem,
 } from '../../types/analytics'
+import { RaisedSurface } from '../common/Surface'
 
 interface Props {
   bySide: BySideData
@@ -45,7 +46,7 @@ export default function TradingActivity({
   const sellVisible = Math.max(0, sellArc - gap)
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl p-5 flex flex-col justify-between">
+    <RaisedSurface variant="raised-subtle" className="flex flex-col justify-between">
       {/* ── Top Header + Tab Selector ────────────────────────────────────── */}
       <div>
         <div className="flex items-start justify-between gap-2">
@@ -278,6 +279,6 @@ export default function TradingActivity({
           </div>
         </div>
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

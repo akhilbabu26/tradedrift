@@ -14,6 +14,7 @@ import (
 // Register creates a new user account with PENDING_VERIFICATION status and sends an OTP.
 func (s *Service) Register(ctx context.Context, email, username, password string) (string, error) {
 	// 1. Validation
+	email = normalizeEmail(email)
 	if !emailRegex.MatchString(email) {
 		return "", platformerrors.New(platformerrors.CodeInvalidArgument, "invalid email format")
 	}

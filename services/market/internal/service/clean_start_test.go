@@ -309,8 +309,8 @@ func TestMarketPipeline_CleanStart_And_RecoveryInvariants(t *testing.T) {
 		t.Fatalf("expected redis ticker lastPrice '100', got '%v'", tickerPayload["lastPrice"])
 	}
 	ttl := mr.TTL("ticker:BTC-USDT")
-	if ttl <= 0 || ttl > 60*time.Second {
-		t.Fatalf("expected redis ticker TTL between 1s and 60s, got %v", ttl)
+	if ttl <= 0 || ttl > 24*time.Hour {
+		t.Fatalf("expected redis ticker TTL between 1s and 24h, got %v", ttl)
 	}
 
 	// ── Trade #2: T = 10:00:20 UTC (same 1m bucket), Price = 105, Qty = 2 ────────

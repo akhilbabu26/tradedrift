@@ -60,7 +60,14 @@ func (p *MockPaymentProvider) CreateOrder(ctx context.Context, orderID string, a
 
 func (p *MockPaymentProvider) VerifySignature(payload []byte, signature string, timestamp int64) bool {
 	expectedSig := p.GenerateSignature(payload, timestamp)
-	return hmac.Equal([]byte(expectedSig), []byte(signature))
+	if hmac.Equal([]byte(expectedSig), []byte(signature)) {
+		return true
+	}
+	// Also accept direct raw payload HMAC (matching standard Razorpay webhook signature format)
+	mac := hmac.New(sha256.New, []byte(p.secret))
+	mac.Write(payload)
+	directSig := hex.EncodeToString(mac.Sum(nil))
+	return hmac.Equal([]byte(directSig), []byte(signature))
 }
 
 func (p *MockPaymentProvider) GenerateSignature(payload []byte, timestamp int64) string {

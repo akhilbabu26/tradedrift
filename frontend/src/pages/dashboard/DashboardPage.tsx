@@ -29,10 +29,13 @@ export default function DashboardPage() {
     cancelOrder,
     activePeriod,
     setActivePeriod,
+    isChartLoading,
+    chartError,
+    retryChart,
   } = useDashboardData()
 
   return (
-    <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa] flex flex-col justify-between">
+    <div className="flex-1 overflow-y-auto min-h-0 bg-[#08090B] text-[#F2F3F5] flex flex-col justify-between">
       <div className="max-w-[1600px] w-full mx-auto px-4 lg:px-6 py-5">
 
       {/* Welcome + Status Header */}
@@ -87,6 +90,9 @@ export default function DashboardPage() {
         totalTrades={data.totalTrades}
         activePeriod={activePeriod}
         onPeriodChange={setActivePeriod}
+        isChartLoading={isChartLoading}
+        chartError={chartError}
+        onRetryChart={retryChart}
       />
 
 

@@ -1,4 +1,5 @@
 import { TrendingUp, BarChart3, Coins, Target } from 'lucide-react'
+import { RaisedSurface } from '../common/Surface'
 import type { TradingProfileMetrics } from '../../types/profile'
 
 interface TradingProfileCardProps {
@@ -7,7 +8,7 @@ interface TradingProfileCardProps {
 
 export default function TradingProfileCard({ metrics }: TradingProfileCardProps) {
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl p-5 flex flex-col justify-between transition-colors">
+    <RaisedSurface variant="raised-subtle" className="rounded-xl p-5 flex flex-col justify-between transition-colors">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>
@@ -77,6 +78,6 @@ export default function TradingProfileCard({ metrics }: TradingProfileCardProps)
           </span>
         </div>
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

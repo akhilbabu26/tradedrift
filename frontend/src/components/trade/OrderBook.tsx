@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { ChevronDown } from 'lucide-react'
 import type { OrderBookSnapshot, OrderBookLevel } from '../../types/trade'
 import { formatPrice, formatQuantity } from '../../utils/formatters'
+import MarketDepthChart from './MarketDepthChart'
 
 interface OrderBookProps {
   orderBook: OrderBookSnapshot
@@ -14,7 +15,11 @@ interface OrderBookProps {
   quoteAsset: string  // e.g. "USDT"
 }
 
-const PRECISIONS = [2, 1, 0]
+const PRECISION_OPTIONS = [
+  { value: 2, label: '0.01' },
+  { value: 1, label: '0.1' },
+  { value: 0, label: '1' },
+]
 
 function DepthRow({
   level,
@@ -106,31 +111,32 @@ export default function OrderBook({
               DEMO
             </span>
           )}
-          {/* Precision */}
+          {/* Price Precision / Tick Size */}
           <div className="relative">
             <button
               type="button"
               onClick={() => setPrecOpen((o) => !o)}
+              title="Order book price precision"
               aria-label={`Precision ${precision}`}
-              className="flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-[#1e2530] text-[11px] font-mono text-slate-400 hover:text-[#f5f7fa] bg-[#0a0b0e] transition-colors"
+              className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-[#1e2530] text-[11px] font-mono text-slate-300 hover:text-[#f5f7fa] bg-[#0a0b0e] hover:border-slate-600 transition-colors"
             >
-              {precision.toFixed(0)}
-              <ChevronDown size={10} />
+              <span>{PRECISION_OPTIONS.find((opt) => opt.value === precision)?.label ?? '0.01'}</span>
+              <ChevronDown size={10} className="text-slate-400" />
             </button>
             {precOpen && (
-              <div className="absolute right-0 top-full mt-1 w-12 bg-[#111318] border border-[#1e2530] rounded shadow-lg z-30 overflow-hidden">
-                {PRECISIONS.map((p) => (
+              <div className="absolute right-0 top-full mt-1 w-16 bg-[#111318] border border-[#1e2530] rounded shadow-lg z-30 overflow-hidden py-0.5">
+                {PRECISION_OPTIONS.map((opt) => (
                   <button
-                    key={p}
+                    key={opt.value}
                     type="button"
-                    onClick={() => { onPrecisionChange(p); setPrecOpen(false) }}
-                    className={`w-full text-center px-2 py-1.5 text-[11px] font-mono transition-colors ${
-                      p === precision
-                        ? 'text-[#10b981] bg-[#10b981]/10'
+                    onClick={() => { onPrecisionChange(opt.value); setPrecOpen(false) }}
+                    className={`w-full text-center px-2 py-1 text-[11px] font-mono transition-colors ${
+                      opt.value === precision
+                        ? 'text-[#10b981] bg-[#10b981]/10 font-semibold'
                         : 'text-slate-400 hover:text-[#f5f7fa] hover:bg-white/5'
                     }`}
                   >
-                    {p.toFixed(0)}
+                    {opt.label}
                   </button>
                 ))}
               </div>
@@ -139,14 +145,16 @@ export default function OrderBook({
         </div>
       </div>
 
-      {/* ── Column headers ─────────────────────────────────────────────────── */}
-      <div className="flex items-center px-2 py-1 border-b border-[#1e2530]/60 flex-shrink-0">
-        <span className="flex-1 text-[10px] text-slate-600 uppercase tracking-wider">Price ({quoteAsset})</span>
-        <span className="w-[72px] text-right text-[10px] text-slate-600 uppercase tracking-wider">Amount ({baseAsset})</span>
-        <span className="w-[68px] text-right text-[10px] text-slate-600 uppercase tracking-wider">Total</span>
-      </div>
+      {/* ── Column headers (Order Book tab only) ─────────────────────────── */}
+      {activeTab === 'book' && (
+        <div className="flex items-center px-2 py-1 border-b border-[#1e2530]/60 flex-shrink-0">
+          <span className="flex-1 text-[10px] text-slate-600 uppercase tracking-wider">Price ({quoteAsset})</span>
+          <span className="w-[72px] text-right text-[10px] text-slate-600 uppercase tracking-wider">Amount ({baseAsset})</span>
+          <span className="w-[68px] text-right text-[10px] text-slate-600 uppercase tracking-wider">Total</span>
+        </div>
+      )}
 
-      {/* ── Book content ───────────────────────────────────────────────────── */}
+      {/* ── Book content / Depth Chart ─────────────────────────────────────── */}
       {activeTab === 'book' ? (
         /*
          * flex-1 min-h-0 flex flex-col: fills remaining height
@@ -196,12 +204,13 @@ export default function OrderBook({
           </div>
         </div>
       ) : (
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center px-4">
-            <p className="text-xs text-slate-500">Market depth chart</p>
-            <p className="text-[10px] text-slate-600 mt-0.5">Coming soon</p>
-          </div>
-        </div>
+        <MarketDepthChart
+          orderBook={orderBook}
+          baseAsset={baseAsset}
+          quoteAsset={quoteAsset}
+          lastPrice={lastPrice}
+          onSelectPrice={onSelectPrice}
+        />
       )}
     </div>
   )

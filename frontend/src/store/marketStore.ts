@@ -4,19 +4,22 @@
  * Centralized Zustand store for markets, 24h tickers, and trend lines.
  * SOURCE OF TRUTH: frontend/docs/all backend apis.md
  *
- * Phase 2 Architectural Guarantees:
+ * Architectural Guarantees:
  * 1. Single Live Price Source:
- *    Multiple components (TradeMarketHeader, MarketPulse, MarketsTable, LiveSparkline)
+ *    Multiple components (TradeMarketHeader, MarketPulse, MarketsTable, Portfolio)
  *    subscribe to and read from this store instead of opening duplicate WS channels.
  * 2. Timestamp Guards against Stale REST Responses:
  *    Tracks epoch timestamps of incoming WebSocket ticks. When a REST snapshot
- *    (e.g. GET /api/v1/markets/overview) resolves, it will NOT overwrite a market's
- *    ticker if a newer WebSocket tick was received after the REST request started.
+ *    resolves, it will NOT overwrite a market's ticker if a newer WebSocket tick
+ *    was received after the REST request started.
  * 3. Reference-Counted Subscriptions:
  *    Multiple components can subscribe to the same market's ticker stream;
  *    wsService.subscribe is only activated once and unsubscribed when all unmount.
+ * 4. Dual Volume Representation:
+ *    Preserves base asset volume (volume_24h) and quote asset turnover (quote_volume_24h).
  */
 
+import { useEffect } from 'react'
 import { create } from 'zustand'
 import { marketApi, type Market, type Ticker24h, type MarketOverview } from '../api/market'
 import { wsService, WsChannels } from '../api/ws'
@@ -40,6 +43,20 @@ export interface MarketState {
 // Subscription reference counting
 const subscriberCounts = new Map<string, number>()
 const unsubs = new Map<string, () => void>()
+
+export function resetMarketStoreForTesting() {
+  subscriberCounts.clear()
+  unsubs.forEach((unsub) => unsub())
+  unsubs.clear()
+  useMarketStore.setState({
+    markets: [],
+    tickers: {},
+    trends: {},
+    tickerTimestamps: {},
+    loading: false,
+    error: null,
+  })
+}
 
 function handleIncomingTicker(
   marketId: string,
@@ -215,3 +232,57 @@ export const useMarketStore = create<MarketState>((set, get) => ({
 wsService.onReconnect(() => {
   useMarketStore.getState().loadMarketsAndOverview()
 })
+
+/**
+ * Shared Hook: Subscribes to and returns live ticker for a single market.
+ * Uses reference counting so multiple components share one underlying WS subscription.
+ */
+export function useMarketTicker(marketId: string) {
+  const ticker = useMarketStore((s) => s.tickers[marketId] || null)
+  const trend = useMarketStore((s) => s.trends[marketId] || [])
+  const loading = useMarketStore((s) => s.loading)
+  const error = useMarketStore((s) => s.error)
+  const subscribeTicker = useMarketStore((s) => s.subscribeTicker)
+
+  useEffect(() => {
+    if (!marketId) return
+    const unsub = subscribeTicker(marketId)
+    return unsub
+  }, [marketId, subscribeTicker])
+
+  return { ticker, trend, loading, error }
+}
+
+/**
+ * Shared Hook: Subscribes to and returns data for all active markets.
+ */
+export function useMarketsData() {
+  const markets = useMarketStore((s) => s.markets)
+  const tickers = useMarketStore((s) => s.tickers)
+  const trends = useMarketStore((s) => s.trends)
+  const loading = useMarketStore((s) => s.loading)
+  const error = useMarketStore((s) => s.error)
+  const loadMarketsAndOverview = useMarketStore((s) => s.loadMarketsAndOverview)
+  const subscribeAllTickers = useMarketStore((s) => s.subscribeAllTickers)
+
+  useEffect(() => {
+    if (markets.length === 0) {
+      loadMarketsAndOverview()
+    }
+  }, [markets.length, loadMarketsAndOverview])
+
+  useEffect(() => {
+    if (markets.length === 0) return
+    const unsub = subscribeAllTickers()
+    return unsub
+  }, [markets.length, subscribeAllTickers])
+
+  return {
+    markets,
+    tickers,
+    trends,
+    loading,
+    error,
+    refetch: loadMarketsAndOverview,
+  }
+}

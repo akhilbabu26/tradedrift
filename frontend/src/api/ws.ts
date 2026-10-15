@@ -22,18 +22,33 @@
  * One singleton connection — do NOT create additional WebSocket instances.
  */
 
+import axios from 'axios'
+
 export type MessageHandler = (data: unknown) => void
 export type ConnectionStatus = 'connected' | 'connecting' | 'reconnecting' | 'offline'
 
 const WS_BASE_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8080/ws'
 
 // ── Channel name helpers ─────────────────────────────────────────────────────
+/** Validates user identifier to prevent malformed frames or path traversal attempts */
+export function isValidUserId(userId: unknown): userId is string {
+  if (typeof userId !== 'string') return false
+  const trimmed = userId.trim()
+  if (!trimmed) return false
+  if (trimmed.includes('/') || trimmed.includes('\\') || trimmed.includes(':') || /\s/.test(trimmed)) {
+    return false
+  }
+  return true
+}
+
 export const WsChannels = {
   orderbook: (marketId: string) => `market:orderbook:${marketId}`,
   ticker:    (marketId: string) => `market:ticker:${marketId}`,
   trades:    (marketId: string) => `market:trades:${marketId}`,
-  userNotifications: (userId?: string) => userId ? `user:notifications:${userId}` : 'user:notifications',
-  userPortfolio:     (userId?: string) => userId ? `user:portfolio:${userId}` : 'user:portfolio',
+  userNotifications: (userId?: string | null): string =>
+    isValidUserId(userId) ? `user:notifications:${userId.trim()}` : '',
+  userPortfolio:     (userId?: string | null): string =>
+    isValidUserId(userId) ? `user:portfolio:${userId.trim()}` : '',
 } as const
 
 // ── Dev-mode API logger (never logs tokens or sensitive data) ────────────────
@@ -71,6 +86,7 @@ class WebSocketService {
   private reconnectTimeout: ReturnType<typeof setTimeout> | null = null
   private pingInterval: ReturnType<typeof setInterval> | null = null
   private isExplicitlyClosed = false
+  private connectionEpoch = 0
   private onReconnectHooks: Set<() => void> = new Set()
   private onStatusHooks: Set<(connected: boolean, status: ConnectionStatus) => void> = new Set()
   private onLatencyHooks: Set<(ms: number) => void> = new Set()
@@ -83,21 +99,21 @@ class WebSocketService {
 
   // ── Public lifecycle hooks ───────────────────────────────────────────────
 
-  public onStatus(hook: (connected: boolean, status: ConnectionStatus) => void) {
+  public onStatus(hook: (connected: boolean, status: ConnectionStatus) => void): () => void {
     this.onStatusHooks.add(hook)
     hook(this.isConnected(), this.getStatus())
-    return () => this.onStatusHooks.delete(hook)
+    return () => { this.onStatusHooks.delete(hook) }
   }
 
-  public onLatency(hook: (ms: number) => void) {
+  public onLatency(hook: (ms: number) => void): () => void {
     this.onLatencyHooks.add(hook)
     hook(this.currentLatency)
-    return () => this.onLatencyHooks.delete(hook)
+    return () => { this.onLatencyHooks.delete(hook) }
   }
 
-  public onReconnect(hook: () => void) {
+  public onReconnect(hook: () => void): () => void {
     this.onReconnectHooks.add(hook)
-    return () => this.onReconnectHooks.delete(hook)
+    return () => { this.onReconnectHooks.delete(hook) }
   }
 
   public getStatus(): ConnectionStatus {
@@ -124,7 +140,8 @@ class WebSocketService {
     }
 
     this.isExplicitlyClosed = false
-    
+    const epoch = ++this.connectionEpoch
+
     this.notifyStatus(false, this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting')
 
     // Verify token validity before passing as query param.
@@ -136,21 +153,21 @@ class WebSocketService {
       wsLog('Stored access_token has expired. Attempting token refresh...')
       const refreshToken = typeof localStorage !== 'undefined' ? localStorage.getItem('refresh_token') : null
       if (refreshToken) {
-        import('axios').then(async ({ default: axios }) => {
-          try {
-            const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
-            const { data } = await axios.post(`${apiBase}/api/v1/auth/refresh`, { refreshToken })
+        const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
+        axios
+          .post(`${apiBase}/api/v1/auth/refresh`, { refreshToken })
+          .then(({ data }) => {
+            if (epoch !== this.connectionEpoch) return
             if (data?.accessToken && typeof localStorage !== 'undefined') {
               localStorage.setItem('access_token', data.accessToken)
               if (data.refreshToken) localStorage.setItem('refresh_token', data.refreshToken)
               wsLog('Token refreshed. Upgrading WebSocket with authenticated session...')
-              this.disconnect()
-              this.connect()
+              this.reconnect()
             }
-          } catch {
+          })
+          .catch(() => {
             wsLog('Token refresh failed. Continuing in unauthenticated public mode.')
-          }
-        })
+          })
       }
     }
 
@@ -162,9 +179,14 @@ class WebSocketService {
       if (typeof WebSocket === 'undefined') {
         return
       }
-      this.socket = new WebSocket(url)
+      const socket = new WebSocket(url)
+      this.socket = socket
 
-      this.socket.onopen = () => {
+      socket.onopen = () => {
+        if (epoch !== this.connectionEpoch) {
+          try { socket.close() } catch { /* ignore */ }
+          return
+        }
         this.reconnectAttempt = 0
         this.notifyStatus(true, 'connected')
         this.measureLatency()
@@ -176,7 +198,8 @@ class WebSocketService {
         })
       }
 
-      this.socket.onmessage = (event) => {
+      socket.onmessage = (event) => {
+        if (epoch !== this.connectionEpoch) return
         try {
           const lines = (event.data as string).split('\n')
           for (const line of lines) {
@@ -208,8 +231,8 @@ class WebSocketService {
         }
       }
 
-      this.socket.onclose = () => {
-        
+      socket.onclose = () => {
+        if (epoch !== this.connectionEpoch) return
         this.notifyStatus(false, 'offline')
         this.cleanup()
         if (!this.isExplicitlyClosed) {
@@ -217,10 +240,11 @@ class WebSocketService {
         }
       }
 
-      this.socket.onerror = () => {
+      socket.onerror = () => {
+        if (epoch !== this.connectionEpoch) return
         wsLog('Error — closing socket')
         this.notifyStatus(false, 'offline')
-        if (this.socket) this.socket.close()
+        try { socket.close() } catch { /* ignore */ }
       }
     } catch {
       this.notifyStatus(false, 'offline')
@@ -228,68 +252,127 @@ class WebSocketService {
     }
   }
 
+  /**
+   * Reconnect the WebSocket immediately with the current authentication status.
+   * Cleans up the previous socket connection so it cannot deliver events.
+   */
+  public reconnect() {
+    this.isExplicitlyClosed = false
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout)
+      this.reconnectTimeout = null
+    }
+    if (this.socket) {
+      const oldSocket = this.socket
+      this.socket = null
+      oldSocket.onopen = null
+      oldSocket.onmessage = null
+      oldSocket.onerror = null
+      oldSocket.onclose = null
+      try {
+        oldSocket.close()
+      } catch { /* ignore */ }
+    }
+    this.cleanup()
+    this.reconnectAttempt = 0
+    this.connect()
+  }
+
   public disconnect() {
+    this.connectionEpoch++
     this.isExplicitlyClosed = true
     if (this.reconnectTimeout) {
       clearTimeout(this.reconnectTimeout)
       this.reconnectTimeout = null
     }
     if (this.socket) {
-      this.socket.close()
+      const oldSocket = this.socket
+      this.socket = null
+      oldSocket.onopen = null
+      oldSocket.onmessage = null
+      oldSocket.onerror = null
+      oldSocket.onclose = null
+      try {
+        oldSocket.close()
+      } catch { /* ignore */ }
     }
     this.cleanup()
     this.notifyStatus(false, 'offline')
   }
 
+  /**
+   * Purges all private user-scoped channel subscriptions (e.g. user:notifications:*, user:portfolio:*).
+   * Call on logout so subscriptions from previous users are never resubscribed.
+   */
+  public clearPrivateSubscriptions() {
+    for (const channel of Array.from(this.subscribers.keys())) {
+      if (channel.startsWith('user:')) {
+        this.subscribers.delete(channel)
+      }
+    }
+  }
+
   // ── Subscribe / Unsubscribe ──────────────────────────────────────────────
 
-  public subscribe(channel: string, handler: MessageHandler) {
-    let set = this.subscribers.get(channel)
+  public subscribe(channel: string | null | undefined, handler: MessageHandler): () => void {
+    if (!channel || !channel.trim()) {
+      return () => {}
+    }
+    const safeChannel = channel.trim()
+    let set = this.subscribers.get(safeChannel)
     const isFirst = !set || set.size === 0
     if (!set) {
       set = new Set()
-      this.subscribers.set(channel, set)
+      this.subscribers.set(safeChannel, set)
     }
     set.add(handler)
 
-    if (isFirst && this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.sendSubscribe(channel)
+    if (!this.socket || this.socket.readyState === WebSocket.CLOSED) {
+      this.connect()
+    } else if (isFirst && this.socket.readyState === WebSocket.OPEN) {
+      this.sendSubscribe(safeChannel)
     }
 
-    return () => this.unsubscribe(channel, handler)
+    return () => this.unsubscribe(safeChannel, handler)
   }
 
-  public unsubscribe(channel: string, handler: MessageHandler) {
-    const set = this.subscribers.get(channel)
+  public unsubscribe(channel: string | null | undefined, handler: MessageHandler) {
+    if (!channel || !channel.trim()) return
+    const safeChannel = channel.trim()
+    const set = this.subscribers.get(safeChannel)
     if (set) {
       set.delete(handler)
       if (set.size === 0) {
-        this.subscribers.delete(channel)
+        this.subscribers.delete(safeChannel)
         if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-          this.sendUnsubscribe(channel)
+          this.sendUnsubscribe(safeChannel)
         }
       }
     }
   }
 
   private sendSubscribe(channel: string) {
+    if (!channel || !channel.trim()) return
+    const safeChannel = channel.trim()
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify({ event: 'subscribe', streams: [channel] }))
-      wsLog(`subscribe ${channel}`)
+      this.socket.send(JSON.stringify({ event: 'subscribe', streams: [safeChannel] }))
+      wsLog(`subscribe ${safeChannel}`)
     }
   }
 
   private sendUnsubscribe(channel: string) {
+    if (!channel || !channel.trim()) return
+    const safeChannel = channel.trim()
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-      this.socket.send(JSON.stringify({ event: 'unsubscribe', streams: [channel] }))
-      wsLog(`unsubscribe ${channel}`)
+      this.socket.send(JSON.stringify({ event: 'unsubscribe', streams: [safeChannel] }))
+      wsLog(`unsubscribe ${safeChannel}`)
     }
   }
 
   private resubscribeAll() {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return
     const activeChannels = Array.from(this.subscribers.keys()).filter(
-      (ch) => (this.subscribers.get(ch)?.size ?? 0) > 0
+      (ch) => Boolean(ch && ch.trim()) && (this.subscribers.get(ch)?.size ?? 0) > 0
     )
     // Send individual subscribe frames per channel (protocol requires singular channel)
     for (const channel of activeChannels) {

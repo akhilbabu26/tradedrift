@@ -1,30 +1,10 @@
 import { Info, TrendingUp, TrendingDown } from 'lucide-react'
+import { RaisedSurface } from '../common/Surface'
+import Sparkline from '../dashboard/shared/Sparkline'
 import type { KpiCardItem } from '../../types/analytics'
 
 interface Props {
   kpis: KpiCardItem[]
-}
-
-/**
- * Mini SVG sparkline for PnL cards
- */
-function Sparkline({ isPositive }: { isPositive: boolean }) {
-  const strokeColor = isPositive ? '#10b981' : '#ef4444'
-  const pathD = isPositive
-    ? 'M2 24C12 22 18 10 26 14C34 18 42 6 52 10C56 12 60 4 62 3'
-    : 'M2 4C12 6 18 18 26 14C34 10 42 22 52 18C56 16 60 24 62 26'
-
-  return (
-    <svg width="64" height="32" viewBox="0 0 64 32" fill="none" className="flex-shrink-0">
-      <path
-        d={pathD}
-        stroke={strokeColor}
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  )
 }
 
 /**
@@ -63,9 +43,10 @@ export default function AnalyticsStats({ kpis }: Props) {
         const trendColor = item.isPositive ? 'text-[#10b981]' : 'text-[#ef4444]'
 
         return (
-          <div
+          <RaisedSurface
             key={item.id}
-            className="bg-[#111318] border border-[#1e2530] rounded-xl p-4 sm:p-5 flex flex-col justify-between transition-colors hover:border-[#2a3442]"
+            variant="raised-subtle"
+            className="rounded-xl p-4 sm:p-5 flex flex-col justify-between transition-colors hover:border-white/10"
           >
             {/* Top header row: Label + Info icon + Visual */}
             <div className="flex items-center justify-between gap-2">
@@ -78,7 +59,13 @@ export default function AnalyticsStats({ kpis }: Props) {
 
               <div>
                 {item.visualType === 'sparkline' ? (
-                  <Sparkline isPositive={item.isPositive} />
+                  <Sparkline
+                    data={item.sparklinePoints}
+                    positive={item.isPositive}
+                    width={64}
+                    height={28}
+                    ariaLabel={`${item.label} trend`}
+                  />
                 ) : (
                   <MiniBars />
                 )}
@@ -109,7 +96,7 @@ export default function AnalyticsStats({ kpis }: Props) {
               <span>{item.trendValue}</span>
               <span className="text-[#64748b] font-normal">{item.trendPeriod}</span>
             </div>
-          </div>
+          </RaisedSurface>
         )
       })}
     </div>

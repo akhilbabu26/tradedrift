@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Eye, EyeOff, Mail, Lock, ShieldCheck } from 'lucide-react'
-import WebGLBackground from '../../components/WebGLBackground'
+import AuthCard from '../../components/AuthCard'
 import { useAuthStore } from '../../store/authStore'
 import { authApi } from '../../api/auth'
 
@@ -41,26 +41,14 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="relative min-h-screen w-screen overflow-auto flex items-center justify-center bg-base py-6 px-4">
-
-      {/* WebGL animated background */}
-      <div className="fixed inset-0 z-0">
-        <WebGLBackground />
+    <AuthCard>
+      {/* Heading */}
+      <div className="mb-8 text-center flex flex-col items-center">
+        <h1 className="text-2xl font-black text-white mb-1">
+          Welcome back, Trader <span className="inline-block hover:animate-bounce">👋</span>
+        </h1>
+        <p className="text-slate-400 text-sm">Sign in to your simulation account</p>
       </div>
-
-      {/* Glass login card */}
-      <div className="relative z-10 w-full max-w-[500px] bg-[#111318]/80 backdrop-blur-xl rounded-2xl shadow-2xl border border-[#1f2229] flex flex-col p-8 md:p-10">
-
-        {/* Logo + heading */}
-        <div className="mb-8 text-center flex flex-col items-center">
-          <Link to="/">
-            <img src="/logo.png" alt="TradeDrift" className="h-12 w-auto mb-6 object-contain" />
-          </Link>
-          <h1 className="text-2xl font-black text-white mb-1">
-            Welcome back, Trader <span className="inline-block hover:animate-bounce">👋</span>
-          </h1>
-          <p className="text-slate-400 text-sm">Sign in to your simulation account</p>
-        </div>
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-5">
@@ -189,7 +177,6 @@ export default function LoginPage() {
             <span>Secured with JWT + OTP verification</span>
           </div>
         </div>
-      </div>
-    </div>
+    </AuthCard>
   )
 }

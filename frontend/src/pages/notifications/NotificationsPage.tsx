@@ -5,7 +5,7 @@ import NotificationsList from '../../components/notifications/NotificationsList'
 import NotificationSettingsCard from '../../components/notifications/NotificationSettingsCard'
 import NotificationStatsCard from '../../components/notifications/NotificationStatsCard'
 import NotificationQuickActionsCard from '../../components/notifications/NotificationQuickActionsCard'
-import NotificationsFooter from '../../components/notifications/NotificationsFooter'
+import GlobalFooter from '../../components/layout/GlobalFooter'
 import { useNotificationStore } from '../../store/notificationStore'
 
 /**
@@ -49,7 +49,7 @@ export default function NotificationsPage() {
         </div>
       </div>
 
-      <NotificationsFooter />
+      <GlobalFooter />
     </div>
   )
 }

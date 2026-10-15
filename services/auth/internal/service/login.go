@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -14,6 +15,10 @@ import (
 func (s *Service) Login(ctx context.Context, identifier, password string) (*UserDTO, *TokenPairDTO, error) {
 	s.log.Info("Login attempt", zap.String("identifier", identifier))
 
+	if strings.Contains(identifier, "@") {
+		identifier = normalizeEmail(identifier)
+	}
+
 	u, err := s.userRepo.GetByIdentifier(ctx, identifier)
 	if err != nil {
 		s.log.Error("Login: failed to look up user", zap.String("identifier", identifier), zap.Error(err))
@@ -24,6 +29,12 @@ func (s *Service) Login(ctx context.Context, identifier, password string) (*User
 	if u == nil {
 		s.log.Warn("Login: user not found", zap.String("identifier", identifier))
 		return nil, nil, platformerrors.New(platformerrors.CodeInvalidCredentials, "invalid email/username or password")
+	}
+
+	// Check if account is passwordless (created via Google or another OAuth provider)
+	if u.PasswordHash == "" {
+		s.log.Warn("Login: attempt to use password on passwordless account", zap.String("userID", u.ID))
+		return nil, nil, platformerrors.New(platformerrors.CodeFailedPrecondition, "this account was created with Google Sign-In. Please sign in using Google or reset your password to set one.")
 	}
 
 	// Check if account is locked due to brute force protection

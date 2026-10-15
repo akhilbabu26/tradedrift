@@ -9,12 +9,13 @@
  * All monetary calculations use toDecimal() from src/utils/decimal.ts.
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { portfolioApi } from '../api/portfolio'
 import { walletApi } from '../api/wallet'
 import { marketApi, type MarketOverview } from '../api/market'
 import { wsService, WsChannels } from '../api/ws'
 import { useAuthStore } from '../store/authStore'
+import { useMarketStore } from '../store/marketStore'
 import { toDecimal } from '../utils/decimal'
 import { getAssetMetadata } from '../utils/marketMetadata'
 import type {
@@ -39,6 +40,9 @@ interface UsePortfolioDataReturn {
   setTimeframe: (tf: TimeframeOption) => void
   showBtcBenchmark: boolean
   setShowBtcBenchmark: (v: boolean) => void
+  isChartLoading: boolean
+  chartError: string | null
+  retryChart: () => void
   refetch: () => Promise<void>
 }
 
@@ -80,6 +84,10 @@ export function usePortfolioData(): UsePortfolioDataReturn {
   const [isEmptyPortfolio, setIsEmptyPortfolio] = useState(false)
   const [timeframe, setTimeframe] = useState<TimeframeOption>('7D')
   const [showBtcBenchmark, setShowBtcBenchmark] = useState(false)
+  const [isChartLoading, setIsChartLoading] = useState(false)
+  const [chartError, setChartError] = useState<string | null>(null)
+  const historyCache = useRef<Record<string, PerformanceDataPoint[]>>({})
+  const latestTimeframeReqId = useRef(0)
 
   const [metrics, setMetrics] = useState<PortfolioExecutiveMetrics>(DEFAULT_METRICS)
   const [holdings, setHoldings] = useState<PortfolioHolding[]>([])
@@ -214,9 +222,9 @@ export function usePortfolioData(): UsePortfolioDataReturn {
           const cb = qty.times(avgCost)
           const unPnl = mv.minus(cb)
           const unPnlPct = cb.gt(0)
-            ? unPnl.dividedBy(cb).times(100).toFixed(2)
+            ? unPnl.dividedBy(cb).times(100).abs().toFixed(2)
             : '0.00'
-          const pnlSign = unPnl.gte(0) ? '+' : ''
+          const pnlSign = unPnl.gte(0) ? '+' : '-'
           rows.push({
             asset,
             quantity: qty.toFixed(4),
@@ -225,7 +233,7 @@ export function usePortfolioData(): UsePortfolioDataReturn {
             marketValue: mv,
             unrealizedPnl: unPnl,
             unrealizedPnlPct: `${pnlSign}${unPnlPct}`,
-            realizedPnl: summaryRes.realizedPnl || '-0.77',
+            realizedPnl: summaryRes.realizedPnl || '0.00',
             sparklinePoints: assetTrend,
           })
         } else {
@@ -256,6 +264,7 @@ export function usePortfolioData(): UsePortfolioDataReturn {
         const weightPct = totalMarketValue.gt(0)
           ? r.marketValue.dividedBy(totalMarketValue).times(100).toFixed(1)
           : '0.0'
+        const isPnlZero = r.asset === 'USDT' || r.unrealizedPnl.abs().toFixed(2) === '0.00'
         const pnlSign = r.unrealizedPnl.gte(0) ? '+' : '-'
         return {
           asset: r.asset,
@@ -265,9 +274,9 @@ export function usePortfolioData(): UsePortfolioDataReturn {
           averageCost: r.averageCost,
           currentPrice: r.currentPrice,
           marketValue: r.marketValue.toFixed(2),
-          unrealizedPnl: r.asset === 'USDT' || r.unrealizedPnl.isZero()
+          unrealizedPnl: isPnlZero
             ? '0.00'
-            : `${pnlSign}${Math.abs(r.unrealizedPnl.toNumber()).toFixed(2)}`,
+            : `${pnlSign}${r.unrealizedPnl.abs().toFixed(2)}`,
           unrealizedPnlPct: r.unrealizedPnlPct,
           realizedPnl: r.realizedPnl.startsWith('+') || r.realizedPnl.startsWith('-')
             ? r.realizedPnl
@@ -303,12 +312,12 @@ export function usePortfolioData(): UsePortfolioDataReturn {
       const totalPnlSign = totalUnrealPnl.gte(0) ? '+' : '-'
 
       // 24h change from BTC market overview
-      const btc24hPct = parseFloat(overviewMap['BTC-USDT']?.price_change_24h_percent || '0')
+      const btc24hPct = toDecimal(overviewMap['BTC-USDT']?.price_change_24h_percent || '0')
       const btcMv = rows.find((r) => r.asset === 'BTC')?.marketValue || toDecimal(0)
       const dailyChangeVal = btcMv.times(btc24hPct).dividedBy(100)
       const dailyChangeSign = dailyChangeVal.gte(0) ? '+' : '-'
       const dailyChangePctTotal = totalMarketValue.gt(0)
-        ? dailyChangeVal.dividedBy(totalMarketValue).times(100).toFixed(2)
+        ? dailyChangeVal.dividedBy(totalMarketValue).times(100).abs().toFixed(2)
         : '0.00'
 
       const totalCostBasis = rows.reduce((sum, r) => {
@@ -316,22 +325,25 @@ export function usePortfolioData(): UsePortfolioDataReturn {
         return sum.plus(toDecimal(r.quantity).times(toDecimal(r.averageCost)))
       }, toDecimal(0))
 
-      const unPnlPctTotal = totalCostBasis.gt(0)
-        ? totalUnrealPnl.dividedBy(totalCostBasis).times(100).toFixed(2)
-        : '0.00'
+      const unPnlPctTotalDec = totalCostBasis.gt(0)
+        ? totalUnrealPnl.dividedBy(totalCostBasis).times(100)
+        : toDecimal(0)
+      const unPnlPctSign = unPnlPctTotalDec.gte(0) ? '+' : '-'
+      const unPnlPctTotal = unPnlPctTotalDec.abs().toFixed(2)
 
-      const realPnlVal = parseFloat(summaryRes.realizedPnl || '-0.77')
-      const realPnlStr = `${realPnlVal >= 0 ? '+' : '-'}${Math.abs(realPnlVal).toFixed(2)}`
+      const realPnlDec = toDecimal(summaryRes.realizedPnl || '0.00')
+      const realPnlSign = realPnlDec.gte(0) ? '+' : '-'
+      const realPnlStr = `${realPnlSign}${realPnlDec.abs().toFixed(2)}`
 
       const finalMetrics: PortfolioExecutiveMetrics = {
         totalValue: totalMarketValue.toFixed(2),
-        dailyChangeValue: `${dailyChangeSign}${Math.abs(dailyChangeVal.toNumber()).toFixed(2)}`,
-        dailyChangePct: `${dailyChangeSign}${Math.abs(parseFloat(dailyChangePctTotal)).toFixed(2)}`,
-        unrealizedPnl: `${totalPnlSign}${Math.abs(totalUnrealPnl.toNumber()).toFixed(2)}`,
-        unrealizedPnlPct: `${totalPnlSign}${Math.abs(parseFloat(unPnlPctTotal)).toFixed(2)}`,
+        dailyChangeValue: `${dailyChangeSign}${dailyChangeVal.abs().toFixed(2)}`,
+        dailyChangePct: `${dailyChangeSign}${dailyChangePctTotal}`,
+        unrealizedPnl: `${totalPnlSign}${totalUnrealPnl.abs().toFixed(2)}`,
+        unrealizedPnlPct: `${unPnlPctSign}${unPnlPctTotal}`,
         realizedPnl: realPnlStr,
-        pnl24h: `${dailyChangeSign}${Math.abs(dailyChangeVal.toNumber()).toFixed(2)}`,
-        pnl24hPct: `${dailyChangeSign}${Math.abs(parseFloat(dailyChangePctTotal)).toFixed(2)}`,
+        pnl24h: `${dailyChangeSign}${dailyChangeVal.abs().toFixed(2)}`,
+        pnl24hPct: `${dailyChangeSign}${dailyChangePctTotal}`,
       }
 
       // ── 7. Insights ────────────────────────────────────────────────────────
@@ -339,7 +351,7 @@ export function usePortfolioData(): UsePortfolioDataReturn {
         topPerformer: {
           asset: 'BTC',
           name: 'Bitcoin',
-          roiPct: unPnlPctTotal,
+          roiPct: `${unPnlPctSign}${unPnlPctTotal}`,
           direction: 'top',
         },
         underPerformer: {
@@ -349,7 +361,7 @@ export function usePortfolioData(): UsePortfolioDataReturn {
           direction: 'under',
         },
         totalInvested: totalCostBasis.toFixed(2),
-        last7DaysPct: `${dailyChangeSign}${Math.abs(parseFloat(dailyChangePctTotal)).toFixed(2)}`,
+        last7DaysPct: `${dailyChangeSign}${dailyChangePctTotal}`,
         quote: 'Discipline today, better trades tomorrow.',
       }
 
@@ -377,12 +389,14 @@ export function usePortfolioData(): UsePortfolioDataReturn {
     const unsubs: Array<() => void> = []
 
     supportedMarkets.forEach((marketId) => {
-      const channel = WsChannels.ticker(marketId)
-      const unsub = wsService.subscribe(channel, (payload: any) => {
-        if (!payload) return
-        const rawLast = payload.lastPrice ?? payload.last_price
-        if (rawLast === undefined || rawLast === null) return
-        const numPrice = parseFloat(String(rawLast))
+      unsubs.push(useMarketStore.getState().subscribeTicker(marketId))
+    })
+
+    const unsubStore = useMarketStore.subscribe((state) => {
+      supportedMarkets.forEach((marketId) => {
+        const ticker = state.tickers[marketId]
+        if (!ticker || !ticker.last_price) return
+        const numPrice = parseFloat(ticker.last_price)
         if (isNaN(numPrice) || !isFinite(numPrice) || numPrice <= 0) return
 
         const asset = marketId.split('-')[0] // 'BTC', 'ETH', 'SOL'
@@ -393,6 +407,8 @@ export function usePortfolioData(): UsePortfolioDataReturn {
           if (targetIndex === -1) return prevHoldings
 
           const h = prevHoldings[targetIndex]
+          if (h.currentPrice === toDecimal(numPrice).toFixed(2)) return prevHoldings
+
           const priceDec = toDecimal(numPrice)
           const qty = toDecimal(h.quantity || '0')
           const mv = qty.times(priceDec)
@@ -400,7 +416,7 @@ export function usePortfolioData(): UsePortfolioDataReturn {
           const cb = qty.times(avgCost)
           const unPnl = mv.minus(cb)
           const unPnlPct = cb.gt(0)
-            ? unPnl.dividedBy(cb).times(100).toFixed(2)
+            ? unPnl.dividedBy(cb).times(100).abs().toFixed(2)
             : '0.00'
           const pnlSign = unPnl.gte(0) ? '+' : '-'
 
@@ -412,11 +428,12 @@ export function usePortfolioData(): UsePortfolioDataReturn {
             }
           }
 
+          const isLivePnlZero = unPnl.abs().toFixed(2) === '0.00'
           const updatedHolding: PortfolioHolding = {
             ...h,
             currentPrice: priceDec.toFixed(2),
             marketValue: mv.toFixed(2),
-            unrealizedPnl: unPnl.isZero() ? '0.00' : `${pnlSign}${Math.abs(unPnl.toNumber()).toFixed(2)}`,
+            unrealizedPnl: isLivePnlZero ? '0.00' : `${pnlSign}${unPnl.abs().toFixed(2)}`,
             unrealizedPnlPct: `${pnlSign}${unPnlPct}`,
             sparklinePoints: updatedSparkline,
           }
@@ -467,22 +484,23 @@ export function usePortfolioData(): UsePortfolioDataReturn {
             return sum.plus(toDecimal(item.quantity || '0').times(toDecimal(item.averageCost || '0')))
           }, toDecimal(0))
 
-          const unPnlPctTotal = totalCostBasis.gt(0)
-            ? totalUnrealPnl.dividedBy(totalCostBasis).times(100).toFixed(2)
-            : '0.00'
+          const unPnlPctTotalDec = totalCostBasis.gt(0)
+            ? totalUnrealPnl.dividedBy(totalCostBasis).times(100)
+            : toDecimal(0)
+          const unPnlPctSign = unPnlPctTotalDec.gte(0) ? '+' : '-'
 
           setMetrics((prev) => ({
             ...prev,
             totalValue: newTotalMarketValue.toFixed(2),
-            unrealizedPnl: `${totalPnlSign}${Math.abs(totalUnrealPnl.toNumber()).toFixed(2)}`,
-            unrealizedPnlPct: `${totalPnlSign}${Math.abs(parseFloat(unPnlPctTotal)).toFixed(2)}`,
+            unrealizedPnl: `${totalPnlSign}${totalUnrealPnl.abs().toFixed(2)}`,
+            unrealizedPnlPct: `${unPnlPctSign}${unPnlPctTotalDec.abs().toFixed(2)}`,
           }))
 
           return reweighted
         })
       })
-      unsubs.push(unsub)
     })
+    unsubs.push(unsubStore)
 
     if (userId) {
       unsubs.push(
@@ -511,30 +529,30 @@ export function usePortfolioData(): UsePortfolioDataReturn {
     }
   }, [loadData, userId])
 
-  // ── 8. Live Performance Chart Curves ──────────────────────────────────────
-  useEffect(() => {
-    let isCancelled = false
+  // ── 8. Smooth Timeframe Switching with In-Memory Cache & Race Guard ───
+  const changeTimeframe = useCallback(
+    async (newTf: TimeframeOption) => {
+      setTimeframe(newTf)
+      setChartError(null)
 
-    async function fetchChartCandles() {
-      const tfConfig: Record<TimeframeOption, { resolution: string; limit: number; daySec: number }> = {
-        '24H': { resolution: '1h', limit: 24, daySec: 3600 },
-        '7D':  { resolution: '4h', limit: 42, daySec: 14400 },
-        '30D': { resolution: '1d', limit: 30, daySec: 86400 },
-        '90D': { resolution: '1d', limit: 90, daySec: 86400 },
-        'ALL': { resolution: '1d', limit: 120, daySec: 86400 },
+      // 1. Instant cache hit
+      const cached = historyCache.current[newTf]
+      if (cached && cached.length > 0) {
+        setPerformanceData(cached)
+        return
       }
 
-      const cfg = tfConfig[timeframe] || tfConfig['7D']
-      const totalValNum = parseFloat(metrics.totalValue) || 9998.47
-      const btcRow = holdings.find((h) => h.asset === 'BTC')
-      const btcQty = parseFloat(btcRow?.quantity || '0.02')
-      const cashVal = parseFloat(holdings.find((h) => h.asset === 'USDT')?.marketValue || '8069.47')
+      // 2. Fetch new timeframe data with loading overlay and race guard
+      setIsChartLoading(true)
+      const reqId = ++latestTimeframeReqId.current
 
-      // ── Priority 1: Authentic backend portfolio equity snapshots ─────────
       try {
-        const historyRes = await portfolioApi.getHistory(timeframe === 'ALL' ? '1Y' : timeframe)
-        if (!isCancelled && historyRes.points && historyRes.points.length > 0) {
+        const historyRes = await portfolioApi.getHistory(newTf === 'ALL' || newTf === '1Y' ? '1Y' : newTf)
+        if (reqId !== latestTimeframeReqId.current) return
+
+        if (historyRes.points && historyRes.points.length > 0) {
           const nowSec = Math.floor(Date.now() / 1000)
+          const totalValNum = parseFloat(metrics.totalValue) || 19762.99
           const pts: PerformanceDataPoint[] = historyRes.points.map((p) => {
             const val = parseFloat(p.totalEquity)
             return {
@@ -551,20 +569,32 @@ export function usePortfolioData(): UsePortfolioDataReturn {
               btcBenchmarkValue: totalValNum,
             })
           }
+          historyCache.current[newTf] = pts
           setPerformanceData(pts)
+          setIsChartLoading(false)
           return
         }
-      } catch (err) {
-        console.warn('[usePortfolioData] Snapshot history fetch failed:', err)
-      }
 
-      // ── Priority 2: Fallback to candle revaluation if no snapshots recorded yet ─
-      try {
-        const candles = await marketApi.getCandles('BTC-USDT', cfg.resolution, cfg.limit)
+        // Fallback: candle revaluation
+        const tfConfig: Record<string, { resolution: string; limit: number; daySec: number }> = {
+          '24H': { resolution: '1h', limit: 24, daySec: 3600 },
+          '7D':  { resolution: '4h', limit: 42, daySec: 14400 },
+          '30D': { resolution: '1d', limit: 30, daySec: 86400 },
+          '90D': { resolution: '1d', limit: 90, daySec: 86400 },
+          '1Y':  { resolution: '1d', limit: 120, daySec: 86400 },
+          'ALL': { resolution: '1d', limit: 120, daySec: 86400 },
+        }
+        const cfg = tfConfig[newTf] || tfConfig['7D']
+        const totalValNum = parseFloat(metrics.totalValue) || 19762.99
+        const btcRow = holdings.find((h) => h.asset === 'BTC')
+        const btcQty = parseFloat(btcRow?.quantity || '0.02')
+        const cashVal = parseFloat(holdings.find((h) => h.asset === 'USDT')?.marketValue || '8069.47')
 
-        if (!isCancelled && Array.isArray(candles) && candles.length > 0) {
+        const candles = await marketApi.getCandles('BTC-USDT', cfg.resolution, cfg.limit).catch(() => [])
+        if (reqId !== latestTimeframeReqId.current) return
+
+        if (Array.isArray(candles) && candles.length > 0) {
           const latestClose = parseFloat(candles[candles.length - 1].close || '96450.00')
-
           const points: PerformanceDataPoint[] = candles.map((c) => {
             const time = Math.floor(new Date(c.start_time).getTime() / 1000)
             const price = parseFloat(c.close || '96450.00')
@@ -572,44 +602,41 @@ export function usePortfolioData(): UsePortfolioDataReturn {
             const btcBench = latestClose > 0
               ? Math.round(((price / latestClose) * totalValNum) * 100) / 100
               : totalValNum
-
-            return {
-              time,
-              portfolioValue: portVal,
-              btcBenchmarkValue: btcBench,
-            }
+            return { time, portfolioValue: portVal, btcBenchmarkValue: btcBench }
           })
-
+          historyCache.current[newTf] = points
           setPerformanceData(points)
-          return
+        } else {
+          const nowSec = Math.floor(Date.now() / 1000)
+          const count = cfg.limit
+          const points: PerformanceDataPoint[] = Array.from({ length: count }, (_, i) => {
+            const time = nowSec - (count - 1 - i) * cfg.daySec
+            return { time, portfolioValue: totalValNum, btcBenchmarkValue: totalValNum }
+          })
+          historyCache.current[newTf] = points
+          setPerformanceData(points)
         }
-      } catch (err) {
-        console.warn('[usePortfolioData] Candle fetch failed, generating baseline:', err)
+      } catch {
+        if (reqId === latestTimeframeReqId.current) {
+          setChartError('Failed to load timeframe data')
+        }
+      } finally {
+        if (reqId === latestTimeframeReqId.current) {
+          setIsChartLoading(false)
+        }
       }
+    },
+    [holdings, metrics.totalValue]
+  )
 
+  const retryChart = useCallback(() => {
+    delete historyCache.current[timeframe]
+    changeTimeframe(timeframe)
+  }, [changeTimeframe, timeframe])
 
-      // Clean fallback anchored to authentic total value
-      if (!isCancelled) {
-        const nowSec = Math.floor(Date.now() / 1000)
-        const count = cfg.limit
-        const points: PerformanceDataPoint[] = Array.from({ length: count }, (_, i) => {
-          const time = nowSec - (count - 1 - i) * cfg.daySec
-          return {
-            time,
-            portfolioValue: totalValNum,
-            btcBenchmarkValue: totalValNum,
-          }
-        })
-        setPerformanceData(points)
-      }
-    }
-
-    fetchChartCandles()
-
-    return () => {
-      isCancelled = true
-    }
-  }, [timeframe, metrics.totalValue, holdings])
+  useEffect(() => {
+    changeTimeframe(timeframe)
+  }, [changeTimeframe, timeframe])
 
   return {
     loading,
@@ -621,9 +648,12 @@ export function usePortfolioData(): UsePortfolioDataReturn {
     insights,
     performanceData,
     timeframe,
-    setTimeframe,
+    setTimeframe: changeTimeframe,
     showBtcBenchmark,
     setShowBtcBenchmark,
+    isChartLoading,
+    chartError,
+    retryChart,
     refetch: loadData,
   }
 }

@@ -12,7 +12,7 @@ import TradingChart from '../../components/trade/TradingChart'
 import OrderBook from '../../components/trade/OrderBook'
 import OrderEntry from '../../components/trade/OrderEntry'
 import OpenOrdersPanel from '../../components/trade/OpenOrdersPanel'
-import TradeFooter from '../../components/trade/TradeFooter'
+import GlobalFooter from '../../components/layout/GlobalFooter'
 
 /**
  * Trade page — authenticated route at /trade.
@@ -23,7 +23,7 @@ import TradeFooter from '../../components/trade/TradeFooter'
  *     MarketHeader   → flex-shrink-0 (h-14 fixed)
  *     TradingWorkspace → flex-1 min-h-0 grid            (absorbs remaining)
  *     OpenOrdersPanel  → flex-shrink-0 (h-[280px] fixed)
- *     TradeFooter      → flex-shrink-0
+ *     GlobalFooter (compact) → flex-shrink-0
  *
  * All hooks are called here; selectedMarketId is the single source of truth
  * and is passed to every child panel as a prop.
@@ -82,9 +82,11 @@ export default function TradePage() {
   const {
     orders,
     loading: ordersLoading,
+    error: ordersError,
     submitting,
     cancellingId,
     cancellingAll,
+    fetchOrders,
     submitOrder,
     cancelOrder,
     cancelAll,
@@ -206,15 +208,18 @@ export default function TradePage() {
       <OpenOrdersPanel
         orders={orders}
         loading={ordersLoading}
+        error={ordersError}
+        selectedMarketId={selectedMarketId}
         cancellingId={cancellingId}
         cancellingAll={cancellingAll}
         balances={balances}
         onCancel={cancelOrder}
         onCancelAll={cancelAll}
+        onRetry={fetchOrders}
       />
 
       {/* ── Footer ────────────────────────────────────────────────────────── */}
-      <TradeFooter />
+      <GlobalFooter compact />
     </div>
   )
 }

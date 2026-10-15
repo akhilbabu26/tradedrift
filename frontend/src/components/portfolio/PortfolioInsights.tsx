@@ -2,6 +2,7 @@ import { Lightbulb, TrendingUp, TrendingDown, DollarSign, Calendar, Quote } from
 import { getAssetMetadata } from '../../utils/marketMetadata'
 import { formatUSDT, formatPercentage } from '../../utils/formatters'
 import { toDecimal } from '../../utils/decimal'
+import { RaisedSurface } from '../common/Surface'
 import type { PortfolioInsightsData } from '../../types/portfolio'
 
 interface Props {
@@ -27,7 +28,7 @@ export default function PortfolioInsights({ insights }: Props) {
   const display7d = `${is7dPos ? '+' : ''}${raw7d}%`
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl overflow-hidden">
+    <RaisedSurface variant="raised-subtle" className="rounded-xl overflow-hidden">
       <div className="flex flex-col lg:flex-row lg:items-center divide-y lg:divide-y-0 lg:divide-x divide-[#1e2530]">
 
         {/* Label */}
@@ -109,6 +110,6 @@ export default function PortfolioInsights({ insights }: Props) {
         </div>
 
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

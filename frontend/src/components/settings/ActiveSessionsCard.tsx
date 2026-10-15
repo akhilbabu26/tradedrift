@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Smartphone, Monitor, RotateCw, LogOut } from 'lucide-react'
 import toast from 'react-hot-toast'
+import { RaisedSurface } from '../common/Surface'
 import SignOutAllModal from './SignOutAllModal'
 
 function getCurrentSession() {
@@ -48,7 +49,7 @@ export default function ActiveSessionsCard() {
 
   return (
     <>
-      <div className="bg-[#111318] border border-[#1e2530] rounded-xl p-5 sm:p-6 mb-5 transition-colors">
+      <RaisedSurface variant="raised-subtle" className="rounded-xl p-5 sm:p-6 mb-5 transition-colors">
         {/* Header */}
         <div className="flex items-start justify-between gap-4 mb-5">
           <div className="flex items-center gap-3">
@@ -153,7 +154,7 @@ export default function ActiveSessionsCard() {
             This will sign you out from all devices, including this one.
           </span>
         </div>
-      </div>
+      </RaisedSurface>
 
       <SignOutAllModal
         isOpen={isSignOutAllOpen}

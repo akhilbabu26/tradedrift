@@ -2,6 +2,7 @@ import { TrendingUp, TrendingDown, BarChart2 } from 'lucide-react'
 import type { MarketHighlight } from '../../types/markets'
 import { formatPrice } from '../../utils/formatters'
 import Sparkline from '../dashboard/shared/Sparkline'
+import { RaisedSurface } from '../common/Surface'
 
 interface MarketHighlightCardsProps {
   highlights: MarketHighlight[]
@@ -53,9 +54,10 @@ export default function MarketHighlightCards({ highlights }: MarketHighlightCard
         const labelColor  = HighlightLabelColor({ type: h.type })
 
         return (
-          <div
+          <RaisedSurface
             key={h.type}
-            className="bg-[#111318] border border-[#1e2530] rounded-lg p-4"
+            variant="raised-subtle"
+            className="p-4"
           >
             {/* Card header */}
             <div className="flex items-center gap-1.5 mb-3">
@@ -100,7 +102,7 @@ export default function MarketHighlightCards({ highlights }: MarketHighlightCard
                 />
               </div>
             </div>
-          </div>
+          </RaisedSurface>
         )
       })}
     </div>

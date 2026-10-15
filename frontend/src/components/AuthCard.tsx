@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import WebGLBackground from './WebGLBackground'
+import TradeDriftLogo from './brand/TradeDriftLogo'
 
 interface AuthCardProps {
   children: React.ReactNode
@@ -13,12 +14,12 @@ export default function AuthCard({ children }: AuthCardProps) {
         <WebGLBackground />
       </div>
 
-      {/* Glass card */}
-      <div className="relative z-10 w-full max-w-[480px] bg-[#111318]/80 backdrop-blur-xl rounded-2xl shadow-2xl border border-[#1f2229] flex flex-col p-8 md:p-10">
+      {/* 3D Glass card */}
+      <div className="relative z-10 w-full max-w-[480px] bg-[#131518]/90 backdrop-blur-xl rounded-2xl shadow-[0_16px_36px_-8px_rgba(0,0,0,0.8),0_4px_12px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.14)] border border-[rgba(255,255,255,0.07)] border-t-[rgba(255,255,255,0.16)] flex flex-col p-8 md:p-10">
         {/* Logo */}
-        <div className="flex justify-center mb-8">
-          <Link to="/">
-            <img src="/logo.png" alt="TradeDrift" className="h-11 w-auto object-contain hover:opacity-90 transition-opacity" />
+        <div className="flex justify-center mb-6">
+          <Link to="/" className="group" aria-label="TradeDrift home">
+            <TradeDriftLogo variant="auth" symbolSize={38} className="group-hover:scale-105 transition-transform" />
           </Link>
         </div>
 

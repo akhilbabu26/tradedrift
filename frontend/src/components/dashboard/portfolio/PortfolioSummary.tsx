@@ -1,4 +1,4 @@
-import { TrendingUp } from 'lucide-react'
+import { TrendingUp, TrendingDown, Minus } from 'lucide-react'
 import { formatUSDT, formatCompact, formatPercentage } from '../../../utils/formatters'
 
 interface PortfolioSummaryProps {
@@ -15,7 +15,13 @@ export default function PortfolioSummary({
   changeUsdt,
   changePercent,
 }: PortfolioSummaryProps) {
-  const isPositive = !changePercent.startsWith('-')
+  const numChange = parseFloat(changeUsdt || '0')
+  const numPercent = parseFloat((changePercent || '0').replace(/%/g, ''))
+
+  const isZero = (isNaN(numChange) || numChange === 0) && (isNaN(numPercent) || numPercent === 0)
+  const isPositive = !isZero && (numChange > 0 || (numChange === 0 && numPercent > 0))
+
+  const colorClass = isZero ? 'text-slate-400' : isPositive ? 'text-[#10b981]' : 'text-[#ef4444]'
 
   return (
     <div className="flex flex-col gap-2 min-w-0">
@@ -26,11 +32,15 @@ export default function PortfolioSummary({
         {formatUSDT(portfolioValue)}
       </p>
       <div
-        className={`flex items-center gap-1 text-sm font-semibold ${
-          isPositive ? 'text-[#10b981]' : 'text-[#ef4444]'
-        }`}
+        className={`flex items-center gap-1 text-sm font-semibold ${colorClass}`}
       >
-        <TrendingUp size={14} />
+        {isZero ? (
+          <Minus size={14} aria-label="No change" />
+        ) : isPositive ? (
+          <TrendingUp size={14} aria-label="Positive change" />
+        ) : (
+          <TrendingDown size={14} aria-label="Negative change" />
+        )}
         <span>
           {formatCompact(changeUsdt)} ({formatPercentage(changePercent)}) today
         </span>

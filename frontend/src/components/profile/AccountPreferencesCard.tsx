@@ -1,4 +1,5 @@
 import { Sliders, Moon, Database, DollarSign, Globe } from 'lucide-react'
+import { RaisedSurface } from '../common/Surface'
 import type { AccountPreferenceItem } from '../../types/profile'
 
 interface AccountPreferencesCardProps {
@@ -22,7 +23,7 @@ export default function AccountPreferencesCard({ preferences }: AccountPreferenc
   }
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl p-5 flex flex-col justify-between transition-colors">
+    <RaisedSurface variant="raised-subtle" className="rounded-xl p-5 flex flex-col justify-between transition-colors">
       {/* Header */}
       <div className="flex items-center gap-2 mb-4">
         <Sliders size={15} className="text-emerald-400" />
@@ -53,6 +54,6 @@ export default function AccountPreferencesCard({ preferences }: AccountPreferenc
           </div>
         ))}
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

@@ -19,6 +19,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080
 const client = axios.create({
   baseURL: API_BASE_URL,
   headers: { 'Content-Type': 'application/json' },
+  withCredentials: true,
 })
 
 // ── In-flight GET deduplication ──────────────────────────────────────────────
@@ -48,15 +49,91 @@ client.interceptors.request.use((config) => {
 // caller presents the same (already-rotated) refresh token, which the auth
 // service correctly treats as a hijack attempt and revokes all sessions.
 let refreshPromise: Promise<{ accessToken: string; refreshToken: string }> | null = null
+let isLoggingOut = false
+
+type SessionExpiredHandler = () => void
+let sessionExpiredHandler: SessionExpiredHandler | null = null
+
+type TokenRefreshHandler = (accessToken: string, refreshToken: string) => void
+let tokenRefreshHandler: TokenRefreshHandler | null = null
+
+export function setSessionExpiredHandler(handler: SessionExpiredHandler | null) {
+  sessionExpiredHandler = handler
+}
+
+export function setTokenRefreshHandler(handler: TokenRefreshHandler | null) {
+  tokenRefreshHandler = handler
+}
+
+/**
+ * Safely invalidates the session and cleans up user-specific state (in-memory auth store,
+ * private WebSocket channels, notification/wallet stores) without circular imports or redirect loops.
+ */
+export async function clearSessionAndRedirect() {
+  if (isLoggingOut) return
+  isLoggingOut = true
+
+  try {
+    if (sessionExpiredHandler) {
+      try {
+        sessionExpiredHandler()
+      } catch (err) {
+        console.error('Session expired handler failed:', err)
+      }
+    }
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('access_token')
+      localStorage.removeItem('refresh_token')
+      localStorage.removeItem('user')
+    }
+  } finally {
+    if (typeof window !== 'undefined' && window.location && window.location.pathname !== '/login') {
+      window.location.href = '/login'
+    }
+    setTimeout(() => {
+      isLoggingOut = false
+    }, 500)
+  }
+}
+
+export function resetSessionCleanupLock() {
+  isLoggingOut = false
+}
 
 // 2. Handle 401: refresh → retry; on failure clear session
 client.interceptors.response.use(
   (res) => res,
   async (error) => {
     const original = error.config
-    if (error.response?.status === 401 && !original?._retry) {
-      const refresh = localStorage.getItem('refresh_token')
+    if (!original) {
+      return Promise.reject(error)
+    }
+
+    // Do NOT intercept or attempt token refresh on public auth endpoints (login, register, etc.)
+    const isPublicAuthEndpoint = Boolean(
+      original.url &&
+        (original.url.includes('/api/v1/auth/login') ||
+          original.url.includes('/api/v1/auth/register') ||
+          original.url.includes('/api/v1/auth/forgot-password') ||
+          original.url.includes('/api/v1/auth/reset-password') ||
+          original.url.includes('/api/v1/auth/verify'))
+    )
+
+    if (error.response?.status === 401) {
+      if (isPublicAuthEndpoint) {
+        return Promise.reject(error)
+      }
+
+      // If the request was the refresh call itself, or it was already retried once and still got 401,
+      // invalidate session immediately to prevent infinite loops.
+      if (original.url?.includes('/api/v1/auth/refresh') || original._retry) {
+        await clearSessionAndRedirect()
+        return Promise.reject(error)
+      }
+
+      const refresh = typeof localStorage !== 'undefined' ? localStorage.getItem('refresh_token') : null
       if (!refresh) {
+        await clearSessionAndRedirect()
         return Promise.reject(error)
       }
 
@@ -66,20 +143,30 @@ client.interceptors.response.use(
         // All others share it, so the refresh token is rotated exactly once.
         if (!refreshPromise) {
           refreshPromise = axios
-            .post(`${API_BASE_URL}/api/v1/auth/refresh`, { refreshToken: refresh })
+            .post(
+              `${API_BASE_URL}/api/v1/auth/refresh`,
+              { refreshToken: refresh },
+              { withCredentials: true }
+            )
             .then((r) => r.data as { accessToken: string; refreshToken: string })
-            .finally(() => { refreshPromise = null })
+            .finally(() => {
+              refreshPromise = null
+            })
         }
         const data = await refreshPromise
-        localStorage.setItem('access_token', data.accessToken)
-        localStorage.setItem('refresh_token', data.refreshToken)
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem('access_token', data.accessToken)
+          localStorage.setItem('refresh_token', data.refreshToken)
+        }
+        if (tokenRefreshHandler) {
+          tokenRefreshHandler(data.accessToken, data.refreshToken)
+        }
+
         original.headers.Authorization = `Bearer ${data.accessToken}`
         return client(original)
-      } catch {
-        localStorage.removeItem('access_token')
-        localStorage.removeItem('refresh_token')
-        localStorage.removeItem('user')
-        window.location.href = '/login'
+      } catch (refreshErr) {
+        await clearSessionAndRedirect()
+        return Promise.reject(refreshErr)
       }
     }
     return Promise.reject(error)

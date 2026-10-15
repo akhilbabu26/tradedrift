@@ -10,7 +10,7 @@ import type { AssetMetadata } from '../utils/marketMetadata'
 // ── Timeframe & Filter Types ────────────────────────────────────────────────
 
 /** Timeframe options for Portfolio Performance chart */
-export type TimeframeOption = '24H' | '7D' | '30D' | '90D' | 'ALL'
+export type TimeframeOption = '24H' | '7D' | '30D' | '90D' | '1Y' | 'ALL'
 
 /** Holdings table filter tab */
 export type HoldingsFilterTab = 'all' | 'profit' | 'loss'

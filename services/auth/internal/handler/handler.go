@@ -249,4 +249,82 @@ func (h *GRPCHandler) ListSuspendedUsers(ctx context.Context, req *authv1.ListSu
 	}, nil
 }
 
+func (h *GRPCHandler) GoogleLogin(ctx context.Context, req *authv1.GoogleLoginRequest) (*authv1.GoogleLoginResponse, error) {
+	if req.IdToken == "" {
+		return nil, status.Error(codes.InvalidArgument, "id_token is required")
+	}
+
+	u, tp, linkReq, err := h.svc.GoogleLogin(ctx, req.IdToken)
+	if err != nil {
+		return nil, mapToGRPCError(err)
+	}
+
+	if linkReq != nil {
+		return &authv1.GoogleLoginResponse{
+			Status:    authv1.GoogleLoginStatus_GOOGLE_LOGIN_STATUS_LINK_REQUIRED,
+			LinkToken: linkReq.LinkToken,
+			Email:     linkReq.Email,
+			Message:   linkReq.Message,
+		}, nil
+	}
+
+	return &authv1.GoogleLoginResponse{
+		Status: authv1.GoogleLoginStatus_GOOGLE_LOGIN_STATUS_SUCCESS,
+		User: &authv1.User{
+			UserId:   u.ID,
+			Email:    u.Email,
+			Username: u.Username,
+		},
+		AccessToken:           tp.AccessToken,
+		RefreshToken:          tp.RefreshToken,
+		AccessTokenExpiresAt:  timestamppb.New(tp.AccessTokenExpiresAt),
+		RefreshTokenExpiresAt: timestamppb.New(tp.RefreshTokenExpiresAt),
+	}, nil
+}
+
+func (h *GRPCHandler) LinkGoogleAccount(ctx context.Context, req *authv1.LinkGoogleAccountRequest) (*authv1.LinkGoogleAccountResponse, error) {
+	if req.Email == "" || req.Password == "" || req.LinkToken == "" {
+		return nil, status.Error(codes.InvalidArgument, "email, password, and link_token are required")
+	}
+
+	u, tp, err := h.svc.LinkGoogleAccount(ctx, req.Email, req.Password, req.LinkToken)
+	if err != nil {
+		return nil, mapToGRPCError(err)
+	}
+
+	return &authv1.LinkGoogleAccountResponse{
+		User: &authv1.User{
+			UserId:   u.ID,
+			Email:    u.Email,
+			Username: u.Username,
+		},
+		AccessToken:           tp.AccessToken,
+		RefreshToken:          tp.RefreshToken,
+		AccessTokenExpiresAt:  timestamppb.New(tp.AccessTokenExpiresAt),
+		RefreshTokenExpiresAt: timestamppb.New(tp.RefreshTokenExpiresAt),
+	}, nil
+}
+
+func (h *GRPCHandler) ConnectGoogleAccount(ctx context.Context, req *authv1.ConnectGoogleAccountRequest) (*authv1.ConnectGoogleAccountResponse, error) {
+	claims, ok := platformjwt.FromContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "unauthenticated request context")
+	}
+
+	if req.IdToken == "" {
+		return nil, status.Error(codes.InvalidArgument, "id_token is required")
+	}
+
+	email, err := h.svc.ConnectGoogleAccount(ctx, claims.UserID, req.IdToken)
+	if err != nil {
+		return nil, mapToGRPCError(err)
+	}
+
+	return &authv1.ConnectGoogleAccountResponse{
+		Success:  true,
+		Provider: "google",
+		Email:    email,
+	}, nil
+}
+
 

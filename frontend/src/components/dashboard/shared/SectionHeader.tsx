@@ -14,7 +14,7 @@ export default function SectionHeader({ title, action, className = '' }: Section
     <div className={`flex items-center justify-between mb-3 ${className}`}>
       <span className="text-sm font-semibold text-[#f5f7fa]">{title}</span>
       {action && (
-        <span className="text-xs text-slate-400 hover:text-[#10b981] cursor-pointer transition-colors">
+        <span className="text-xs text-[#777E87] hover:text-[#F2F3F5] cursor-pointer transition-colors">
           {action}
         </span>
       )}

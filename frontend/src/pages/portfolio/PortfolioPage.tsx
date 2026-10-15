@@ -5,7 +5,7 @@ import PortfolioPerformance from '../../components/portfolio/PortfolioPerformanc
 import AssetAllocation from '../../components/portfolio/AssetAllocation'
 import HoldingsSection from '../../components/portfolio/HoldingsSection'
 import PortfolioInsights from '../../components/portfolio/PortfolioInsights'
-import PortfolioFooter from '../../components/portfolio/PortfolioFooter'
+import GlobalFooter from '../../components/layout/GlobalFooter'
 
 export default function PortfolioPage() {
   const {
@@ -20,6 +20,9 @@ export default function PortfolioPage() {
     setTimeframe,
     showBtcBenchmark,
     setShowBtcBenchmark,
+    isChartLoading,
+    chartError,
+    retryChart,
   } = usePortfolioData()
 
   return (
@@ -44,6 +47,9 @@ export default function PortfolioPage() {
             onTimeframeChange={setTimeframe}
             showBtcBenchmark={showBtcBenchmark}
             onToggleBtcBenchmark={setShowBtcBenchmark}
+            isLoading={isChartLoading}
+            error={chartError}
+            onRetry={retryChart}
           />
           <AssetAllocation
             allocation={allocation}
@@ -57,7 +63,7 @@ export default function PortfolioPage() {
 
       </div>
 
-      <PortfolioFooter />
+      <GlobalFooter />
     </div>
   )
 }

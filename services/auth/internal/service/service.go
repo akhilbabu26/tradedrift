@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -16,6 +17,7 @@ import (
 	platformjwt "tradedrift/platform/jwt"
 	"golang.org/x/crypto/bcrypt"
 
+	"tradedrift/services/auth/internal/google"
 	"tradedrift/services/auth/internal/mail"
 	"tradedrift/services/auth/internal/otp"
 	"tradedrift/services/auth/internal/repository"
@@ -33,25 +35,29 @@ type WalletClient interface {
 
 // Service contains the dependencies and handlers for core auth logic.
 type Service struct {
-	userRepo   repository.UserRepository
-	tokenRepo  repository.RefreshTokenRepository
-	otpMgr     *otp.Manager
-	mailer     mail.Mailer
-	walletCl   WalletClient
-	rdb        *redis.Client
-	jwtSecret  []byte
-	accessTTL  time.Duration
-	refreshTTL time.Duration
-	log        *zap.Logger
+	userRepo        repository.UserRepository
+	identityRepo    repository.IdentityRepository
+	tokenRepo       repository.RefreshTokenRepository
+	otpMgr          *otp.Manager
+	mailer          mail.Mailer
+	walletCl        WalletClient
+	googleValidator google.TokenValidator
+	rdb             *redis.Client
+	jwtSecret       []byte
+	accessTTL       time.Duration
+	refreshTTL      time.Duration
+	log             *zap.Logger
 }
 
 // NewService creates a new Service instance.
 func NewService(
 	userRepo repository.UserRepository,
+	identityRepo repository.IdentityRepository,
 	tokenRepo repository.RefreshTokenRepository,
 	otpMgr *otp.Manager,
 	mailer mail.Mailer,
 	walletCl WalletClient,
+	googleValidator google.TokenValidator,
 	rdb *redis.Client,
 	jwtSecret []byte,
 	accessTTL time.Duration,
@@ -59,16 +65,18 @@ func NewService(
 	log *zap.Logger,
 ) *Service {
 	return &Service{
-		userRepo:   userRepo,
-		tokenRepo:  tokenRepo,
-		otpMgr:     otpMgr,
-		mailer:     mailer,
-		walletCl:   walletCl,
-		rdb:        rdb,
-		jwtSecret:  jwtSecret,
-		accessTTL:  accessTTL,
-		refreshTTL: refreshTTL,
-		log:        log,
+		userRepo:        userRepo,
+		identityRepo:    identityRepo,
+		tokenRepo:       tokenRepo,
+		otpMgr:          otpMgr,
+		mailer:          mailer,
+		walletCl:        walletCl,
+		googleValidator: googleValidator,
+		rdb:             rdb,
+		jwtSecret:       jwtSecret,
+		accessTTL:       accessTTL,
+		refreshTTL:      refreshTTL,
+		log:             log,
 	}
 }
 
@@ -77,6 +85,13 @@ type UserDTO struct {
 	ID       string
 	Email    string
 	Username string
+}
+
+// LinkRequiredDTO is returned when Google sign-in encounters an existing local password account with matching email.
+type LinkRequiredDTO struct {
+	LinkToken string
+	Email     string
+	Message   string
 }
 
 // TokenPairDTO holds the generated tokens and expirations.
@@ -132,6 +147,10 @@ func (s *Service) issueTokenPair(ctx context.Context, userID, email, role string
 func hashToken(token string) string {
 	hash := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(hash[:])
+}
+
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
 }
 
 // GetTokenVersion implements platformjwt.AuthProvider interface for local JWT validation.

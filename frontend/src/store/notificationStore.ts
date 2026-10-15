@@ -27,7 +27,6 @@ import { notificationsApi, type BackendNotification } from '../api/notifications
 import { wsService, WsChannels } from '../api/ws'
 import { useAuthStore } from './authStore'
 import { extractApiError } from '../utils/apiError'
-import { INITIAL_NOTIFICATIONS } from '../data/notificationsMock'
 import type { NotificationItem, NotificationCategory } from '../types/notifications'
 
 // ── Type mapper: backend → UI ────────────────────────────────────────────────
@@ -86,7 +85,7 @@ export interface NotificationState {
   loading: boolean
   error: string | null
   isDemoData: boolean
-  /** Derived client-side: count of notifications where isRead === false */
+  /** Authoritative unread count from GET /api/v1/notifications/unread-count, adjusted reactively */
   unreadCount: number
   /** Cursor for next page, null when no more pages */
   nextCursorTime: string | null
@@ -94,6 +93,7 @@ export interface NotificationState {
   hasMore: boolean
 
   setActiveTab: (tab: NotificationCategory) => void
+  fetchUnreadCount: () => Promise<void>
   loadNotifications: (reset?: boolean) => Promise<void>
   loadMore: () => Promise<void>
   markAsRead: (id: string) => Promise<void>
@@ -121,14 +121,34 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
 
   setActiveTab: (activeTab) => set({ activeTab }),
 
+  fetchUnreadCount: async () => {
+    try {
+      const res = await notificationsApi.getUnreadCount()
+      if (typeof res?.unreadCount === 'number') {
+        set({ unreadCount: res.unreadCount })
+      }
+    } catch {
+      // Ignore transient errors
+    }
+  },
+
   loadNotifications: async (reset = true) => {
     set({ loading: true, error: null })
     try {
-      const res = await notificationsApi.getNotifications({ limit: 20 })
+      const [res, unreadRes] = await Promise.all([
+        notificationsApi.getNotifications({ limit: 20 }),
+        Promise.resolve()
+          .then(() => notificationsApi.getUnreadCount?.())
+          .catch(() => null),
+      ])
       const mapped = (res.notifications || []).map(mapBackendNotification)
       const nextTime = res.nextCursorTime ?? res.next_cursor_time ?? null
       const nextId = res.nextCursorId ?? res.next_cursor_id ?? null
-      const unread = res.unreadCount !== undefined ? res.unreadCount : mapped.filter((n) => !n.isRead).length
+      const unread = unreadRes?.unreadCount !== undefined
+        ? unreadRes.unreadCount
+        : res.unreadCount !== undefined
+          ? res.unreadCount
+          : mapped.filter((n) => !n.isRead).length
       const hasMore = res.hasMore !== undefined ? res.hasMore : !!(nextTime && nextId)
 
       set({
@@ -143,15 +163,11 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       })
     } catch (err) {
       const msg = extractApiError(err)
-      // Only fall back to demo data on network errors, not auth errors
-      const items = INITIAL_NOTIFICATIONS
-      const unread = items.filter((n) => !n.isRead).length
       set({
         loading: false,
         error: msg,
-        isDemoData: true,
-        notifications: items,
-        unreadCount: unread,
+        isDemoData: false,
+        notifications: reset ? [] : get().notifications,
         hasMore: false,
       })
     }
@@ -172,12 +188,10 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
       const combined = [...notifications, ...mapped]
       const nextTime = res.nextCursorTime ?? res.next_cursor_time ?? null
       const nextId = res.nextCursorId ?? res.next_cursor_id ?? null
-      const unread = res.unreadCount !== undefined ? res.unreadCount : combined.filter((n) => !n.isRead).length
       const hasMorePages = res.hasMore !== undefined ? res.hasMore : !!(nextTime && nextId)
 
       set({
         notifications: combined,
-        unreadCount: unread,
         nextCursorTime: nextTime,
         nextCursorId: nextId,
         hasMore: hasMorePages,
@@ -189,12 +203,18 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   },
 
   markAsRead: async (id: string) => {
+    const target = get().notifications.find((n) => n.id === id)
+    const wasUnread = target ? !target.isRead : false
+
     // Optimistic update
     set((state) => {
       const updated = state.notifications.map((n) =>
         n.id === id ? { ...n, isRead: true } : n
       )
-      return { notifications: updated, unreadCount: updated.filter((n) => !n.isRead).length }
+      return {
+        notifications: updated,
+        unreadCount: wasUnread ? Math.max(0, state.unreadCount - 1) : state.unreadCount,
+      }
     })
     try {
       await notificationsApi.markAsRead(id)
@@ -204,12 +224,18 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
         const reverted = state.notifications.map((n) =>
           n.id === id ? { ...n, isRead: false } : n
         )
-        return { notifications: reverted, unreadCount: reverted.filter((n) => !n.isRead).length }
+        return {
+          notifications: reverted,
+          unreadCount: wasUnread ? state.unreadCount + 1 : state.unreadCount,
+        }
       })
     }
   },
 
   markAllAsRead: async () => {
+    const prevNotifications = get().notifications
+    const prevUnreadCount = get().unreadCount
+
     // Optimistic update
     set((state) => ({
       notifications: state.notifications.map((n) => ({ ...n, isRead: true })),
@@ -218,8 +244,11 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     try {
       await notificationsApi.markAllAsRead()
     } catch {
-      // Revert — reload from API
-      await get().loadNotifications(true)
+      // Revert on failure
+      set({
+        notifications: prevNotifications,
+        unreadCount: prevUnreadCount,
+      })
     }
   },
 
@@ -240,7 +269,7 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
             const updated = [item, ...state.notifications]
             return {
               notifications: updated,
-              unreadCount: updated.filter((x) => !x.isRead).length,
+              unreadCount: item.isRead ? state.unreadCount : state.unreadCount + 1,
             }
           })
         } catch {
@@ -262,10 +291,10 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
 
   resetToDefault: () =>
     set({
-      notifications: INITIAL_NOTIFICATIONS,
-      unreadCount: INITIAL_NOTIFICATIONS.filter((n) => !n.isRead).length,
+      notifications: [],
+      unreadCount: 0,
       activeTab: 'all',
-      isDemoData: true,
+      isDemoData: false,
       error: null,
       hasMore: false,
       nextCursorTime: null,
@@ -285,9 +314,9 @@ export const selectCategoryUnreadCount = (
   return state.notifications.filter((n) => n.category === category && !n.isRead).length
 }
 
-// Auto-resync notifications on WebSocket reconnection if logged in
+// Auto-resync notifications and authoritative unread count on WebSocket reconnection if logged in
 wsService.onReconnect(() => {
   if (useAuthStore.getState().isAuthenticated) {
-    useNotificationStore.getState().loadNotifications(false)
+    useNotificationStore.getState().loadNotifications(true)
   }
 })

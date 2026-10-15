@@ -44,7 +44,7 @@ export default function MarketPulse({ rows }: MarketPulseProps) {
       <SectionHeader
         title="Market Pulse"
         action={
-          <Link to="/markets" className="flex items-center gap-0.5 text-xs text-slate-400 hover:text-[#10b981] transition-colors">
+          <Link to="/markets" className="flex items-center gap-0.5 text-xs text-[#777E87] hover:text-[#F2F3F5] transition-colors">
             View All Markets <ArrowRight size={11} />
           </Link>
         }
@@ -52,7 +52,7 @@ export default function MarketPulse({ rows }: MarketPulseProps) {
 
       {/* Tabs */}
       <div
-        className="flex items-center gap-0.5 bg-[#0a0b0e] rounded-md border border-[#1e2530] p-0.5 mb-3 w-fit"
+        className="flex items-center gap-1 bg-[#090A0C] rounded-xl border border-[#292C30] p-1 mb-3 w-fit shadow-[inset_0_2px_4px_rgba(0,0,0,0.5)]"
         role="tablist"
         aria-label="Market filter"
       >
@@ -62,10 +62,10 @@ export default function MarketPulse({ rows }: MarketPulseProps) {
             role="tab"
             aria-selected={activeTab === tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-3 py-1 rounded text-xs font-medium transition-colors ${
+            className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all duration-150 ${
               activeTab === tab
-                ? 'bg-[#10b981] text-[#0a0b0e]'
-                : 'text-slate-400 hover:text-[#f5f7fa]'
+                ? 'bg-gradient-to-b from-[#FFFFFF] to-[#D9DCE0] text-[#090B0D] shadow-[0_2px_6px_rgba(0,0,0,0.4)]'
+                : 'text-[#777E87] hover:text-[#F2F3F5]'
             }`}
           >
             {tab}
@@ -87,7 +87,16 @@ export default function MarketPulse({ rows }: MarketPulseProps) {
           </thead>
           <tbody className="divide-y divide-[#1e2530]/40">
             {sortedRows.map((row) => {
-              const changeColor = row.positive ? 'text-[#10b981]' : 'text-[#ef4444]'
+              const numChange = parseFloat(row.change24h || '0')
+              const isZero = isNaN(numChange) || numChange === 0
+              const changeColor = isZero ? 'text-slate-400' : row.positive ? 'text-[#10b981]' : 'text-[#ef4444]'
+              const signPrefix = isZero ? '' : row.positive ? '+' : '-'
+              const formattedChange = `${signPrefix}${formatPercentage(row.change24h, false)}`
+              const hasPoints = row.sparklinePoints && row.sparklinePoints.length > 0
+              const trendAccessibleLabel = hasPoints
+                ? (row.trendLabel ? `${row.pair} ${row.trendLabel}` : `${row.pair} price trend`)
+                : 'No trend data available'
+
               return (
                 <tr key={row.pair} className="hover:bg-white/[0.02] transition-colors">
                   {/* Pair */}
@@ -107,16 +116,19 @@ export default function MarketPulse({ rows }: MarketPulseProps) {
                   </td>
                   {/* 24h Change */}
                   <td className={`py-2.5 text-right font-mono font-semibold ${changeColor}`}>
-                    {row.positive ? '+' : '-'}{formatPercentage(row.change24h, false)}
+                    {formattedChange}
                   </td>
                   {/* Trend Sparkline */}
                   <td className="py-2.5 text-right">
-                    <div className="flex items-center justify-end">
+                    <div
+                      className="flex items-center justify-end"
+                      title={trendAccessibleLabel}
+                    >
                       <Sparkline
                         data={row.sparklinePoints}
                         width={72}
                         height={26}
-                        ariaLabel={`${row.pair} trend`}
+                        ariaLabel={trendAccessibleLabel}
                       />
                     </div>
                   </td>

@@ -2,41 +2,64 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { orderApi, type Order, type CreateOrderRequest } from '../api/order'
 import { wsService, WsChannels } from '../api/ws'
 import { useAuthStore } from '../store/authStore'
+import { useWalletStore } from '../store/walletStore'
 import toast from 'react-hot-toast'
 
 export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [cancellingId, setCancellingId] = useState<string | null>(null)
   const [cancellingAll, setCancellingAll] = useState(false)
+
   const user = useAuthStore((s) => s.user)
-  const userId = user?.userId
+  const userId = user?.userId || (user as any)?.user_id || (user as any)?.id
 
   const reqIdRef = useRef(0)
+  const inFlightRef = useRef(false)
+  const pendingRefetchRef = useRef(false)
+  const latestAppliedReqIdRef = useRef(0)
 
+  // Fetch all orders for the authenticated user across all markets with coalesced refetching
   const fetchOrders = useCallback(async () => {
+    if (inFlightRef.current) {
+      pendingRefetchRef.current = true
+      return
+    }
+
+    inFlightRef.current = true
     const thisReqId = ++reqIdRef.current
-    const targetMarket = marketId
 
     try {
-      const data = await orderApi.listOrders({ market_id: targetMarket })
-      if (thisReqId !== reqIdRef.current || targetMarket !== marketId) return
+      setError(null)
+      // Retrieve up to 100 orders across all markets for the user overview
+      const data = await orderApi.listOrders({ limit: 100 })
+      // Guard against stale out-of-order REST responses:
+      if (thisReqId < latestAppliedReqIdRef.current) {
+        return
+      }
+      latestAppliedReqIdRef.current = thisReqId
       setOrders(data || [])
-    } catch (err) {
-      if (thisReqId !== reqIdRef.current || targetMarket !== marketId) return
-      console.warn('Failed to fetch orders', err)
-      // On error, do not wipe valid orders if market hasn't changed
+    } catch (err: any) {
+      if (thisReqId >= latestAppliedReqIdRef.current) {
+        const msg = err?.response?.data?.message || err?.message || 'Failed to fetch orders'
+        console.warn('Failed to fetch orders', err)
+        setError(msg)
+      }
     } finally {
-      if (thisReqId === reqIdRef.current && targetMarket === marketId) {
-        setLoading(false)
+      inFlightRef.current = false
+      setLoading(false)
+
+      if (pendingRefetchRef.current) {
+        pendingRefetchRef.current = false
+        // Trigger queued refetch to ensure the latest state is captured
+        fetchOrders()
       }
     }
-  }, [marketId])
+  }, [])
 
   useEffect(() => {
-    // Reset orders state immediately on market switch (Market Isolation)
-    setOrders([])
     setLoading(true)
     fetchOrders()
 
@@ -45,25 +68,44 @@ export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) 
       onBalanceRefresh?.()
     }
 
-    const unsub = wsService.subscribe(WsChannels.userNotifications(userId), onRefresh)
-    const unsubReconnect = wsService.onReconnect(onRefresh)
+    const unsubs: Array<() => void> = []
+
+    if (userId) {
+      // Subscribe to both user-scoped notifications and settled trade/portfolio events
+      const notifCh = WsChannels.userNotifications(userId)
+      const portfolioCh = WsChannels.userPortfolio(userId)
+
+      if (notifCh) {
+        unsubs.push(wsService.subscribe(notifCh, onRefresh))
+      }
+      if (portfolioCh) {
+        unsubs.push(wsService.subscribe(portfolioCh, onRefresh))
+      }
+    }
+
+    unsubs.push(wsService.onReconnect(onRefresh))
 
     window.addEventListener('focus', onRefresh)
+    unsubs.push(() => window.removeEventListener('focus', onRefresh))
 
     return () => {
-      unsub()
-      unsubReconnect()
-      window.removeEventListener('focus', onRefresh)
+      unsubs.forEach((u) => u())
     }
-  }, [fetchOrders, onBalanceRefresh, userId, marketId])
+  }, [fetchOrders, onBalanceRefresh, userId])
 
   const submitOrder = async (req: CreateOrderRequest): Promise<boolean> => {
     setSubmitting(true)
     try {
       const newOrder = await orderApi.createOrder(req)
-      toast.success(`${req.side} order placed: ${req.quantity} ${marketId.split('-')[0]}`)
-      setOrders((prev) => [newOrder, ...prev])
+      const baseAsset = req.market_id?.split('-')[0] || marketId.split('-')[0]
+      toast.success(`${req.side} order placed: ${req.quantity} ${baseAsset}`)
+
+      // Advance monotonic request id to prevent older background responses from discarding this order
+      latestAppliedReqIdRef.current = ++reqIdRef.current
+      setOrders((prev) => [newOrder, ...prev.filter((o) => o.id !== newOrder.id)])
+
       onBalanceRefresh?.()
+      useWalletStore.getState().invalidateBalances().catch(() => {})
       return true
     } catch (err: any) {
       const msg = err?.response?.data?.message || err?.message || 'Failed to submit order'
@@ -77,12 +119,26 @@ export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) 
   const cancelOrder = async (orderId: string): Promise<boolean> => {
     setCancellingId(orderId)
     try {
-      await orderApi.cancelOrder(orderId)
+      const updated = await orderApi.cancelOrder(orderId)
       toast.success('Order cancelled')
+
+      // Advance monotonic request id so an older listOrders response cannot un-cancel the order
+      latestAppliedReqIdRef.current = ++reqIdRef.current
       setOrders((prev) =>
-        prev.map((o) => (o.id === orderId ? { ...o, status: 'CANCELLED' } : o))
+        prev.map((o) => {
+          if (o.id !== orderId) return o
+          return {
+            ...o,
+            status: 'CANCELLED',
+            ...(updated ? {
+              filled_quantity: updated.filled_quantity || o.filled_quantity,
+              quantity: updated.quantity || o.quantity,
+            } : {}),
+          }
+        })
       )
       onBalanceRefresh?.()
+      useWalletStore.getState().invalidateBalances().catch(() => {})
       return true
     } catch (err: any) {
       const msg = err?.response?.data?.message || err?.message || 'Failed to cancel order'
@@ -115,6 +171,7 @@ export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) 
 
       await fetchOrders()
       onBalanceRefresh?.()
+      useWalletStore.getState().invalidateBalances().catch(() => {})
     } catch {
       toast.error('Unexpected error while cancelling orders')
     } finally {
@@ -125,6 +182,7 @@ export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) 
   return {
     orders,
     loading,
+    error,
     submitting,
     cancellingId,
     cancellingAll,

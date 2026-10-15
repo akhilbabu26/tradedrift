@@ -115,3 +115,35 @@ func refreshResponseDTO(res *authv1.RefreshTokenResponse) AuthResponseDTO {
 		RefreshTokenExpiresAt: common.FormatTimestamp(res.RefreshTokenExpiresAt),
 	}
 }
+
+type GoogleLoginRequestDTO struct {
+	IDToken string `json:"idToken"`
+}
+
+type GoogleLoginResponseDTO struct {
+	Status                string   `json:"status"` // "SUCCESS" or "LINK_REQUIRED"
+	User                  *UserDTO `json:"user,omitempty"`
+	AccessToken           string   `json:"accessToken,omitempty"`
+	RefreshToken          string   `json:"refreshToken,omitempty"`
+	AccessTokenExpiresAt  string   `json:"accessTokenExpiresAt,omitempty"`
+	RefreshTokenExpiresAt string   `json:"refreshTokenExpiresAt,omitempty"`
+	LinkToken             string   `json:"linkToken,omitempty"`
+	Email                 string   `json:"email,omitempty"`
+	Message               string   `json:"message,omitempty"`
+}
+
+type LinkGoogleRequestDTO struct {
+	Email     string `json:"email"`
+	Password  string `json:"password"`
+	LinkToken string `json:"linkToken"`
+}
+
+type ConnectGoogleRequestDTO struct {
+	IDToken string `json:"idToken"`
+}
+
+type ConnectGoogleResponseDTO struct {
+	Success  bool   `json:"success"`
+	Provider string `json:"provider"`
+	Email    string `json:"email"`
+}

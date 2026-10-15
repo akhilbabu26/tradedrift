@@ -1,7 +1,8 @@
-﻿import { Eye, EyeOff, TrendingUp, TrendingDown, Info } from 'lucide-react'
+import { Eye, EyeOff, TrendingUp, TrendingDown, Info } from 'lucide-react'
 import { useState } from 'react'
 import { formatUSDT, formatPercentage, formatCompact } from '../../utils/formatters'
 import { toDecimal } from '../../utils/decimal'
+import { RaisedSurface } from '../common/Surface'
 import type { PortfolioExecutiveMetrics } from '../../types/portfolio'
 
 interface Props {
@@ -14,7 +15,7 @@ export default function PortfolioMetrics({ metrics, loading }: Props) {
 
   function pnlColor(value: string): string {
     try {
-      const sanitized = String(value || '0').replace(/[^\d.\-]/g, '').replace(/^-?$/, '0')
+      const sanitized = String(value || '0').replace(/[^\d.-]/g, '').replace(/^-?$/, '0')
       const d = toDecimal(sanitized)
       if (d.gt(0)) return 'text-[#10b981]'
       if (d.lt(0)) return 'text-[#ef4444]'
@@ -29,7 +30,7 @@ export default function PortfolioMetrics({ metrics, loading }: Props) {
   )
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl overflow-hidden">
+    <RaisedSurface variant="raised-subtle" className="rounded-xl overflow-hidden">
       <div className="grid grid-cols-2 lg:grid-cols-4 divide-x divide-[#1e2530] divide-y lg:divide-y-0">
 
         {/* Total Portfolio Value */}
@@ -111,6 +112,6 @@ export default function PortfolioMetrics({ metrics, loading }: Props) {
         </div>
 
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

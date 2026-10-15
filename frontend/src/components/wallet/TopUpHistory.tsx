@@ -1,5 +1,6 @@
 import { ChevronDown } from 'lucide-react'
 import type { TopUpHistoryItem } from '../../api/topup'
+import { RaisedSurface } from '../common/Surface'
 
 interface TopUpHistoryProps {
   history: TopUpHistoryItem[]
@@ -7,22 +8,25 @@ interface TopUpHistoryProps {
 
 export default function TopUpHistory({ history }: TopUpHistoryProps) {
   return (
-    <div className="rounded-xl border border-[#1e2530] bg-[#111318] overflow-hidden shadow-sm flex flex-col">
+    <RaisedSurface variant="raised-subtle" noPadding className="overflow-hidden flex flex-col">
       {/* Header */}
-      <div className="p-4 sm:p-5 border-b border-[#1e2530]">
-        <h2 className="text-base font-bold text-[#f5f7fa]" style={{ color: '#f5f7fa' }}>
+      <div className="p-4 sm:p-5 border-b border-[#202225]">
+        <h2 className="text-base font-bold text-[#F2F3F5]">
           Top-Up History
         </h2>
+        <p className="text-[11px] text-[#777E87] mt-0.5">
+          Record of real INR to virtual USDT transactions
+        </p>
       </div>
 
       {/* Table */}
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead>
-            <tr className="border-b border-[#1e2530]/80 text-slate-300 uppercase tracking-wider text-[11px] font-semibold">
+            <tr className="border-b border-[#202225] text-[#777E87] uppercase tracking-wider text-[11px] font-semibold bg-[#111316]/40">
               <th className="py-3 px-4 sm:px-5">
                 <span className="flex items-center gap-1">
-                  Order ID <ChevronDown size={12} className="text-slate-400" />
+                  Order ID <ChevronDown size={12} className="text-[#777E87]" />
                 </span>
               </th>
               <th className="py-3 px-4 sm:px-5">Amount Paid (INR)</th>
@@ -32,10 +36,10 @@ export default function TopUpHistory({ history }: TopUpHistoryProps) {
               <th className="py-3 px-4 sm:px-5">Date</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-[#1e2530]/50">
+          <tbody className="divide-y divide-[#202225]/60">
             {history.length === 0 ? (
               <tr>
-                <td colSpan={6} className="py-8 text-center text-slate-400">
+                <td colSpan={6} className="py-8 text-center text-[#777E87]">
                   No top-up transactions yet
                 </td>
               </tr>
@@ -43,11 +47,21 @@ export default function TopUpHistory({ history }: TopUpHistoryProps) {
               history.map((item) => {
                 const isCredited = item.status === 'Credited'
                 const isCompleted = item.status === 'Completed'
+                const isFailed = item.status === 'Failed'
                 const statusDotColor = isCompleted
-                  ? 'bg-[#10b981]'
+                  ? 'bg-[#10B981]'
                   : isCredited
-                  ? 'bg-[#14b8a6]'
+                  ? 'bg-[#14B8A6]'
+                  : isFailed
+                  ? 'bg-[#EF4444]'
                   : 'bg-amber-400'
+                const statusTextColor = isCompleted
+                  ? 'text-[#10B981]'
+                  : isCredited
+                  ? 'text-[#14B8A6]'
+                  : isFailed
+                  ? 'text-[#EF4444]'
+                  : 'text-amber-400'
 
                 return (
                   <tr
@@ -55,35 +69,35 @@ export default function TopUpHistory({ history }: TopUpHistoryProps) {
                     className="hover:bg-white/[0.02] transition-colors"
                   >
                     {/* Order ID */}
-                    <td className="py-3 px-4 sm:px-5 font-mono font-medium text-slate-200 whitespace-nowrap">
+                    <td className="py-3 px-4 sm:px-5 font-mono font-medium text-[#A7ADB5] whitespace-nowrap">
                       {item.orderId}
                     </td>
 
                     {/* Amount Paid */}
-                    <td className="py-3 px-4 sm:px-5 font-mono text-[#f5f7fa] whitespace-nowrap">
+                    <td className="py-3 px-4 sm:px-5 font-mono text-[#F2F3F5] whitespace-nowrap">
                       {item.amountInr > 0 ? `₹${item.amountInr.toFixed(2)}` : '—'}
                     </td>
 
                     {/* USDT Credited */}
-                    <td className="py-3 px-4 sm:px-5 font-mono font-semibold text-[#10b981] whitespace-nowrap">
+                    <td className="py-3 px-4 sm:px-5 font-mono font-semibold text-[#10B981] whitespace-nowrap">
                       {item.usdtCredited}
                     </td>
 
                     {/* Payment Mode */}
-                    <td className="py-3 px-4 sm:px-5 text-slate-200 whitespace-nowrap">
+                    <td className="py-3 px-4 sm:px-5 text-[#A7ADB5] whitespace-nowrap">
                       {item.paymentMode}
                     </td>
 
                     {/* Status */}
                     <td className="py-3 px-4 sm:px-5 whitespace-nowrap">
-                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium text-slate-200">
+                      <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium text-[#A7ADB5]">
                         <span className={`w-1.5 h-1.5 rounded-full ${statusDotColor}`} />
-                        {item.status}
+                        <span className={statusTextColor}>{item.status}</span>
                       </span>
                     </td>
 
                     {/* Date */}
-                    <td className="py-3 px-4 sm:px-5 font-mono text-slate-300 whitespace-nowrap text-[11px]">
+                    <td className="py-3 px-4 sm:px-5 font-mono text-[#777E87] whitespace-nowrap text-[11px]">
                       {item.date}
                     </td>
                   </tr>
@@ -93,6 +107,6 @@ export default function TopUpHistory({ history }: TopUpHistoryProps) {
           </tbody>
         </table>
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

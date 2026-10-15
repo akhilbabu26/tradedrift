@@ -15,6 +15,8 @@ export interface OpenOrderItem {
   progress: number         // 0 to 100
   status: 'Open'
   rawStatus?: string
+  rawFilledQuantity?: string
+  rawQuantity?: string
 }
 
 export interface OrderHistoryItem {

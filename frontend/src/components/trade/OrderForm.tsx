@@ -116,9 +116,14 @@ export default function OrderForm({
   const [error,  setError]  = useState<string | null>(null)
   const userEditedPriceRef = useRef(false)
 
+  const lastPriceRef = useRef(lastPrice)
+  useEffect(() => {
+    lastPriceRef.current = lastPrice
+  }, [lastPrice])
+
   // Reset order state when switching markets
   useEffect(() => {
-    setPrice(lastPrice || '')
+    setPrice(lastPriceRef.current || '')
     setAmount('')
     setError(null)
     userEditedPriceRef.current = false

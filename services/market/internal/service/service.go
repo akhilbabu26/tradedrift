@@ -40,6 +40,7 @@ type MarketService interface {
 	GetCandles(ctx context.Context, marketID string, resolution string, from, to *time.Time, limit int) ([]*repository.OHLCCandle, error)
 	ProcessTradeEvent(ctx context.Context, payload *TradeEventPayload) (bool, error)
 	GetMarketsOverview(ctx context.Context, resolution string, limit int) ([]*repository.MarketOverviewItem, error)
+	RefreshAllTickers(ctx context.Context) error
 }
 
 type marketService struct {
@@ -191,6 +192,9 @@ type redisTickerPayload struct {
 }
 
 func (s *marketService) publishTickerToRedis(ctx context.Context, marketID string) {
+	if s.rdb == nil {
+		return
+	}
 	ticker, err := s.GetTicker(ctx, marketID)
 	if err != nil {
 		s.logger.Error("Failed to calculate 24h ticker for Redis publication",
@@ -226,18 +230,34 @@ func (s *marketService) publishTickerToRedis(ctx context.Context, marketID strin
 		return
 	}
 
-	// 60-second TTL prevents serving stale ticker if Market Service crashes (Invariant 7)
+	// 24-hour TTL preserves the last legitimate ticker during extended idle periods without expiring,
+	// while the background ticker worker and trade events continuously refresh active statistics.
 	redisCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
 	redisKey := "ticker:" + marketID
-	if err := s.rdb.Set(redisCtx, redisKey, data, 60*time.Second).Err(); err != nil {
+	if err := s.rdb.Set(redisCtx, redisKey, data, 24*time.Hour).Err(); err != nil {
 		s.logger.Error("Failed to publish ticker to Redis",
 			zap.String("market_id", marketID),
 			zap.String("redis_key", redisKey),
 			zap.Error(err),
 		)
 	}
+}
+
+func (s *marketService) RefreshAllTickers(ctx context.Context) error {
+	markets, err := s.marketRepo.ListMarkets(ctx)
+	if err != nil {
+		s.logger.Error("Failed to list markets for ticker refresh", zap.Error(err))
+		return fmt.Errorf("list markets for ticker refresh: %w", err)
+	}
+
+	for _, m := range markets {
+		if m.Status == "ACTIVE" {
+			s.publishTickerToRedis(ctx, m.ID)
+		}
+	}
+	return nil
 }
 
 func (s *marketService) GetMarketsOverview(ctx context.Context, resolution string, limit int) ([]*repository.MarketOverviewItem, error) {

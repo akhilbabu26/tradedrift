@@ -4,6 +4,7 @@ import { AlertTriangle, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { authApi } from '../../api/auth'
 import { useAuthStore } from '../../store/authStore'
+import { useModalFocus } from '../../hooks/useModalFocus'
 
 interface SignOutAllModalProps {
   isOpen: boolean
@@ -14,6 +15,7 @@ export default function SignOutAllModal({ isOpen, onClose }: SignOutAllModalProp
   const navigate = useNavigate()
   const logout = useAuthStore((s) => s.logout)
   const [loading, setLoading] = useState(false)
+  const modalRef = useModalFocus<HTMLDivElement>({ isOpen, onClose })
 
   if (!isOpen) return null
 
@@ -39,8 +41,16 @@ export default function SignOutAllModal({ isOpen, onClose }: SignOutAllModalProp
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) {
+          onClose()
+        }
+      }}
+    >
       <div
+        ref={modalRef}
         className="w-full max-w-md bg-[#111318] border border-[#1e2530] rounded-xl shadow-2xl overflow-hidden"
         role="dialog"
         aria-modal="true"

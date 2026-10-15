@@ -75,4 +75,17 @@ describe('HoldingsTable Component', () => {
     )
     expect(html).toContain('No holdings match your current filters.')
   })
+
+  it('renders horizontal scrolling container with trade-scrollbar-x and min-w table', () => {
+    const html = renderToString(
+      <MemoryRouter>
+        <HoldingsTable holdings={mockHoldings} />
+      </MemoryRouter>
+    )
+    expect(html).toContain('trade-scrollbar-x')
+    expect(html).toContain('overflow-x-auto')
+    expect(html).toContain('min-w-[920px]')
+    expect(html).toContain('aria-label="Portfolio holdings table"')
+    expect(html).toContain('whitespace-nowrap')
+  })
 })

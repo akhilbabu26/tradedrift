@@ -69,4 +69,23 @@ describe('walletStore', () => {
 
     unsub()
   })
+
+  it('bypasses 200ms throttle when invalidateBalances is explicitly called', async () => {
+    vi.mocked(walletApi.getAllBalances).mockResolvedValue([
+      { asset: 'USDT', availableBalance: '10000.00', reservedBalance: '0.00' },
+    ])
+
+    // First load
+    await useWalletStore.getState().loadBalances()
+    expect(walletApi.getAllBalances).toHaveBeenCalledTimes(1)
+
+    // Unforced immediate load within 200ms should be throttled
+    await useWalletStore.getState().loadBalances(false)
+    expect(walletApi.getAllBalances).toHaveBeenCalledTimes(1)
+
+    // Explicit invalidateBalances forces fresh fetch immediately
+    await useWalletStore.getState().invalidateBalances()
+    expect(walletApi.getAllBalances).toHaveBeenCalledTimes(2)
+  })
 })
+

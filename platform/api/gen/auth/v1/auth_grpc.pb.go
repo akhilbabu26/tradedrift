@@ -26,9 +26,12 @@ const (
 	AuthService_RefreshToken_FullMethodName           = "/tradedrift.auth.v1.AuthService/RefreshToken"
 	AuthService_ForgotPassword_FullMethodName         = "/tradedrift.auth.v1.AuthService/ForgotPassword"
 	AuthService_ResetPassword_FullMethodName          = "/tradedrift.auth.v1.AuthService/ResetPassword"
+	AuthService_GoogleLogin_FullMethodName            = "/tradedrift.auth.v1.AuthService/GoogleLogin"
+	AuthService_LinkGoogleAccount_FullMethodName      = "/tradedrift.auth.v1.AuthService/LinkGoogleAccount"
 	AuthService_Logout_FullMethodName                 = "/tradedrift.auth.v1.AuthService/Logout"
 	AuthService_LogoutAll_FullMethodName              = "/tradedrift.auth.v1.AuthService/LogoutAll"
 	AuthService_ChangePassword_FullMethodName         = "/tradedrift.auth.v1.AuthService/ChangePassword"
+	AuthService_ConnectGoogleAccount_FullMethodName   = "/tradedrift.auth.v1.AuthService/ConnectGoogleAccount"
 	AuthService_InvalidateUserSessions_FullMethodName = "/tradedrift.auth.v1.AuthService/InvalidateUserSessions"
 	AuthService_SuspendUser_FullMethodName            = "/tradedrift.auth.v1.AuthService/SuspendUser"
 	AuthService_UnsuspendUser_FullMethodName          = "/tradedrift.auth.v1.AuthService/UnsuspendUser"
@@ -61,12 +64,22 @@ type AuthServiceClient interface {
 	// all refresh tokens and blacklists all currently-issued access tokens for
 	// the user.
 	ResetPassword(ctx context.Context, in *ResetPasswordRequest, opts ...grpc.CallOption) (*ResetPasswordResponse, error)
+	// Authenticates a user using a Google ID token.
+	// Handles brand new user signup, returning user login, or returns
+	// an explicit LINK_REQUIRED status when a matching local email account exists.
+	GoogleLogin(ctx context.Context, in *GoogleLoginRequest, opts ...grpc.CallOption) (*GoogleLoginResponse, error)
+	// Links a verified Google identity to an existing local password account
+	// by validating password credentials alongside the short-lived link token.
+	LinkGoogleAccount(ctx context.Context, in *LinkGoogleAccountRequest, opts ...grpc.CallOption) (*LinkGoogleAccountResponse, error)
 	// Revokes current session tokens based on the authenticated JWT context.
 	Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*LogoutResponse, error)
 	// Revokes ALL sessions for the authenticated user across all devices.
 	LogoutAll(ctx context.Context, in *LogoutAllRequest, opts ...grpc.CallOption) (*LogoutAllResponse, error)
 	// Changes password for the authenticated user and revokes all other sessions.
 	ChangePassword(ctx context.Context, in *ChangePasswordRequest, opts ...grpc.CallOption) (*ChangePasswordResponse, error)
+	// Connects a Google identity to the currently authenticated user's account.
+	// Fails with ALREADY_EXISTS if the Google identity is already linked to an account.
+	ConnectGoogleAccount(ctx context.Context, in *ConnectGoogleAccountRequest, opts ...grpc.CallOption) (*ConnectGoogleAccountResponse, error)
 	// Revokes all active sessions for the specified user by user_id.
 	// Called by the Admin service during user suspension. Idempotent.
 	InvalidateUserSessions(ctx context.Context, in *InvalidateUserSessionsRequest, opts ...grpc.CallOption) (*InvalidateUserSessionsResponse, error)
@@ -156,6 +169,26 @@ func (c *authServiceClient) ResetPassword(ctx context.Context, in *ResetPassword
 	return out, nil
 }
 
+func (c *authServiceClient) GoogleLogin(ctx context.Context, in *GoogleLoginRequest, opts ...grpc.CallOption) (*GoogleLoginResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GoogleLoginResponse)
+	err := c.cc.Invoke(ctx, AuthService_GoogleLogin_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) LinkGoogleAccount(ctx context.Context, in *LinkGoogleAccountRequest, opts ...grpc.CallOption) (*LinkGoogleAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(LinkGoogleAccountResponse)
+	err := c.cc.Invoke(ctx, AuthService_LinkGoogleAccount_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *authServiceClient) Logout(ctx context.Context, in *LogoutRequest, opts ...grpc.CallOption) (*LogoutResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(LogoutResponse)
@@ -180,6 +213,16 @@ func (c *authServiceClient) ChangePassword(ctx context.Context, in *ChangePasswo
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ChangePasswordResponse)
 	err := c.cc.Invoke(ctx, AuthService_ChangePassword_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *authServiceClient) ConnectGoogleAccount(ctx context.Context, in *ConnectGoogleAccountRequest, opts ...grpc.CallOption) (*ConnectGoogleAccountResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConnectGoogleAccountResponse)
+	err := c.cc.Invoke(ctx, AuthService_ConnectGoogleAccount_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -252,12 +295,22 @@ type AuthServiceServer interface {
 	// all refresh tokens and blacklists all currently-issued access tokens for
 	// the user.
 	ResetPassword(context.Context, *ResetPasswordRequest) (*ResetPasswordResponse, error)
+	// Authenticates a user using a Google ID token.
+	// Handles brand new user signup, returning user login, or returns
+	// an explicit LINK_REQUIRED status when a matching local email account exists.
+	GoogleLogin(context.Context, *GoogleLoginRequest) (*GoogleLoginResponse, error)
+	// Links a verified Google identity to an existing local password account
+	// by validating password credentials alongside the short-lived link token.
+	LinkGoogleAccount(context.Context, *LinkGoogleAccountRequest) (*LinkGoogleAccountResponse, error)
 	// Revokes current session tokens based on the authenticated JWT context.
 	Logout(context.Context, *LogoutRequest) (*LogoutResponse, error)
 	// Revokes ALL sessions for the authenticated user across all devices.
 	LogoutAll(context.Context, *LogoutAllRequest) (*LogoutAllResponse, error)
 	// Changes password for the authenticated user and revokes all other sessions.
 	ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error)
+	// Connects a Google identity to the currently authenticated user's account.
+	// Fails with ALREADY_EXISTS if the Google identity is already linked to an account.
+	ConnectGoogleAccount(context.Context, *ConnectGoogleAccountRequest) (*ConnectGoogleAccountResponse, error)
 	// Revokes all active sessions for the specified user by user_id.
 	// Called by the Admin service during user suspension. Idempotent.
 	InvalidateUserSessions(context.Context, *InvalidateUserSessionsRequest) (*InvalidateUserSessionsResponse, error)
@@ -298,6 +351,12 @@ func (UnimplementedAuthServiceServer) ForgotPassword(context.Context, *ForgotPas
 func (UnimplementedAuthServiceServer) ResetPassword(context.Context, *ResetPasswordRequest) (*ResetPasswordResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ResetPassword not implemented")
 }
+func (UnimplementedAuthServiceServer) GoogleLogin(context.Context, *GoogleLoginRequest) (*GoogleLoginResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GoogleLogin not implemented")
+}
+func (UnimplementedAuthServiceServer) LinkGoogleAccount(context.Context, *LinkGoogleAccountRequest) (*LinkGoogleAccountResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method LinkGoogleAccount not implemented")
+}
 func (UnimplementedAuthServiceServer) Logout(context.Context, *LogoutRequest) (*LogoutResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Logout not implemented")
 }
@@ -306,6 +365,9 @@ func (UnimplementedAuthServiceServer) LogoutAll(context.Context, *LogoutAllReque
 }
 func (UnimplementedAuthServiceServer) ChangePassword(context.Context, *ChangePasswordRequest) (*ChangePasswordResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method ChangePassword not implemented")
+}
+func (UnimplementedAuthServiceServer) ConnectGoogleAccount(context.Context, *ConnectGoogleAccountRequest) (*ConnectGoogleAccountResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ConnectGoogleAccount not implemented")
 }
 func (UnimplementedAuthServiceServer) InvalidateUserSessions(context.Context, *InvalidateUserSessionsRequest) (*InvalidateUserSessionsResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method InvalidateUserSessions not implemented")
@@ -466,6 +528,42 @@ func _AuthService_ResetPassword_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AuthService_GoogleLogin_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GoogleLoginRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).GoogleLogin(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_GoogleLogin_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).GoogleLogin(ctx, req.(*GoogleLoginRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AuthService_LinkGoogleAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(LinkGoogleAccountRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).LinkGoogleAccount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_LinkGoogleAccount_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).LinkGoogleAccount(ctx, req.(*LinkGoogleAccountRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _AuthService_Logout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(LogoutRequest)
 	if err := dec(in); err != nil {
@@ -516,6 +614,24 @@ func _AuthService_ChangePassword_Handler(srv interface{}, ctx context.Context, d
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(AuthServiceServer).ChangePassword(ctx, req.(*ChangePasswordRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _AuthService_ConnectGoogleAccount_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConnectGoogleAccountRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AuthServiceServer).ConnectGoogleAccount(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AuthService_ConnectGoogleAccount_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AuthServiceServer).ConnectGoogleAccount(ctx, req.(*ConnectGoogleAccountRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -628,6 +744,14 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _AuthService_ResetPassword_Handler,
 		},
 		{
+			MethodName: "GoogleLogin",
+			Handler:    _AuthService_GoogleLogin_Handler,
+		},
+		{
+			MethodName: "LinkGoogleAccount",
+			Handler:    _AuthService_LinkGoogleAccount_Handler,
+		},
+		{
 			MethodName: "Logout",
 			Handler:    _AuthService_Logout_Handler,
 		},
@@ -638,6 +762,10 @@ var AuthService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ChangePassword",
 			Handler:    _AuthService_ChangePassword_Handler,
+		},
+		{
+			MethodName: "ConnectGoogleAccount",
+			Handler:    _AuthService_ConnectGoogleAccount_Handler,
 		},
 		{
 			MethodName: "InvalidateUserSessions",

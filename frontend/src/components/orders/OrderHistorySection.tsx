@@ -3,6 +3,7 @@ import { Copy, Check, ChevronLeft, ChevronRight } from 'lucide-react'
 import type { OrderHistoryItem, OrderFilterState } from '../../types/orders'
 import OrderFilters from './OrderFilters'
 import toast from 'react-hot-toast'
+import { RaisedSurface } from '../common/Surface'
 
 interface OrderHistorySectionProps {
   history: OrderHistoryItem[]
@@ -99,9 +100,10 @@ export default function OrderHistorySection({ history }: OrderHistorySectionProp
   const paginatedHistory = filteredHistory.slice(startIndex, endIndex)
 
   return (
-    <div
+    <RaisedSurface
       id="order-history-section"
-      className="rounded-xl border border-[#1e2530] bg-[#111318] p-4 sm:p-5 flex flex-col gap-4 shadow-sm"
+      variant="raised-subtle"
+      className="flex flex-col gap-4 shadow-sm"
     >
       {/* ── Section Header + Filters ───────────────────────────────────────── */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-[#1e2530] pb-4">
@@ -314,6 +316,6 @@ export default function OrderHistorySection({ history }: OrderHistorySectionProp
           </div>
         </div>
       )}
-    </div>
+    </RaisedSurface>
   )
 }

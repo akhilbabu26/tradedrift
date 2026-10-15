@@ -15,6 +15,8 @@ export interface MarketEntry {
   high24h: string         // "68400.00"
   low24h: string          // "66120.00"
   volume24h: string       // "$1.42B"  (pre-formatted for display)
+  baseVolume24h?: string  // e.g. "42.68 BTC"
+  quoteVolume24h?: string // e.g. "$1.42M"
   sparklinePoints: number[] // normalized 0–1 values for sparkline
   iconColor: string       // "#f7931a"
   iconLabel: string       // "₿"

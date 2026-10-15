@@ -5,10 +5,11 @@ export default function NotificationCategoryTabs() {
   const activeTab = useNotificationStore((s) => s.activeTab)
   const setActiveTab = useNotificationStore((s) => s.setActiveTab)
   const notifications = useNotificationStore((s) => s.notifications)
+  const unreadCount = useNotificationStore((s) => s.unreadCount)
 
   const getUnreadCount = (cat: NotificationCategory) => {
     if (cat === 'all') {
-      return notifications.filter((n) => !n.isRead).length
+      return unreadCount
     }
     return notifications.filter((n) => n.category === cat && !n.isRead).length
   }

@@ -40,6 +40,15 @@ service AuthService {
     // the user.
     rpc ResetPassword(ResetPasswordRequest) returns (ResetPasswordResponse);
 
+    // Authenticates a user using a Google ID token.
+    // Handles brand new user signup, returning user login, or returns
+    // an explicit LINK_REQUIRED status when a matching local email account exists.
+    rpc GoogleLogin(GoogleLoginRequest) returns (GoogleLoginResponse);
+
+    // Links a verified Google identity to an existing local password account
+    // by validating password credentials alongside the short-lived link token.
+    rpc LinkGoogleAccount(LinkGoogleAccountRequest) returns (LinkGoogleAccountResponse);
+
     // ==========================================
     // Authenticated RPCs (Requires JWT Context)
     // ==========================================
@@ -52,6 +61,10 @@ service AuthService {
 
     // Changes password for the authenticated user and revokes all other sessions.
     rpc ChangePassword(ChangePasswordRequest) returns (ChangePasswordResponse);
+
+    // Connects a Google identity to the currently authenticated user's account.
+    // Fails with ALREADY_EXISTS if the Google identity is already linked to an account.
+    rpc ConnectGoogleAccount(ConnectGoogleAccountRequest) returns (ConnectGoogleAccountResponse);
 
     // ==========================================
     // Internal RPCs (Admin service only — no JWT required)
@@ -272,4 +285,66 @@ message ListSuspendedUsersRequest {
 message ListSuspendedUsersResponse {
     repeated string user_ids = 1;
     int32 total              = 2;
+}
+
+// ==========================================
+// Google OAuth & Account Linking
+// ==========================================
+
+enum GoogleLoginStatus {
+    GOOGLE_LOGIN_STATUS_UNSPECIFIED = 0;
+    GOOGLE_LOGIN_STATUS_SUCCESS = 1;
+    GOOGLE_LOGIN_STATUS_LINK_REQUIRED = 2;
+}
+
+message GoogleLoginRequest {
+    // Required. Raw Google ID Token (JWT) issued by Google Identity Services.
+    string id_token = 1;
+}
+
+message GoogleLoginResponse {
+    GoogleLoginStatus status = 1;
+
+    // Populated when status == GOOGLE_LOGIN_STATUS_SUCCESS
+    User user = 2;
+    string access_token = 3;
+    string refresh_token = 4;
+    google.protobuf.Timestamp access_token_expires_at = 5;
+    google.protobuf.Timestamp refresh_token_expires_at = 6;
+
+    // Populated when status == GOOGLE_LOGIN_STATUS_LINK_REQUIRED
+    // Short-lived signed link token proving possession of the verified Google identity.
+    string link_token = 7;
+    // Email associated with the Google identity requiring password confirmation.
+    string email = 8;
+    // Explanatory message for UI presentation.
+    string message = 9;
+}
+
+message LinkGoogleAccountRequest {
+    // Required. Email of the existing TradeDrift local account.
+    string email = 1;
+    // Required. Password of the existing TradeDrift local account.
+    string password = 2;
+    // Required. Short-lived link token returned when GoogleLogin status was LINK_REQUIRED.
+    string link_token = 3;
+}
+
+message LinkGoogleAccountResponse {
+    User user = 1;
+    string access_token = 2;
+    string refresh_token = 3;
+    google.protobuf.Timestamp access_token_expires_at = 4;
+    google.protobuf.Timestamp refresh_token_expires_at = 5;
+}
+
+message ConnectGoogleAccountRequest {
+    // Required. Raw Google ID Token (JWT) issued by Google Identity Services.
+    string id_token = 1;
+}
+
+message ConnectGoogleAccountResponse {
+    bool success = 1;
+    string provider = 2;
+    string email = 3;
 }

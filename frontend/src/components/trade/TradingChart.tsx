@@ -4,6 +4,7 @@ import {
   CandlestickSeries,
   AreaSeries,
   HistogramSeries,
+  LineSeries,
   type IChartApi,
   type ISeriesApi,
   type UTCTimestamp,
@@ -15,6 +16,19 @@ import type { Candle, Timeframe } from '../../types/trade'
 import { wsService, WsChannels } from '../../api/ws'
 import ChartToolbar from './ChartToolbar'
 import { getPrecisionFromTickSize } from '../../utils/formatters'
+import toast from 'react-hot-toast'
+import {
+  calculateEMA,
+  calculateBollingerBands,
+  type ActiveIndicators,
+  DEFAULT_ACTIVE_INDICATORS,
+} from '../../utils/indicators'
+import {
+  getTimeframeSeconds,
+  sanitizeCandles,
+  type SanitizedBar,
+} from '../../utils/chartSanitizer'
+import ChartScreenshotModal from './ChartScreenshotModal'
 
 interface TradingChartProps {
   marketId: string
@@ -54,6 +68,9 @@ const AREA_OPTIONS: AreaSeriesPartialOptions = {
   lineWidth:        2,
   priceLineVisible: false,
   lastValueVisible: true,
+  crosshairMarkerVisible: true,
+  crosshairMarkerRadius:  5,
+  crosshairMarkerBackgroundColor: '#10b981',
   visible:          false,
   priceFormat: {
     type: 'price',
@@ -70,108 +87,7 @@ const VOLUME_OPTIONS: HistogramSeriesPartialOptions = {
   lastValueVisible: false,
 }
 
-interface SanitizedBar {
-  time: UTCTimestamp
-  open: number
-  high: number
-  low: number
-  close: number
-}
 
-interface SanitizedVolume {
-  time: UTCTimestamp
-  value: number
-  color: string
-}
-
-function getTimeframeSeconds(tf: Timeframe): number {
-  switch (tf) {
-    case '1m':  return 60
-    case '5m':  return 300
-    case '15m': return 900
-    case '1h':  return 3600
-    case '4h':  return 14400
-    case '1d':  return 86400
-    default:    return 3600
-  }
-}
-
-/**
- * Validates, sorts ascending, and strictly deduplicates candle timestamps.
- * Guarantees time[i] < time[i + 1] to prevent Lightweight Charts invariant crashes.
- */
-function sanitizeCandles(rawCandles: Candle[]): { bars: SanitizedBar[]; volumes: SanitizedVolume[] } {
-  if (!Array.isArray(rawCandles) || rawCandles.length === 0) {
-    return { bars: [], volumes: [] }
-  }
-
-  // 1. Validate numerical integrity and ISO timestamp
-  const valid = rawCandles
-    .map((c) => {
-      if (!c || !c.start_time) return null
-      const d = new Date(c.start_time)
-      const ms = d.getTime()
-      if (isNaN(ms) || ms <= 0) return null
-
-      const time = Math.floor(ms / 1000) as UTCTimestamp
-      const open = parseFloat(c.open)
-      const high = parseFloat(c.high)
-      const low = parseFloat(c.low)
-      const close = parseFloat(c.close)
-      const volume = parseFloat(c.volume || '0')
-
-      if (
-        isNaN(open) || isNaN(high) || isNaN(low) || isNaN(close) ||
-        open <= 0 || high <= 0 || low <= 0 || close <= 0
-      ) {
-        return null
-      }
-
-      return {
-        time,
-        open,
-        high: Math.max(high, open, close),
-        low: Math.min(low, open, close),
-        close,
-        volume: isNaN(volume) || volume < 0 ? 0 : volume,
-      }
-    })
-    .filter((c): c is NonNullable<typeof c> => c !== null)
-
-  // 2. Sort ascending by timestamp
-  valid.sort((a, b) => (a.time as number) - (b.time as number))
-
-  // 3. Deduplicate timestamps ensuring time[i] < time[i + 1]
-  const deduped: typeof valid = []
-  for (const bar of valid) {
-    if (deduped.length === 0) {
-      deduped.push(bar)
-    } else {
-      const prev = deduped[deduped.length - 1]
-      if ((bar.time as number) > (prev.time as number)) {
-        deduped.push(bar)
-      } else if ((bar.time as number) === (prev.time as number)) {
-        deduped[deduped.length - 1] = bar
-      }
-    }
-  }
-
-  const bars: SanitizedBar[] = deduped.map((b) => ({
-    time: b.time,
-    open: b.open,
-    high: b.high,
-    low: b.low,
-    close: b.close,
-  }))
-
-  const volumes: SanitizedVolume[] = deduped.map((b) => ({
-    time: b.time,
-    value: b.volume,
-    color: b.close >= b.open ? 'rgba(16,185,129,0.45)' : 'rgba(239,68,68,0.45)',
-  }))
-
-  return { bars, volumes }
-}
 
 export default function TradingChart({
   marketId,
@@ -187,14 +103,54 @@ export default function TradingChart({
 }: TradingChartProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const chartWrapperRef = useRef<HTMLDivElement>(null)
+  const tooltipRef = useRef<HTMLDivElement>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const candleRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
   const areaRef = useRef<ISeriesApi<'Area'> | null>(null)
   const volumeRef = useRef<ISeriesApi<'Histogram'> | null>(null)
 
+  // Overlay indicator line series refs
+  const ema20Ref = useRef<ISeriesApi<'Line'> | null>(null)
+  const ema50Ref = useRef<ISeriesApi<'Line'> | null>(null)
+  const ema200Ref = useRef<ISeriesApi<'Line'> | null>(null)
+  const bbUpperRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const bbMiddleRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const bbLowerRef = useRef<ISeriesApi<'Line'> | null>(null)
+
   const [chartType, setChartType] = useState<'candlestick' | 'line'>('candlestick')
+  const [activeIndicators, setActiveIndicators] = useState<ActiveIndicators>(DEFAULT_ACTIVE_INDICATORS)
+  const [screenshotModal, setScreenshotModal] = useState<{
+    dataUrl: string
+    blob: Blob | null
+    filename: string
+  } | null>(null)
+
+  const handleToggleIndicator = useCallback((key: keyof ActiveIndicators) => {
+    setActiveIndicators((prev) => ({ ...prev, [key]: !prev[key] }))
+  }, [])
+
+  const activeIndicatorsRef = useRef<ActiveIndicators>(activeIndicators)
+  useEffect(() => {
+    activeIndicatorsRef.current = activeIndicators
+  }, [activeIndicators])
+
+  const symbolRef = useRef<string>(symbol)
+  useEffect(() => {
+    symbolRef.current = symbol
+  }, [symbol])
+
+  const chartTypeRef = useRef<'candlestick' | 'line'>(chartType)
+  useEffect(() => {
+    chartTypeRef.current = chartType
+  }, [chartType])
+
+  const tickSizeRef = useRef<string | undefined>(tickSize)
+  useEffect(() => {
+    tickSizeRef.current = tickSize
+  }, [tickSize])
 
   // Tracking refs for real-time live active candle, volume, deduplication, and market safety
+  const currentBarsRef = useRef<SanitizedBar[]>([])
   const lastBarRef = useRef<SanitizedBar | null>(null)
   const activeVolumeRef = useRef<number>(0)
   const activeMarketRef = useRef<string>(marketId)
@@ -247,7 +203,7 @@ export default function TradingChart({
 
     chartRef.current = chart
 
-    const { precision, minMove } = getPrecisionFromTickSize(tickSize)
+    const { precision, minMove } = getPrecisionFromTickSize(tickSizeRef.current)
     const priceFormat = { type: 'price' as const, precision, minMove }
 
     // 1. Candlestick series
@@ -274,6 +230,256 @@ export default function TradingChart({
     })
     volumeRef.current = volumeSeries
 
+    // 4. Overlay Indicators LineSeries (Category A)
+    // EMA 20 (Cyan)
+    const ema20Series = chart.addSeries(LineSeries, {
+      color: '#06b6d4',
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: true,
+      crosshairMarkerRadius: 3,
+      crosshairMarkerBackgroundColor: '#06b6d4',
+      priceFormat,
+    })
+    ema20Ref.current = ema20Series
+
+    // EMA 50 (Amber)
+    const ema50Series = chart.addSeries(LineSeries, {
+      color: '#f59e0b',
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: true,
+      crosshairMarkerRadius: 3,
+      crosshairMarkerBackgroundColor: '#f59e0b',
+      priceFormat,
+    })
+    ema50Ref.current = ema50Series
+
+    // EMA 200 (Purple)
+    const ema200Series = chart.addSeries(LineSeries, {
+      color: '#a855f7',
+      lineWidth: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: true,
+      crosshairMarkerRadius: 3,
+      crosshairMarkerBackgroundColor: '#a855f7',
+      priceFormat,
+    })
+    ema200Ref.current = ema200Series
+
+    // Bollinger Bands (Sky Blue)
+    const bbUpperSeries = chart.addSeries(LineSeries, {
+      color: 'rgba(56, 189, 248, 0.75)',
+      lineWidth: 1,
+      lineStyle: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      priceFormat,
+    })
+    bbUpperRef.current = bbUpperSeries
+
+    const bbMiddleSeries = chart.addSeries(LineSeries, {
+      color: 'rgba(56, 189, 248, 0.5)',
+      lineWidth: 1,
+      lineStyle: 0,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      priceFormat,
+    })
+    bbMiddleRef.current = bbMiddleSeries
+
+    const bbLowerSeries = chart.addSeries(LineSeries, {
+      color: 'rgba(56, 189, 248, 0.75)',
+      lineWidth: 1,
+      lineStyle: 2,
+      priceLineVisible: false,
+      lastValueVisible: false,
+      crosshairMarkerVisible: false,
+      priceFormat,
+    })
+    bbLowerRef.current = bbLowerSeries
+
+    // ── Interactive Hover Tooltip ──────────────────────────────────────────
+    chart.subscribeCrosshairMove((param) => {
+      const tooltip = tooltipRef.current
+      if (!tooltip || !containerRef.current) return
+
+      if (
+        !param.point ||
+        !param.time ||
+        param.point.x < 0 ||
+        param.point.x > container.clientWidth ||
+        param.point.y < 0 ||
+        param.point.y > container.clientHeight
+      ) {
+        tooltip.style.display = 'none'
+        return
+      }
+
+      const currentChartType = chartTypeRef.current
+      const currentSymbol = symbolRef.current
+      const currentTickSize = tickSizeRef.current
+      const { precision } = getPrecisionFromTickSize(currentTickSize)
+
+      const formatVal = (val: number) =>
+        val.toLocaleString('en-US', {
+          minimumFractionDigits: precision,
+          maximumFractionDigits: precision,
+        })
+
+      const formatVol = (val: number) => {
+        if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(2)}M`
+        if (val >= 1_000) return `${(val / 1_000).toFixed(2)}K`
+        return val.toLocaleString('en-US', { maximumFractionDigits: 2 })
+      }
+
+      const dateObj = new Date((param.time as number) * 1000)
+      const dateStr = dateObj.toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+
+      // Extract active overlay indicator values
+      const activeInd = activeIndicatorsRef.current
+      const indRows: string[] = []
+
+      if (activeInd.ema20 && ema20Ref.current) {
+        const d = param.seriesData.get(ema20Ref.current) as { value: number } | undefined
+        if (d && typeof d.value === 'number') {
+          indRows.push(`<div class="flex justify-between items-center text-[#06b6d4]"><span>EMA 20</span><span>${formatVal(d.value)}</span></div>`)
+        }
+      }
+      if (activeInd.ema50 && ema50Ref.current) {
+        const d = param.seriesData.get(ema50Ref.current) as { value: number } | undefined
+        if (d && typeof d.value === 'number') {
+          indRows.push(`<div class="flex justify-between items-center text-[#f59e0b]"><span>EMA 50</span><span>${formatVal(d.value)}</span></div>`)
+        }
+      }
+      if (activeInd.ema200 && ema200Ref.current) {
+        const d = param.seriesData.get(ema200Ref.current) as { value: number } | undefined
+        if (d && typeof d.value === 'number') {
+          indRows.push(`<div class="flex justify-between items-center text-[#a855f7]"><span>EMA 200</span><span>${formatVal(d.value)}</span></div>`)
+        }
+      }
+      if (activeInd.bollinger && bbUpperRef.current && bbLowerRef.current) {
+        const u = param.seriesData.get(bbUpperRef.current) as { value: number } | undefined
+        const m = bbMiddleRef.current ? (param.seriesData.get(bbMiddleRef.current) as { value: number } | undefined) : undefined
+        const l = param.seriesData.get(bbLowerRef.current) as { value: number } | undefined
+        if (u && l && typeof u.value === 'number' && typeof l.value === 'number') {
+          indRows.push(`<div class="flex justify-between items-center text-[#38bdf8]"><span>BB Upper</span><span>${formatVal(u.value)}</span></div>`)
+          if (m && typeof m.value === 'number') {
+            indRows.push(`<div class="flex justify-between items-center text-[#38bdf8]/70"><span>BB Mid</span><span>${formatVal(m.value)}</span></div>`)
+          }
+          indRows.push(`<div class="flex justify-between items-center text-[#38bdf8]"><span>BB Lower</span><span>${formatVal(l.value)}</span></div>`)
+        }
+      }
+
+      const indicatorHtml = indRows.length > 0
+        ? `<div class="mt-1 pt-1 border-t border-[#292C30]/50 space-y-0.5 text-[10px] font-mono">${indRows.join('')}</div>`
+        : ''
+
+      if (currentChartType === 'candlestick') {
+        const candleData = param.seriesData.get(candleSeries) as
+          | { open: number; high: number; low: number; close: number }
+          | undefined
+
+        if (!candleData || typeof candleData.close !== 'number') {
+          tooltip.style.display = 'none'
+          return
+        }
+
+        const isBullish = candleData.close >= candleData.open
+        const diff = candleData.close - candleData.open
+        const pctChange = candleData.open > 0 ? ((diff / candleData.open) * 100).toFixed(2) : '0.00'
+        const pctChangeSign = diff >= 0 ? '+' : ''
+        const deltaColor = isBullish ? 'text-[#10b981]' : 'text-[#ef4444]'
+        const badgeBg = isBullish ? 'bg-[#10b981]' : 'bg-[#ef4444]'
+
+        const volumeData = param.seriesData.get(volumeSeries) as { value: number } | undefined
+
+        tooltip.innerHTML = `
+          <div class="flex items-center justify-between gap-3 mb-1.5 pb-1 border-b border-[#292C30]">
+            <div class="flex items-center gap-1.5">
+              <span class="w-1.5 h-1.5 rounded-full ${badgeBg}"></span>
+              <span class="text-xs font-semibold text-[#f5f7fa] font-mono">${currentSymbol}</span>
+            </div>
+            <span class="text-[11px] font-mono font-medium ${deltaColor}">
+              ${pctChangeSign}${pctChange}%
+            </span>
+          </div>
+          <div class="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] font-mono text-slate-300">
+            <div><span class="text-slate-500 text-[10px]">O:</span> ${formatVal(candleData.open)}</div>
+            <div><span class="text-slate-500 text-[10px]">H:</span> ${formatVal(candleData.high)}</div>
+            <div><span class="text-slate-500 text-[10px]">L:</span> ${formatVal(candleData.low)}</div>
+            <div><span class="text-slate-500 text-[10px]">C:</span> ${formatVal(candleData.close)}</div>
+          </div>
+          ${
+            volumeData && typeof volumeData.value === 'number'
+              ? `<div class="mt-1 text-[10px] font-mono text-slate-400 border-t border-[#292C30]/50 pt-0.5 flex justify-between"><span>Vol:</span> <span class="text-slate-300">${formatVol(volumeData.value)}</span></div>`
+              : ''
+          }
+          ${indicatorHtml}
+          <div class="text-[9px] text-slate-500 mt-1">${dateStr}</div>
+        `
+      } else {
+        // Line / Area mode
+        const areaData = param.seriesData.get(areaSeries) as { value: number } | undefined
+
+        if (!areaData || typeof areaData.value !== 'number') {
+          tooltip.style.display = 'none'
+          return
+        }
+
+        const quoteAsset = currentSymbol.split('/')[1] || 'USDT'
+
+        tooltip.innerHTML = `
+          <div class="flex items-center justify-between gap-3 mb-1 pb-1 border-b border-[#292C30]">
+            <div class="flex items-center gap-1.5">
+              <span class="w-2 h-2 rounded-full bg-[#10b981] inline-block shadow-[0_0_6px_rgba(16,185,129,0.5)]"></span>
+              <span class="text-xs font-semibold text-[#f5f7fa] font-mono">${currentSymbol}</span>
+            </div>
+          </div>
+          <div class="text-xs font-mono font-bold text-[#f5f7fa] mb-0.5">
+            ${formatVal(areaData.value)} <span class="text-[10px] text-slate-400 font-normal">${quoteAsset}</span>
+          </div>
+          ${indicatorHtml}
+          <div class="text-[10px] text-slate-500">${dateStr}</div>
+        `
+      }
+
+      tooltip.style.display = 'block'
+
+      const tooltipWidth = indRows.length > 0 ? (currentChartType === 'candlestick' ? 190 : 170) : (currentChartType === 'candlestick' ? 180 : 150)
+      const baseHeight = currentChartType === 'candlestick' ? 115 : 65
+      const tooltipHeight = baseHeight + (indRows.length * 15)
+
+      let left = param.point.x + 15
+      let top = param.point.y - 20
+
+      if (left + tooltipWidth > container.clientWidth) {
+        left = param.point.x - tooltipWidth - 15
+      }
+      if (left < 10) {
+        left = 10
+      }
+
+      if (top < 10) {
+        top = 10
+      } else if (top + tooltipHeight > container.clientHeight) {
+        top = container.clientHeight - tooltipHeight - 10
+      }
+
+      tooltip.style.left = `${left}px`
+      tooltip.style.top = `${top}px`
+    })
+
     // ResizeObserver — chart responds to container size
     const resizeObserver = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -285,13 +491,23 @@ export default function TradingChart({
     })
     resizeObserver.observe(container)
 
+    const tooltipEl = tooltipRef.current
     return () => {
       resizeObserver.disconnect()
       chart.remove()
-      chartRef.current  = null
-      candleRef.current = null
-      areaRef.current   = null
-      volumeRef.current = null
+      chartRef.current    = null
+      candleRef.current   = null
+      areaRef.current     = null
+      volumeRef.current   = null
+      ema20Ref.current    = null
+      ema50Ref.current    = null
+      ema200Ref.current   = null
+      bbUpperRef.current  = null
+      bbMiddleRef.current = null
+      bbLowerRef.current  = null
+      if (tooltipEl) {
+        tooltipEl.style.display = 'none'
+      }
     }
   }, []) // Create once — never re-run
 
@@ -301,6 +517,12 @@ export default function TradingChart({
     const priceFormat = { type: 'price' as const, precision, minMove }
     candleRef.current?.applyOptions({ priceFormat })
     areaRef.current?.applyOptions({ priceFormat })
+    ema20Ref.current?.applyOptions({ priceFormat })
+    ema50Ref.current?.applyOptions({ priceFormat })
+    ema200Ref.current?.applyOptions({ priceFormat })
+    bbUpperRef.current?.applyOptions({ priceFormat })
+    bbMiddleRef.current?.applyOptions({ priceFormat })
+    bbLowerRef.current?.applyOptions({ priceFormat })
   }, [tickSize])
 
   // ── Chart type toggle (Candlestick vs Line) ─────────────────────────────────
@@ -319,12 +541,79 @@ export default function TradingChart({
     activeVolumeRef.current = 0
     totalBarsRef.current = 0
     seenTradeIdsRef.current.clear()
+    currentBarsRef.current = []
+
+    if (tooltipRef.current) {
+      tooltipRef.current.style.display = 'none'
+    }
 
     // Immediately clear previous market's or timeframe's series
     if (candleRef.current) candleRef.current.setData([])
     if (areaRef.current) areaRef.current.setData([])
     if (volumeRef.current) volumeRef.current.setData([])
+    if (ema20Ref.current) ema20Ref.current.setData([])
+    if (ema50Ref.current) ema50Ref.current.setData([])
+    if (ema200Ref.current) ema200Ref.current.setData([])
+    if (bbUpperRef.current) bbUpperRef.current.setData([])
+    if (bbMiddleRef.current) bbMiddleRef.current.setData([])
+    if (bbLowerRef.current) bbLowerRef.current.setData([])
   }, [marketId, timeframe])
+
+  // ── Indicator Calculation & Series Updater ─────────────────────────────────
+  const updateIndicatorSeries = useCallback((bars: SanitizedBar[], indicators: ActiveIndicators) => {
+    if (!bars || bars.length === 0) {
+      ema20Ref.current?.setData([])
+      ema50Ref.current?.setData([])
+      ema200Ref.current?.setData([])
+      bbUpperRef.current?.setData([])
+      bbMiddleRef.current?.setData([])
+      bbLowerRef.current?.setData([])
+      return
+    }
+
+    const closeData = bars.map((b) => ({ time: b.time, close: b.close }))
+
+    // EMA 20
+    if (indicators.ema20) {
+      const data = calculateEMA(closeData, 20)
+      ema20Ref.current?.setData(data)
+    } else {
+      ema20Ref.current?.setData([])
+    }
+
+    // EMA 50
+    if (indicators.ema50) {
+      const data = calculateEMA(closeData, 50)
+      ema50Ref.current?.setData(data)
+    } else {
+      ema50Ref.current?.setData([])
+    }
+
+    // EMA 200
+    if (indicators.ema200) {
+      const data = calculateEMA(closeData, 200)
+      ema200Ref.current?.setData(data)
+    } else {
+      ema200Ref.current?.setData([])
+    }
+
+    // Bollinger Bands (20, 2)
+    if (indicators.bollinger) {
+      const { upper, middle, lower } = calculateBollingerBands(closeData, 20, 2)
+      bbUpperRef.current?.setData(upper)
+      bbMiddleRef.current?.setData(middle)
+      bbLowerRef.current?.setData(lower)
+    } else {
+      bbUpperRef.current?.setData([])
+      bbMiddleRef.current?.setData([])
+      bbLowerRef.current?.setData([])
+    }
+  }, [])
+
+  // Sync indicators whenever toggles change
+  useEffect(() => {
+    updateIndicatorSeries(currentBarsRef.current, activeIndicators)
+  }, [activeIndicators, updateIndicatorSeries])
 
   // ── Helper: determine if user is currently near the real-time edge ──────────
   const isNearRealtimeEdge = useCallback((): boolean => {
@@ -433,10 +722,12 @@ export default function TradingChart({
     lastBarRef.current = { ...last }
     activeVolumeRef.current = lastVol ? lastVol.value : 0
     totalBarsRef.current = bars.length
+    currentBarsRef.current = bars
 
     candleRef.current.setData(bars)
     areaRef.current.setData(bars.map((b) => ({ time: b.time, value: b.close })))
     volumeRef.current.setData(volumes)
+    updateIndicatorSeries(bars, activeIndicatorsRef.current)
 
     // Viewport positioning:
     // When history is dense (>= 45 bars), focus visible range on the most recent ~85 bars.
@@ -459,7 +750,7 @@ export default function TradingChart({
       // Follow the real-time edge only if user has not intentionally panned back in history
       chartRef.current?.timeScale().scrollToRealTime()
     }
-  }, [candles, timeframe])
+  }, [candles, timeframe, updateIndicatorSeries])
 
   // ── Real-Time Trades Stream (Kafka -> Gateway -> WebSocket) ────────────────
   useEffect(() => {
@@ -516,6 +807,7 @@ export default function TradingChart({
         activeVolumeRef.current = qty
         lastBarRef.current = newBar
         totalBarsRef.current = 1
+        currentBarsRef.current = [newBar]
 
         candleRef.current.update(newBar)
         areaRef.current.update({ time: bucketTime, value: price })
@@ -524,6 +816,7 @@ export default function TradingChart({
           value: qty,
           color: 'rgba(16,185,129,0.45)',
         })
+        updateIndicatorSeries(currentBarsRef.current, activeIndicatorsRef.current)
         chartRef.current?.timeScale().scrollToRealTime()
         return
       }
@@ -540,6 +833,12 @@ export default function TradingChart({
         activeVolumeRef.current += qty
         lastBarRef.current = updatedBar
 
+        if (currentBarsRef.current.length > 0) {
+          currentBarsRef.current[currentBarsRef.current.length - 1] = updatedBar
+        } else {
+          currentBarsRef.current = [updatedBar]
+        }
+
         const volColor = price >= updatedBar.open ? 'rgba(16,185,129,0.45)' : 'rgba(239,68,68,0.45)'
 
         candleRef.current.update(updatedBar)
@@ -549,6 +848,7 @@ export default function TradingChart({
           value: activeVolumeRef.current,
           color: volColor,
         })
+        updateIndicatorSeries(currentBarsRef.current, activeIndicatorsRef.current)
       } else if (bucketTime > (currentBar.time as number)) {
         // Timeframe boundary crossed: start new real candle bar
         const newBar: SanitizedBar = {
@@ -561,6 +861,7 @@ export default function TradingChart({
         activeVolumeRef.current = qty
         lastBarRef.current = newBar
         totalBarsRef.current += 1
+        currentBarsRef.current.push(newBar)
 
         candleRef.current.update(newBar)
         areaRef.current.update({ time: bucketTime, value: price })
@@ -569,6 +870,7 @@ export default function TradingChart({
           value: qty,
           color: 'rgba(16,185,129,0.45)',
         })
+        updateIndicatorSeries(currentBarsRef.current, activeIndicatorsRef.current)
         if (isNearRealtimeEdgeRef.current()) {
           chartRef.current?.timeScale().scrollToRealTime()
         }
@@ -583,20 +885,80 @@ export default function TradingChart({
       mounted = false
       unsubscribe()
     }
-  }, [marketId, timeframe])
+  }, [marketId, timeframe, updateIndicatorSeries])
 
   // ── Secondary Toolbar Actions (Screenshot & Fullscreen) ─────────────────────
   const handleScreenshot = useCallback(() => {
-    if (!chartRef.current) return
+    const container = containerRef.current
+    if (!container) return
+
     try {
-      const canvas = chartRef.current.takeScreenshot()
-      const link = document.createElement('a')
-      const sanitizedSymbol = symbol.replace(/[/\\:]/g, '-')
-      link.download = `${sanitizedSymbol}_${timeframe}_chart.png`
-      link.href = canvas.toDataURL('image/png')
-      link.click()
+      // Find all canvas elements rendered inside the Lightweight Charts container
+      const canvases = Array.from(container.querySelectorAll('canvas'))
+      if (canvases.length === 0) {
+        toast.error('No chart canvas found to capture')
+        return
+      }
+
+      const containerRect = container.getBoundingClientRect()
+      const width = container.clientWidth || containerRect.width
+      const height = container.clientHeight || containerRect.height
+
+      if (width <= 0 || height <= 0) {
+        toast.error('Chart area has zero dimensions')
+        return
+      }
+
+      const dpr = window.devicePixelRatio || 1
+      const exportCanvas = document.createElement('canvas')
+      exportCanvas.width = width * dpr
+      exportCanvas.height = height * dpr
+
+      const ctx = exportCanvas.getContext('2d')
+      if (!ctx) {
+        toast.error('Failed to create screenshot context')
+        return
+      }
+
+      ctx.scale(dpr, dpr)
+
+      // 1. Draw solid dark chart background (#0a0b0e) so the export is opaque
+      ctx.fillStyle = '#0a0b0e'
+      ctx.fillRect(0, 0, width, height)
+
+      // 2. Composite all layered canvases in their exact DOM order and positions
+      for (const canvas of canvases) {
+        const rect = canvas.getBoundingClientRect()
+        const x = rect.left - containerRect.left
+        const y = rect.top - containerRect.top
+        const w = rect.width
+        const h = rect.height
+
+        if (w > 0 && h > 0) {
+          ctx.drawImage(canvas, x, y, w, h)
+        }
+      }
+
+      // 3. Add TradeDrift watermark branding to the saved screenshot
+      ctx.font = 'bold 12px "JetBrains Mono", monospace'
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
+      ctx.fillText(`${symbol} · ${timeframe.toUpperCase()} · TradeDrift`, 16, 22)
+
+      // 4. Open TradingView-style Screenshot Preview & Export Modal
+      const sanitizedSymbol = (symbol || 'CHART').replace(/[/\\:]/g, '-')
+      const filename = `${sanitizedSymbol}_${timeframe}_chart.png`
+      const dataUrl = exportCanvas.toDataURL('image/png')
+
+      exportCanvas.toBlob((blob) => {
+        setScreenshotModal({
+          dataUrl,
+          blob,
+          filename,
+        })
+      }, 'image/png')
     } catch (err) {
-      console.warn('Failed to take chart screenshot:', err)
+      console.error('Failed to take chart screenshot:', err)
+      toast.error('Failed to capture chart screenshot')
     }
   }, [symbol, timeframe])
 
@@ -622,17 +984,45 @@ export default function TradingChart({
         chartType={chartType}
         onChartTypeChange={setChartType}
         isDemoData={isDemoData}
+        activeIndicators={activeIndicators}
+        onToggleIndicator={handleToggleIndicator}
         onScreenshot={handleScreenshot}
         onFullscreen={handleFullscreen}
       />
 
       {/* Watermark row */}
-      <div className="flex items-center gap-2 px-3 py-1 border-b border-[#1e2530]/50 bg-[#0a0b0e] flex-shrink-0">
+      <div className="flex items-center gap-2 px-3 py-1 border-b border-[#1e2530]/50 bg-[#0a0b0e] flex-shrink-0 flex-wrap">
         <span className="text-[11px] text-slate-600 font-mono">
           {symbol} · {tfLabel} · TradeDrift
         </span>
         {lastPrice && lastPrice !== '0' && lastPrice !== '—' && (
           <span className="text-[11px] text-slate-500 font-mono">{lastPrice}</span>
+        )}
+
+        {/* Active Indicators Legend */}
+        {activeIndicators.ema20 && (
+          <span className="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 border border-cyan-500/25">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#06b6d4]" />
+            EMA 20
+          </span>
+        )}
+        {activeIndicators.ema50 && (
+          <span className="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/25">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#f59e0b]" />
+            EMA 50
+          </span>
+        )}
+        {activeIndicators.ema200 && (
+          <span className="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/25">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#a855f7]" />
+            EMA 200
+          </span>
+        )}
+        {activeIndicators.bollinger && (
+          <span className="inline-flex items-center gap-1 text-[10px] font-mono px-1.5 py-0.5 rounded bg-sky-500/10 text-sky-400 border border-sky-500/25">
+            <span className="w-1.5 h-1.5 rounded-full bg-[#38bdf8]" />
+            BB (20, 2)
+          </span>
         )}
       </div>
 
@@ -646,6 +1036,14 @@ export default function TradingChart({
             </div>
           </div>
         )}
+
+        {/* Interactive hover tooltip */}
+        <div
+          ref={tooltipRef}
+          className="absolute z-20 pointer-events-none hidden bg-[#161B22]/95 backdrop-blur-sm border border-[#292C30] rounded-lg px-2.5 py-2 shadow-[0_4px_16px_rgba(0,0,0,0.6)]"
+          style={{ transition: 'left 0.05s ease-out, top 0.05s ease-out' }}
+        />
+
         <div
           ref={containerRef}
           className="w-full h-full"
@@ -653,6 +1051,19 @@ export default function TradingChart({
           role="img"
         />
       </div>
+
+      {/* Screenshot Preview & Export Modal */}
+      {screenshotModal && (
+        <ChartScreenshotModal
+          isOpen={true}
+          onClose={() => setScreenshotModal(null)}
+          dataUrl={screenshotModal.dataUrl}
+          blob={screenshotModal.blob}
+          filename={screenshotModal.filename}
+          symbol={symbol}
+          timeframe={timeframe}
+        />
+      )}
     </div>
   )
 }

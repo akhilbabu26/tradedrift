@@ -29,6 +29,55 @@ export interface ListOrdersParams {
   limit?: number
 }
 
+/**
+ * Authoritative helper to determine if an order is active (in-flight/open/partial/cancelling).
+ * Terminal states (FILLED, CANCELLED, REJECTED) are strictly NOT active.
+ */
+export function isOrderActive(orderOrStatus: Order | string | undefined | null): boolean {
+  if (!orderOrStatus) return false
+  const raw = typeof orderOrStatus === 'string' ? orderOrStatus : orderOrStatus.status
+  if (!raw) return false
+  const s = raw.toUpperCase().trim()
+
+  // Terminal states take strict priority
+  if (
+    s === 'FILLED' ||
+    s === 'CANCELLED' ||
+    s === 'REJECTED' ||
+    s === 'ORDER_STATUS_FILLED' ||
+    s === 'ORDER_STATUS_CANCELLED' ||
+    s === 'ORDER_STATUS_REJECTED'
+  ) {
+    return false
+  }
+
+  // Active states
+  if (s.includes('PARTIAL')) return true
+  if (s === 'OPEN' || s === 'PENDING' || s === 'ORDER_STATUS_OPEN' || s === 'CANCELLING' || s.includes('OPEN')) {
+    return true
+  }
+
+  return false
+}
+
+/**
+ * Authoritative helper to determine if an order has reached a terminal settled state.
+ */
+export function isOrderTerminal(orderOrStatus: Order | string | undefined | null): boolean {
+  if (!orderOrStatus) return false
+  const raw = typeof orderOrStatus === 'string' ? orderOrStatus : orderOrStatus.status
+  if (!raw) return false
+  const s = raw.toUpperCase().trim()
+  return (
+    s === 'FILLED' ||
+    s === 'CANCELLED' ||
+    s === 'REJECTED' ||
+    s === 'ORDER_STATUS_FILLED' ||
+    s === 'ORDER_STATUS_CANCELLED' ||
+    s === 'ORDER_STATUS_REJECTED'
+  )
+}
+
 export function normalizeOrder(o: any): Order {
   if (!o) return o
 
@@ -38,7 +87,7 @@ export function normalizeOrder(o: any): Order {
   else if (side.includes('SELL')) side = 'SELL'
 
   // Normalize order_type: ORDER_TYPE_LIMIT -> LIMIT, ORDER_TYPE_MARKET -> MARKET
-  let order_type = (o.order_type || o.type || 'LIMIT').toUpperCase()
+  let order_type = (o.order_type || o.orderType || o.type || 'LIMIT').toUpperCase()
   if (order_type.includes('LIMIT')) order_type = 'LIMIT'
   else if (order_type.includes('MARKET')) order_type = 'MARKET'
 
@@ -50,18 +99,21 @@ export function normalizeOrder(o: any): Order {
   else if (status.includes('REJECT')) status = 'REJECTED'
   else if (status.includes('OPEN')) status = 'OPEN'
 
+  const quantity = o.quantity != null ? String(o.quantity) : o.totalQuantity != null ? String(o.totalQuantity) : o.amount != null ? String(o.amount) : '0'
+  const filled_quantity = o.filled_quantity != null ? String(o.filled_quantity) : o.filledQuantity != null ? String(o.filledQuantity) : '0'
+
   return {
-    id: o.id,
-    user_id: o.user_id,
-    market_id: o.market_id,
+    id: o.id || '',
+    user_id: o.user_id || o.userId || '',
+    market_id: o.market_id || o.marketId || '',
     side,
     order_type,
     status,
-    price: o.price ? String(o.price) : '',
-    quantity: o.quantity ? String(o.quantity) : '0',
-    filled_quantity: o.filled_quantity ? String(o.filled_quantity) : '0',
-    created_at: o.created_at || new Date().toISOString(),
-    updated_at: o.updated_at || new Date().toISOString(),
+    price: o.price != null ? String(o.price) : '',
+    quantity,
+    filled_quantity,
+    created_at: o.created_at || o.createdAt || new Date().toISOString(),
+    updated_at: o.updated_at || o.updatedAt || new Date().toISOString(),
   }
 }
 

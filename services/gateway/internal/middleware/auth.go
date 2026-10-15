@@ -17,13 +17,18 @@ func Auth(validator platformjwt.Validator, rdb redis.Cmdable, log *zap.Logger) f
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
-			if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
-				response.WriteError(w, http.StatusUnauthorized, "AUTH_INVALID_TOKEN", "missing or invalid authorization header")
-				return
+			tokenStr := ""
+			if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+				tokenStr = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+				tokenStr = strings.Trim(tokenStr, "\"")
+			} else if cookie, err := r.Cookie("access_token"); err == nil && cookie.Value != "" {
+				tokenStr = strings.TrimSpace(cookie.Value)
 			}
 
-			tokenStr := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-			tokenStr = strings.Trim(tokenStr, "\"")
+			if tokenStr == "" {
+				response.WriteError(w, http.StatusUnauthorized, "AUTH_INVALID_TOKEN", "missing or invalid authorization header or session cookie")
+				return
+			}
 
 			claims, err := validator.Validate(r.Context(), tokenStr)
 			if err != nil {

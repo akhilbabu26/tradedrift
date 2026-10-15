@@ -1,4 +1,5 @@
 import type { AssetPerformanceItem } from '../../types/analytics'
+import { RaisedSurface } from '../common/Surface'
 
 interface Props {
   assets: AssetPerformanceItem[]
@@ -10,7 +11,7 @@ interface Props {
  */
 export default function PortfolioPerformanceByAsset({ assets }: Props) {
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl overflow-hidden flex flex-col">
+    <RaisedSurface variant="raised-subtle" noPadding className="overflow-hidden flex flex-col">
       {/* Header */}
       <div className="px-5 py-4 border-b border-[#1e2530]">
         <h2 className="text-sm font-semibold text-[#f5f7fa]">
@@ -112,6 +113,6 @@ export default function PortfolioPerformanceByAsset({ assets }: Props) {
           </tbody>
         </table>
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

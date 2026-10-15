@@ -2,7 +2,8 @@ import { useState } from 'react'
 import { User as UserIcon, Edit2, Copy, Check, Database } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuthStore } from '../../store/authStore'
-import EditProfileModal from './EditProfileModal'
+import { RaisedSurface } from '../common/Surface'
+import EditProfileModal from '../profile/EditProfileModal'
 
 export default function ProfileAccountCard() {
   const { user } = useAuthStore()
@@ -38,7 +39,7 @@ export default function ProfileAccountCard() {
 
   return (
     <>
-      <div className="bg-[#111318] border border-[#1e2530] rounded-xl p-5 sm:p-6 mb-5 transition-colors">
+      <RaisedSurface variant="raised-subtle" className="rounded-xl p-5 sm:p-6 mb-5 transition-colors">
         {/* Card Header */}
         <div className="flex items-start justify-between gap-4 mb-5">
           <div className="flex items-center gap-3">
@@ -113,7 +114,7 @@ export default function ProfileAccountCard() {
             </div>
           </div>
         </div>
-      </div>
+      </RaisedSurface>
 
       <EditProfileModal isOpen={isEditOpen} onClose={() => setIsEditOpen(false)} />
     </>

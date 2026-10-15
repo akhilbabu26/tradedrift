@@ -22,6 +22,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type GoogleLoginStatus int32
+
+const (
+	GoogleLoginStatus_GOOGLE_LOGIN_STATUS_UNSPECIFIED   GoogleLoginStatus = 0
+	GoogleLoginStatus_GOOGLE_LOGIN_STATUS_SUCCESS       GoogleLoginStatus = 1
+	GoogleLoginStatus_GOOGLE_LOGIN_STATUS_LINK_REQUIRED GoogleLoginStatus = 2
+)
+
+// Enum value maps for GoogleLoginStatus.
+var (
+	GoogleLoginStatus_name = map[int32]string{
+		0: "GOOGLE_LOGIN_STATUS_UNSPECIFIED",
+		1: "GOOGLE_LOGIN_STATUS_SUCCESS",
+		2: "GOOGLE_LOGIN_STATUS_LINK_REQUIRED",
+	}
+	GoogleLoginStatus_value = map[string]int32{
+		"GOOGLE_LOGIN_STATUS_UNSPECIFIED":   0,
+		"GOOGLE_LOGIN_STATUS_SUCCESS":       1,
+		"GOOGLE_LOGIN_STATUS_LINK_REQUIRED": 2,
+	}
+)
+
+func (x GoogleLoginStatus) Enum() *GoogleLoginStatus {
+	p := new(GoogleLoginStatus)
+	*p = x
+	return p
+}
+
+func (x GoogleLoginStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GoogleLoginStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_auth_v1_auth_proto_enumTypes[0].Descriptor()
+}
+
+func (GoogleLoginStatus) Type() protoreflect.EnumType {
+	return &file_auth_v1_auth_proto_enumTypes[0]
+}
+
+func (x GoogleLoginStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GoogleLoginStatus.Descriptor instead.
+func (GoogleLoginStatus) EnumDescriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{0}
+}
+
 type User struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        string                 `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
@@ -1525,6 +1574,408 @@ func (x *ListSuspendedUsersResponse) GetTotal() int32 {
 	return 0
 }
 
+type GoogleLoginRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. Raw Google ID Token (JWT) issued by Google Identity Services.
+	IdToken       string `protobuf:"bytes,1,opt,name=id_token,json=idToken,proto3" json:"id_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GoogleLoginRequest) Reset() {
+	*x = GoogleLoginRequest{}
+	mi := &file_auth_v1_auth_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GoogleLoginRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GoogleLoginRequest) ProtoMessage() {}
+
+func (x *GoogleLoginRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GoogleLoginRequest.ProtoReflect.Descriptor instead.
+func (*GoogleLoginRequest) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *GoogleLoginRequest) GetIdToken() string {
+	if x != nil {
+		return x.IdToken
+	}
+	return ""
+}
+
+type GoogleLoginResponse struct {
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Status GoogleLoginStatus      `protobuf:"varint,1,opt,name=status,proto3,enum=tradedrift.auth.v1.GoogleLoginStatus" json:"status,omitempty"`
+	// Populated when status == GOOGLE_LOGIN_STATUS_SUCCESS
+	User                  *User                  `protobuf:"bytes,2,opt,name=user,proto3" json:"user,omitempty"`
+	AccessToken           string                 `protobuf:"bytes,3,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
+	RefreshToken          string                 `protobuf:"bytes,4,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	AccessTokenExpiresAt  *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=access_token_expires_at,json=accessTokenExpiresAt,proto3" json:"access_token_expires_at,omitempty"`
+	RefreshTokenExpiresAt *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=refresh_token_expires_at,json=refreshTokenExpiresAt,proto3" json:"refresh_token_expires_at,omitempty"`
+	// Populated when status == GOOGLE_LOGIN_STATUS_LINK_REQUIRED
+	// Short-lived signed link token proving possession of the verified Google identity.
+	LinkToken string `protobuf:"bytes,7,opt,name=link_token,json=linkToken,proto3" json:"link_token,omitempty"`
+	// Email associated with the Google identity requiring password confirmation.
+	Email string `protobuf:"bytes,8,opt,name=email,proto3" json:"email,omitempty"`
+	// Explanatory message for UI presentation.
+	Message       string `protobuf:"bytes,9,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GoogleLoginResponse) Reset() {
+	*x = GoogleLoginResponse{}
+	mi := &file_auth_v1_auth_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GoogleLoginResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GoogleLoginResponse) ProtoMessage() {}
+
+func (x *GoogleLoginResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GoogleLoginResponse.ProtoReflect.Descriptor instead.
+func (*GoogleLoginResponse) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *GoogleLoginResponse) GetStatus() GoogleLoginStatus {
+	if x != nil {
+		return x.Status
+	}
+	return GoogleLoginStatus_GOOGLE_LOGIN_STATUS_UNSPECIFIED
+}
+
+func (x *GoogleLoginResponse) GetUser() *User {
+	if x != nil {
+		return x.User
+	}
+	return nil
+}
+
+func (x *GoogleLoginResponse) GetAccessToken() string {
+	if x != nil {
+		return x.AccessToken
+	}
+	return ""
+}
+
+func (x *GoogleLoginResponse) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
+}
+
+func (x *GoogleLoginResponse) GetAccessTokenExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.AccessTokenExpiresAt
+	}
+	return nil
+}
+
+func (x *GoogleLoginResponse) GetRefreshTokenExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RefreshTokenExpiresAt
+	}
+	return nil
+}
+
+func (x *GoogleLoginResponse) GetLinkToken() string {
+	if x != nil {
+		return x.LinkToken
+	}
+	return ""
+}
+
+func (x *GoogleLoginResponse) GetEmail() string {
+	if x != nil {
+		return x.Email
+	}
+	return ""
+}
+
+func (x *GoogleLoginResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type LinkGoogleAccountRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. Email of the existing TradeDrift local account.
+	Email string `protobuf:"bytes,1,opt,name=email,proto3" json:"email,omitempty"`
+	// Required. Password of the existing TradeDrift local account.
+	Password string `protobuf:"bytes,2,opt,name=password,proto3" json:"password,omitempty"`
+	// Required. Short-lived link token returned when GoogleLogin status was LINK_REQUIRED.
+	LinkToken     string `protobuf:"bytes,3,opt,name=link_token,json=linkToken,proto3" json:"link_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LinkGoogleAccountRequest) Reset() {
+	*x = LinkGoogleAccountRequest{}
+	mi := &file_auth_v1_auth_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LinkGoogleAccountRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LinkGoogleAccountRequest) ProtoMessage() {}
+
+func (x *LinkGoogleAccountRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LinkGoogleAccountRequest.ProtoReflect.Descriptor instead.
+func (*LinkGoogleAccountRequest) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *LinkGoogleAccountRequest) GetEmail() string {
+	if x != nil {
+		return x.Email
+	}
+	return ""
+}
+
+func (x *LinkGoogleAccountRequest) GetPassword() string {
+	if x != nil {
+		return x.Password
+	}
+	return ""
+}
+
+func (x *LinkGoogleAccountRequest) GetLinkToken() string {
+	if x != nil {
+		return x.LinkToken
+	}
+	return ""
+}
+
+type LinkGoogleAccountResponse struct {
+	state                 protoimpl.MessageState `protogen:"open.v1"`
+	User                  *User                  `protobuf:"bytes,1,opt,name=user,proto3" json:"user,omitempty"`
+	AccessToken           string                 `protobuf:"bytes,2,opt,name=access_token,json=accessToken,proto3" json:"access_token,omitempty"`
+	RefreshToken          string                 `protobuf:"bytes,3,opt,name=refresh_token,json=refreshToken,proto3" json:"refresh_token,omitempty"`
+	AccessTokenExpiresAt  *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=access_token_expires_at,json=accessTokenExpiresAt,proto3" json:"access_token_expires_at,omitempty"`
+	RefreshTokenExpiresAt *timestamppb.Timestamp `protobuf:"bytes,5,opt,name=refresh_token_expires_at,json=refreshTokenExpiresAt,proto3" json:"refresh_token_expires_at,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
+}
+
+func (x *LinkGoogleAccountResponse) Reset() {
+	*x = LinkGoogleAccountResponse{}
+	mi := &file_auth_v1_auth_proto_msgTypes[32]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LinkGoogleAccountResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LinkGoogleAccountResponse) ProtoMessage() {}
+
+func (x *LinkGoogleAccountResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[32]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LinkGoogleAccountResponse.ProtoReflect.Descriptor instead.
+func (*LinkGoogleAccountResponse) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{32}
+}
+
+func (x *LinkGoogleAccountResponse) GetUser() *User {
+	if x != nil {
+		return x.User
+	}
+	return nil
+}
+
+func (x *LinkGoogleAccountResponse) GetAccessToken() string {
+	if x != nil {
+		return x.AccessToken
+	}
+	return ""
+}
+
+func (x *LinkGoogleAccountResponse) GetRefreshToken() string {
+	if x != nil {
+		return x.RefreshToken
+	}
+	return ""
+}
+
+func (x *LinkGoogleAccountResponse) GetAccessTokenExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.AccessTokenExpiresAt
+	}
+	return nil
+}
+
+func (x *LinkGoogleAccountResponse) GetRefreshTokenExpiresAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RefreshTokenExpiresAt
+	}
+	return nil
+}
+
+type ConnectGoogleAccountRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Required. Raw Google ID Token (JWT) issued by Google Identity Services.
+	IdToken       string `protobuf:"bytes,1,opt,name=id_token,json=idToken,proto3" json:"id_token,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConnectGoogleAccountRequest) Reset() {
+	*x = ConnectGoogleAccountRequest{}
+	mi := &file_auth_v1_auth_proto_msgTypes[33]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectGoogleAccountRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectGoogleAccountRequest) ProtoMessage() {}
+
+func (x *ConnectGoogleAccountRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[33]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectGoogleAccountRequest.ProtoReflect.Descriptor instead.
+func (*ConnectGoogleAccountRequest) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{33}
+}
+
+func (x *ConnectGoogleAccountRequest) GetIdToken() string {
+	if x != nil {
+		return x.IdToken
+	}
+	return ""
+}
+
+type ConnectGoogleAccountResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Success       bool                   `protobuf:"varint,1,opt,name=success,proto3" json:"success,omitempty"`
+	Provider      string                 `protobuf:"bytes,2,opt,name=provider,proto3" json:"provider,omitempty"`
+	Email         string                 `protobuf:"bytes,3,opt,name=email,proto3" json:"email,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConnectGoogleAccountResponse) Reset() {
+	*x = ConnectGoogleAccountResponse{}
+	mi := &file_auth_v1_auth_proto_msgTypes[34]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConnectGoogleAccountResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConnectGoogleAccountResponse) ProtoMessage() {}
+
+func (x *ConnectGoogleAccountResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_auth_v1_auth_proto_msgTypes[34]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConnectGoogleAccountResponse.ProtoReflect.Descriptor instead.
+func (*ConnectGoogleAccountResponse) Descriptor() ([]byte, []int) {
+	return file_auth_v1_auth_proto_rawDescGZIP(), []int{34}
+}
+
+func (x *ConnectGoogleAccountResponse) GetSuccess() bool {
+	if x != nil {
+		return x.Success
+	}
+	return false
+}
+
+func (x *ConnectGoogleAccountResponse) GetProvider() string {
+	if x != nil {
+		return x.Provider
+	}
+	return ""
+}
+
+func (x *ConnectGoogleAccountResponse) GetEmail() string {
+	if x != nil {
+		return x.Email
+	}
+	return ""
+}
+
 var File_auth_v1_auth_proto protoreflect.FileDescriptor
 
 const file_auth_v1_auth_proto_rawDesc = "" +
@@ -1614,7 +2065,41 @@ const file_auth_v1_auth_proto_rawDesc = "" +
 	"\x06offset\x18\x02 \x01(\x05R\x06offset\"M\n" +
 	"\x1aListSuspendedUsersResponse\x12\x19\n" +
 	"\buser_ids\x18\x01 \x03(\tR\auserIds\x12\x14\n" +
-	"\x05total\x18\x02 \x01(\x05R\x05total2\x95\v\n" +
+	"\x05total\x18\x02 \x01(\x05R\x05total\"/\n" +
+	"\x12GoogleLoginRequest\x12\x19\n" +
+	"\bid_token\x18\x01 \x01(\tR\aidToken\"\xc1\x03\n" +
+	"\x13GoogleLoginResponse\x12=\n" +
+	"\x06status\x18\x01 \x01(\x0e2%.tradedrift.auth.v1.GoogleLoginStatusR\x06status\x12,\n" +
+	"\x04user\x18\x02 \x01(\v2\x18.tradedrift.auth.v1.UserR\x04user\x12!\n" +
+	"\faccess_token\x18\x03 \x01(\tR\vaccessToken\x12#\n" +
+	"\rrefresh_token\x18\x04 \x01(\tR\frefreshToken\x12Q\n" +
+	"\x17access_token_expires_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x14accessTokenExpiresAt\x12S\n" +
+	"\x18refresh_token_expires_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\x15refreshTokenExpiresAt\x12\x1d\n" +
+	"\n" +
+	"link_token\x18\a \x01(\tR\tlinkToken\x12\x14\n" +
+	"\x05email\x18\b \x01(\tR\x05email\x12\x18\n" +
+	"\amessage\x18\t \x01(\tR\amessage\"k\n" +
+	"\x18LinkGoogleAccountRequest\x12\x14\n" +
+	"\x05email\x18\x01 \x01(\tR\x05email\x12\x1a\n" +
+	"\bpassword\x18\x02 \x01(\tR\bpassword\x12\x1d\n" +
+	"\n" +
+	"link_token\x18\x03 \x01(\tR\tlinkToken\"\xb9\x02\n" +
+	"\x19LinkGoogleAccountResponse\x12,\n" +
+	"\x04user\x18\x01 \x01(\v2\x18.tradedrift.auth.v1.UserR\x04user\x12!\n" +
+	"\faccess_token\x18\x02 \x01(\tR\vaccessToken\x12#\n" +
+	"\rrefresh_token\x18\x03 \x01(\tR\frefreshToken\x12Q\n" +
+	"\x17access_token_expires_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x14accessTokenExpiresAt\x12S\n" +
+	"\x18refresh_token_expires_at\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\x15refreshTokenExpiresAt\"8\n" +
+	"\x1bConnectGoogleAccountRequest\x12\x19\n" +
+	"\bid_token\x18\x01 \x01(\tR\aidToken\"j\n" +
+	"\x1cConnectGoogleAccountResponse\x12\x18\n" +
+	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x1a\n" +
+	"\bprovider\x18\x02 \x01(\tR\bprovider\x12\x14\n" +
+	"\x05email\x18\x03 \x01(\tR\x05email*\x80\x01\n" +
+	"\x11GoogleLoginStatus\x12#\n" +
+	"\x1fGOOGLE_LOGIN_STATUS_UNSPECIFIED\x10\x00\x12\x1f\n" +
+	"\x1bGOOGLE_LOGIN_STATUS_SUCCESS\x10\x01\x12%\n" +
+	"!GOOGLE_LOGIN_STATUS_LINK_REQUIRED\x10\x022\xe2\r\n" +
 	"\vAuthService\x12U\n" +
 	"\bRegister\x12#.tradedrift.auth.v1.RegisterRequest\x1a$.tradedrift.auth.v1.RegisterResponse\x12^\n" +
 	"\vVerifyEmail\x12&.tradedrift.auth.v1.VerifyEmailRequest\x1a'.tradedrift.auth.v1.VerifyEmailResponse\x12\x7f\n" +
@@ -1622,10 +2107,13 @@ const file_auth_v1_auth_proto_rawDesc = "" +
 	"\x05Login\x12 .tradedrift.auth.v1.LoginRequest\x1a!.tradedrift.auth.v1.LoginResponse\x12a\n" +
 	"\fRefreshToken\x12'.tradedrift.auth.v1.RefreshTokenRequest\x1a(.tradedrift.auth.v1.RefreshTokenResponse\x12g\n" +
 	"\x0eForgotPassword\x12).tradedrift.auth.v1.ForgotPasswordRequest\x1a*.tradedrift.auth.v1.ForgotPasswordResponse\x12d\n" +
-	"\rResetPassword\x12(.tradedrift.auth.v1.ResetPasswordRequest\x1a).tradedrift.auth.v1.ResetPasswordResponse\x12O\n" +
+	"\rResetPassword\x12(.tradedrift.auth.v1.ResetPasswordRequest\x1a).tradedrift.auth.v1.ResetPasswordResponse\x12^\n" +
+	"\vGoogleLogin\x12&.tradedrift.auth.v1.GoogleLoginRequest\x1a'.tradedrift.auth.v1.GoogleLoginResponse\x12p\n" +
+	"\x11LinkGoogleAccount\x12,.tradedrift.auth.v1.LinkGoogleAccountRequest\x1a-.tradedrift.auth.v1.LinkGoogleAccountResponse\x12O\n" +
 	"\x06Logout\x12!.tradedrift.auth.v1.LogoutRequest\x1a\".tradedrift.auth.v1.LogoutResponse\x12X\n" +
 	"\tLogoutAll\x12$.tradedrift.auth.v1.LogoutAllRequest\x1a%.tradedrift.auth.v1.LogoutAllResponse\x12g\n" +
-	"\x0eChangePassword\x12).tradedrift.auth.v1.ChangePasswordRequest\x1a*.tradedrift.auth.v1.ChangePasswordResponse\x12\x7f\n" +
+	"\x0eChangePassword\x12).tradedrift.auth.v1.ChangePasswordRequest\x1a*.tradedrift.auth.v1.ChangePasswordResponse\x12y\n" +
+	"\x14ConnectGoogleAccount\x12/.tradedrift.auth.v1.ConnectGoogleAccountRequest\x1a0.tradedrift.auth.v1.ConnectGoogleAccountResponse\x12\x7f\n" +
 	"\x16InvalidateUserSessions\x121.tradedrift.auth.v1.InvalidateUserSessionsRequest\x1a2.tradedrift.auth.v1.InvalidateUserSessionsResponse\x12^\n" +
 	"\vSuspendUser\x12&.tradedrift.auth.v1.SuspendUserRequest\x1a'.tradedrift.auth.v1.SuspendUserResponse\x12d\n" +
 	"\rUnsuspendUser\x12(.tradedrift.auth.v1.UnsuspendUserRequest\x1a).tradedrift.auth.v1.UnsuspendUserResponse\x12s\n" +
@@ -1643,81 +2131,102 @@ func file_auth_v1_auth_proto_rawDescGZIP() []byte {
 	return file_auth_v1_auth_proto_rawDescData
 }
 
-var file_auth_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_auth_v1_auth_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_auth_v1_auth_proto_msgTypes = make([]protoimpl.MessageInfo, 35)
 var file_auth_v1_auth_proto_goTypes = []any{
-	(*User)(nil),                           // 0: tradedrift.auth.v1.User
-	(*RegisterRequest)(nil),                // 1: tradedrift.auth.v1.RegisterRequest
-	(*RegisterResponse)(nil),               // 2: tradedrift.auth.v1.RegisterResponse
-	(*VerifyEmailRequest)(nil),             // 3: tradedrift.auth.v1.VerifyEmailRequest
-	(*VerifyEmailResponse)(nil),            // 4: tradedrift.auth.v1.VerifyEmailResponse
-	(*ResendVerificationCodeRequest)(nil),  // 5: tradedrift.auth.v1.ResendVerificationCodeRequest
-	(*ResendVerificationCodeResponse)(nil), // 6: tradedrift.auth.v1.ResendVerificationCodeResponse
-	(*LoginRequest)(nil),                   // 7: tradedrift.auth.v1.LoginRequest
-	(*LoginResponse)(nil),                  // 8: tradedrift.auth.v1.LoginResponse
-	(*RefreshTokenRequest)(nil),            // 9: tradedrift.auth.v1.RefreshTokenRequest
-	(*RefreshTokenResponse)(nil),           // 10: tradedrift.auth.v1.RefreshTokenResponse
-	(*ForgotPasswordRequest)(nil),          // 11: tradedrift.auth.v1.ForgotPasswordRequest
-	(*ForgotPasswordResponse)(nil),         // 12: tradedrift.auth.v1.ForgotPasswordResponse
-	(*ResetPasswordRequest)(nil),           // 13: tradedrift.auth.v1.ResetPasswordRequest
-	(*ResetPasswordResponse)(nil),          // 14: tradedrift.auth.v1.ResetPasswordResponse
-	(*LogoutRequest)(nil),                  // 15: tradedrift.auth.v1.LogoutRequest
-	(*LogoutResponse)(nil),                 // 16: tradedrift.auth.v1.LogoutResponse
-	(*LogoutAllRequest)(nil),               // 17: tradedrift.auth.v1.LogoutAllRequest
-	(*LogoutAllResponse)(nil),              // 18: tradedrift.auth.v1.LogoutAllResponse
-	(*InvalidateUserSessionsRequest)(nil),  // 19: tradedrift.auth.v1.InvalidateUserSessionsRequest
-	(*InvalidateUserSessionsResponse)(nil), // 20: tradedrift.auth.v1.InvalidateUserSessionsResponse
-	(*ChangePasswordRequest)(nil),          // 21: tradedrift.auth.v1.ChangePasswordRequest
-	(*ChangePasswordResponse)(nil),         // 22: tradedrift.auth.v1.ChangePasswordResponse
-	(*SuspendUserRequest)(nil),             // 23: tradedrift.auth.v1.SuspendUserRequest
-	(*SuspendUserResponse)(nil),            // 24: tradedrift.auth.v1.SuspendUserResponse
-	(*UnsuspendUserRequest)(nil),           // 25: tradedrift.auth.v1.UnsuspendUserRequest
-	(*UnsuspendUserResponse)(nil),          // 26: tradedrift.auth.v1.UnsuspendUserResponse
-	(*ListSuspendedUsersRequest)(nil),      // 27: tradedrift.auth.v1.ListSuspendedUsersRequest
-	(*ListSuspendedUsersResponse)(nil),     // 28: tradedrift.auth.v1.ListSuspendedUsersResponse
-	(*timestamppb.Timestamp)(nil),          // 29: google.protobuf.Timestamp
+	(GoogleLoginStatus)(0),                 // 0: tradedrift.auth.v1.GoogleLoginStatus
+	(*User)(nil),                           // 1: tradedrift.auth.v1.User
+	(*RegisterRequest)(nil),                // 2: tradedrift.auth.v1.RegisterRequest
+	(*RegisterResponse)(nil),               // 3: tradedrift.auth.v1.RegisterResponse
+	(*VerifyEmailRequest)(nil),             // 4: tradedrift.auth.v1.VerifyEmailRequest
+	(*VerifyEmailResponse)(nil),            // 5: tradedrift.auth.v1.VerifyEmailResponse
+	(*ResendVerificationCodeRequest)(nil),  // 6: tradedrift.auth.v1.ResendVerificationCodeRequest
+	(*ResendVerificationCodeResponse)(nil), // 7: tradedrift.auth.v1.ResendVerificationCodeResponse
+	(*LoginRequest)(nil),                   // 8: tradedrift.auth.v1.LoginRequest
+	(*LoginResponse)(nil),                  // 9: tradedrift.auth.v1.LoginResponse
+	(*RefreshTokenRequest)(nil),            // 10: tradedrift.auth.v1.RefreshTokenRequest
+	(*RefreshTokenResponse)(nil),           // 11: tradedrift.auth.v1.RefreshTokenResponse
+	(*ForgotPasswordRequest)(nil),          // 12: tradedrift.auth.v1.ForgotPasswordRequest
+	(*ForgotPasswordResponse)(nil),         // 13: tradedrift.auth.v1.ForgotPasswordResponse
+	(*ResetPasswordRequest)(nil),           // 14: tradedrift.auth.v1.ResetPasswordRequest
+	(*ResetPasswordResponse)(nil),          // 15: tradedrift.auth.v1.ResetPasswordResponse
+	(*LogoutRequest)(nil),                  // 16: tradedrift.auth.v1.LogoutRequest
+	(*LogoutResponse)(nil),                 // 17: tradedrift.auth.v1.LogoutResponse
+	(*LogoutAllRequest)(nil),               // 18: tradedrift.auth.v1.LogoutAllRequest
+	(*LogoutAllResponse)(nil),              // 19: tradedrift.auth.v1.LogoutAllResponse
+	(*InvalidateUserSessionsRequest)(nil),  // 20: tradedrift.auth.v1.InvalidateUserSessionsRequest
+	(*InvalidateUserSessionsResponse)(nil), // 21: tradedrift.auth.v1.InvalidateUserSessionsResponse
+	(*ChangePasswordRequest)(nil),          // 22: tradedrift.auth.v1.ChangePasswordRequest
+	(*ChangePasswordResponse)(nil),         // 23: tradedrift.auth.v1.ChangePasswordResponse
+	(*SuspendUserRequest)(nil),             // 24: tradedrift.auth.v1.SuspendUserRequest
+	(*SuspendUserResponse)(nil),            // 25: tradedrift.auth.v1.SuspendUserResponse
+	(*UnsuspendUserRequest)(nil),           // 26: tradedrift.auth.v1.UnsuspendUserRequest
+	(*UnsuspendUserResponse)(nil),          // 27: tradedrift.auth.v1.UnsuspendUserResponse
+	(*ListSuspendedUsersRequest)(nil),      // 28: tradedrift.auth.v1.ListSuspendedUsersRequest
+	(*ListSuspendedUsersResponse)(nil),     // 29: tradedrift.auth.v1.ListSuspendedUsersResponse
+	(*GoogleLoginRequest)(nil),             // 30: tradedrift.auth.v1.GoogleLoginRequest
+	(*GoogleLoginResponse)(nil),            // 31: tradedrift.auth.v1.GoogleLoginResponse
+	(*LinkGoogleAccountRequest)(nil),       // 32: tradedrift.auth.v1.LinkGoogleAccountRequest
+	(*LinkGoogleAccountResponse)(nil),      // 33: tradedrift.auth.v1.LinkGoogleAccountResponse
+	(*ConnectGoogleAccountRequest)(nil),    // 34: tradedrift.auth.v1.ConnectGoogleAccountRequest
+	(*ConnectGoogleAccountResponse)(nil),   // 35: tradedrift.auth.v1.ConnectGoogleAccountResponse
+	(*timestamppb.Timestamp)(nil),          // 36: google.protobuf.Timestamp
 }
 var file_auth_v1_auth_proto_depIdxs = []int32{
-	0,  // 0: tradedrift.auth.v1.VerifyEmailResponse.user:type_name -> tradedrift.auth.v1.User
-	29, // 1: tradedrift.auth.v1.VerifyEmailResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
-	29, // 2: tradedrift.auth.v1.VerifyEmailResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
-	0,  // 3: tradedrift.auth.v1.LoginResponse.user:type_name -> tradedrift.auth.v1.User
-	29, // 4: tradedrift.auth.v1.LoginResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
-	29, // 5: tradedrift.auth.v1.LoginResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
-	29, // 6: tradedrift.auth.v1.RefreshTokenResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
-	29, // 7: tradedrift.auth.v1.RefreshTokenResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
-	1,  // 8: tradedrift.auth.v1.AuthService.Register:input_type -> tradedrift.auth.v1.RegisterRequest
-	3,  // 9: tradedrift.auth.v1.AuthService.VerifyEmail:input_type -> tradedrift.auth.v1.VerifyEmailRequest
-	5,  // 10: tradedrift.auth.v1.AuthService.ResendVerificationCode:input_type -> tradedrift.auth.v1.ResendVerificationCodeRequest
-	7,  // 11: tradedrift.auth.v1.AuthService.Login:input_type -> tradedrift.auth.v1.LoginRequest
-	9,  // 12: tradedrift.auth.v1.AuthService.RefreshToken:input_type -> tradedrift.auth.v1.RefreshTokenRequest
-	11, // 13: tradedrift.auth.v1.AuthService.ForgotPassword:input_type -> tradedrift.auth.v1.ForgotPasswordRequest
-	13, // 14: tradedrift.auth.v1.AuthService.ResetPassword:input_type -> tradedrift.auth.v1.ResetPasswordRequest
-	15, // 15: tradedrift.auth.v1.AuthService.Logout:input_type -> tradedrift.auth.v1.LogoutRequest
-	17, // 16: tradedrift.auth.v1.AuthService.LogoutAll:input_type -> tradedrift.auth.v1.LogoutAllRequest
-	21, // 17: tradedrift.auth.v1.AuthService.ChangePassword:input_type -> tradedrift.auth.v1.ChangePasswordRequest
-	19, // 18: tradedrift.auth.v1.AuthService.InvalidateUserSessions:input_type -> tradedrift.auth.v1.InvalidateUserSessionsRequest
-	23, // 19: tradedrift.auth.v1.AuthService.SuspendUser:input_type -> tradedrift.auth.v1.SuspendUserRequest
-	25, // 20: tradedrift.auth.v1.AuthService.UnsuspendUser:input_type -> tradedrift.auth.v1.UnsuspendUserRequest
-	27, // 21: tradedrift.auth.v1.AuthService.ListSuspendedUsers:input_type -> tradedrift.auth.v1.ListSuspendedUsersRequest
-	2,  // 22: tradedrift.auth.v1.AuthService.Register:output_type -> tradedrift.auth.v1.RegisterResponse
-	4,  // 23: tradedrift.auth.v1.AuthService.VerifyEmail:output_type -> tradedrift.auth.v1.VerifyEmailResponse
-	6,  // 24: tradedrift.auth.v1.AuthService.ResendVerificationCode:output_type -> tradedrift.auth.v1.ResendVerificationCodeResponse
-	8,  // 25: tradedrift.auth.v1.AuthService.Login:output_type -> tradedrift.auth.v1.LoginResponse
-	10, // 26: tradedrift.auth.v1.AuthService.RefreshToken:output_type -> tradedrift.auth.v1.RefreshTokenResponse
-	12, // 27: tradedrift.auth.v1.AuthService.ForgotPassword:output_type -> tradedrift.auth.v1.ForgotPasswordResponse
-	14, // 28: tradedrift.auth.v1.AuthService.ResetPassword:output_type -> tradedrift.auth.v1.ResetPasswordResponse
-	16, // 29: tradedrift.auth.v1.AuthService.Logout:output_type -> tradedrift.auth.v1.LogoutResponse
-	18, // 30: tradedrift.auth.v1.AuthService.LogoutAll:output_type -> tradedrift.auth.v1.LogoutAllResponse
-	22, // 31: tradedrift.auth.v1.AuthService.ChangePassword:output_type -> tradedrift.auth.v1.ChangePasswordResponse
-	20, // 32: tradedrift.auth.v1.AuthService.InvalidateUserSessions:output_type -> tradedrift.auth.v1.InvalidateUserSessionsResponse
-	24, // 33: tradedrift.auth.v1.AuthService.SuspendUser:output_type -> tradedrift.auth.v1.SuspendUserResponse
-	26, // 34: tradedrift.auth.v1.AuthService.UnsuspendUser:output_type -> tradedrift.auth.v1.UnsuspendUserResponse
-	28, // 35: tradedrift.auth.v1.AuthService.ListSuspendedUsers:output_type -> tradedrift.auth.v1.ListSuspendedUsersResponse
-	22, // [22:36] is the sub-list for method output_type
-	8,  // [8:22] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	1,  // 0: tradedrift.auth.v1.VerifyEmailResponse.user:type_name -> tradedrift.auth.v1.User
+	36, // 1: tradedrift.auth.v1.VerifyEmailResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
+	36, // 2: tradedrift.auth.v1.VerifyEmailResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
+	1,  // 3: tradedrift.auth.v1.LoginResponse.user:type_name -> tradedrift.auth.v1.User
+	36, // 4: tradedrift.auth.v1.LoginResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
+	36, // 5: tradedrift.auth.v1.LoginResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
+	36, // 6: tradedrift.auth.v1.RefreshTokenResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
+	36, // 7: tradedrift.auth.v1.RefreshTokenResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
+	0,  // 8: tradedrift.auth.v1.GoogleLoginResponse.status:type_name -> tradedrift.auth.v1.GoogleLoginStatus
+	1,  // 9: tradedrift.auth.v1.GoogleLoginResponse.user:type_name -> tradedrift.auth.v1.User
+	36, // 10: tradedrift.auth.v1.GoogleLoginResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
+	36, // 11: tradedrift.auth.v1.GoogleLoginResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
+	1,  // 12: tradedrift.auth.v1.LinkGoogleAccountResponse.user:type_name -> tradedrift.auth.v1.User
+	36, // 13: tradedrift.auth.v1.LinkGoogleAccountResponse.access_token_expires_at:type_name -> google.protobuf.Timestamp
+	36, // 14: tradedrift.auth.v1.LinkGoogleAccountResponse.refresh_token_expires_at:type_name -> google.protobuf.Timestamp
+	2,  // 15: tradedrift.auth.v1.AuthService.Register:input_type -> tradedrift.auth.v1.RegisterRequest
+	4,  // 16: tradedrift.auth.v1.AuthService.VerifyEmail:input_type -> tradedrift.auth.v1.VerifyEmailRequest
+	6,  // 17: tradedrift.auth.v1.AuthService.ResendVerificationCode:input_type -> tradedrift.auth.v1.ResendVerificationCodeRequest
+	8,  // 18: tradedrift.auth.v1.AuthService.Login:input_type -> tradedrift.auth.v1.LoginRequest
+	10, // 19: tradedrift.auth.v1.AuthService.RefreshToken:input_type -> tradedrift.auth.v1.RefreshTokenRequest
+	12, // 20: tradedrift.auth.v1.AuthService.ForgotPassword:input_type -> tradedrift.auth.v1.ForgotPasswordRequest
+	14, // 21: tradedrift.auth.v1.AuthService.ResetPassword:input_type -> tradedrift.auth.v1.ResetPasswordRequest
+	30, // 22: tradedrift.auth.v1.AuthService.GoogleLogin:input_type -> tradedrift.auth.v1.GoogleLoginRequest
+	32, // 23: tradedrift.auth.v1.AuthService.LinkGoogleAccount:input_type -> tradedrift.auth.v1.LinkGoogleAccountRequest
+	16, // 24: tradedrift.auth.v1.AuthService.Logout:input_type -> tradedrift.auth.v1.LogoutRequest
+	18, // 25: tradedrift.auth.v1.AuthService.LogoutAll:input_type -> tradedrift.auth.v1.LogoutAllRequest
+	22, // 26: tradedrift.auth.v1.AuthService.ChangePassword:input_type -> tradedrift.auth.v1.ChangePasswordRequest
+	34, // 27: tradedrift.auth.v1.AuthService.ConnectGoogleAccount:input_type -> tradedrift.auth.v1.ConnectGoogleAccountRequest
+	20, // 28: tradedrift.auth.v1.AuthService.InvalidateUserSessions:input_type -> tradedrift.auth.v1.InvalidateUserSessionsRequest
+	24, // 29: tradedrift.auth.v1.AuthService.SuspendUser:input_type -> tradedrift.auth.v1.SuspendUserRequest
+	26, // 30: tradedrift.auth.v1.AuthService.UnsuspendUser:input_type -> tradedrift.auth.v1.UnsuspendUserRequest
+	28, // 31: tradedrift.auth.v1.AuthService.ListSuspendedUsers:input_type -> tradedrift.auth.v1.ListSuspendedUsersRequest
+	3,  // 32: tradedrift.auth.v1.AuthService.Register:output_type -> tradedrift.auth.v1.RegisterResponse
+	5,  // 33: tradedrift.auth.v1.AuthService.VerifyEmail:output_type -> tradedrift.auth.v1.VerifyEmailResponse
+	7,  // 34: tradedrift.auth.v1.AuthService.ResendVerificationCode:output_type -> tradedrift.auth.v1.ResendVerificationCodeResponse
+	9,  // 35: tradedrift.auth.v1.AuthService.Login:output_type -> tradedrift.auth.v1.LoginResponse
+	11, // 36: tradedrift.auth.v1.AuthService.RefreshToken:output_type -> tradedrift.auth.v1.RefreshTokenResponse
+	13, // 37: tradedrift.auth.v1.AuthService.ForgotPassword:output_type -> tradedrift.auth.v1.ForgotPasswordResponse
+	15, // 38: tradedrift.auth.v1.AuthService.ResetPassword:output_type -> tradedrift.auth.v1.ResetPasswordResponse
+	31, // 39: tradedrift.auth.v1.AuthService.GoogleLogin:output_type -> tradedrift.auth.v1.GoogleLoginResponse
+	33, // 40: tradedrift.auth.v1.AuthService.LinkGoogleAccount:output_type -> tradedrift.auth.v1.LinkGoogleAccountResponse
+	17, // 41: tradedrift.auth.v1.AuthService.Logout:output_type -> tradedrift.auth.v1.LogoutResponse
+	19, // 42: tradedrift.auth.v1.AuthService.LogoutAll:output_type -> tradedrift.auth.v1.LogoutAllResponse
+	23, // 43: tradedrift.auth.v1.AuthService.ChangePassword:output_type -> tradedrift.auth.v1.ChangePasswordResponse
+	35, // 44: tradedrift.auth.v1.AuthService.ConnectGoogleAccount:output_type -> tradedrift.auth.v1.ConnectGoogleAccountResponse
+	21, // 45: tradedrift.auth.v1.AuthService.InvalidateUserSessions:output_type -> tradedrift.auth.v1.InvalidateUserSessionsResponse
+	25, // 46: tradedrift.auth.v1.AuthService.SuspendUser:output_type -> tradedrift.auth.v1.SuspendUserResponse
+	27, // 47: tradedrift.auth.v1.AuthService.UnsuspendUser:output_type -> tradedrift.auth.v1.UnsuspendUserResponse
+	29, // 48: tradedrift.auth.v1.AuthService.ListSuspendedUsers:output_type -> tradedrift.auth.v1.ListSuspendedUsersResponse
+	32, // [32:49] is the sub-list for method output_type
+	15, // [15:32] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_auth_v1_auth_proto_init() }
@@ -1730,13 +2239,14 @@ func file_auth_v1_auth_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_auth_v1_auth_proto_rawDesc), len(file_auth_v1_auth_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   29,
+			NumEnums:      1,
+			NumMessages:   35,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_auth_v1_auth_proto_goTypes,
 		DependencyIndexes: file_auth_v1_auth_proto_depIdxs,
+		EnumInfos:         file_auth_v1_auth_proto_enumTypes,
 		MessageInfos:      file_auth_v1_auth_proto_msgTypes,
 	}.Build()
 	File_auth_v1_auth_proto = out.File

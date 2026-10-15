@@ -2,6 +2,7 @@ import { useNavigate } from 'react-router-dom'
 import { Zap, Check, Settings, ChevronRight } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useNotificationStore } from '../../store/notificationStore'
+import { RaisedSurface } from '../common/Surface'
 
 export default function NotificationQuickActionsCard() {
   const navigate = useNavigate()
@@ -13,7 +14,7 @@ export default function NotificationQuickActionsCard() {
   }
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl p-4 sm:p-5">
+    <RaisedSurface variant="raised-subtle" className="rounded-xl p-4 sm:p-5">
       {/* Header */}
       <div className="flex items-center gap-2 mb-3.5">
         <Zap size={16} className="text-amber-400" />
@@ -68,6 +69,6 @@ export default function NotificationQuickActionsCard() {
           <ChevronRight size={15} className="text-slate-500 group-hover:text-slate-300 group-hover:translate-x-0.5 transition-all flex-shrink-0" />
         </button>
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

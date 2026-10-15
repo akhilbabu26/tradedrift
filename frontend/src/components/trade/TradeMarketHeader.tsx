@@ -1,7 +1,8 @@
+import { useRef, useEffect } from 'react'
 import { Plus } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import type { Ticker24h, Market, Balance } from '../../types/trade'
-import { formatPrice, formatPercentage, formatQuantity } from '../../utils/formatters'
+import { formatPrice, formatPercentage, formatQuantity, formatHighLow, formatTurnover } from '../../utils/formatters'
 import { toDecimal } from '../../utils/decimal'
 import { getMarketMetadata } from '../../utils/marketMetadata'
 import MarketSelector from './MarketSelector'
@@ -57,17 +58,30 @@ export default function TradeMarketHeader({
   const changeBg      = changePositive ? 'bg-[#10b981]/10 border-[#10b981]/20' : 'bg-[#ef4444]/10 border-[#ef4444]/20'
 
   const usdtAvailable  = toDecimal(usdtBalance.availableBalance).toFixed(2)
-  const usdtUsdValue   = `≈ $${formatPrice(usdtBalance.availableBalance)}`
   const baseAvailable  = formatQuantity(baseBalance.availableBalance, 6)
 
   const handleAddDemoFunds = () => {
     navigate('/wallet')
   }
 
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollLeft = 0
+    }
+  }, [selectedMarketId])
+
+  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY !== 0) {
+      e.currentTarget.scrollLeft += e.deltaY
+    }
+  }
+
   return (
-    <div className="relative z-30 flex items-center border-b border-[#1e2530] bg-[#111318] px-4 h-14 flex-shrink-0">
+    <div className="relative z-30 flex items-center border-b border-[#1e2530] bg-[#111318] px-4 min-h-[58px] h-[58px] flex-shrink-0">
       {/* Market Selector */}
-      <div className="relative flex items-center pr-5 border-r border-[#1e2530] mr-5 flex-shrink-0">
+      <div className="relative flex items-center pr-4 border-r border-[#1e2530] mr-4 flex-shrink-0">
         <MarketSelector
           markets={markets}
           selectedMarketId={selectedMarketId}
@@ -76,8 +90,12 @@ export default function TradeMarketHeader({
         />
       </div>
 
-      {/* Ticker stats & actions container - scrolls horizontally on small screens without clipping MarketSelector */}
-      <div className="flex items-center gap-0 flex-1 min-w-0 overflow-x-auto h-full scrollbar-none">
+      {/* Ticker stats & actions container - scrolls horizontally on small screens without clipping */}
+      <div
+        ref={scrollRef}
+        onWheel={handleWheel}
+        className="flex items-center gap-0 flex-1 min-w-0 h-full trade-scrollbar-x py-1"
+      >
         {/* Last Price */}
         <div className="flex flex-col mr-5 flex-shrink-0">
           <span className="text-[10px] text-slate-500 uppercase tracking-wider">Last Price</span>
@@ -95,61 +113,70 @@ export default function TradeMarketHeader({
         </div>
 
         {/* 24h High */}
-        <div className="hidden md:flex flex-col mr-5 flex-shrink-0">
-          <StatCell label="24h High" value={high24h !== '—' ? formatPrice(high24h) : '—'} />
+        <div className="flex flex-col mr-5 flex-shrink-0">
+          <StatCell label="24h High" value={formatHighLow(high24h)} />
         </div>
 
         {/* 24h Low */}
-        <div className="hidden md:flex flex-col mr-5 flex-shrink-0">
-          <StatCell label="24h Low" value={low24h !== '—' ? formatPrice(low24h) : '—'} />
+        <div className="flex flex-col mr-5 flex-shrink-0">
+          <StatCell label="24h Low" value={formatHighLow(low24h)} />
         </div>
 
         {/* 24h Volume */}
-        <div className="hidden lg:flex flex-col mr-5 flex-shrink-0">
+        <div className="flex flex-col mr-5 flex-shrink-0">
           <StatCell
             label={`24h Volume (${baseAsset})`}
-            value={volume24h !== '—' ? formatQuantity(volume24h, 2) : '—'}
+            value={volume24h !== '—' && parseFloat(volume24h) > 0 ? formatQuantity(volume24h, 2) : '—'}
           />
         </div>
 
+        {/* 24h Turnover */}
+        {ticker?.quote_volume_24h && parseFloat(ticker.quote_volume_24h) > 0 && (
+          <div className="flex flex-col mr-5 flex-shrink-0">
+            <StatCell
+              label={`24h Turnover (${quoteAsset})`}
+              value={formatTurnover(ticker.quote_volume_24h)}
+            />
+          </div>
+        )}
+
         {/* Demo indicator */}
         {isDemoData && (
-          <div className="hidden md:flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 mr-4 flex-shrink-0">
+          <div className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 mr-4 flex-shrink-0">
             <span className="text-[10px] font-semibold text-amber-400 uppercase tracking-wider">DEMO</span>
           </div>
         )}
 
         {/* Spacer */}
-        <div className="flex-1" />
+        <div className="flex-1 min-w-[12px]" />
 
         {/* USDT Balance */}
-        <div className="hidden lg:flex flex-col items-end mr-4 flex-shrink-0">
+        <div className="flex flex-col items-end mr-4 flex-shrink-0">
           <div className="flex items-center gap-1.5">
             <div className={`w-4 h-4 rounded-full ${quoteMeta.iconBg} border ${quoteMeta.iconBorder} flex items-center justify-center flex-shrink-0`}>
               <span className={`text-[7px] font-black ${quoteMeta.iconColor}`}>{quoteMeta.symbol}</span>
             </div>
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider">{quoteAsset} Balance</span>
+            <span className="text-[10px] text-slate-500 uppercase tracking-wider whitespace-nowrap">{quoteAsset} Balance</span>
           </div>
-          <span className="text-sm font-bold font-mono text-[#f5f7fa] mt-0.5">{formatPrice(usdtAvailable)}</span>
-          <span className="text-[10px] text-slate-500">{usdtUsdValue}</span>
+          <span className="text-sm font-bold font-mono text-[#f5f7fa] mt-0.5 whitespace-nowrap">{formatPrice(usdtAvailable)}</span>
         </div>
 
         {/* Base Asset Balance */}
-        <div className="hidden lg:flex flex-col items-end mr-4 flex-shrink-0">
+        <div className="flex flex-col items-end mr-4 flex-shrink-0">
           <div className="flex items-center gap-1.5">
             <div className={`w-4 h-4 rounded-full ${baseMeta.iconBg} border ${baseMeta.iconBorder} flex items-center justify-center flex-shrink-0`}>
               <span className={`text-[7px] font-black ${baseMeta.iconColor}`}>{baseMeta.symbol}</span>
             </div>
-            <span className="text-[10px] text-slate-500 uppercase tracking-wider">{baseAsset} Balance</span>
+            <span className="text-[10px] text-slate-500 uppercase tracking-wider whitespace-nowrap">{baseAsset} Balance</span>
           </div>
-          <span className="text-sm font-bold font-mono text-[#f5f7fa] mt-0.5">{baseAvailable}</span>
+          <span className="text-sm font-bold font-mono text-[#f5f7fa] mt-0.5 whitespace-nowrap">{baseAvailable}</span>
         </div>
 
         {/* Add Demo Funds */}
         <button
           type="button"
           onClick={handleAddDemoFunds}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#10b981]/40 bg-[#10b981]/8 text-[#10b981] text-xs font-semibold hover:bg-[#10b981]/15 hover:border-[#10b981]/60 transition-colors flex-shrink-0"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#10b981]/40 bg-[#10b981]/8 text-[#10b981] text-xs font-semibold hover:bg-[#10b981]/15 hover:border-[#10b981]/60 transition-colors flex-shrink-0 whitespace-nowrap"
           aria-label="Add demo funds — informational"
         >
           <Plus size={13} strokeWidth={2.5} />

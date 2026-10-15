@@ -49,12 +49,90 @@ export function formatQuantity(value: string | number, decimals = 4): string {
  */
 export function formatPercentage(value: string | number, signed = true): string {
   try {
-    const d = toDecimal(value)
+    const clean = typeof value === 'string' ? value.replace(/%/g, '').trim() : value
+    const d = toDecimal(clean)
     const fixed = d.toFixed(2)
     if (signed && d.gt(0)) return `+${fixed}%`
     return `${fixed}%`
   } catch {
     return '0.00%'
+  }
+}
+
+/**
+ * Calculates order execution progress percentage clamped to [0, 100].
+ * Safely handles missing, zero, invalid, or negative numbers without NaN / Infinity.
+ * e.g. filled = 0.56, total = 5.0 -> 11.2
+ */
+export function calculateOrderProgress(
+  filled: string | number | undefined | null,
+  total: string | number | undefined | null
+): number {
+  try {
+    const f = toDecimal(filled || '0')
+    const t = toDecimal(total || '0')
+    if (t.lte(0) || f.lte(0)) return 0
+    if (f.gte(t)) return 100
+    const pct = f.dividedBy(t).times(100).toNumber()
+    if (isNaN(pct) || !isFinite(pct) || pct <= 0) return 0
+    return Math.min(100, Math.max(0, Math.round(pct * 10) / 10))
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * Formats order execution progress percentage string.
+ * Formats whole percentages without decimals (e.g. 0%, 20%, 100%),
+ * and fractional percentages with 1 decimal place (e.g. 11.2%).
+ */
+export function formatOrderProgress(progress: number | string | undefined | null): string {
+  try {
+    const p = typeof progress === 'number' ? progress : parseFloat(String(progress || '0'))
+    if (isNaN(p) || !isFinite(p) || p <= 0) return '0%'
+    if (p >= 100) return '100%'
+    if (p % 1 === 0) return `${p.toFixed(0)}%`
+    return `${p.toFixed(1)}%`
+  } catch {
+    return '0%'
+  }
+}
+
+/**
+ * Formats a raw quote turnover value into compact dollar currency string.
+ * e.g. "3247011.56" → "$3.25M"
+ *      "150250.00"  → "$150.3K"
+ *      "45.20"      → "$45.20"
+ */
+export function formatTurnover(raw: string | number | undefined): string {
+  if (!raw) return '$0'
+  try {
+    const v = toDecimal(raw)
+    if (v.lte(0)) return '$0'
+    if (v.gte(1_000_000_000)) return `$${v.dividedBy(1_000_000_000).toFixed(2)}B`
+    if (v.gte(1_000_000))     return `$${v.dividedBy(1_000_000).toFixed(2)}M`
+    if (v.gte(1_000))         return `$${v.dividedBy(1_000).toFixed(1)}K`
+    return `$${v.toFixed(2)}`
+  } catch {
+    return '$0'
+  }
+}
+
+/** Alias for backward compatibility */
+export const formatVolume = formatTurnover
+
+/**
+ * Formats 24h high/low price string.
+ * When price is 0, non-positive, or missing, returns "—" (never displays "$0.00").
+ */
+export function formatHighLow(price: string | number | undefined): string {
+  if (!price) return '—'
+  try {
+    const d = toDecimal(price)
+    if (d.lte(0)) return '—'
+    return formatPrice(d.toString())
+  } catch {
+    return '—'
   }
 }
 

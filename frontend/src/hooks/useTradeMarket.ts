@@ -104,7 +104,12 @@ export function useTradeMarket(initialMarketId = 'BTC-USDT') {
       }
     }
 
-    loadTicker()
+    const cached = useMarketStore.getState().tickers[targetMarket]
+    if (cached && cached.last_price) {
+      setTicker(cached)
+    } else {
+      loadTicker()
+    }
 
     // Subscribe to centralized WS ticker stream in marketStore
     const unsubTicker = subscribeStoreTicker(targetMarket)
@@ -141,13 +146,17 @@ export function useTradeMarket(initialMarketId = 'BTC-USDT') {
     }
   }, [markets, selectedMarketId])
 
+  const combinedTrends = useMemo(() => {
+    return Object.keys(storeTrends).length > 0 ? { ...marketTrends, ...storeTrends } : marketTrends
+  }, [marketTrends, storeTrends])
+
   return {
     markets,
     selectedMarketId,
     setSelectedMarketId,
     selectedMarket,
     ticker: storeTicker || ticker,
-    marketTrends: Object.keys(storeTrends).length > 0 ? { ...marketTrends, ...storeTrends } : marketTrends,
+    marketTrends: combinedTrends,
     isDemoData,
     loading,
   }

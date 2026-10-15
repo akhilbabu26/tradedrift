@@ -3,6 +3,7 @@ import { Search } from 'lucide-react'
 import HoldingsTable from './HoldingsTable'
 import type { PortfolioHolding, HoldingsFilterTab } from '../../types/portfolio'
 import { toDecimal } from '../../utils/decimal'
+import { RaisedSurface } from '../common/Surface'
 
 interface Props {
   holdings: PortfolioHolding[]
@@ -35,7 +36,7 @@ export default function HoldingsSection({ holdings, loading }: Props) {
 
     const safeDec = (v: string) => {
       try {
-        const sanitized = String(v || '0').replace(/[^\d.\-]/g, '').replace(/^-?$/, '0')
+        const sanitized = String(v || '0').replace(/[^\d.-]/g, '').replace(/^-?$/, '0')
         return toDecimal(sanitized)
       } catch {
         return toDecimal(0)
@@ -68,7 +69,7 @@ export default function HoldingsSection({ holdings, loading }: Props) {
   }, [holdings, search, activeTab, hideSmall])
 
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl overflow-hidden">
+    <RaisedSurface variant="raised-subtle" noPadding className="overflow-hidden">
       {/* Section header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 px-5 py-4 border-b border-[#1e2530]">
         <h2 className="text-sm font-semibold text-[#f5f7fa]">
@@ -136,6 +137,6 @@ export default function HoldingsSection({ holdings, loading }: Props) {
       ) : (
         <HoldingsTable holdings={filtered} />
       )}
-    </div>
+    </RaisedSurface>
   )
 }

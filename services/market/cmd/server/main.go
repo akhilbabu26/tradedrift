@@ -74,6 +74,30 @@ func main() {
 	candleRepo := postgresrepo.NewCandleRepository(dbPool)
 	marketSvc := service.NewMarketService(marketRepo, candleRepo, redisClient, appLogger)
 
+	// Seed all active market tickers to Redis immediately upon startup
+	if err := marketSvc.RefreshAllTickers(ctx); err != nil {
+		appLogger.Warn("Initial ticker publication to Redis encountered an issue", zap.Error(err))
+	} else {
+		appLogger.Info("Seeded initial active market tickers to Redis successfully")
+	}
+
+	// Periodic ticker refresher: preserves valid ticker data during idle periods
+	// and continuously recalculates 24h metrics every 5 seconds.
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := marketSvc.RefreshAllTickers(ctx); err != nil {
+					appLogger.Warn("Periodic ticker refresh encountered an issue", zap.Error(err))
+				}
+			}
+		}
+	}()
+
 	// Invariant 1: No synthetic historical trades or candles are generated.
 	// Market history is strictly execution-derived from ME TradeExecuted events.
 

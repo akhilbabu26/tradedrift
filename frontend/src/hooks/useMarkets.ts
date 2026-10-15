@@ -20,15 +20,15 @@
  *   - Real numeric calculations with decimal safety.
  */
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { marketApi, type Market, type Ticker24h, type MarketOverview } from '../api/market'
-import { wsService, WsChannels, type ConnectionStatus } from '../api/ws'
+import { useState, useEffect, useMemo } from 'react'
+import type { Market, Ticker24h } from '../api/market'
+import { wsService, type ConnectionStatus } from '../api/ws'
 import { toDecimal } from '../utils/decimal'
 import { getAssetMetadata } from '../utils/marketMetadata'
-import { extractApiError } from '../utils/apiError'
 import { evaluateTrendCoverage, type TrendCoverage } from '../utils/trendCoverage'
+import { formatTurnover, formatQuantity } from '../utils/formatters'
+import { useMarketsData } from '../store/marketStore'
 import type { MarketEntry, MarketHighlight, MarketStats } from '../types/markets'
-
 
 export type MarketFilter = 'all' | 'favorites'
 
@@ -94,18 +94,6 @@ export function normalizeTrend(trend: string[] | undefined, targetPoints = 16): 
   return sampled.map((v) => Math.round(((v - min) / range) * 1000) / 1000)
 }
 
-/** Format raw volume number to display string */
-function formatVolume(raw: string | undefined): string {
-  if (!raw) return '$0'
-  try {
-    const v = toDecimal(raw)
-    if (v.gte(1_000_000_000)) return `$${v.dividedBy(1_000_000_000).toFixed(2)}B`
-    if (v.gte(1_000_000))     return `$${v.dividedBy(1_000_000).toFixed(2)}M`
-    if (v.gte(1_000))         return `$${v.dividedBy(1_000).toFixed(1)}K`
-    return `$${v.toFixed(2)}`
-  } catch { return '$0' }
-}
-
 /** Map backend Market + Ticker to MarketEntry UI type */
 function buildEntry(
   market: Market,
@@ -123,7 +111,9 @@ function buildEntry(
   const positive = toDecimal(changeStr).gte(0)
   const high = ticker?.high_24h ?? '0'
   const low  = ticker?.low_24h  ?? '0'
-  const vol  = formatVolume(ticker?.quote_volume_24h)
+  const quoteVol = formatTurnover(ticker?.quote_volume_24h)
+  const baseVolNum = parseFloat(ticker?.volume_24h || '0')
+  const baseVolStr = baseVolNum > 0 ? `${formatQuantity(ticker?.volume_24h || '0', 2)} ${base}` : undefined
   const pair = `${base}/${market.quote_asset}`
 
   const sparklinePoints = (trendPoints && trendPoints.length > 0)
@@ -140,7 +130,9 @@ function buildEntry(
     positive,
     high24h: high,
     low24h: low,
-    volume24h: vol,
+    volume24h: quoteVol,
+    baseVolume24h: baseVolStr,
+    quoteVolume24h: quoteVol,
     sparklinePoints,
     iconColor: meta.iconColor,
     iconLabel: meta.iconLabel,
@@ -149,7 +141,6 @@ function buildEntry(
     trendHours: coverage?.hoursCovered,
   }
 }
-
 
 /** Derive highlights from live entries */
 function deriveHighlights(
@@ -237,20 +228,12 @@ export function useMarkets(): UseMarketsReturn {
   const [search, setSearch]               = useState('')
   const [filter, setFilter]               = useState<MarketFilter>('all')
   const [quoteCurrency, setQuoteCurrency] = useState('USDT')
+  const [wsStatus, setWsStatus]           = useState<ConnectionStatus>(() => wsService.getStatus())
 
-  const [markets, setMarkets]       = useState<Market[]>([])
-  const [tickers, setTickers]       = useState<Record<string, Ticker24h>>({})
-  const [trends, setTrends]         = useState<Record<string, number[]>>({})
-  const [trendCoverages, setTrendCoverages] = useState<Record<string, TrendCoverage>>({})
-  const [loading, setLoading]       = useState(true)
-  const [error, setError]           = useState<string | null>(null)
-  const [isDemoData, setIsDemoData] = useState(false)
-  const [wsStatus, setWsStatus]     = useState<ConnectionStatus>(() => wsService.getStatus())
+  // Consume centralized market data & subscriptions from marketStore
+  const { markets, tickers, trends, loading, error, refetch } = useMarketsData()
 
-  const tickersRef = useRef(tickers)
-  tickersRef.current = tickers
-
-  // ── Track WebSocket connection status ─────────────────────────────────────
+  // Track WebSocket connection status
   useEffect(() => {
     const unsub = wsService.onStatus((_connected, status) => {
       setWsStatus(status)
@@ -260,183 +243,15 @@ export function useMarkets(): UseMarketsReturn {
     }
   }, [])
 
-  // ── Load initial markets & overview data from backend ──────────────────────
-  const loadData = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const [marketList, overviewList] = await Promise.all([
-        marketApi.getMarkets(),
-        marketApi.getMarketsOverview().catch(() => [] as MarketOverview[]),
-      ])
-      setMarkets(marketList)
-
-      const newTickers: Record<string, Ticker24h> = {}
-      const newTrends: Record<string, number[]> = {}
-      const newCoverages: Record<string, TrendCoverage> = {}
-
-      overviewList.forEach((ov) => {
-        newTickers[ov.market_id] = {
-          market_id: ov.market_id,
-          last_price: ov.last_price,
-          high_24h: ov.high_24h,
-          low_24h: ov.low_24h,
-          volume_24h: ov.volume_24h,
-          quote_volume_24h: ov.quote_volume_24h,
-          price_change_24h_percent: ov.price_change_24h_percent,
-        }
-        const coverage = evaluateTrendCoverage(ov.trend?.length || 0)
-        newCoverages[ov.market_id] = coverage
-        if (ov.trend && ov.trend.length > 0) {
-          const validFloats = ov.trend
-            .map((v) => parseFloat(v))
-            .filter((v) => !isNaN(v) && isFinite(v) && v > 0)
-          if (validFloats.length > 0) {
-            newTrends[ov.market_id] = validFloats.slice(-24)
-          }
-        }
-      })
-
-      // Fallback for any market missing from overview
-      const missingTickers = marketList.filter((m) => !newTickers[m.id])
-      if (missingTickers.length > 0) {
-        const results = await Promise.allSettled(missingTickers.map((m) => marketApi.getTicker(m.id)))
-        missingTickers.forEach((m, i) => {
-          const r = results[i]
-          if (r.status === 'fulfilled') newTickers[m.id] = r.value
-        })
-      }
-
-      // If any market is missing trend from overview, fetch candles
-      const missingTrends = marketList.filter((m) => !newTrends[m.id] || newTrends[m.id].length === 0)
-      if (missingTrends.length > 0) {
-        const candleResults = await Promise.allSettled(
-          missingTrends.map((m) => marketApi.getCandles(m.id, '1h', 24))
-        )
-        missingTrends.forEach((m, i) => {
-          const r = candleResults[i]
-          if (r.status === 'fulfilled') {
-            const candles = r.value
-            const startCandle = candles[0]
-            const endCandle = candles[candles.length - 1]
-            const coverage = evaluateTrendCoverage(
-              candles.length,
-              startCandle?.start_time,
-              endCandle?.start_time
-            )
-            newCoverages[m.id] = coverage
-            if (candles.length > 0) {
-              const closes = candles
-                .map((c) => parseFloat(c.close))
-                .filter((v) => !isNaN(v) && isFinite(v) && v > 0)
-              if (closes.length > 0) {
-                newTrends[m.id] = closes.slice(-24)
-              }
-            }
-          }
-        })
-      }
-
-      // If any market still has no historical series, initialize with last price
-      marketList.forEach((m) => {
-        if (!newTrends[m.id] || newTrends[m.id].length === 0) {
-          const p = parseFloat(newTickers[m.id]?.last_price || '0')
-          if (p > 0) {
-            newTrends[m.id] = [p]
-          }
-        }
-      })
-
-      setTickers(newTickers)
-      setTrends(newTrends)
-      setTrendCoverages(newCoverages)
-      setIsDemoData(false)
-    } catch (err) {
-      const msg = extractApiError(err)
-      setError(msg)
-      setIsDemoData(false)
-      setMarkets([])
-      setTickers({})
-      setTrends({})
-      setTrendCoverages({})
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-
-  // ── WebSocket: live ticker updates ────────────────────────────────────────
-  useEffect(() => {
-    if (markets.length === 0) return
-
-    const unsubs: Array<() => void> = []
-
-    for (const m of markets) {
-      const channel = WsChannels.ticker(m.id)
-      const marketId = m.id
-      const unsub = wsService.subscribe(channel, (payload) => {
-        try {
-          const raw = payload as any
-          if (!raw) return
-
-          const rawLast = raw.lastPrice ?? raw.last_price
-
-          // Update sparkline current candle with live price in real time
-          if (rawLast !== undefined && rawLast !== null) {
-            const numPrice = parseFloat(String(rawLast))
-            if (!isNaN(numPrice) && isFinite(numPrice) && numPrice > 0) {
-              setTrends((prev) => {
-                const current = prev[marketId]
-                if (!current || current.length === 0) {
-                  return { ...prev, [marketId]: [numPrice] }
-                }
-                const lastIdx = current.length - 1
-                if (current[lastIdx] === numPrice) {
-                  return prev
-                }
-                const updated = [...current.slice(0, lastIdx), numPrice]
-                return { ...prev, [marketId]: updated }
-              })
-            }
-          }
-
-          setTickers((prev) => {
-            const current = prev[marketId]
-            const rawHigh = raw.high24h ?? raw.high_24h
-            const rawLow = raw.low24h ?? raw.low_24h
-            const rawVol = raw.volume24h ?? raw.volume_24h
-            const rawQuoteVol = raw.quoteVolume24h ?? raw.quote_volume_24h
-            const rawChange = raw.priceChange24hPercent ?? raw.price_change_24h_percent
-
-            return {
-              ...prev,
-              [marketId]: {
-                market_id: marketId,
-                last_price: rawLast !== undefined && rawLast !== null ? String(rawLast) : (current?.last_price ?? '0'),
-                high_24h: rawHigh !== undefined && rawHigh !== null ? String(rawHigh) : (current?.high_24h ?? '0'),
-                low_24h: rawLow !== undefined && rawLow !== null ? String(rawLow) : (current?.low_24h ?? '0'),
-                volume_24h: rawVol !== undefined && rawVol !== null ? String(rawVol) : (current?.volume_24h ?? '0'),
-                quote_volume_24h: rawQuoteVol !== undefined && rawQuoteVol !== null ? String(rawQuoteVol) : (current?.quote_volume_24h ?? '0'),
-                price_change_24h_percent: rawChange !== undefined && rawChange !== null ? String(rawChange) : (current?.price_change_24h_percent ?? '0'),
-              },
-            }
-          })
-        } catch { /* ignore malformed frames */ }
-      })
-      unsubs.push(unsub)
-    }
-
-    return () => unsubs.forEach((u) => u())
-  }, [markets])
-
-  useEffect(() => { loadData() }, [loadData])
-
-  // ── Derived UI data ───────────────────────────────────────────────────────
+  // Derived UI entries
   const allEntries = useMemo<MarketEntry[]>(() => {
     if (markets.length === 0) return []
-    return markets.map((m, i) => buildEntry(m, tickers[m.id], i + 1, trends[m.id], trendCoverages[m.id]))
-  }, [markets, tickers, trends, trendCoverages])
-
+    return markets.map((m, i) => {
+      const trendPoints = trends[m.id]
+      const coverage = evaluateTrendCoverage(trendPoints?.length || 0)
+      return buildEntry(m, tickers[m.id], i + 1, trendPoints, coverage)
+    })
+  }, [markets, tickers, trends])
 
   const stats = useMemo<MarketStats>(() => {
     let totalQuoteVol = toDecimal('0')
@@ -453,7 +268,7 @@ export function useMarkets(): UseMarketsReturn {
 
     return {
       marketsListed: markets.length,
-      volume24h: formatVolume(totalQuoteVol.toString()),
+      volume24h: formatTurnover(totalQuoteVol.toString()),
       liveDataLabel: isConnected ? 'via WebSocket' : isConnecting ? 'Connecting...' : 'Disconnected',
       wsStatus: isConnected ? 'live' : isConnecting ? 'connecting' : 'offline',
     }
@@ -502,7 +317,8 @@ export function useMarkets(): UseMarketsReturn {
     search, setSearch,
     filter, setFilter,
     quoteCurrency, setQuoteCurrency,
-    loading, error, isDemoData,
-    refetch: loadData,
+    loading, error, isDemoData: false,
+    refetch,
   }
 }
+

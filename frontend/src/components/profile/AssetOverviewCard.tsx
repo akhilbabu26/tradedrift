@@ -1,4 +1,5 @@
 import { PieChart } from 'lucide-react'
+import { RaisedSurface } from '../common/Surface'
 import type { ProfileAssetAllocation } from '../../types/profile'
 
 interface AssetOverviewCardProps {
@@ -7,7 +8,7 @@ interface AssetOverviewCardProps {
 
 export default function AssetOverviewCard({ assets }: AssetOverviewCardProps) {
   return (
-    <div className="bg-[#111318] border border-[#1e2530] rounded-xl p-5 flex flex-col justify-between transition-colors">
+    <RaisedSurface variant="raised-subtle" className="rounded-xl p-5 flex flex-col justify-between transition-colors">
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div>
@@ -81,6 +82,6 @@ export default function AssetOverviewCard({ assets }: AssetOverviewCardProps) {
           </div>
         ))}
       </div>
-    </div>
+    </RaisedSurface>
   )
 }

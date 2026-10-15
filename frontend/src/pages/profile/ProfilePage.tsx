@@ -5,7 +5,7 @@ import AssetOverviewCard from '../../components/profile/AssetOverviewCard'
 import AccountPreferencesCard from '../../components/profile/AccountPreferencesCard'
 import SecurityShortcutCard from '../../components/profile/SecurityShortcutCard'
 import ProfileInsightsSection from '../../components/profile/ProfileInsightsSection'
-import ProfileFooter from '../../components/profile/ProfileFooter'
+import GlobalFooter from '../../components/layout/GlobalFooter'
 import { useProfileData } from '../../hooks/useProfileData'
 
 /**
@@ -46,7 +46,7 @@ export default function ProfilePage() {
         <ProfileInsightsSection insights={insights} />
 
         {/* Page Footer */}
-        <ProfileFooter />
+        <GlobalFooter />
       </div>
     </div>
   )

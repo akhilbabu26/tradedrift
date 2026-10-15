@@ -7,7 +7,7 @@ import WhyTopUp from '../../components/wallet/WhyTopUp'
 import WalletAssets from '../../components/wallet/WalletAssets'
 import TopUpPanel from '../../components/wallet/TopUpPanel'
 import TopUpHistory from '../../components/wallet/TopUpHistory'
-import WalletFooter from '../../components/wallet/WalletFooter'
+import GlobalFooter from '../../components/layout/GlobalFooter'
 
 export default function WalletPage() {
   const {
@@ -37,11 +37,11 @@ export default function WalletPage() {
   }, [])
 
   return (
-    <div className="flex-1 overflow-y-auto min-h-0 bg-[#0a0b0e] text-[#f5f7fa] flex flex-col justify-between">
+    <div className="flex-1 overflow-y-auto min-h-0 bg-[#08090B] text-[#F2F3F5] flex flex-col justify-between">
       <div className="max-w-[1600px] w-full mx-auto px-4 lg:px-6 py-6 flex flex-col gap-6">
         {/* Error banner when wallet balances cannot be loaded */}
         {error && (
-          <div className="bg-[#111318] border border-red-500/30 rounded-lg px-4 py-3 flex items-center justify-between text-xs text-red-400">
+          <div className="bg-[#090A0C] border border-red-500/30 rounded-xl px-4 py-3 flex items-center justify-between text-xs text-red-400 shadow-sm">
             <span className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-red-400 animate-pulse" />
               Failed to load wallet balances: {error}
@@ -58,7 +58,7 @@ export default function WalletPage() {
 
         {/* Demo Data Banner when offline/fallback */}
         {isDemoData && (
-          <div className="bg-[#111318] border border-amber-500/30 rounded-lg px-4 py-2.5 flex items-center justify-between text-xs text-amber-400">
+          <div className="bg-[#090A0C] border border-amber-500/30 rounded-xl px-4 py-2.5 flex items-center justify-between text-xs text-amber-400 shadow-sm">
             <span className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse" />
               Viewing paper trading demo balances. Connect to the TradeDrift API backend for live account persistence.
@@ -106,7 +106,7 @@ export default function WalletPage() {
         <TopUpHistory history={topUpHistory} />
       </div>
 
-      <WalletFooter />
+      <GlobalFooter />
     </div>
   )
 }

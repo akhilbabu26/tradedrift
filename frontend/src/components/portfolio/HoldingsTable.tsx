@@ -21,6 +21,19 @@ interface Props {
 export default function HoldingsTable({ holdings }: Props) {
   const navigate = useNavigate()
 
+  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (e.deltaY !== 0 && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) {
+      const { scrollLeft, scrollWidth, clientWidth } = e.currentTarget
+      const maxScroll = scrollWidth - clientWidth
+      const canScrollRight = e.deltaY > 0 && Math.ceil(scrollLeft) < maxScroll
+      const canScrollLeft = e.deltaY < 0 && scrollLeft > 0
+
+      if (canScrollRight || canScrollLeft || e.shiftKey) {
+        e.currentTarget.scrollLeft += e.deltaY
+      }
+    }
+  }
+
   function pnlColor(value: string): string {
     try {
       const sanitized = String(value || '0').replace(/[^\d.-]/g, '').replace(/^-?$/, '0')
@@ -43,20 +56,25 @@ export default function HoldingsTable({ holdings }: Props) {
   }
 
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-xs">
+    <div
+      onWheel={handleWheel}
+      className="w-full min-w-0 overflow-x-auto trade-scrollbar-x select-text"
+      tabIndex={0}
+      aria-label="Portfolio holdings table"
+    >
+      <table className="w-full min-w-[920px] text-xs">
         <thead>
           <tr className="border-b border-[#1e2530]">
-            <th className="text-left py-3 px-3 text-[#64748b] font-medium">Asset</th>
-            <th className="text-right py-3 px-3 text-[#64748b] font-medium">Holdings</th>
-            <th className="text-right py-3 px-3 text-[#64748b] font-medium">Avg Cost</th>
-            <th className="text-right py-3 px-3 text-[#64748b] font-medium">Current Price</th>
-            <th className="text-right py-3 px-3 text-[#64748b] font-medium w-24">24h Trend</th>
-            <th className="text-right py-3 px-3 text-[#64748b] font-medium">Market Value</th>
-            <th className="text-right py-3 px-3 text-[#64748b] font-medium">Unrealized PnL</th>
-            <th className="text-right py-3 px-3 text-[#64748b] font-medium">Realized PnL</th>
-            <th className="text-left py-3 px-3 text-[#64748b] font-medium w-28">Weight</th>
-            <th className="text-right py-3 px-3 text-[#64748b] font-medium">Action</th>
+            <th className="text-left py-3 px-3 text-[#64748b] font-medium whitespace-nowrap">Asset</th>
+            <th className="text-right py-3 px-3 text-[#64748b] font-medium whitespace-nowrap">Holdings</th>
+            <th className="text-right py-3 px-3 text-[#64748b] font-medium whitespace-nowrap">Avg Cost</th>
+            <th className="text-right py-3 px-3 text-[#64748b] font-medium whitespace-nowrap">Current Price</th>
+            <th className="text-right py-3 px-3 text-[#64748b] font-medium w-24 whitespace-nowrap">24h Trend</th>
+            <th className="text-right py-3 px-3 text-[#64748b] font-medium whitespace-nowrap">Market Value</th>
+            <th className="text-right py-3 px-3 text-[#64748b] font-medium whitespace-nowrap">Unrealized PnL</th>
+            <th className="text-right py-3 px-3 text-[#64748b] font-medium whitespace-nowrap">Realized PnL</th>
+            <th className="text-left py-3 px-3 text-[#64748b] font-medium w-28 whitespace-nowrap">Weight</th>
+            <th className="text-right py-3 px-3 text-[#64748b] font-medium whitespace-nowrap">Action</th>
           </tr>
         </thead>
         <tbody>
@@ -66,7 +84,7 @@ export default function HoldingsTable({ holdings }: Props) {
               className="border-b border-[#0f1117] hover:bg-[#0f1117] transition-colors group"
             >
               {/* Asset */}
-              <td className="py-3.5 px-3">
+              <td className="py-3.5 px-3 whitespace-nowrap">
                 <div className="flex items-center gap-2.5">
                   <div
                     className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold border ${h.meta.iconBg} ${h.meta.iconBorder} ${h.meta.iconColor} flex-shrink-0`}
@@ -81,7 +99,7 @@ export default function HoldingsTable({ holdings }: Props) {
               </td>
 
               {/* Holdings */}
-              <td className="py-3.5 px-3 text-right">
+              <td className="py-3.5 px-3 text-right whitespace-nowrap">
                 <span className="text-[#cbd5e1] font-mono">
                   {h.quantity}
                 </span>
@@ -89,21 +107,21 @@ export default function HoldingsTable({ holdings }: Props) {
               </td>
 
               {/* Avg Cost */}
-              <td className="py-3.5 px-3 text-right">
+              <td className="py-3.5 px-3 text-right whitespace-nowrap">
                 <span className="text-[#94a3b8] font-mono">
                   ${formatPrice(h.averageCost)}
                 </span>
               </td>
 
               {/* Current Price */}
-              <td className="py-3.5 px-3 text-right">
+              <td className="py-3.5 px-3 text-right whitespace-nowrap">
                 <span className="text-[#f5f7fa] font-mono font-medium">
                   ${formatPrice(h.currentPrice)}
                 </span>
               </td>
 
               {/* 24h Trend */}
-              <td className="py-3.5 px-3 text-right">
+              <td className="py-3.5 px-3 text-right whitespace-nowrap">
                 <div className="flex items-center justify-end">
                   {h.sparklinePoints && h.sparklinePoints.length > 0 ? (
                     <Sparkline
@@ -119,14 +137,14 @@ export default function HoldingsTable({ holdings }: Props) {
               </td>
 
               {/* Market Value */}
-              <td className="py-3.5 px-3 text-right">
+              <td className="py-3.5 px-3 text-right whitespace-nowrap">
                 <span className="text-[#cbd5e1] font-mono">
                   {formatUSDT(h.marketValue)}
                 </span>
               </td>
 
               {/* Unrealized PnL */}
-              <td className="py-3.5 px-3 text-right">
+              <td className="py-3.5 px-3 text-right whitespace-nowrap">
                 <div className="flex flex-col items-end">
                   <span className={`font-mono font-medium ${pnlColor(h.unrealizedPnl)}`}>
                     {h.unrealizedPnl.startsWith('+') || h.unrealizedPnl.startsWith('-')
@@ -141,14 +159,14 @@ export default function HoldingsTable({ holdings }: Props) {
               </td>
 
               {/* Realized PnL */}
-              <td className="py-3.5 px-3 text-right">
+              <td className="py-3.5 px-3 text-right whitespace-nowrap">
                 <span className={`font-mono font-medium ${pnlColor(h.realizedPnl)}`}>
                   {h.realizedPnl} USDT
                 </span>
               </td>
 
               {/* Weight */}
-              <td className="py-3.5 px-3 w-28">
+              <td className="py-3.5 px-3 w-28 whitespace-nowrap">
                 <div className="flex flex-col gap-1">
                   <span className="text-[#94a3b8] font-mono text-[10px]">
                     {parseFloat(h.weightPct).toFixed(1)}%
@@ -166,7 +184,7 @@ export default function HoldingsTable({ holdings }: Props) {
               </td>
 
               {/* Action */}
-              <td className="py-3.5 px-3 text-right">
+              <td className="py-3.5 px-3 text-right whitespace-nowrap">
                 <div className="flex items-center gap-1.5 justify-end">
                   <button
                     onClick={() =>

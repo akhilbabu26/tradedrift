@@ -168,6 +168,11 @@ func (r *Reconciler) CheckExpiredOrders(ctx context.Context, marketID string) (e
 		if createdAt.IsZero() {
 			createdAt = o.PendingSince
 		}
+		if createdAt.IsZero() {
+			// Order has unknown creation timestamp — use OSRegisteredSince as safety fallback
+			// so that recovered orders with missing DB timestamps cannot sit immortal on the book forever.
+			createdAt = o.OSRegisteredSince
+		}
 		if !createdAt.IsZero() && now.Sub(createdAt) >= orderLifetime {
 			expired = append(expired, o)
 			if len(expired) >= maxBatch {
@@ -214,8 +219,29 @@ func (r *Reconciler) CheckExpiredOrders(ctx context.Context, marketID string) (e
 			zones = config.DefaultZoneConfig()
 		}
 
+		// Authoritatively resolve zone against configured ladder if missing
+		zone := o.Zone
+		if zone == "" {
+			zone = pricing.ResolveZoneForMarketConfig(o.LevelID, mc)
+		}
+		if zone == "" {
+			// Level is not in the configured ladder — cancel without replacement to prune rogue/stale levels.
+			r.logger.Warn("expired order has unknown zone and is not in configured ladder — cancelling without replacement",
+				zap.String("level_id", o.LevelID),
+				zap.String("market_id", mc.MarketID))
+			diffEntry := order.DiffEntry{
+				Action:       order.DiffCancel,
+				LevelID:      o.LevelID,
+				ExistingOID:  o.OrderID,
+				ExistingCOID: o.ClientOrderID,
+			}
+			_ = r.applyCancel(ctx, diffEntry, mc)
+			r.lastRefreshByLevel[o.LevelID] = now
+			continue
+		}
+
 		var band config.ZoneBand
-		switch o.Zone {
+		switch zone {
 		case "LOW":
 			band = zones.Low
 		case "MID":

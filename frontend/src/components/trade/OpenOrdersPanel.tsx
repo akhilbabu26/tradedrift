@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { Trash2 } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef, memo } from 'react'
+import { Trash2, Lock } from 'lucide-react'
 import type { Order, Balance } from '../../types/trade'
 import { isOrderActive } from '../../api/order'
 import { tradesApi, type BackendTrade } from '../../api/trades'
@@ -42,7 +42,37 @@ function PlaceholderTab({ label }: { label: string }) {
   )
 }
 
-export default function OpenOrdersPanel({
+/** Placeholder state for Guest Mode */
+function GuestTabPlaceholder({ tabLabel, marketId }: { tabLabel: string; marketId?: string }) {
+  const returnUrl = encodeURIComponent(`/trade?market=${marketId || 'BTC-USDT'}`)
+  return (
+    <div className="flex flex-col items-center justify-center py-10 px-4 text-center">
+      <div className="w-10 h-10 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center mb-3 text-slate-400">
+        <Lock size={18} />
+      </div>
+      <p className="text-xs font-semibold text-slate-300">Sign in to view {tabLabel.toLowerCase()}</p>
+      <p className="text-[11px] text-slate-500 max-w-sm mt-1 mb-4">
+        You are currently exploring in Guest Mode. Sign in or register to access open orders, transaction history, and wallet balances.
+      </p>
+      <div className="flex items-center gap-2">
+        <a
+          href={`/login?returnUrl=${returnUrl}`}
+          className="px-3.5 py-1.5 rounded-lg bg-[#10b981] hover:bg-[#059669] text-black font-bold text-xs transition-colors"
+        >
+          Sign In
+        </a>
+        <a
+          href={`/register?returnUrl=${returnUrl}`}
+          className="px-3.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-white font-medium text-xs transition-colors"
+        >
+          Create Account
+        </a>
+      </div>
+    </div>
+  )
+}
+
+function OpenOrdersPanel({
   orders,
   loading,
   error,
@@ -58,6 +88,8 @@ export default function OpenOrdersPanel({
   const [hideOtherPairs, setHideOtherPairs] = useState(false)
   const [trades, setTrades] = useState<BackendTrade[]>([])
   const [tradesLoading, setTradesLoading] = useState(false)
+  const storeAuth = useAuthStore((s) => s.isAuthenticated)
+  const isAuthenticated = storeAuth || useAuthStore.getState().isAuthenticated
 
   // Transient completed orders kept visible briefly for smooth completion UX
   interface CompletedEntry {
@@ -218,6 +250,12 @@ export default function OpenOrdersPanel({
   )
 
   const loadTrades = useCallback(async () => {
+    if (!useAuthStore.getState().isAuthenticated) {
+      setTrades([])
+      setTradesLoading(false)
+      return
+    }
+
     setTradesLoading(true)
     try {
       const res = await tradesApi.listTrades()
@@ -265,8 +303,8 @@ export default function OpenOrdersPanel({
   return (
     <div className="flex-shrink-0 border-t border-t-[rgba(255,255,255,0.09)] border-[#1e2530] bg-gradient-to-b from-[#181a1f] to-[#111318] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]">
       {/* Tab bar */}
-      <div className="flex items-center justify-between border-b border-[#1e2530] px-3">
-        <div className="flex items-center gap-0" role="tablist" aria-label="Order panel tabs">
+      <div className="flex items-center justify-between border-b border-[#1e2530] px-2.5 sm:px-3 overflow-x-auto trade-scrollbar-x gap-2 min-w-0">
+        <div className="flex items-center gap-0 flex-shrink-0" role="tablist" aria-label="Order panel tabs">
           {TABS.map(({ key, label }) => {
             const isActive = activeTab === key
             const count    = key === 'open' ? openCount : 0
@@ -276,7 +314,7 @@ export default function OpenOrdersPanel({
                 role="tab"
                 aria-selected={isActive}
                 onClick={() => setActiveTab(key)}
-                className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-medium border-b-2 transition-colors ${
+                className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-2 sm:py-2.5 text-xs font-medium border-b-2 transition-colors whitespace-nowrap ${
                   isActive
                     ? 'text-[#f5f7fa] border-[#10b981]'
                     : 'text-slate-500 border-transparent hover:text-[#f5f7fa]'
@@ -294,10 +332,10 @@ export default function OpenOrdersPanel({
         </div>
 
         {/* Right side controls: Hide other pairs + Cancel All */}
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 sm:gap-4 flex-shrink-0 ml-auto">
           {/* Hide other pairs toggle — shown on Open Orders, Order History, and Fills tabs */}
           {activeTab !== 'balances' && (
-            <label className="flex items-center gap-1.5 cursor-pointer select-none text-[11px] text-slate-400 hover:text-slate-200 transition-colors">
+            <label className="flex items-center gap-1.5 cursor-pointer select-none text-[10px] sm:text-[11px] text-slate-400 hover:text-slate-200 transition-colors whitespace-nowrap">
               <input
                 type="checkbox"
                 checked={hideOtherPairs}
@@ -305,7 +343,8 @@ export default function OpenOrdersPanel({
                 className="w-3.5 h-3.5 rounded border-[#1e2530] bg-[#0a0b0e] text-[#10b981] focus:ring-0 focus:ring-offset-0 cursor-pointer accent-[#10b981]"
                 aria-label="Hide other pairs"
               />
-              <span>Hide other pairs</span>
+              <span className="hidden sm:inline">Hide other pairs</span>
+              <span className="sm:hidden">Current pair</span>
             </label>
           )}
 
@@ -315,18 +354,18 @@ export default function OpenOrdersPanel({
               type="button"
               onClick={() => onCancelAll(openOrders)}
               disabled={cancellingAll}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-[#ef4444]/40 text-[#ef4444] text-[11px] font-semibold hover:bg-[#ef4444]/8 hover:border-[#ef4444]/60 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              className="flex items-center gap-1 px-2 sm:px-3 py-1 sm:py-1.5 rounded border border-[#ef4444]/40 text-[#ef4444] text-[10px] sm:text-[11px] font-semibold hover:bg-[#ef4444]/8 hover:border-[#ef4444]/60 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer whitespace-nowrap"
               aria-label="Cancel all open orders"
             >
               {cancellingAll ? (
                 <>
-                  <span className="w-3 h-3 border border-[#ef4444] border-t-transparent rounded-full animate-spin" />
-                  Cancelling...
+                  <span className="w-2.5 h-2.5 border border-[#ef4444] border-t-transparent rounded-full animate-spin" />
+                  <span>Cancelling...</span>
                 </>
               ) : (
                 <>
-                  <Trash2 size={12} />
-                  Cancel All
+                  <Trash2 size={11} />
+                  <span>Cancel All</span>
                 </>
               )}
             </button>
@@ -353,6 +392,11 @@ export default function OpenOrdersPanel({
               </button>
             )}
           </div>
+        ) : !isAuthenticated && orders.length === 0 ? (
+          <GuestTabPlaceholder
+            tabLabel={TABS.find((t) => t.key === activeTab)?.label || 'Orders'}
+            marketId={selectedMarketId}
+          />
         ) : (
           <>
             {activeTab === 'open' && (
@@ -381,3 +425,5 @@ export default function OpenOrdersPanel({
     </div>
   )
 }
+
+export default memo(OpenOrdersPanel)

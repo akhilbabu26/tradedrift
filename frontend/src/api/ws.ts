@@ -92,6 +92,7 @@ class WebSocketService {
   private onLatencyHooks: Set<(ms: number) => void> = new Set()
   private lastPingSentAt = 0
   private currentLatency = 0
+  private isRefreshingToken = false
 
   constructor() {
     this.connect()
@@ -150,24 +151,33 @@ class WebSocketService {
     const hasValidToken = isTokenValid(token)
 
     if (token && !hasValidToken) {
-      wsLog('Stored access_token has expired. Attempting token refresh...')
       const refreshToken = typeof localStorage !== 'undefined' ? localStorage.getItem('refresh_token') : null
-      if (refreshToken) {
+      if (refreshToken && !this.isRefreshingToken) {
+        this.isRefreshingToken = true
+        wsLog('Stored access_token has expired. Attempting token refresh before connecting...')
         const apiBase = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
         axios
           .post(`${apiBase}/api/v1/auth/refresh`, { refreshToken })
           .then(({ data }) => {
+            this.isRefreshingToken = false
             if (epoch !== this.connectionEpoch) return
             if (data?.accessToken && typeof localStorage !== 'undefined') {
               localStorage.setItem('access_token', data.accessToken)
               if (data.refreshToken) localStorage.setItem('refresh_token', data.refreshToken)
-              wsLog('Token refreshed. Upgrading WebSocket with authenticated session...')
-              this.reconnect()
+              wsLog('Token refreshed. Connecting with authenticated session...')
             }
+            this.connect()
           })
           .catch(() => {
+            this.isRefreshingToken = false
+            if (epoch !== this.connectionEpoch) return
             wsLog('Token refresh failed. Continuing in unauthenticated public mode.')
+            this.connect()
           })
+        return
+      }
+      if (this.isRefreshingToken) {
+        return
       }
     }
 
@@ -265,13 +275,19 @@ class WebSocketService {
     if (this.socket) {
       const oldSocket = this.socket
       this.socket = null
-      oldSocket.onopen = null
       oldSocket.onmessage = null
       oldSocket.onerror = null
       oldSocket.onclose = null
-      try {
-        oldSocket.close()
-      } catch { /* ignore */ }
+      if (oldSocket.readyState === WebSocket.CONNECTING) {
+        oldSocket.onopen = () => {
+          try { oldSocket.close() } catch { /* ignore */ }
+        }
+      } else {
+        oldSocket.onopen = null
+        try {
+          oldSocket.close()
+        } catch { /* ignore */ }
+      }
     }
     this.cleanup()
     this.reconnectAttempt = 0
@@ -288,13 +304,19 @@ class WebSocketService {
     if (this.socket) {
       const oldSocket = this.socket
       this.socket = null
-      oldSocket.onopen = null
       oldSocket.onmessage = null
       oldSocket.onerror = null
       oldSocket.onclose = null
-      try {
-        oldSocket.close()
-      } catch { /* ignore */ }
+      if (oldSocket.readyState === WebSocket.CONNECTING) {
+        oldSocket.onopen = () => {
+          try { oldSocket.close() } catch { /* ignore */ }
+        }
+      } else {
+        oldSocket.onopen = null
+        try {
+          oldSocket.close()
+        } catch { /* ignore */ }
+      }
     }
     this.cleanup()
     this.notifyStatus(false, 'offline')

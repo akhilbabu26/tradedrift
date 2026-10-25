@@ -104,6 +104,7 @@ type OSOrder struct {
 	Price         decimal.Decimal
 	OriginalQty   decimal.Decimal // = order.Quantity
 	RemainingQty  decimal.Decimal // = order.RemainingQuantity
+	CreatedAt     time.Time       // authoritative created_at from Order Service
 }
 
 // ClientOrderID constructs the client_order_id for a given level and generation.

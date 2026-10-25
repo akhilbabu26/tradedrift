@@ -65,7 +65,9 @@ services:
       PORT: ":50051"
       MIGRATIONS_DIR: services/auth/migrations
       WALLET_ADDR: wallet:50052
+      GOOGLE_CLIENT_ID: "778142269213-7e4knagb3r5cfhq2kdrj6nr8qlueobr4.apps.googleusercontent.com"
       LOG_LEVEL: info
+
     ports:
       - "50051:50051"
     depends_on:
@@ -112,9 +114,10 @@ services:
       PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-MOCK}
       RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
       RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
-      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-}
-    ports:
-      - "8084:8084"
+    # Internal-only microservice: port 8084 is NOT published to host to enforce
+    # perimeter security and prevent bypassing the API Gateway's JWT authentication.
+    expose:
+      - "8084"
     depends_on:
       wallet:
         condition: service_started
@@ -360,6 +363,7 @@ services:
       CORS_ORIGIN: "http://localhost:5173"
       GATEWAY_RATE_LIMIT_RPS: "50"
       GATEWAY_RATE_LIMIT_BURST: "100"
+      TOPUP_ADDR: "http://wallet-topup:8084"
       LOG_LEVEL: "info"
     ports:
       - "8080:8080"
@@ -383,6 +387,8 @@ services:
       portfolio:
         condition: service_started
       notification:
+        condition: service_started
+      wallet-topup:
         condition: service_started
 
   liquidity-engine:

@@ -92,7 +92,7 @@ func (r *IdentityRepository) CreateUserWithIdentity(
 		outboxQuery := `
 			INSERT INTO outbox (
 				id, aggregate_type, aggregate_id, event_type, payload, status, created_at
-			) VALUES ($1, 'User', $2, 'UserVerified', $3, 'PENDING', $4)
+			) VALUES ($1, 'User', $2, 'WalletInitializePending', $3, 'PENDING', $4)
 		`
 		_, err = tx.Exec(ctx, outboxQuery, outboxEventID, u.ID, outboxPayload, u.CreatedAt)
 		if err != nil {

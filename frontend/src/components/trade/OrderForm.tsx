@@ -3,6 +3,8 @@ import { ChevronUp, ChevronDown } from 'lucide-react'
 import type { OrderSide, OrderType, Market, Balance, CreateOrderRequest } from '../../types/trade'
 import { toDecimal, multiply, divide } from '../../utils/decimal'
 import { formatPrice, formatQuantity } from '../../utils/formatters'
+import { useAuthStore } from '../../store/authStore'
+import AuthPromptModal from '../common/AuthPromptModal'
 
 interface OrderFormProps {
   side: OrderSide
@@ -114,6 +116,8 @@ export default function OrderForm({
   const [price,  setPrice]  = useState(lastPrice || '')
   const [amount, setAmount] = useState('')
   const [error,  setError]  = useState<string | null>(null)
+  const [showAuthModal, setShowAuthModal] = useState(false)
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
   const userEditedPriceRef = useRef(false)
 
   const lastPriceRef = useRef(lastPrice)
@@ -235,6 +239,12 @@ export default function OrderForm({
 
   // ── Submit ────────────────────────────────────────────────────────────────
   const handleSubmit = async () => {
+    // Intercept guest order submissions with authentication prompt
+    if (!isAuthenticated) {
+      setShowAuthModal(true)
+      return
+    }
+
     const err = validate()
     if (err) { setError(err); return }
     setError(null)
@@ -343,10 +353,15 @@ export default function OrderForm({
         <div className="flex items-center justify-between">
           <span className="text-[11px] text-slate-500">Available ({isBuy ? quoteAsset : baseAsset})</span>
           <span className="text-[11px] font-mono text-slate-300">
-            {isBuy
-              ? formatPrice(availableQuote.availableBalance)
-              : formatQuantity(availableBase.availableBalance, 6)
-            }
+            {isAuthenticated ? (
+              isBuy
+                ? formatPrice(availableQuote.availableBalance)
+                : formatQuantity(availableBase.availableBalance, 6)
+            ) : (
+              <span className="text-slate-500" title="Sign in to view balance">
+                — {isBuy ? quoteAsset : baseAsset}
+              </span>
+            )}
           </span>
         </div>
         <div className="flex items-center justify-between">
@@ -376,6 +391,15 @@ export default function OrderForm({
           `${isBuy ? 'Buy' : 'Sell'} ${baseAsset}`
         )}
       </button>
+
+      {/* Guest Mode Authentication Interception Modal */}
+      <AuthPromptModal
+        isOpen={showAuthModal}
+        onClose={() => setShowAuthModal(false)}
+        title={`Sign In to ${isBuy ? 'Buy' : 'Sell'} ${baseAsset}`}
+        description={`You are exploring in Guest Mode. Please sign in or create an account to place ${orderType.toLowerCase()} orders on the ${market.id} market.`}
+        targetMarket={market.id}
+      />
     </div>
   )
 }

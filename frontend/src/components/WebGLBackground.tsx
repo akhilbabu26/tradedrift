@@ -96,11 +96,12 @@ export default function WebGLBackground() {
     const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl') as WebGLRenderingContext | null
     if (!gl) return
 
-    // Sync canvas size
+    // Sync canvas size with DPR support strictly on element/window resize
     function syncSize() {
       if (!canvas) return
-      const w = canvas.clientWidth || window.innerWidth
-      const h = canvas.clientHeight || window.innerHeight
+      const dpr = Math.min(window.devicePixelRatio || 1, 2)
+      const w = Math.round((canvas.clientWidth || window.innerWidth) * dpr)
+      const h = Math.round((canvas.clientHeight || window.innerHeight) * dpr)
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w
         canvas.height = h
@@ -109,6 +110,7 @@ export default function WebGLBackground() {
 
     const ro = new ResizeObserver(syncSize)
     ro.observe(canvas)
+    window.addEventListener('resize', syncSize)
     syncSize()
 
     function compileShader(type: number, src: string) {
@@ -146,22 +148,35 @@ export default function WebGLBackground() {
     }
     window.addEventListener('mousemove', onMouseMove)
 
-    let animId: number
+    let animId = 0
     function render(t: number) {
-      syncSize()
-      gl!.viewport(0, 0, canvas!.width, canvas!.height)
-      gl!.uniform1f(uTime, t * 0.001)
-      gl!.uniform2f(uRes, canvas!.width, canvas!.height)
-      gl!.uniform2f(uMouse, mouse.x, mouse.y)
-      gl!.drawArrays(gl!.TRIANGLE_STRIP, 0, 4)
+      if (!canvas || !gl) return
+      if (document.hidden) {
+        animId = 0
+        return
+      }
+      gl.viewport(0, 0, canvas.width, canvas.height)
+      gl.uniform1f(uTime, t * 0.001)
+      gl.uniform2f(uRes, canvas.width, canvas.height)
+      gl.uniform2f(uMouse, mouse.x, mouse.y)
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
       animId = requestAnimationFrame(render)
     }
     animId = requestAnimationFrame(render)
 
+    const onVisibilityChange = () => {
+      if (!document.hidden && animId === 0) {
+        animId = requestAnimationFrame(render)
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
     return () => {
-      cancelAnimationFrame(animId)
+      if (animId) cancelAnimationFrame(animId)
       ro.disconnect()
+      window.removeEventListener('resize', syncSize)
       window.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [])
 

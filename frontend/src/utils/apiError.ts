@@ -1,4 +1,4 @@
-﻿/**
+/**
  * src/utils/apiError.ts
  *
  * Centralized Axios error mapper.
@@ -17,8 +17,10 @@ export function extractApiError(err: unknown): string {
     if (status === 403) return 'You do not have permission to access this resource.'
     if (status === 404) return 'Requested resource not found.'
     if (status === 429) return 'Too many requests. Please try again later.'
-    if (status && status >= 500) return serverMsg || 'Server error. Please try again.'
-    if (err.code === 'ECONNABORTED' || err.code === 'ERR_NETWORK') return 'Network connection unavailable.'
+    if (err.code === 'ECONNABORTED' || err.message?.toLowerCase().includes('timeout')) {
+      return 'Request timed out. Please check your connection and try again.'
+    }
+    if (err.code === 'ERR_NETWORK') return 'Network connection unavailable.'
     return serverMsg || err.message || 'An unexpected error occurred.'
   }
   if (err instanceof Error) return err.message

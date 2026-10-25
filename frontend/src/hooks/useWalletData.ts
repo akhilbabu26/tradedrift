@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { walletApi, type Balance } from '../api/wallet'
 import { marketApi } from '../api/market'
 import { topupApi, type DailyUsage, type TopUpHistoryItem } from '../api/topup'
+import { useAuthStore } from '../store/authStore'
 import { useWalletStore } from '../store/walletStore'
 import { useMarketStore } from '../store/marketStore'
 import { wsService } from '../api/ws'
@@ -40,12 +41,50 @@ function loadSavedTopUps(): TopUpHistoryItem[] {
   return []
 }
 
+interface WalletCacheEntry {
+  userId: string
+  rawBalances: Balance[]
+  prices: Record<string, string>
+  dailyUsage: DailyUsage | null
+  topUpHistory: TopUpHistoryItem[]
+  timestamp: number
+}
+
+import { registerCacheClearHandler } from '../utils/cacheRegistry'
+
+let cachedWalletEntry: WalletCacheEntry | null = null
+
+export function clearWalletCache() {
+  cachedWalletEntry = null
+}
+
+registerCacheClearHandler(clearWalletCache)
+
 export function useWalletData() {
-  const [rawBalances, setRawBalances] = useState<Balance[]>([])
-  const [prices, setPrices] = useState<Record<string, string>>({ USDT: '1.00' })
-  const [dailyUsage, setDailyUsage] = useState<DailyUsage | null>(null)
-  const [topUpHistory, setTopUpHistory] = useState<TopUpHistoryItem[]>(() => loadSavedTopUps())
-  const [loading, setLoading] = useState(true)
+  const currentUserId = useAuthStore((s) => s.user?.userId) || ''
+  const storeBalances = useWalletStore((s) => s.balances)
+
+  const hasValidCache = Boolean(
+    cachedWalletEntry &&
+    cachedWalletEntry.userId === currentUserId &&
+    currentUserId !== ''
+  )
+
+  const initialBalances = hasValidCache && cachedWalletEntry
+    ? cachedWalletEntry.rawBalances
+    : (storeBalances.length > 0 ? storeBalances : [])
+
+  const [rawBalances, setRawBalances] = useState<Balance[]>(initialBalances)
+  const [prices, setPrices] = useState<Record<string, string>>(() =>
+    hasValidCache && cachedWalletEntry ? cachedWalletEntry.prices : { USDT: '1.00' }
+  )
+  const [dailyUsage, setDailyUsage] = useState<DailyUsage | null>(() =>
+    hasValidCache && cachedWalletEntry ? cachedWalletEntry.dailyUsage : null
+  )
+  const [topUpHistory, setTopUpHistory] = useState<TopUpHistoryItem[]>(() =>
+    hasValidCache && cachedWalletEntry ? cachedWalletEntry.topUpHistory : loadSavedTopUps()
+  )
+  const [loading, setLoading] = useState(() => !hasValidCache && initialBalances.length === 0)
   const [isDemoData, setIsDemoData] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [submittingTopUp, setSubmittingTopUp] = useState(false)
@@ -55,11 +94,14 @@ export function useWalletData() {
     pricesRef.current = prices
   }, [prices])
 
-  const storeBalances = useWalletStore((s) => s.balances)
-
   // ── 1. Fetch Balances, Top-Ups & Market Prices ─────────────────────────────
   const loadData = useCallback(async () => {
-    setLoading(true)
+    const authUserId = useAuthStore.getState().user?.userId || ''
+    if (!cachedWalletEntry || cachedWalletEntry.userId !== authUserId || !authUserId) {
+      if (useWalletStore.getState().balances.length === 0) {
+        setLoading(true)
+      }
+    }
     setError(null)
 
     let loadedBalances: Balance[] = []
@@ -81,9 +123,14 @@ export function useWalletData() {
       setIsDemoData(false)
     } catch (err) {
       const msg = extractApiError(err)
-      console.warn('Wallet API unreachable:', msg)
-      setError(msg)
-      setRawBalances([])
+      const authId = useAuthStore.getState().user?.userId || ''
+      if (!cachedWalletEntry || cachedWalletEntry.userId !== authId) {
+        console.warn('Wallet API unreachable:', msg)
+        setError(msg)
+        setRawBalances([])
+      } else {
+        console.warn('Background wallet revalidation failed:', msg)
+      }
       setIsDemoData(false)
     }
 
@@ -122,10 +169,11 @@ export function useWalletData() {
     setPrices(updatedPrices)
 
     // 3. Fetch authentic top-ups from backend GET /api/v1/topups
+    let loadedTopUps: TopUpHistoryItem[] = []
     try {
       const serverOrders = await topupApi.listTopUps()
       if (serverOrders && serverOrders.length > 0) {
-        const history: TopUpHistoryItem[] = serverOrders.map((o) => {
+        loadedTopUps = serverOrders.map((o) => {
           let status: TopUpHistoryItem['status'] = 'Pending'
           if (o.status === 'COMPLETED') status = 'Completed'
           else if (o.status === 'PAYMENT_CONFIRMED' || o.status === 'CREDIT_PENDING') status = 'Credited'
@@ -141,33 +189,45 @@ export function useWalletData() {
             date: o.createdAt ? new Date(o.createdAt).toLocaleDateString() : 'Recent',
           }
         })
-        setTopUpHistory(history)
+        setTopUpHistory(loadedTopUps)
       }
     } catch {
       // Local fallback if top-up service endpoint unconfigured
     }
 
     // 4. Fetch daily usage from TopUp API
+    let usage: DailyUsage | null = null
     try {
-      const usage = await topupApi.getDailyUsage()
-      if (usage) {
-        setDailyUsage(usage)
-      } else {
-        setDailyUsage(null)
-      }
+      usage = await topupApi.getDailyUsage()
+      setDailyUsage(usage || null)
     } catch {
       setDailyUsage(null)
     }
 
     setLoading(false)
+
+    const authId = useAuthStore.getState().user?.userId || ''
+    if (authId) {
+      cachedWalletEntry = {
+        userId: authId,
+        rawBalances: loadedBalances,
+        prices: updatedPrices,
+        dailyUsage: usage,
+        topUpHistory: loadedTopUps.length > 0 ? loadedTopUps : (cachedWalletEntry?.userId === authId ? cachedWalletEntry.topUpHistory : loadSavedTopUps()),
+        timestamp: Date.now(),
+      }
+    }
   }, [])
 
   // Sync with global walletStore
   useEffect(() => {
     if (storeBalances.length > 0) {
       setRawBalances(storeBalances)
+      if (cachedWalletEntry && cachedWalletEntry.userId === currentUserId) {
+        cachedWalletEntry.rawBalances = storeBalances
+      }
     }
-  }, [storeBalances])
+  }, [storeBalances, currentUserId])
 
   // Lifecycle listeners: auto-refresh on mount, WS balance push, reconnect, and tab focus
   useEffect(() => {

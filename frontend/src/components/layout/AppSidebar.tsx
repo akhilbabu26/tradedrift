@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard,
@@ -11,6 +11,7 @@ import {
   User,
   Settings,
   LogOut,
+  LogIn,
   ChevronLeft,
   ChevronRight,
   X,
@@ -18,6 +19,7 @@ import {
 import { TradeDriftSymbol } from '../brand/TradeDriftLogo'
 import { useAuthStore } from '../../store/authStore'
 import { authApi } from '../../api/auth'
+import { prefetchRoute } from '../../utils/routePrefetch'
 
 export interface AppSidebarProps {
   collapsed?: boolean
@@ -55,6 +57,8 @@ export default function AppSidebar({
 }: AppSidebarProps) {
   const { pathname } = useLocation()
   const navigate = useNavigate()
+  const storeAuth = useAuthStore((s) => s.isAuthenticated)
+  const isAuthenticated = storeAuth || useAuthStore.getState().isAuthenticated
   const storeUser = useAuthStore((s) => s.user)
   const user = storeUser ?? useAuthStore.getState().user
   const logout = useAuthStore((s) => s.logout)
@@ -168,10 +172,24 @@ export default function AppSidebar({
       items: [
         { to: '/profile', label: 'Profile', icon: User },
         { to: '/settings', label: 'Settings', icon: Settings },
-        { label: 'Log out', icon: LogOut, action: handleLogout },
+        isAuthenticated
+          ? { label: 'Log out', icon: LogOut, action: handleLogout }
+          : { to: `/login?returnUrl=${encodeURIComponent(pathname)}`, label: 'Sign in', icon: LogIn },
       ],
     },
   ]
+
+  // Close mobile drawer on Escape key
+  useEffect(() => {
+    if (!mobileOpen || !onCloseMobile) return
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onCloseMobile()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [mobileOpen, onCloseMobile])
 
   // Shared 3D Active Pill styling
   const activeStyle: React.CSSProperties = {
@@ -182,18 +200,22 @@ export default function AppSidebar({
       '0 8px 18px -3px rgba(0, 0, 0, 0.75), 0 2px 4px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.2), inset 0 -1px 0 rgba(0, 0, 0, 0.4)',
   }
 
-  const renderNavContent = () => (
+  const renderNavContent = (collapsed: boolean = isCollapsed, isMobileDrawer: boolean = false) => (
     <div className="flex flex-col h-full select-none">
       {/* ── Brand Header ─────────────────────────────────────────────────── */}
-      <div className={`flex items-center ${isCollapsed ? 'justify-center py-4 px-2' : 'justify-between py-4 px-4'} border-b border-[#242629]/50 flex-shrink-0`}>
+      <div
+        className={`flex items-center ${
+          collapsed ? 'justify-center py-4 px-2' : 'justify-between py-4 px-4'
+        } border-b border-[#242629]/50 flex-shrink-0`}
+      >
         <Link
-          to="/dashboard"
+          to={isAuthenticated ? '/dashboard' : '/trade'}
           onClick={onCloseMobile}
           className="flex items-center gap-2.5 group focus:outline-none min-w-0"
           aria-label="TradeDrift home"
         >
           <TradeDriftSymbol size={28} className="flex-shrink-0 group-hover:scale-105 transition-transform" />
-          {!isCollapsed && (
+          {!collapsed && (
             <div className="flex flex-col min-w-0">
               <span className="text-[17px] font-bold text-white tracking-tight leading-none group-hover:text-zinc-200 transition-colors">
                 TradeDrift
@@ -206,17 +228,17 @@ export default function AppSidebar({
         </Link>
 
         {/* Desktop Collapse / Mobile Close */}
-        {mobileOpen ? (
+        {isMobileDrawer ? (
           <button
             type="button"
             onClick={onCloseMobile}
             aria-label="Close sidebar"
-            className="w-7 h-7 rounded-lg bg-[#14161B] border border-[#242629] flex items-center justify-center text-[#777D85] hover:text-white transition-colors cursor-pointer"
+            className="w-8 h-8 rounded-lg bg-[#14161B] border border-[#242629] flex items-center justify-center text-[#777D85] hover:text-white transition-colors cursor-pointer"
           >
-            <X size={15} />
+            <X size={16} />
           </button>
         ) : (
-          !isCollapsed && (
+          !collapsed && (
             <button
               type="button"
               onClick={handleToggle}
@@ -229,8 +251,8 @@ export default function AppSidebar({
         )}
       </div>
 
-      {/* Expand button on collapsed rail header */}
-      {isCollapsed && !mobileOpen && (
+      {/* Expand button on collapsed rail header (desktop only) */}
+      {collapsed && !isMobileDrawer && (
         <div className="flex justify-center py-2 border-b border-[#242629]/40 flex-shrink-0">
           <button
             type="button"
@@ -246,7 +268,7 @@ export default function AppSidebar({
       {/* ── Scrollable Body ──────────────────────────────────────────────── */}
       <div className="flex-1 overflow-y-auto overflow-x-hidden py-3 px-3 scrollbar-thin">
         {/* Account Information (Only when expanded) */}
-        {!isCollapsed && (
+        {!collapsed && (
           <div className="px-2 pt-1 pb-3 mb-2 border-b border-[#242629]/50">
             <div className="text-[14px] font-semibold text-[#F5F5F5] leading-snug truncate">
               {displayName}
@@ -269,7 +291,7 @@ export default function AppSidebar({
                 className={isSettingsSection ? 'pt-3 mt-1 border-t border-[#242629]/50' : ''}
               >
                 {/* Section Title */}
-                {section.title && !isCollapsed && (
+                {section.title && !collapsed && (
                   <div className="px-2 mb-1.5 text-[10px] font-semibold tracking-wider text-[#777D85] uppercase">
                     {section.title}
                   </div>
@@ -289,16 +311,20 @@ export default function AppSidebar({
                         <button
                           key={item.label}
                           type="button"
-                          onClick={item.action}
-                          title={isCollapsed ? item.label : undefined}
+                          onClick={() => {
+                            if (isMobileDrawer && onCloseMobile) onCloseMobile()
+                            item.action?.()
+                          }}
+                          title={collapsed ? item.label : undefined}
+                          aria-label={collapsed ? item.label : undefined}
                           className={`w-full flex items-center rounded-xl text-[13.5px] font-medium transition-colors select-none text-[#A7ABB2] hover:text-[#F5F5F5] hover:bg-white/[0.03] cursor-pointer ${
-                            isCollapsed
+                            collapsed
                               ? 'justify-center p-2.5'
-                              : 'gap-3 px-3 py-2 text-left'
+                              : 'gap-3 px-3.5 py-2.5 text-left min-h-[42px]'
                           }`}
                         >
                           <Icon size={17} className="text-[#777D85] group-hover:text-white flex-shrink-0" />
-                          {!isCollapsed && <span>{item.label}</span>}
+                          {!collapsed && <span>{item.label}</span>}
                         </button>
                       )
                     }
@@ -308,17 +334,20 @@ export default function AppSidebar({
                         key={item.label}
                         to={item.to || '#'}
                         onClick={onCloseMobile}
-                        title={isCollapsed ? item.label : undefined}
+                        onMouseEnter={() => prefetchRoute(item.to)}
+                        onFocus={() => prefetchRoute(item.to)}
+                        title={collapsed ? item.label : undefined}
+                        aria-label={collapsed ? item.label : undefined}
                         aria-current={isActive ? 'page' : undefined}
                         style={isActive ? activeStyle : undefined}
                         className={`group flex items-center rounded-xl text-[13.5px] font-medium select-none transition-colors duration-150 ${
                           isActive
-                            ? isCollapsed
+                            ? collapsed
                               ? 'justify-center p-2.5 text-white'
-                              : 'gap-3 px-3.5 py-2.5 text-white'
-                            : isCollapsed
+                              : 'gap-3 px-3.5 py-2.5 text-white min-h-[42px]'
+                            : collapsed
                               ? 'justify-center p-2.5 text-[#A7ABB2] hover:text-[#F5F5F5] hover:bg-white/[0.03]'
-                              : 'gap-3 px-3.5 py-2.5 text-[#A7ABB2] hover:text-[#F5F5F5] hover:bg-white/[0.03]'
+                              : 'gap-3 px-3.5 py-2.5 text-[#A7ABB2] hover:text-[#F5F5F5] hover:bg-white/[0.03] min-h-[42px]'
                         }`}
                       >
                         <Icon
@@ -327,7 +356,7 @@ export default function AppSidebar({
                             isActive ? 'text-white' : 'text-[#777D85] group-hover:text-[#F5F5F5]'
                           }`}
                         />
-                        {!isCollapsed && <span className="truncate">{item.label}</span>}
+                        {!collapsed && <span className="truncate">{item.label}</span>}
                       </Link>
                     )
                   })}
@@ -349,7 +378,7 @@ export default function AppSidebar({
         }`}
         aria-label="Sidebar navigation"
       >
-        {renderNavContent()}
+        {renderNavContent(isCollapsed, false)}
       </aside>
 
       {/* ── Mobile Overlay Drawer ────────────────────────────────────────── */}
@@ -367,9 +396,9 @@ export default function AppSidebar({
             aria-hidden="true"
           />
 
-          {/* Drawer Sheet */}
-          <aside className="relative flex flex-col w-[260px] max-w-[85vw] h-full bg-[#090A0C] border-r border-[#292C30] z-10 shadow-2xl">
-            {renderNavContent()}
+          {/* Drawer Sheet - ALWAYS rendered with full labels & section headers */}
+          <aside className="relative flex flex-col w-[280px] max-w-[85vw] h-full bg-[#090A0C] border-r border-[#292C30] z-10 shadow-2xl">
+            {renderNavContent(false, true)}
           </aside>
         </div>
       )}

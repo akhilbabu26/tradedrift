@@ -7,16 +7,46 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
 	platformerrors "tradedrift/platform/errors"
 	"tradedrift/services/auth/internal/repository"
 )
 
+// compareAndDeleteScript ensures a client only deletes the lock if it still holds it.
+var compareAndDeleteScript = redis.NewScript(`
+	if redis.call("get", KEYS[1]) == ARGV[1] then
+		return redis.call("del", KEYS[1])
+	else
+		return 0
+	end
+`)
+
+// consumeLinkTokenScript atomically validates the token state and transitions it to CONSUMED with 60s TTL.
+// Return codes:
+//  1: Successfully consumed
+// -1: Token not found / expired
+// -2: Token already consumed (replay detected)
+var consumeLinkTokenScript = redis.NewScript(`
+	local val = redis.call("get", KEYS[1])
+	if not val then
+		return -1
+	end
+	local data = cjson.decode(val)
+	if data["state"] == "CONSUMED" then
+		return -2
+	end
+	data["state"] = "CONSUMED"
+	redis.call("set", KEYS[1], cjson.encode(data), "EX", 60)
+	return 1
+`)
+
 type linkTokenPayload struct {
 	Sub    string `json:"sub"`
 	Email  string `json:"email"`
 	UserID string `json:"user_id"`
+	State  string `json:"state"`
 }
 
 // LinkGoogleAccount securely links a verified Google identity to an existing
@@ -40,6 +70,21 @@ func (s *Service) LinkGoogleAccount(ctx context.Context, email, password, linkTo
 	if err := json.Unmarshal([]byte(dataStr), &payload); err != nil {
 		s.log.Error("Failed to unmarshal link token payload", zap.Error(err))
 		return nil, nil, platformerrors.New(platformerrors.CodeInternal, "failed to process link token")
+	}
+
+	// Reject immediately if token was already consumed (anti-replay check)
+	if payload.State == "CONSUMED" {
+		s.log.Warn("Replay attempt detected for consumed link token")
+		// Check if the Google identity is already linked to the intended user
+		existingIdent, checkErr := s.identityRepo.GetByProviderAndUID(ctx, "google", payload.Sub)
+		if checkErr != nil {
+			s.log.Error("Failed to lookup identity during consumed link token validation", zap.Error(checkErr))
+			return nil, nil, fmt.Errorf("failed to verify account link status: %w", checkErr)
+		}
+		if existingIdent != nil && existingIdent.UserID == payload.UserID {
+			return nil, nil, platformerrors.New(platformerrors.CodeAlreadyExists, "account is already linked. Please sign in with Google directly.")
+		}
+		return nil, nil, platformerrors.New(platformerrors.CodeInvalidArgument, "link token has already been used. Please initiate Google sign-in again.")
 	}
 
 	// 2. Verify target email matches the verified Google email
@@ -92,19 +137,29 @@ func (s *Service) LinkGoogleAccount(ctx context.Context, email, password, linkTo
 		return nil, nil, platformerrors.New(platformerrors.CodeInvalidCredentials, "incorrect account password")
 	}
 
-	// 8. CONCURRENCY CONTROL: Acquire an exclusive short-lived lease on this link attempt
+	// 8. CONCURRENCY CONTROL: Acquire an exclusive lease with a unique owner token (15s lease)
+	ownerToken := uuid.NewString()
 	lockKey := "auth:google_link_lock:" + linkToken
-	acquired, err := s.rdb.SetNX(ctx, lockKey, u.ID, 15*time.Second).Result()
+	acquired, err := s.rdb.SetNX(ctx, lockKey, ownerToken, 15*time.Second).Result()
 	if err != nil || !acquired {
 		s.log.Warn("Concurrent account linking attempt detected", zap.String("userID", u.ID))
 		return nil, nil, platformerrors.New(platformerrors.CodeFailedPrecondition, "account linking is currently being processed. Please wait a moment.")
 	}
 	defer func() {
-		_ = s.rdb.Del(ctx, lockKey).Err()
+		// Atomic compare-and-delete: releases lock ONLY if this request still owns it.
+		// Dedicated 2-second timeout context ensures cleanup runs even if opCtx was canceled or timed out.
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cleanupCancel()
+		_ = compareAndDeleteScript.Run(cleanupCtx, s.rdb, []string{lockKey}, ownerToken).Err()
 	}()
 
+	// Bounded operation context: strictly terminates any slow DB or RPC operation within 8 seconds,
+	// ensuring the critical section completes well before the 15-second Redis lock lease could expire.
+	opCtx, opCancel := context.WithTimeout(ctx, 8*time.Second)
+	defer opCancel()
+
 	// 9. Check existing identity binding (idempotent recovery)
-	existingIdent, err := s.identityRepo.GetByProviderAndUID(ctx, "google", payload.Sub)
+	existingIdent, err := s.identityRepo.GetByProviderAndUID(opCtx, "google", payload.Sub)
 	if err != nil {
 		s.log.Error("Failed to check existing identity during link", zap.String("userID", u.ID), zap.Error(err))
 		return nil, nil, err
@@ -124,26 +179,33 @@ func (s *Service) LinkGoogleAccount(ctx context.Context, email, password, linkTo
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		}
-		if err := s.identityRepo.Create(ctx, newIdentity); err != nil {
+		if err := s.identityRepo.Create(opCtx, newIdentity); err != nil {
 			s.log.Error("Failed to save linked Google identity", zap.String("userID", u.ID), zap.Error(err))
-			// On DB failure, return error without deleting the token, allowing user to retry!
+			// On DB failure, return error without consuming the token, allowing user to retry
 			return nil, nil, err
 		}
 	}
 
 	// 11. Durable wallet readiness verification (fail-closed)
-	if err := s.walletCl.InitializeWallet(ctx, u.ID); err != nil {
+	if err := s.walletCl.InitializeWallet(opCtx, u.ID); err != nil {
 		s.log.Error("Failed to verify/initialize wallet during account linking", zap.String("userID", u.ID), zap.Error(err))
 		return nil, nil, platformerrors.Wrap(err, platformerrors.CodeInternal, "account linked, but wallet initialization failed. Please retry sign-in.")
 	}
 
-	// 12. Complete token consumption: delete token only after DB persistence and wallet check succeed
-	_ = s.rdb.Del(ctx, redisKey).Err()
+	// 12. ATOMIC TOKEN CONSUMPTION: Transitions token to CONSUMED with 60s TTL via Lua
+	res, err := consumeLinkTokenScript.Run(opCtx, s.rdb, []string{redisKey}).Int()
+	if err != nil || res != 1 {
+		s.log.Warn("Atomic link token consumption rejected", zap.Int("res", res), zap.Error(err))
+		if res == -2 {
+			return nil, nil, platformerrors.New(platformerrors.CodeInvalidArgument, "link token has already been used")
+		}
+		return nil, nil, platformerrors.New(platformerrors.CodeInvalidArgument, "link token was already consumed or expired")
+	}
 
 	// 13. Issue standard TradeDrift session tokens
-	tokens, err := s.issueTokenPair(ctx, u.ID, u.Email, u.Role, u.TokenVersion)
+	tokens, err := s.issueTokenPair(opCtx, u.ID, u.Email, u.Role, u.TokenVersion)
 	if err != nil {
-		s.log.Error("Failed to issue tokens after account linking", zap.String("userID", u.ID), zap.Error(err))
+		s.log.Error("Failed to issue session tokens after linking", zap.String("userID", u.ID), zap.Error(err))
 		return nil, nil, err
 	}
 
@@ -180,7 +242,12 @@ func (s *Service) ConnectGoogleAccount(ctx context.Context, userID, idToken stri
 	}
 	if existing != nil {
 		if existing.UserID == userID {
-			return payload.Email, nil // Already connected to this user
+			// Already connected to this user — verify wallet readiness before returning success!
+			if err := s.walletCl.InitializeWallet(ctx, userID); err != nil {
+				s.log.Error("Failed to verify wallet readiness during idempotent connect", zap.String("userID", userID), zap.Error(err))
+				return "", platformerrors.Wrap(err, platformerrors.CodeInternal, "failed to verify wallet readiness; please try again")
+			}
+			return payload.Email, nil
 		}
 		return "", platformerrors.New(platformerrors.CodeAlreadyExists, "this Google account is already linked to another TradeDrift profile")
 	}

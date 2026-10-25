@@ -7,7 +7,11 @@ const STATS = [
   { icon: <Activity size={14} />, label: 'Price Data', value: 'Live Charts' },
 ]
 
-export default function HeroSection() {
+interface HeroSectionProps {
+  onLaunchSimulator?: () => void
+}
+
+export default function HeroSection({ onLaunchSimulator }: HeroSectionProps) {
   return (
     <section className="relative min-h-screen flex flex-col items-center justify-center text-center px-6 pt-8">
       {/* Badge */}
@@ -31,13 +35,24 @@ export default function HeroSection() {
 
       {/* CTA buttons */}
       <div className="flex flex-col sm:flex-row items-center gap-4 mb-16">
-        <Link
-          to="/register"
-          className="group flex items-center gap-2 px-7 py-3.5 bg-brand hover:bg-brand-dark text-black font-bold rounded-xl transition-all duration-200 glow-green hover:scale-105"
-        >
-          Start Simulator
-          <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform" />
-        </Link>
+        {onLaunchSimulator ? (
+          <button
+            type="button"
+            onClick={onLaunchSimulator}
+            className="group flex items-center gap-2 px-7 py-3.5 bg-brand hover:bg-brand-dark text-black font-bold rounded-xl transition-all duration-200 glow-green hover:scale-105 cursor-pointer"
+          >
+            Start Simulator
+            <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform" />
+          </button>
+        ) : (
+          <Link
+            to="/register"
+            className="group flex items-center gap-2 px-7 py-3.5 bg-brand hover:bg-brand-dark text-black font-bold rounded-xl transition-all duration-200 glow-green hover:scale-105"
+          >
+            Start Simulator
+            <ArrowRight size={16} className="group-hover:translate-x-1 transition-transform" />
+          </Link>
+        )}
         <a
           href="#features"
           className="flex items-center gap-2 px-7 py-3.5 border border-surface-border hover:border-brand/50 text-slate-300 hover:text-white font-medium rounded-xl transition-all duration-200"

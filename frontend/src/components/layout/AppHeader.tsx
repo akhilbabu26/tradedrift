@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, memo } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
+import { useNavigate, Link, useLocation } from 'react-router-dom'
 import {
   Search,
   Bell,
@@ -15,11 +15,14 @@ import {
   ClipboardList,
   LineChart,
   LayoutDashboard,
+  LogIn,
 } from 'lucide-react'
 import { useNotificationStore, selectUnreadCount } from '../../store/notificationStore'
+import { useAuthStore } from '../../store/authStore'
 import { wsService, type ConnectionStatus } from '../../api/ws'
 import StatusIndicator from '../dashboard/shared/StatusIndicator'
 import { TradeDriftSymbol } from '../brand/TradeDriftLogo'
+import { prefetchRoute } from '../../utils/routePrefetch'
 
 export interface AppHeaderProps {
   onOpenMobile?: () => void
@@ -90,6 +93,9 @@ const SEARCHABLE_PAGES = [
  */
 function AppHeader({ onOpenMobile }: AppHeaderProps) {
   const navigate = useNavigate()
+  const location = useLocation()
+  const storeIsAuth = useAuthStore((s) => s.isAuthenticated)
+  const isAuthenticated = storeIsAuth || useAuthStore.getState().isAuthenticated
 
   const [wsStatus, setWsStatus] = useState<ConnectionStatus>('connecting')
   const [wsLatency, setWsLatency] = useState<number>(0)
@@ -169,29 +175,31 @@ function AppHeader({ onOpenMobile }: AppHeaderProps) {
   }
 
   return (
-    <header className="relative h-14 bg-[#08090B] border-b border-[#292C30] flex items-center justify-between px-3 sm:px-4 lg:px-5 flex-shrink-0 z-20 select-none w-full">
+    <header className="relative h-14 bg-[#08090B] border-b border-[#292C30] flex items-center justify-between px-2.5 sm:px-4 lg:px-5 flex-shrink-0 z-20 select-none w-full">
       {/* ── Left Area: Mobile Drawer Toggle & Left-Positioned Search Bar ────── */}
-      <div className="flex items-center gap-3 flex-1 min-w-0">
+      <div className="flex items-center gap-2 sm:gap-3 flex-1 min-w-0 mr-2">
         {/* Mobile menu trigger */}
         <button
           type="button"
           onClick={onOpenMobile}
           aria-label="Open navigation menu"
-          className="lg:hidden p-1.5 rounded-lg bg-[#151719] border border-[#292C30] text-[#777E87] hover:text-white transition-colors cursor-pointer"
+          className="lg:hidden min-w-[36px] min-h-[36px] p-2 rounded-lg bg-[#151719] border border-[#292C30] text-[#777E87] hover:text-white transition-colors cursor-pointer flex items-center justify-center flex-shrink-0"
         >
           <Menu size={16} />
         </button>
 
         {/* Mobile Brand when sidebar is off-screen */}
-        <div className="lg:hidden flex items-center gap-2">
-          <Link to="/dashboard" className="flex items-center gap-2">
-            <TradeDriftSymbol size={24} />
-            <span className="text-base font-bold text-white tracking-tight">TradeDrift</span>
+        <div className="lg:hidden flex items-center gap-1.5 sm:gap-2 flex-shrink-0">
+          <Link to="/dashboard" className="flex items-center gap-1.5 sm:gap-2">
+            <TradeDriftSymbol size={22} />
+            <span className="text-sm sm:text-base font-bold text-white tracking-tight hidden min-[360px]:inline">
+              TradeDrift
+            </span>
           </Link>
         </div>
 
         {/* ── Global Search (Left-aligned immediately after sidebar) ───────── */}
-        <div className="flex items-center relative w-60 sm:w-80 md:w-96 max-w-full" ref={searchRef}>
+        <div className="flex items-center relative min-w-0 flex-1 max-w-[180px] sm:max-w-xs md:max-w-sm" ref={searchRef}>
           <Search size={14} className="absolute left-3 text-[#777E87] pointer-events-none" />
           <input
             type="text"
@@ -273,6 +281,8 @@ function AppHeader({ onOpenMobile }: AppHeaderProps) {
                         key={p.to}
                         type="button"
                         onClick={() => handleSelectPage(p.to)}
+                        onMouseEnter={() => prefetchRoute(p.to)}
+                        onFocus={() => prefetchRoute(p.to)}
                         className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg hover:bg-white/5 transition-colors group text-left cursor-pointer"
                       >
                         <div className="flex items-center gap-2">
@@ -300,6 +310,19 @@ function AppHeader({ onOpenMobile }: AppHeaderProps) {
 
       {/* ── Right Area: LIVE Status & Notifications ───────────────────────── */}
       <div className="flex items-center gap-2.5 sm:gap-3 flex-shrink-0 ml-4">
+        {/* ── Guest Mode Indicator ────────────────────────────────────────── */}
+        {!isAuthenticated && (
+          <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-[#10b981]/10 border border-[#10b981]/25 flex-shrink-0">
+            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#10b981]/15 border border-[#10b981]/30 text-[#10b981] font-mono font-bold text-[10px] tracking-wide uppercase flex-shrink-0">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#10b981] animate-pulse" />
+              GUEST MODE
+            </span>
+            <span className="hidden md:inline text-slate-300 font-medium text-xs truncate">
+              Explore markets freely. Sign in to start trading.
+            </span>
+          </div>
+        )}
+
         {/* ── LIVE Status ─────────────────────────────────────────────────── */}
         <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-[#151719] border border-[#292C30] shadow-[0_2px_4px_rgba(0,0,0,0.3)] flex-shrink-0">
           <StatusIndicator
@@ -310,10 +333,25 @@ function AppHeader({ onOpenMobile }: AppHeaderProps) {
           <span className="hidden xl:inline text-[11px] font-mono text-[#777E87]">{latencyLabel}</span>
         </div>
 
+        {/* ── Guest Action CTA ────────────────────────────────────────────── */}
+        {!isAuthenticated && (
+          <Link
+            to={`/login?returnUrl=${encodeURIComponent(location.pathname + location.search)}`}
+            onMouseEnter={() => prefetchRoute('/login')}
+            onFocus={() => prefetchRoute('/login')}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-black text-xs font-bold transition-all shadow-[0_0_12px_rgba(16,185,129,0.25)] flex-shrink-0"
+          >
+            <LogIn size={13} />
+            <span>Sign In</span>
+          </Link>
+        )}
+
         {/* ── Notifications ───────────────────────────────────────────────── */}
         <button
           type="button"
           onClick={() => navigate('/notifications')}
+          onMouseEnter={() => prefetchRoute('/notifications')}
+          onFocus={() => prefetchRoute('/notifications')}
           aria-label="Notifications"
           className="relative p-2 rounded-xl bg-[#151719] border border-[#292C30] text-[#A7ADB5] hover:text-[#F2F3F5] hover:border-[#777E87]/60 shadow-[0_2px_4px_rgba(0,0,0,0.3)] transition-colors flex-shrink-0 cursor-pointer"
         >

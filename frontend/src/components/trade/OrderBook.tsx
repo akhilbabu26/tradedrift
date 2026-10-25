@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, memo } from 'react'
 import { ChevronDown } from 'lucide-react'
 import type { OrderBookSnapshot, OrderBookLevel } from '../../types/trade'
 import { formatPrice, formatQuantity } from '../../utils/formatters'
@@ -61,7 +61,7 @@ function DepthRow({
   )
 }
 
-export default function OrderBook({
+function OrderBook({
   orderBook,
   isDemoData,
   precision,
@@ -83,7 +83,7 @@ export default function OrderBook({
      * flex flex-col: stacks header → columns → content vertically
      * min-h-0: allows shrinking within grid cell
      */
-    <div className="h-full flex flex-col min-h-0 border-l border-[#1e2530] bg-[#111318]">
+    <div className="h-full flex flex-col min-h-0 lg:border-l border-[#1e2530] bg-[#111318]">
 
       {/* ── Header: tabs + precision ──────────────────────────────────────── */}
       <div className="flex items-center justify-between px-2 py-1.5 border-b border-[#1e2530] flex-shrink-0">
@@ -215,3 +215,5 @@ export default function OrderBook({
     </div>
   )
 }
+
+export default memo(OrderBook)

@@ -319,18 +319,33 @@ func (t *Tracker) LastSuccessfulSync(marketID string) time.Time {
 	return t.lastSync[marketID]
 }
 
+// ZoneResolver is a function that maps a LevelID to a configured zone ("LOW", "MID", "HIGH", or "").
+type ZoneResolver func(levelID string) string
+
 // SyncFromOrders populates the tracker from a set of live orders returned by ListMMOrders.
 // Generation numbers are recovered from client_order_id to preserve monotonic ordering across restarts.
 // Duplicate LevelIDs in the OS response are deduplicated by selecting the highest Generation.
 // Recovered orders enter StatusOSRegistered (awaiting ME confirmation window) rather than blindly assuming RESTING.
+// If an authoritative zone resolver is provided, the order's zone is verified against the configured ladder.
+// Authoritative creation timestamps are preserved; missing timestamps are left as zero to prevent bypassing expiry.
+// Fully filled orders (RemainingQty <= 0) or inconsistent orders are protected and not added as active resting orders.
 // Returns (addedCount, duplicatesCount).
-func (t *Tracker) SyncFromOrders(marketID string, orders []OSOrder) (int, int) {
+func (t *Tracker) SyncFromOrders(marketID string, orders []OSOrder, zoneResolvers ...ZoneResolver) (int, int) {
 	added := 0
 	duplicates := 0
+
+	var resolveZone ZoneResolver
+	if len(zoneResolvers) > 0 && zoneResolvers[0] != nil {
+		resolveZone = zoneResolvers[0]
+	}
 
 	// Deduplicate incoming orders by LevelID, choosing the highest generation
 	uniqueOrders := make(map[string]OSOrder, len(orders))
 	for _, o := range orders {
+		// Validate remaining quantity sanity
+		if o.RemainingQty.IsNegative() || o.RemainingQty.GreaterThan(o.OriginalQty) {
+			continue
+		}
 		_, exists := uniqueOrders[o.LevelID]
 		if exists {
 			duplicates++
@@ -341,6 +356,11 @@ func (t *Tracker) SyncFromOrders(marketID string, orders []OSOrder) (int, int) {
 	}
 
 	for _, o := range uniqueOrders {
+		var zone string
+		if resolveZone != nil {
+			zone = resolveZone(o.LevelID)
+		}
+
 		existing := t.orders[o.LevelID]
 		if existing != nil {
 			if o.Generation < existing.Generation {
@@ -364,6 +384,15 @@ func (t *Tracker) SyncFromOrders(marketID string, orders []OSOrder) (int, int) {
 			existing.OriginalQty = o.OriginalQty
 			existing.RemainingQty = o.RemainingQty
 			existing.FilledQty = o.OriginalQty.Sub(o.RemainingQty)
+
+			// Restore authoritative timestamps and zone if available
+			if !o.CreatedAt.IsZero() && (existing.CreatedAt.IsZero() || o.CreatedAt.Before(existing.CreatedAt)) {
+				existing.CreatedAt = o.CreatedAt
+			}
+			if existing.Zone == "" && zone != "" {
+				existing.Zone = zone
+			}
+
 			if existing.Status == StatusPending {
 				existing.Status = StatusOSRegistered
 				existing.OSRegisteredSince = time.Now()
@@ -376,13 +405,24 @@ func (t *Tracker) SyncFromOrders(marketID string, orders []OSOrder) (int, int) {
 			t.generations[o.LevelID] = o.Generation
 		}
 
-		// New entry â€” recovered from Order Service
+		// New entry — recovered from Order Service
 		gen := o.Generation
 		if gen <= 0 {
 			gen = 1
 		}
 		if gen > t.generations[o.LevelID] {
 			t.generations[o.LevelID] = gen
+		}
+
+		// Fully filled orders (RemainingQty == 0) must not be resurrected into active live orders
+		if o.RemainingQty.IsZero() {
+			continue
+		}
+
+		createdAt := o.CreatedAt
+		var pendingSince time.Time
+		if !createdAt.IsZero() {
+			pendingSince = createdAt
 		}
 
 		t.orders[o.LevelID] = &LiveOrder{
@@ -398,7 +438,10 @@ func (t *Tracker) SyncFromOrders(marketID string, orders []OSOrder) (int, int) {
 			FilledQty:         o.OriginalQty.Sub(o.RemainingQty),
 			Status:            StatusOSRegistered, // recovered from OS, starts in OS_REGISTERED
 			KafkaPublished:    true,
+			PendingSince:      pendingSince,
 			OSRegisteredSince: time.Now(),
+			Zone:              zone,
+			CreatedAt:         createdAt,
 		}
 		added++
 	}

@@ -12,6 +12,7 @@ import (
 	"tradedrift/services/liquidity-engine/internal/meclient"
 	"tradedrift/services/liquidity-engine/internal/order"
 	"tradedrift/services/liquidity-engine/internal/orderservice"
+	"tradedrift/services/liquidity-engine/internal/pricing"
 )
 
 // SyncFromOrderService calls ListMMOrders and updates the tracker.
@@ -46,7 +47,10 @@ func (r *Reconciler) SyncFromOrderService(ctx context.Context, marketID string) 
 		return fmt.Errorf("ListMMOrders for %s: %w", marketID, err)
 	}
 
-	added, duplicates := r.tracker.SyncFromOrders(marketID, osOrders)
+	resolver := func(levelID string) string {
+		return pricing.ResolveZoneForMarketConfig(levelID, mc)
+	}
+	added, duplicates := r.tracker.SyncFromOrders(marketID, osOrders, resolver)
 	if duplicates > 0 {
 		r.logger.Info("overlapping MM order generations detected during OS sync — deduplicated by highest generation",
 			zap.String("market_id", marketID),

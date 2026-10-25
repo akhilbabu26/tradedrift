@@ -104,3 +104,62 @@ export function calculateBollingerBands(
 
   return { upper, middle, lower }
 }
+
+/**
+ * Calculates incremental Exponential Moving Average for the active in-progress bar.
+ * Uses the completed EMA from the preceding bar (bar n-2) and the active bar's current close.
+ * Mathematically identical to calculateEMA(data, period)[data.length - 1].
+ */
+export function calculateIncrementalEMA(
+  prevCompletedEma: number,
+  currentClose: number,
+  period: number,
+  time: UTCTimestamp
+): IndicatorPoint {
+  const k = 2 / (period + 1)
+  const currentEma = currentClose * k + prevCompletedEma * (1 - k)
+  return {
+    time,
+    value: Number(currentEma.toFixed(6)),
+  }
+}
+
+/**
+ * Calculates incremental Bollinger Bands for the active in-progress bar.
+ * Uses the preceding completed bars and active bar's current close.
+ * Mathematically identical to calculateBollingerBands(data, period, stdDevMultiplier)[data.length - 1].
+ */
+export function calculateIncrementalBollingerBands(
+  precedingBars: { close: number }[],
+  currentClose: number,
+  period: number = 20,
+  stdDevMultiplier: number = 2,
+  time: UTCTimestamp
+): { upper: IndicatorPoint; middle: IndicatorPoint; lower: IndicatorPoint } | null {
+  if (!Array.isArray(precedingBars) || precedingBars.length < period - 1 || period <= 0) {
+    return null
+  }
+
+  // Preceding (period - 1) bars + current active close price
+  const startIdx = precedingBars.length - (period - 1)
+  let sum = currentClose
+  for (let j = startIdx; j < precedingBars.length; j++) {
+    sum += precedingBars[j].close
+  }
+  const sma = sum / period
+
+  let varianceSum = Math.pow(currentClose - sma, 2)
+  for (let j = startIdx; j < precedingBars.length; j++) {
+    varianceSum += Math.pow(precedingBars[j].close - sma, 2)
+  }
+  const stdDev = Math.sqrt(varianceSum / period)
+
+  const u = sma + stdDevMultiplier * stdDev
+  const l = sma - stdDevMultiplier * stdDev
+
+  return {
+    upper: { time, value: Number(u.toFixed(6)) },
+    middle: { time, value: Number(sma.toFixed(6)) },
+    lower: { time, value: Number(l.toFixed(6)) },
+  }
+}

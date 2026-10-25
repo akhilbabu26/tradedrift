@@ -13,6 +13,7 @@
  */
 
 import axios from 'axios'
+import { clearAllPrivateCaches } from '../utils/cacheRegistry'
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
 
@@ -20,6 +21,7 @@ const client = axios.create({
   baseURL: API_BASE_URL,
   headers: { 'Content-Type': 'application/json' },
   withCredentials: true,
+  timeout: 10000,
 })
 
 // ── In-flight GET deduplication ──────────────────────────────────────────────
@@ -86,6 +88,7 @@ export async function clearSessionAndRedirect() {
       localStorage.removeItem('refresh_token')
       localStorage.removeItem('user')
     }
+    clearAllPrivateCaches()
   } finally {
     if (typeof window !== 'undefined' && window.location && window.location.pathname !== '/login') {
       window.location.href = '/login'
@@ -146,7 +149,7 @@ client.interceptors.response.use(
             .post(
               `${API_BASE_URL}/api/v1/auth/refresh`,
               { refreshToken: refresh },
-              { withCredentials: true }
+              { withCredentials: true, timeout: 10000 }
             )
             .then((r) => r.data as { accessToken: string; refreshToken: string })
             .finally(() => {

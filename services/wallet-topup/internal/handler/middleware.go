@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -54,52 +53,19 @@ func CORSMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// RequireAuth extracts X-User-ID header (or falls back to Bearer JWT token) and ensures it is present.
+// RequireAuth validates that an authenticated X-User-ID header is present (injected upstream by API Gateway).
 func RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		userID := r.Header.Get("X-User-ID")
-		if userID == "" {
-			authHeader := r.Header.Get("Authorization")
-			if strings.HasPrefix(authHeader, "Bearer ") {
-				tokenStr := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-				userID = extractUserIDFromJWT(tokenStr)
-			}
-		}
-
+		userID := strings.TrimSpace(r.Header.Get("X-User-ID"))
 		if userID == "" {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{
-				"error": "missing X-User-ID header or valid authorization token",
+				"error": "missing authenticated X-User-ID header",
 			})
 			return
 		}
 		ctx := context.WithValue(r.Context(), UserIDKey, userID)
 		next(w, r.WithContext(ctx))
 	}
-}
-
-func extractUserIDFromJWT(tokenStr string) string {
-	parts := strings.Split(tokenStr, ".")
-	if len(parts) != 3 {
-		return ""
-	}
-	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		payloadBytes, err = base64.URLEncoding.DecodeString(parts[1])
-		if err != nil {
-			return ""
-		}
-	}
-	var claims struct {
-		UserID string `json:"user_id"`
-		Sub    string `json:"sub"`
-	}
-	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
-		return ""
-	}
-	if claims.UserID != "" {
-		return claims.UserID
-	}
-	return claims.Sub
 }
 
 // LoggingMiddleware logs request duration and status.

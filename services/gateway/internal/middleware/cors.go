@@ -39,6 +39,7 @@ func CORS(origins []string) func(http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key, X-Request-ID")
 			w.Header().Set("Access-Control-Expose-Headers", "X-Request-ID")
 			w.Header().Set("Access-Control-Max-Age", "86400")
+			w.Header().Set("Cross-Origin-Opener-Policy", "same-origin-allow-popups")
 
 			// Handle preflight requests.
 			if r.Method == http.MethodOptions {

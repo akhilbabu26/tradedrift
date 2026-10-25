@@ -1,5 +1,6 @@
 import SettingsHeader from '../../components/settings/SettingsHeader'
 import ProfileAccountCard from '../../components/settings/ProfileAccountCard'
+import ConnectedAccountsCard from '../../components/settings/ConnectedAccountsCard'
 import SecurityPasswordCard from '../../components/settings/SecurityPasswordCard'
 import ActiveSessionsCard from '../../components/settings/ActiveSessionsCard'
 import SignOutCard from '../../components/settings/SignOutCard'
@@ -9,7 +10,7 @@ import GlobalFooter from '../../components/layout/GlobalFooter'
  * Settings page — authenticated route at /settings.
  *
  * Layout provided by MainLayout (App.tsx) via <Outlet />.
- * Displays user identity, password change form, demo active sessions, and sign out options.
+ * Displays user identity, connected accounts (Google OAuth), password change form, demo active sessions, and sign out options.
  * Matches desktop-first proportions (max-w-[880px]) and dark terminal design system.
  */
 export default function SettingsPage() {
@@ -18,6 +19,7 @@ export default function SettingsPage() {
       <div className="max-w-[880px] mx-auto px-4 sm:px-6 py-7 sm:py-8">
         <SettingsHeader />
         <ProfileAccountCard />
+        <ConnectedAccountsCard />
         <SecurityPasswordCard />
         <ActiveSessionsCard />
         <SignOutCard />
@@ -26,3 +28,4 @@ export default function SettingsPage() {
     </div>
   )
 }
+

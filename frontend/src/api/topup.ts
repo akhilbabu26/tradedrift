@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const TOPUP_BASE_URL = import.meta.env.VITE_TOPUP_API_BASE_URL || 'http://localhost:8084'
+const TOPUP_BASE_URL = import.meta.env.VITE_TOPUP_API_BASE_URL || import.meta.env.VITE_API_BASE_URL || 'http://localhost:8080'
 
 const topupClient = axios.create({
   baseURL: TOPUP_BASE_URL,
@@ -11,17 +11,6 @@ topupClient.interceptors.request.use((config) => {
   const token = localStorage.getItem('access_token')
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
-  }
-  const userStr = localStorage.getItem('user')
-  if (userStr) {
-    try {
-      const user = JSON.parse(userStr)
-      if (user?.userId) {
-        config.headers['X-User-ID'] = user.userId
-      }
-    } catch {
-      // Ignore JSON parse error
-    }
   }
   return config
 })

@@ -54,7 +54,9 @@ export default function OrdersTable({
             {['Time', 'Pair', 'Type', 'Side', 'Price', 'Amount', 'Filled', 'Remaining', 'Status', 'Action'].map((col) => (
               <th
                 key={col}
-                className="px-3 py-2 text-left text-[10px] font-medium text-slate-600 uppercase tracking-wider whitespace-nowrap"
+                className={`px-3 py-2 text-left text-[10px] font-medium text-slate-600 uppercase tracking-wider whitespace-nowrap ${
+                  col === 'Action' ? 'sticky right-0 bg-[#111318] z-10 text-right shadow-[-4px_0_6px_rgba(0,0,0,0.3)]' : ''
+                }`}
               >
                 {col}
               </th>
@@ -150,7 +152,7 @@ export default function OrdersTable({
                   </span>
                 </td>
                 {/* Action */}
-                <td className={`px-3 ${cellPadding} whitespace-nowrap`}>
+                <td className={`px-3 ${cellPadding} whitespace-nowrap sticky right-0 bg-[#111318] z-10 text-right shadow-[-4px_0_6px_rgba(0,0,0,0.3)]`}>
                   {isOpen ? (
                     <button
                       type="button"

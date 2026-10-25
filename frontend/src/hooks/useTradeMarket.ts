@@ -5,16 +5,32 @@ import { getMarketMetadata } from '../utils/marketMetadata'
 import type { SelectedMarket } from '../types/trade'
 
 export function useTradeMarket(initialMarketId = 'BTC-USDT') {
-  const [markets, setMarkets] = useState<Market[]>([])
   const [selectedMarketId, setSelectedMarketId] = useState<string>(initialMarketId)
-  const [ticker, setTicker] = useState<Ticker24h | null>(null)
-  const [marketTrends, setMarketTrends] = useState<Record<string, number[]>>({})
-  const [isDemoData, setIsDemoData] = useState(false)
-  const [loading, setLoading] = useState(true)
 
-  const storeTicker = useMarketStore((s) => s.tickers[selectedMarketId])
+  const storeMarkets = useMarketStore((s) => s.markets)
   const storeTrends = useMarketStore((s) => s.trends)
   const subscribeStoreTicker = useMarketStore((s) => s.subscribeTicker)
+  const storeTicker = useMarketStore((s) => s.tickers[selectedMarketId])
+
+  const [markets, setMarkets] = useState<Market[]>(() =>
+    useMarketStore.getState().markets.length > 0 ? useMarketStore.getState().markets : []
+  )
+  const [ticker, setTicker] = useState<Ticker24h | null>(() =>
+    useMarketStore.getState().tickers[initialMarketId] || null
+  )
+  const [marketTrends, setMarketTrends] = useState<Record<string, number[]>>(() =>
+    useMarketStore.getState().trends
+  )
+  const [isDemoData, setIsDemoData] = useState(false)
+  const [loading, setLoading] = useState(() => useMarketStore.getState().markets.length === 0)
+
+  // Sync with marketStore if already loaded elsewhere
+  useEffect(() => {
+    if (storeMarkets.length > 0 && markets.length === 0) {
+      setMarkets(storeMarkets)
+      setLoading(false)
+    }
+  }, [storeMarkets, markets.length])
 
   // 1. Fetch market list and shared 24h overview trends
   useEffect(() => {
@@ -28,6 +44,7 @@ export function useTradeMarket(initialMarketId = 'BTC-USDT') {
         if (!mounted) return
         if (list && list.length > 0) {
           setMarkets(list)
+          useMarketStore.setState({ markets: list })
         }
 
         const trends: Record<string, number[]> = {}

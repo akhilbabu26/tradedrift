@@ -179,8 +179,8 @@ func (r *MarketRepository) GetTicker24h(ctx context.Context, marketID string) (*
 		SELECT 
 			m.id,
 			COALESCE((SELECT last_price FROM latest_trade), 0) AS last_price,
-			COALESCE(MAX(t.price), 0) AS high_24h,
-			COALESCE(MIN(t.price), 0) AS low_24h,
+			COALESCE(MAX(t.price), (SELECT last_price FROM latest_trade), 0) AS high_24h,
+			COALESCE(MIN(t.price), (SELECT last_price FROM latest_trade), 0) AS low_24h,
 			COALESCE(SUM(t.quantity), 0) AS volume_24h,
 			COALESCE(SUM(t.price * t.quantity), 0) AS quote_volume_24h,
 			COALESCE(
@@ -241,8 +241,24 @@ func (r *MarketRepository) GetMarketsOverview(ctx context.Context, resolution st
 					WHERE market_id = m.id
 					ORDER BY executed_at DESC, id DESC LIMIT 1
 				), 0) AS last_price,
-				COALESCE(MAX(t.price), 0)              AS high_24h,
-				COALESCE(MIN(t.price), 0)              AS low_24h,
+				COALESCE(
+					MAX(t.price),
+					(
+						SELECT price FROM market_trades
+						WHERE market_id = m.id
+						ORDER BY executed_at DESC, id DESC LIMIT 1
+					),
+					0
+				) AS high_24h,
+				COALESCE(
+					MIN(t.price),
+					(
+						SELECT price FROM market_trades
+						WHERE market_id = m.id
+						ORDER BY executed_at DESC, id DESC LIMIT 1
+					),
+					0
+				) AS low_24h,
 				COALESCE(SUM(t.quantity), 0)           AS volume_24h,
 				COALESCE(SUM(t.price * t.quantity), 0) AS quote_volume_24h,
 				COALESCE(
@@ -275,6 +291,7 @@ func (r *MarketRepository) GetMarketsOverview(ctx context.Context, resolution st
 					   ROW_NUMBER() OVER (PARTITION BY market_id ORDER BY start_time DESC) AS rn
 				FROM ohlc_candles
 				WHERE resolution = $1
+				  AND start_time >= NOW() - INTERVAL '7 days'
 			) sub
 			WHERE rn <= $2
 			GROUP BY market_id
@@ -342,7 +359,7 @@ func (r *MarketRepository) GetMarketsOverview(ctx context.Context, resolution st
 // CalculatePriceChangePercent calculates the percentage change between firstPrice and lastPrice.
 // Returns zero if firstPrice is zero (e.g. no trades at start of window).
 func CalculatePriceChangePercent(lastPrice, firstPrice decimal.Decimal) decimal.Decimal {
-	if firstPrice.IsZero() {
+	if firstPrice.IsZero() || lastPrice.IsZero() {
 		return decimal.Zero
 	}
 	return lastPrice.Sub(firstPrice).Div(firstPrice).Mul(decimal.NewFromInt(100))

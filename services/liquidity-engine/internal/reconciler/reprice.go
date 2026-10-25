@@ -197,12 +197,17 @@ func (r *Reconciler) applyRefMovementReprice(ctx context.Context, mc *config.Mar
 	var candidates []*order.LiveOrder
 	for _, o := range allOrders {
 		if o.Status == order.StatusResting && o.RefVersion < targetVersion {
-			if action == ActionControlledRebase {
-				if o.Zone == "HIGH" || o.Zone == "MID" || o.Zone == "LOW" {
-					candidates = append(candidates, o)
+			zone := o.Zone
+			if zone == "" {
+				zone = pricing.ResolveZoneForMarketConfig(o.LevelID, mc)
+				if zone != "" {
+					o.Zone = zone
 				}
+			}
+			if action == ActionControlledRebase {
+				candidates = append(candidates, o)
 			} else { // ActionSelectiveReprice
-				if o.Zone == "HIGH" || o.Zone == "MID" {
+				if zone == "HIGH" || zone == "MID" {
 					candidates = append(candidates, o)
 				}
 			}
@@ -402,13 +407,26 @@ func (r *Reconciler) applyRefMovementReprice(ctx context.Context, mc *config.Mar
 			targetVer = targetVersion
 		}
 
-		// Invariant: Rebase is complete only when zero orders across RESTING, PENDING,
-		// and OS_REGISTERED remain with RefVersion < targetVer.
-		// If in-flight PENDING/OS_REGISTERED orders hold an older version, RebaseActive
-		// remains true so subsequent cycles reprice them once confirmed RESTING.
+		// Invariant: Rebase is complete only when all eligible levels have converged to targetVer.
+		// Rebase remains active if:
+		// 1. Any eligible resting orders remain to be processed in subsequent batches (remaining > 0).
+		// 2. Any in-flight PENDING or OS_REGISTERED orders still hold an older RefVersion < targetVer.
+		// 3. Any CANCELLING orders hold an older version without a queued replacement for targetVer.
+		// 4. Any STALE orders hold an older RefVersion < targetVer.
 		hasInFlightOlderVersions := false
 		for _, o := range allOrders {
+			if state.RebaseAction == ActionSelectiveReprice && o.Zone == "LOW" {
+				continue // In selective reprice, LOW zone is anchored and intentionally retains active generation ref
+			}
 			if (o.Status == order.StatusPending || o.Status == order.StatusOSRegistered) && o.RefVersion < targetVer {
+				hasInFlightOlderVersions = true
+				break
+			}
+			if o.Status == order.StatusCancelling && (o.QueuedCorrection == nil || o.QueuedCorrection.RefVersion < targetVer) {
+				hasInFlightOlderVersions = true
+				break
+			}
+			if o.Status == order.StatusStale && o.RefVersion < targetVer {
 				hasInFlightOlderVersions = true
 				break
 			}

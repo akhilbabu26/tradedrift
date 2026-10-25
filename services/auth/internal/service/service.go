@@ -38,6 +38,7 @@ type Service struct {
 	userRepo        repository.UserRepository
 	identityRepo    repository.IdentityRepository
 	tokenRepo       repository.RefreshTokenRepository
+	outboxRepo      repository.OutboxRepository
 	otpMgr          *otp.Manager
 	mailer          mail.Mailer
 	walletCl        WalletClient
@@ -78,6 +79,12 @@ func NewService(
 		refreshTTL:      refreshTTL,
 		log:             log,
 	}
+}
+
+// WithOutboxRepository sets the outbox repository for durable background reconciliation.
+func (s *Service) WithOutboxRepository(outboxRepo repository.OutboxRepository) *Service {
+	s.outboxRepo = outboxRepo
+	return s
 }
 
 // UserDTO is the user payload returned on login/verification.

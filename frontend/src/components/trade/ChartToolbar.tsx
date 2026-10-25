@@ -118,7 +118,7 @@ export default function ChartToolbar({
   return (
     <div
       onWheel={handleWheel}
-      className="flex items-center gap-0 px-2.5 min-h-[38px] h-[38px] border-b border-[#1e2530] bg-[#111318] flex-shrink-0 w-full min-w-0 trade-scrollbar-x select-none"
+      className="flex items-center gap-0 px-2 sm:px-2.5 min-h-[38px] h-[38px] border-b border-[#1e2530] bg-[#111318] flex-shrink-0 w-full min-w-0 overflow-x-auto trade-scrollbar-x select-none"
     >
       {/* Timeframe buttons */}
       <div className="flex items-center gap-0.5 mr-2 flex-shrink-0" role="group" aria-label="Chart timeframe">
@@ -281,7 +281,7 @@ export default function ChartToolbar({
       <div className="flex-1 min-w-[8px]" />
 
       {/* Volume indicator label */}
-      <div className="flex items-center gap-1 mr-3 flex-shrink-0 whitespace-nowrap">
+      <div className="hidden sm:flex items-center gap-1 mr-3 flex-shrink-0 whitespace-nowrap">
         <BarChart2 size={12} className="text-slate-600" />
         <span className="text-[10px] text-slate-600 font-mono">Volume</span>
       </div>

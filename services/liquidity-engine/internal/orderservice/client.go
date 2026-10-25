@@ -172,6 +172,13 @@ func (c *Client) ListMMOrders(ctx context.Context, marketID string) ([]order.OSO
 				zap.Error(err))
 			continue
 		}
+		if remainQty.IsNegative() || remainQty.GreaterThan(origQty) {
+			c.logger.Warn("skipping order with inconsistent remaining_quantity",
+				zap.String("order_id", o.Id),
+				zap.String("quantity", o.Quantity),
+				zap.String("remaining_quantity", o.RemainingQuantity))
+			continue
+		}
 		price, err := decimal.NewFromString(o.Price)
 		if err != nil {
 			c.logger.Warn("skipping order with invalid price",
@@ -185,6 +192,11 @@ func (c *Client) ListMMOrders(ctx context.Context, marketID string) ([]order.OSO
 			side = "SELL"
 		}
 
+		var createdAt time.Time
+		if o.CreatedAt != nil {
+			createdAt = o.CreatedAt.AsTime()
+		}
+
 		result = append(result, order.OSOrder{
 			LevelID:       levelID,
 			Generation:    gen,
@@ -194,6 +206,7 @@ func (c *Client) ListMMOrders(ctx context.Context, marketID string) ([]order.OSO
 			Price:         price,
 			OriginalQty:   origQty,
 			RemainingQty:  remainQty,
+			CreatedAt:     createdAt,
 		})
 	}
 

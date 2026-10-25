@@ -85,4 +85,49 @@ describe('AppSidebar Component', () => {
     expect(html).toContain('aria-current="page"')
     expect(html).toContain('href="/trade"')
   })
+
+  it('renders full labels and section titles in mobile drawer when mobileOpen={true}', () => {
+    const html = renderToString(
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <AppSidebar mobileOpen={true} />
+      </MemoryRouter>
+    )
+
+    // Mobile drawer dialog present
+    expect(html).toContain('role="dialog"')
+    expect(html).toContain('aria-label="Navigation drawer"')
+
+    // All section titles rendered
+    expect(html).toContain('OVERVIEW')
+    expect(html).toContain('TRADING')
+    expect(html).toContain('ACCOUNT')
+    expect(html).toContain('ANALYTICS')
+    expect(html).toContain('SETTINGS')
+
+    // Page text labels rendered alongside icons
+    expect(html).toContain('Dashboard')
+    expect(html).toContain('Trade')
+    expect(html).toContain('Markets')
+    expect(html).toContain('Portfolio')
+    expect(html).toContain('Wallet')
+    expect(html).toContain('Orders')
+    expect(html).toContain('Analytics')
+    expect(html).toContain('Profile')
+    expect(html).toContain('Settings')
+  })
+
+  it('renders full page labels in mobile drawer even when collapsed={true} is passed', () => {
+    const html = renderToString(
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <AppSidebar mobileOpen={true} collapsed={true} />
+      </MemoryRouter>
+    )
+
+    // Mobile drawer sheet must never collapse into icon-only mode
+    expect(html).toContain('Dashboard')
+    expect(html).toContain('Trade')
+    expect(html).toContain('Markets')
+    expect(html).toContain('OVERVIEW')
+    expect(html).toContain('Trade Smarter. Drift Further.')
+  })
 })

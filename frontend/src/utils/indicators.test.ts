@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { calculateEMA, calculateBollingerBands } from './indicators'
+import {
+  calculateEMA,
+  calculateBollingerBands,
+  calculateIncrementalEMA,
+  calculateIncrementalBollingerBands,
+} from './indicators'
 import type { UTCTimestamp } from 'lightweight-charts'
 
 describe('Technical Indicators Utilities', () => {
@@ -55,6 +60,45 @@ describe('Technical Indicators Utilities', () => {
       expect(bb.middle[0].value).toBe(11)
       expect(bb.upper[0].value).toBeCloseTo(12.633, 2)
       expect(bb.lower[0].value).toBeCloseTo(9.367, 2)
+    })
+  })
+
+  describe('calculateIncrementalEMA', () => {
+    it('produces identical result to calculateEMA for the active bar', () => {
+      const period = 3
+      const fullEma = calculateEMA(mockBars, period)
+      // Bar at index 4 (time 5000) was 13
+      const prevEma = fullEma[fullEma.length - 2].value // EMA of bar at index 4
+      const activeBar = mockBars[mockBars.length - 1] // Bar at index 5, close 15
+
+      const incPoint = calculateIncrementalEMA(prevEma, activeBar.close, period, activeBar.time)
+      const fullLastPoint = fullEma[fullEma.length - 1]
+
+      expect(incPoint.time).toBe(fullLastPoint.time)
+      expect(incPoint.value).toBe(fullLastPoint.value)
+    })
+  })
+
+  describe('calculateIncrementalBollingerBands', () => {
+    it('produces identical result to calculateBollingerBands for the active bar', () => {
+      const period = 3
+      const fullBB = calculateBollingerBands(mockBars, period, 2)
+      const precedingBars = mockBars.slice(0, -1)
+      const activeBar = mockBars[mockBars.length - 1]
+
+      const incBB = calculateIncrementalBollingerBands(precedingBars, activeBar.close, period, 2, activeBar.time)
+      expect(incBB).not.toBeNull()
+      const fullLastUpper = fullBB.upper[fullBB.upper.length - 1]
+      const fullLastMiddle = fullBB.middle[fullBB.middle.length - 1]
+      const fullLastLower = fullBB.lower[fullBB.lower.length - 1]
+
+      expect(incBB!.upper.value).toBe(fullLastUpper.value)
+      expect(incBB!.middle.value).toBe(fullLastMiddle.value)
+      expect(incBB!.lower.value).toBe(fullLastLower.value)
+    })
+
+    it('returns null if fewer preceding bars than period - 1', () => {
+      expect(calculateIncrementalBollingerBands([], 10, 5, 2, 1000 as UTCTimestamp)).toBeNull()
     })
   })
 })

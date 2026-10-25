@@ -75,28 +75,70 @@ const DEFAULT_INSIGHTS: PortfolioInsightsData = {
   quote: 'Discipline today, better trades tomorrow.',
 }
 
+interface PortfolioCacheEntry {
+  userId: string
+  metrics: PortfolioExecutiveMetrics
+  holdings: PortfolioHolding[]
+  allocation: AssetAllocationItem[]
+  insights: PortfolioInsightsData
+  performanceData: PerformanceDataPoint[]
+  historyCache: Record<string, PerformanceDataPoint[]>
+  timestamp: number
+}
+
+import { registerCacheClearHandler } from '../utils/cacheRegistry'
+
+let cachedPortfolioEntry: PortfolioCacheEntry | null = null
+
+export function clearPortfolioCache() {
+  cachedPortfolioEntry = null
+}
+
+registerCacheClearHandler(clearPortfolioCache)
+
 export function usePortfolioData(): UsePortfolioDataReturn {
   const user = useAuthStore((s) => s.user)
-  const userId = user?.userId
+  const userId = user?.userId || ''
 
-  const [loading, setLoading] = useState(true)
+  const hasValidCache = Boolean(
+    cachedPortfolioEntry &&
+    cachedPortfolioEntry.userId === userId &&
+    userId !== ''
+  )
+
+  const [loading, setLoading] = useState(!hasValidCache)
   const [isDemoData, setIsDemoData] = useState(false)
   const [isEmptyPortfolio, setIsEmptyPortfolio] = useState(false)
   const [timeframe, setTimeframe] = useState<TimeframeOption>('7D')
   const [showBtcBenchmark, setShowBtcBenchmark] = useState(false)
   const [isChartLoading, setIsChartLoading] = useState(false)
   const [chartError, setChartError] = useState<string | null>(null)
-  const historyCache = useRef<Record<string, PerformanceDataPoint[]>>({})
+  const historyCache = useRef<Record<string, PerformanceDataPoint[]>>(
+    hasValidCache && cachedPortfolioEntry ? { ...cachedPortfolioEntry.historyCache } : {}
+  )
   const latestTimeframeReqId = useRef(0)
 
-  const [metrics, setMetrics] = useState<PortfolioExecutiveMetrics>(DEFAULT_METRICS)
-  const [holdings, setHoldings] = useState<PortfolioHolding[]>([])
-  const [allocation, setAllocation] = useState<AssetAllocationItem[]>([])
-  const [insights, setInsights] = useState<PortfolioInsightsData>(DEFAULT_INSIGHTS)
-  const [performanceData, setPerformanceData] = useState<PerformanceDataPoint[]>([])
+  const [metrics, setMetrics] = useState<PortfolioExecutiveMetrics>(() =>
+    hasValidCache && cachedPortfolioEntry ? cachedPortfolioEntry.metrics : DEFAULT_METRICS
+  )
+  const [holdings, setHoldings] = useState<PortfolioHolding[]>(() =>
+    hasValidCache && cachedPortfolioEntry ? cachedPortfolioEntry.holdings : []
+  )
+  const [allocation, setAllocation] = useState<AssetAllocationItem[]>(() =>
+    hasValidCache && cachedPortfolioEntry ? cachedPortfolioEntry.allocation : []
+  )
+  const [insights, setInsights] = useState<PortfolioInsightsData>(() =>
+    hasValidCache && cachedPortfolioEntry ? cachedPortfolioEntry.insights : DEFAULT_INSIGHTS
+  )
+  const [performanceData, setPerformanceData] = useState<PerformanceDataPoint[]>(() =>
+    hasValidCache && cachedPortfolioEntry ? cachedPortfolioEntry.performanceData : []
+  )
 
   const loadData = useCallback(async () => {
-    setLoading(true)
+    const authUserId = useAuthStore.getState().user?.userId || ''
+    if (!cachedPortfolioEntry || cachedPortfolioEntry.userId !== authUserId || !authUserId) {
+      setLoading(true)
+    }
 
     try {
       // ── 1. Fetch authentic backend portfolio and market data in parallel ──
@@ -371,6 +413,22 @@ export function usePortfolioData(): UsePortfolioDataReturn {
       setInsights(finalInsights)
       setIsEmptyPortfolio(false)
       setIsDemoData(false)
+
+      const authId = useAuthStore.getState().user?.userId || ''
+      if (authId) {
+        cachedPortfolioEntry = {
+          userId: authId,
+          metrics: finalMetrics,
+          holdings: finalHoldings,
+          allocation: finalAllocation,
+          insights: finalInsights,
+          performanceData: cachedPortfolioEntry?.userId === authId && cachedPortfolioEntry.performanceData.length > 0
+            ? cachedPortfolioEntry.performanceData
+            : [],
+          historyCache: { ...historyCache.current },
+          timestamp: Date.now(),
+        }
+      }
     } catch (err) {
       console.error('[usePortfolioData] Error loading live portfolio:', err)
       setIsDemoData(false)
@@ -571,6 +629,10 @@ export function usePortfolioData(): UsePortfolioDataReturn {
           }
           historyCache.current[newTf] = pts
           setPerformanceData(pts)
+          if (cachedPortfolioEntry && cachedPortfolioEntry.userId === userId) {
+            cachedPortfolioEntry.performanceData = pts
+            cachedPortfolioEntry.historyCache = { ...historyCache.current }
+          }
           setIsChartLoading(false)
           return
         }
@@ -606,6 +668,10 @@ export function usePortfolioData(): UsePortfolioDataReturn {
           })
           historyCache.current[newTf] = points
           setPerformanceData(points)
+          if (cachedPortfolioEntry && cachedPortfolioEntry.userId === userId) {
+            cachedPortfolioEntry.performanceData = points
+            cachedPortfolioEntry.historyCache = { ...historyCache.current }
+          }
         } else {
           const nowSec = Math.floor(Date.now() / 1000)
           const count = cfg.limit
@@ -615,6 +681,10 @@ export function usePortfolioData(): UsePortfolioDataReturn {
           })
           historyCache.current[newTf] = points
           setPerformanceData(points)
+          if (cachedPortfolioEntry && cachedPortfolioEntry.userId === userId) {
+            cachedPortfolioEntry.performanceData = points
+            cachedPortfolioEntry.historyCache = { ...historyCache.current }
+          }
         }
       } catch {
         if (reqId === latestTimeframeReqId.current) {
@@ -626,7 +696,7 @@ export function usePortfolioData(): UsePortfolioDataReturn {
         }
       }
     },
-    [holdings, metrics.totalValue]
+    [holdings, metrics.totalValue, userId]
   )
 
   const retryChart = useCallback(() => {

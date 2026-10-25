@@ -2,6 +2,7 @@ package order
 
 import (
 	"testing"
+	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -344,3 +345,256 @@ func TestT26_SameGeneration_ExecutionRefresh(t *testing.T) {
 		t.Errorf("T26: expected StatusOSRegistered, got %s", live.Status)
 	}
 }
+
+func TestTracker_SyncFromOrders_NormalRecovery(t *testing.T) {
+	tr := NewTracker()
+	fixedCreated := time.Now().Add(-10 * time.Minute)
+
+	osOrders := []OSOrder{
+		{
+			LevelID:       "MM-BTC-USDT-BID-01",
+			Generation:    2,
+			ClientOrderID: "MM-BTC-USDT-BID-01-G002",
+			OrderID:       "uuid-btc-bid-01",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("95000.00"),
+			OriginalQty:   decimal.RequireFromString("1.0"),
+			RemainingQty:  decimal.RequireFromString("1.0"),
+			CreatedAt:     fixedCreated,
+		},
+	}
+
+	mockResolver := func(levelID string) string {
+		if levelID == "MM-BTC-USDT-BID-01" {
+			return "LOW"
+		}
+		return ""
+	}
+
+	added, duplicates := tr.SyncFromOrders("BTC-USDT", osOrders, mockResolver)
+	if added != 1 || duplicates != 0 {
+		t.Fatalf("expected added=1, duplicates=0, got added=%d, duplicates=%d", added, duplicates)
+	}
+
+	order := tr.Get("MM-BTC-USDT-BID-01")
+	if order == nil {
+		t.Fatal("expected order in tracker")
+	}
+	if order.Zone != "LOW" {
+		t.Errorf("expected Zone=LOW, got %q", order.Zone)
+	}
+	if !order.CreatedAt.Equal(fixedCreated) {
+		t.Errorf("expected CreatedAt=%v, got %v", fixedCreated, order.CreatedAt)
+	}
+	if !order.PendingSince.Equal(fixedCreated) {
+		t.Errorf("expected PendingSince=%v, got %v", fixedCreated, order.PendingSince)
+	}
+	if order.Status != StatusOSRegistered {
+		t.Errorf("expected Status=OS_REGISTERED, got %s", order.Status)
+	}
+	if order.FilledQty.Sign() != 0 {
+		t.Errorf("expected FilledQty=0, got %s", order.FilledQty)
+	}
+}
+
+func TestTracker_SyncFromOrders_MissingMetadata(t *testing.T) {
+	tr := NewTracker()
+
+	osOrders := []OSOrder{
+		{
+			LevelID:       "MM-ETH-USDT-BID-05",
+			Generation:    1,
+			ClientOrderID: "MM-ETH-USDT-BID-05-G001",
+			OrderID:       "uuid-eth-bid-05",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("2350.00"),
+			OriginalQty:   decimal.RequireFromString("2.0"),
+			RemainingQty:  decimal.RequireFromString("2.0"),
+			CreatedAt:     time.Time{}, // zero time / missing
+		},
+	}
+
+	// No resolver provided
+	added, duplicates := tr.SyncFromOrders("ETH-USDT", osOrders)
+	if added != 1 || duplicates != 0 {
+		t.Fatalf("expected added=1, duplicates=0, got added=%d, duplicates=%d", added, duplicates)
+	}
+
+	order := tr.Get("MM-ETH-USDT-BID-05")
+	if order == nil {
+		t.Fatal("expected order in tracker")
+	}
+	// Missing timestamps must NOT be silently set to time.Now()
+	if !order.CreatedAt.IsZero() {
+		t.Errorf("expected CreatedAt to remain zero, got %v", order.CreatedAt)
+	}
+	if !order.PendingSince.IsZero() {
+		t.Errorf("expected PendingSince to remain zero, got %v", order.PendingSince)
+	}
+	// But OSRegisteredSince must record discovery time for expiry bounding
+	if order.OSRegisteredSince.IsZero() {
+		t.Error("expected OSRegisteredSince to be populated")
+	}
+	if order.Zone != "" {
+		t.Errorf("expected Zone to be empty string, got %q", order.Zone)
+	}
+}
+
+func TestTracker_SyncFromOrders_PartiallyFilled(t *testing.T) {
+	tr := NewTracker()
+
+	osOrders := []OSOrder{
+		{
+			LevelID:       "MM-SOL-USDT-ASK-03",
+			Generation:    5,
+			ClientOrderID: "MM-SOL-USDT-ASK-03-G005",
+			OrderID:       "uuid-sol-ask-03",
+			Side:          "SELL",
+			Price:         decimal.RequireFromString("110.00"),
+			OriginalQty:   decimal.RequireFromString("5.0"),
+			RemainingQty:  decimal.RequireFromString("2.0"),
+			CreatedAt:     time.Now().Add(-5 * time.Minute),
+		},
+	}
+
+	added, _ := tr.SyncFromOrders("SOL-USDT", osOrders)
+	if added != 1 {
+		t.Fatalf("expected added=1, got %d", added)
+	}
+
+	order := tr.Get("MM-SOL-USDT-ASK-03")
+	if order == nil {
+		t.Fatal("expected order in tracker")
+	}
+	expectedRemaining := decimal.RequireFromString("2.0")
+	expectedFilled := decimal.RequireFromString("3.0")
+	if !order.RemainingQty.Equal(expectedRemaining) {
+		t.Errorf("expected RemainingQty=%s, got %s", expectedRemaining, order.RemainingQty)
+	}
+	if !order.FilledQty.Equal(expectedFilled) {
+		t.Errorf("expected FilledQty=%s, got %s", expectedFilled, order.FilledQty)
+	}
+}
+
+func TestTracker_SyncFromOrders_FullyFilledAndInvalid(t *testing.T) {
+	tr := NewTracker()
+
+	osOrders := []OSOrder{
+		{
+			LevelID:       "MM-BTC-USDT-BID-02",
+			Generation:    10,
+			ClientOrderID: "MM-BTC-USDT-BID-02-G010",
+			OrderID:       "uuid-btc-bid-02",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("94000.00"),
+			OriginalQty:   decimal.RequireFromString("1.0"),
+			RemainingQty:  decimal.Zero, // fully filled!
+		},
+		{
+			LevelID:       "MM-BTC-USDT-BID-03",
+			Generation:    4,
+			ClientOrderID: "MM-BTC-USDT-BID-03-G004",
+			OrderID:       "uuid-btc-bid-03",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("93000.00"),
+			OriginalQty:   decimal.RequireFromString("1.0"),
+			RemainingQty:  decimal.RequireFromString("-0.5"), // negative remaining!
+		},
+		{
+			LevelID:       "MM-BTC-USDT-BID-04",
+			Generation:    2,
+			ClientOrderID: "MM-BTC-USDT-BID-04-G002",
+			OrderID:       "uuid-btc-bid-04",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("92000.00"),
+			OriginalQty:   decimal.RequireFromString("1.0"),
+			RemainingQty:  decimal.RequireFromString("1.5"), // remaining > original!
+		},
+	}
+
+	added, _ := tr.SyncFromOrders("BTC-USDT", osOrders)
+	if added != 0 {
+		t.Fatalf("expected 0 orders added, got %d", added)
+	}
+
+	// Fully filled order must not be active
+	if tr.Get("MM-BTC-USDT-BID-02") != nil {
+		t.Error("fully filled order should not be added to active orders")
+	}
+	// But generation 10 must be recorded in generations map to prevent regression
+	if tr.generations["MM-BTC-USDT-BID-02"] != 10 {
+		t.Errorf("expected generation 10 recorded, got %d", tr.generations["MM-BTC-USDT-BID-02"])
+	}
+
+	// Inconsistent orders must not be added
+	if tr.Get("MM-BTC-USDT-BID-03") != nil {
+		t.Error("negative remaining order should not be in tracker")
+	}
+	if tr.Get("MM-BTC-USDT-BID-04") != nil {
+		t.Error("inconsistent remaining > original order should not be in tracker")
+	}
+}
+
+func TestTracker_SyncFromOrders_RepeatedSynchronization(t *testing.T) {
+	tr := NewTracker()
+	initialCreated := time.Now().Add(-20 * time.Minute)
+
+	// Step 1: Initial sync with no resolver and missing zone
+	tr.SyncFromOrders("ETH-USDT", []OSOrder{
+		{
+			LevelID:       "MM-ETH-USDT-BID-01",
+			Generation:    1,
+			ClientOrderID: "MM-ETH-USDT-BID-01-G001",
+			OrderID:       "uuid-eth-1",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("2300.00"),
+			OriginalQty:   decimal.RequireFromString("1.0"),
+			RemainingQty:  decimal.RequireFromString("1.0"),
+			CreatedAt:     time.Time{}, // unknown
+		},
+	})
+
+	order1 := tr.Get("MM-ETH-USDT-BID-01")
+	if order1 == nil || order1.Zone != "" || !order1.CreatedAt.IsZero() {
+		t.Fatalf("initial sync state unexpected: zone=%q, createdAt=%v", order1.Zone, order1.CreatedAt)
+	}
+
+	// Step 2: Second sync provides authoritative resolver and CreatedAt
+	mockResolver := func(levelID string) string {
+		return "LOW"
+	}
+
+	added, duplicates := tr.SyncFromOrders("ETH-USDT", []OSOrder{
+		{
+			LevelID:       "MM-ETH-USDT-BID-01",
+			Generation:    1,
+			ClientOrderID: "MM-ETH-USDT-BID-01-G001",
+			OrderID:       "uuid-eth-1",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("2300.00"),
+			OriginalQty:   decimal.RequireFromString("1.0"),
+			RemainingQty:  decimal.RequireFromString("0.8"), // updated remaining
+			CreatedAt:     initialCreated,
+		},
+	}, mockResolver)
+
+	if added != 0 {
+		t.Errorf("expected 0 new orders added on repeated sync, got %d", added)
+	}
+	if duplicates != 0 {
+		t.Errorf("expected 0 duplicates, got %d", duplicates)
+	}
+
+	order2 := tr.Get("MM-ETH-USDT-BID-01")
+	if order2.Zone != "LOW" {
+		t.Errorf("expected Zone to be updated to LOW, got %q", order2.Zone)
+	}
+	if !order2.CreatedAt.Equal(initialCreated) {
+		t.Errorf("expected CreatedAt to be restored to %v, got %v", initialCreated, order2.CreatedAt)
+	}
+	expectedRem := decimal.RequireFromString("0.8")
+	if !order2.RemainingQty.Equal(expectedRem) {
+		t.Errorf("expected RemainingQty updated to %s, got %s", expectedRem, order2.RemainingQty)
+	}
+}
+

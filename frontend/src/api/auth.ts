@@ -30,12 +30,51 @@ export interface RegisterResponse {
   verificationRequired: boolean
 }
 
+export interface GoogleLoginSuccessResponse {
+  status: 'SUCCESS'
+  user: User
+  accessToken: string
+  refreshToken: string
+  accessTokenExpiresAt?: string
+  refreshTokenExpiresAt?: string
+}
+
+export interface GoogleLoginLinkRequiredResponse {
+  status: 'LINK_REQUIRED'
+  linkToken: string
+  email: string
+  message: string
+}
+
+export type GoogleLoginResponse = GoogleLoginSuccessResponse | GoogleLoginLinkRequiredResponse
+
+export interface LinkGoogleRequest {
+  email: string
+  password: string
+  linkToken: string
+}
+
+export interface ConnectGoogleResponse {
+  success: boolean
+  provider: string
+  email: string
+}
+
 export const authApi = {
   login: (data: LoginRequest) =>
     client.post<LoginResponse>('/api/v1/auth/login', data),
 
   register: (data: RegisterRequest) =>
     client.post<RegisterResponse>('/api/v1/auth/register', data),
+
+  googleLogin: (idToken: string) =>
+    client.post<GoogleLoginResponse>('/api/v1/auth/google', { idToken }),
+
+  linkGoogle: (data: LinkGoogleRequest) =>
+    client.post<LoginResponse>('/api/v1/auth/google/link', data),
+
+  connectGoogle: (idToken: string) =>
+    client.post<ConnectGoogleResponse>('/api/v1/auth/google/connect', { idToken }),
 
   verifyEmail: (data: { email: string; code: string }) =>
     client.post<{ user: User; accessToken: string; refreshToken: string }>('/api/v1/auth/verify', data),
@@ -63,3 +102,4 @@ export const authApi = {
   refresh: (refreshToken: string) =>
     client.post<{ accessToken: string; refreshToken: string }>('/api/v1/auth/refresh', { refreshToken }),
 }
+

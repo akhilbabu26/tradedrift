@@ -32,5 +32,23 @@ describe('AppHeader Component', () => {
     expect(html).toContain('LIVE')
     expect(html).toContain('aria-label="Notifications"')
     expect(html).not.toContain('aria-label="User menu"')
+    expect(html).not.toContain('GUEST MODE')
+  })
+
+  it('renders GUEST MODE badge, exploratory notice, and Sign In button when unauthenticated', () => {
+    useAuthStore.setState({
+      user: null,
+      isAuthenticated: false,
+    })
+
+    const html = renderToString(
+      <MemoryRouter initialEntries={['/trade']}>
+        <AppHeader />
+      </MemoryRouter>
+    )
+
+    expect(html).toContain('GUEST MODE')
+    expect(html).toContain('Explore markets freely. Sign in to start trading.')
+    expect(html).toContain('Sign In')
   })
 })

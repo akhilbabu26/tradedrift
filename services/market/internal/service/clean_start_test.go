@@ -170,6 +170,12 @@ func (r *simulatedDbRepo) GetTicker24h(ctx context.Context, marketID string) (*r
 
 	if latestTrade != nil {
 		ticker.LastPrice = latestTrade.Price
+		if ticker.High24h.IsZero() {
+			ticker.High24h = latestTrade.Price
+		}
+		if ticker.Low24h.IsZero() {
+			ticker.Low24h = latestTrade.Price
+		}
 	}
 	if firstTrade != nil && !firstTrade.Price.IsZero() {
 		change := ticker.LastPrice.Sub(firstTrade.Price)

@@ -3,12 +3,14 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"go.uber.org/zap"
 
 	platformerrors "tradedrift/platform/errors"
@@ -77,6 +79,7 @@ func (s *Service) GoogleLogin(ctx context.Context, idToken string) (*UserDTO, *T
 	var identityRecord *repository.UserAuthIdentity
 	var lastCreateErr error
 
+	var lastEventID string
 	for attempt := 0; attempt < 3; attempt++ {
 		userID := uuid.NewString()
 		username := s.deriveUniqueUsername(ctx, payload.Name, payload.Email, attempt)
@@ -106,6 +109,7 @@ func (s *Service) GoogleLogin(ctx context.Context, idToken string) (*UserDTO, *T
 		}
 
 		eventID := uuid.NewString()
+		lastEventID = eventID
 		eventPayload, _ := json.Marshal(map[string]string{
 			"user_id":  userID,
 			"email":    payload.Email,
@@ -119,12 +123,71 @@ func (s *Service) GoogleLogin(ctx context.Context, idToken string) (*UserDTO, *T
 		}
 		lastCreateErr = err
 
-		// Handle race conditions safely:
-		// A. Did another concurrent request create this Google identity?
+		// 1. Discriminate unique constraint violations from other database errors
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
+			// Fail fast on connection loss, context cancellations, timeouts, or syntax errors
+			s.log.Error("Database error during user creation (non-constraint error)", zap.Error(err))
+			return nil, nil, nil, fmt.Errorf("failed to create user account: %w", err)
+		}
+
+		// 2. Inspect constraint name to determine precise conflict path
+		constraint := pgErr.ConstraintName
+
+		// Path A: Google provider/sub already exists
+		if constraint == "uq_user_auth_identities_provider_uid" || constraint == "uq_user_auth_identities_user_provider" {
+			existingIdent, checkErr := s.identityRepo.GetByProviderAndUID(ctx, "google", payload.Subject)
+			if checkErr != nil {
+				s.log.Error("Failed to lookup existing identity on provider collision", zap.Error(checkErr))
+				return nil, nil, nil, checkErr
+			}
+			if existingIdent != nil {
+				u, fetchErr := s.userRepo.GetByID(ctx, existingIdent.UserID)
+				if fetchErr != nil {
+					return nil, nil, nil, fetchErr
+				}
+				if u != nil {
+					userDTO, tokens, sessionErr := s.handleExistingUserSession(ctx, u)
+					if sessionErr != nil {
+						return nil, nil, nil, sessionErr
+					}
+					return userDTO, tokens, nil, nil
+				}
+			}
+		}
+
+		// Path B: Email already exists (local account or normalized email collision)
+		if constraint == "users_email_key" || constraint == "idx_users_email_lower" {
+			existingByEmail, emailErr := s.userRepo.GetByIdentifier(ctx, payload.Email)
+			if emailErr != nil {
+				s.log.Error("Failed to lookup user by email on email collision", zap.Error(emailErr))
+				return nil, nil, nil, emailErr
+			}
+			if existingByEmail != nil {
+				return s.initiateLinkRequired(ctx, payload.Subject, payload.Email, existingByEmail)
+			}
+		}
+
+		// Path C: Username collision (retry with new username suffix)
+		if constraint == "users_username_key" || constraint == "idx_users_username" {
+			s.log.Warn("Username collision detected during Google signup, retrying with new username",
+				zap.Int("attempt", attempt),
+				zap.String("username", username),
+			)
+			continue
+		}
+
+		// Path D: Fallback if constraint name wasn't populated by driver
 		existingIdent, checkErr := s.identityRepo.GetByProviderAndUID(ctx, "google", payload.Subject)
-		if checkErr == nil && existingIdent != nil {
+		if checkErr != nil {
+			return nil, nil, nil, checkErr
+		}
+		if existingIdent != nil {
 			u, fetchErr := s.userRepo.GetByID(ctx, existingIdent.UserID)
-			if fetchErr == nil && u != nil {
+			if fetchErr != nil {
+				return nil, nil, nil, fetchErr
+			}
+			if u != nil {
 				userDTO, tokens, sessionErr := s.handleExistingUserSession(ctx, u)
 				if sessionErr != nil {
 					return nil, nil, nil, sessionErr
@@ -133,13 +196,14 @@ func (s *Service) GoogleLogin(ctx context.Context, idToken string) (*UserDTO, *T
 			}
 		}
 
-		// B. Did another concurrent request register this email?
 		existingByEmail, emailErr := s.userRepo.GetByIdentifier(ctx, payload.Email)
-		if emailErr == nil && existingByEmail != nil {
+		if emailErr != nil {
+			return nil, nil, nil, emailErr
+		}
+		if existingByEmail != nil {
 			return s.initiateLinkRequired(ctx, payload.Subject, payload.Email, existingByEmail)
 		}
 
-		// C. If neither sub nor email conflicted, this was a username collision — loop and retry with new username suffix
 		s.log.Warn("Retrying user creation after unique constraint collision", zap.Int("attempt", attempt), zap.Error(err))
 	}
 
@@ -170,7 +234,16 @@ func (s *Service) GoogleLogin(ctx context.Context, idToken string) (*UserDTO, *T
 			zap.String("userID", newUser.ID),
 			zap.Error(walletErr),
 		)
+		// Record outbox event failure so background reconciler can process it
+		if s.outboxRepo != nil && lastEventID != "" {
+			_ = s.outboxRepo.RecordFailure(ctx, lastEventID, walletErr.Error())
+		}
 		return nil, nil, nil, platformerrors.Wrap(walletErr, platformerrors.CodeInternal, "account created, but starter wallet initialization failed. Please retry sign-in to complete initialization.")
+	}
+
+	// Mark outbox event PROCESSED on immediate synchronous success
+	if s.outboxRepo != nil && lastEventID != "" {
+		_ = s.outboxRepo.MarkProcessed(ctx, lastEventID)
 	}
 
 	// 6. Issue session tokens
@@ -250,6 +323,7 @@ func (s *Service) initiateLinkRequired(ctx context.Context, sub, email string, e
 		"sub":     sub,
 		"email":   email,
 		"user_id": existingUser.ID,
+		"state":   "ACTIVE",
 	}
 	dataBytes, _ := json.Marshal(linkData)
 

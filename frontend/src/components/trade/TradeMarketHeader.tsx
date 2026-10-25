@@ -1,10 +1,11 @@
-import { useRef, useEffect } from 'react'
-import { Plus } from 'lucide-react'
+import { useRef, useEffect, memo } from 'react'
+import { Plus, LogIn } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import type { Ticker24h, Market, Balance } from '../../types/trade'
 import { formatPrice, formatPercentage, formatQuantity, formatHighLow, formatTurnover } from '../../utils/formatters'
 import { toDecimal } from '../../utils/decimal'
 import { getMarketMetadata } from '../../utils/marketMetadata'
+import { useAuthStore } from '../../store/authStore'
 import MarketSelector from './MarketSelector'
 
 interface TradeMarketHeaderProps {
@@ -29,7 +30,7 @@ function StatCell({ label, value, valueClass = '' }: { label: string; value: str
   )
 }
 
-export default function TradeMarketHeader({
+function TradeMarketHeader({
   markets,
   selectedMarketId,
   onSelectMarket,
@@ -40,6 +41,7 @@ export default function TradeMarketHeader({
   marketTrends,
 }: TradeMarketHeaderProps) {
   const navigate = useNavigate()
+  const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
   const meta = getMarketMetadata(selectedMarketId)
   const baseAsset = meta.base
   const quoteAsset = meta.quote
@@ -79,9 +81,9 @@ export default function TradeMarketHeader({
   }
 
   return (
-    <div className="relative z-30 flex items-center border-b border-[#1e2530] bg-[#111318] px-4 min-h-[58px] h-[58px] flex-shrink-0">
+    <div className="relative z-30 flex items-center border-b border-[#1e2530] bg-[#111318] px-2.5 sm:px-4 min-h-[58px] h-[58px] flex-shrink-0">
       {/* Market Selector */}
-      <div className="relative flex items-center pr-4 border-r border-[#1e2530] mr-4 flex-shrink-0">
+      <div className="relative flex items-center pr-2.5 sm:pr-4 border-r border-[#1e2530] mr-2.5 sm:mr-4 flex-shrink-0">
         <MarketSelector
           markets={markets}
           selectedMarketId={selectedMarketId}
@@ -94,7 +96,7 @@ export default function TradeMarketHeader({
       <div
         ref={scrollRef}
         onWheel={handleWheel}
-        className="flex items-center gap-0 flex-1 min-w-0 h-full trade-scrollbar-x py-1"
+        className="flex items-center gap-0 flex-1 min-w-0 h-full overflow-x-auto trade-scrollbar-x py-1"
       >
         {/* Last Price */}
         <div className="flex flex-col mr-5 flex-shrink-0">
@@ -158,7 +160,9 @@ export default function TradeMarketHeader({
             </div>
             <span className="text-[10px] text-slate-500 uppercase tracking-wider whitespace-nowrap">{quoteAsset} Balance</span>
           </div>
-          <span className="text-sm font-bold font-mono text-[#f5f7fa] mt-0.5 whitespace-nowrap">{formatPrice(usdtAvailable)}</span>
+          <span className="text-sm font-bold font-mono text-[#f5f7fa] mt-0.5 whitespace-nowrap">
+            {isAuthenticated ? formatPrice(usdtAvailable) : '—'}
+          </span>
         </div>
 
         {/* Base Asset Balance */}
@@ -169,20 +173,36 @@ export default function TradeMarketHeader({
             </div>
             <span className="text-[10px] text-slate-500 uppercase tracking-wider whitespace-nowrap">{baseAsset} Balance</span>
           </div>
-          <span className="text-sm font-bold font-mono text-[#f5f7fa] mt-0.5 whitespace-nowrap">{baseAvailable}</span>
+          <span className="text-sm font-bold font-mono text-[#f5f7fa] mt-0.5 whitespace-nowrap">
+            {isAuthenticated ? baseAvailable : '—'}
+          </span>
         </div>
 
-        {/* Add Demo Funds */}
-        <button
-          type="button"
-          onClick={handleAddDemoFunds}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#10b981]/40 bg-[#10b981]/8 text-[#10b981] text-xs font-semibold hover:bg-[#10b981]/15 hover:border-[#10b981]/60 transition-colors flex-shrink-0 whitespace-nowrap"
-          aria-label="Add demo funds — informational"
-        >
-          <Plus size={13} strokeWidth={2.5} />
-          Add Demo Funds
-        </button>
+        {/* Action Button: Add Demo Funds (if auth) or Sign In (if guest) */}
+        {isAuthenticated ? (
+          <button
+            type="button"
+            onClick={handleAddDemoFunds}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#10b981]/40 bg-[#10b981]/8 text-[#10b981] text-xs font-semibold hover:bg-[#10b981]/15 hover:border-[#10b981]/60 transition-colors flex-shrink-0 whitespace-nowrap"
+            aria-label="Add demo funds — informational"
+          >
+            <Plus size={13} strokeWidth={2.5} />
+            Add Demo Funds
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => navigate(`/login?returnUrl=${encodeURIComponent(`/trade?market=${selectedMarketId}`)}`)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-[#10b981]/50 bg-[#10b981] text-black text-xs font-bold hover:bg-[#0ea572] transition-colors flex-shrink-0 whitespace-nowrap cursor-pointer shadow-[0_0_10px_rgba(16,185,129,0.2)]"
+            aria-label="Sign In to Trade"
+          >
+            <LogIn size={13} />
+            Sign In to Trade
+          </button>
+        )}
       </div>
     </div>
   )
 }
+
+export default memo(TradeMarketHeader)

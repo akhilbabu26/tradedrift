@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, memo } from 'react'
 import {
   createChart,
   CandlestickSeries,
@@ -20,6 +20,8 @@ import toast from 'react-hot-toast'
 import {
   calculateEMA,
   calculateBollingerBands,
+  calculateIncrementalEMA,
+  calculateIncrementalBollingerBands,
   type ActiveIndicators,
   DEFAULT_ACTIVE_INDICATORS,
 } from '../../utils/indicators'
@@ -89,7 +91,7 @@ const VOLUME_OPTIONS: HistogramSeriesPartialOptions = {
 
 
 
-export default function TradingChart({
+function TradingChart({
   marketId,
   symbol,
   lastPrice,
@@ -116,6 +118,11 @@ export default function TradingChart({
   const bbUpperRef = useRef<ISeriesApi<'Line'> | null>(null)
   const bbMiddleRef = useRef<ISeriesApi<'Line'> | null>(null)
   const bbLowerRef = useRef<ISeriesApi<'Line'> | null>(null)
+
+  // Incremental EMA completed bar cache refs (value at bar N-2)
+  const completedEma20Ref = useRef<number | null>(null)
+  const completedEma50Ref = useRef<number | null>(null)
+  const completedEma200Ref = useRef<number | null>(null)
 
   const [chartType, setChartType] = useState<'candlestick' | 'line'>('candlestick')
   const [activeIndicators, setActiveIndicators] = useState<ActiveIndicators>(DEFAULT_ACTIVE_INDICATORS)
@@ -557,17 +564,25 @@ export default function TradingChart({
     if (bbUpperRef.current) bbUpperRef.current.setData([])
     if (bbMiddleRef.current) bbMiddleRef.current.setData([])
     if (bbLowerRef.current) bbLowerRef.current.setData([])
+    completedEma20Ref.current = null
+    completedEma50Ref.current = null
+    completedEma200Ref.current = null
   }, [marketId, timeframe])
 
   // ── Indicator Calculation & Series Updater ─────────────────────────────────
   const updateIndicatorSeries = useCallback((bars: SanitizedBar[], indicators: ActiveIndicators) => {
-    if (!bars || bars.length === 0) {
+    const hasAnyActive = Boolean(indicators.ema20 || indicators.ema50 || indicators.ema200 || indicators.bollinger)
+
+    if (!bars || bars.length === 0 || !hasAnyActive) {
       ema20Ref.current?.setData([])
       ema50Ref.current?.setData([])
       ema200Ref.current?.setData([])
       bbUpperRef.current?.setData([])
       bbMiddleRef.current?.setData([])
       bbLowerRef.current?.setData([])
+      completedEma20Ref.current = null
+      completedEma50Ref.current = null
+      completedEma200Ref.current = null
       return
     }
 
@@ -577,24 +592,30 @@ export default function TradingChart({
     if (indicators.ema20) {
       const data = calculateEMA(closeData, 20)
       ema20Ref.current?.setData(data)
+      completedEma20Ref.current = data.length >= 2 ? data[data.length - 2].value : null
     } else {
       ema20Ref.current?.setData([])
+      completedEma20Ref.current = null
     }
 
     // EMA 50
     if (indicators.ema50) {
       const data = calculateEMA(closeData, 50)
       ema50Ref.current?.setData(data)
+      completedEma50Ref.current = data.length >= 2 ? data[data.length - 2].value : null
     } else {
       ema50Ref.current?.setData([])
+      completedEma50Ref.current = null
     }
 
     // EMA 200
     if (indicators.ema200) {
       const data = calculateEMA(closeData, 200)
       ema200Ref.current?.setData(data)
+      completedEma200Ref.current = data.length >= 2 ? data[data.length - 2].value : null
     } else {
       ema200Ref.current?.setData([])
+      completedEma200Ref.current = null
     }
 
     // Bollinger Bands (20, 2)
@@ -848,7 +869,38 @@ export default function TradingChart({
           value: activeVolumeRef.current,
           color: volColor,
         })
-        updateIndicatorSeries(currentBarsRef.current, activeIndicatorsRef.current)
+
+        // Incremental O(1) in-bar indicator updates without full array recalculation or .setData()
+        const ind = activeIndicatorsRef.current
+        if (ind.ema20 && ema20Ref.current && completedEma20Ref.current !== null) {
+          const pt = calculateIncrementalEMA(completedEma20Ref.current, price, 20, updatedBar.time)
+          ema20Ref.current.update(pt)
+        }
+        if (ind.ema50 && ema50Ref.current && completedEma50Ref.current !== null) {
+          const pt = calculateIncrementalEMA(completedEma50Ref.current, price, 50, updatedBar.time)
+          ema50Ref.current.update(pt)
+        }
+        if (ind.ema200 && ema200Ref.current && completedEma200Ref.current !== null) {
+          const pt = calculateIncrementalEMA(completedEma200Ref.current, price, 200, updatedBar.time)
+          ema200Ref.current.update(pt)
+        }
+        if (ind.bollinger && bbUpperRef.current && bbMiddleRef.current && bbLowerRef.current) {
+          const bars = currentBarsRef.current
+          if (bars.length >= 20) {
+            const bands = calculateIncrementalBollingerBands(
+              bars.slice(0, -1),
+              price,
+              20,
+              2,
+              updatedBar.time
+            )
+            if (bands) {
+              bbUpperRef.current.update(bands.upper)
+              bbMiddleRef.current.update(bands.middle)
+              bbLowerRef.current.update(bands.lower)
+            }
+          }
+        }
       } else if (bucketTime > (currentBar.time as number)) {
         // Timeframe boundary crossed: start new real candle bar
         const newBar: SanitizedBar = {
@@ -870,6 +922,7 @@ export default function TradingChart({
           value: qty,
           color: 'rgba(16,185,129,0.45)',
         })
+
         updateIndicatorSeries(currentBarsRef.current, activeIndicatorsRef.current)
         if (isNearRealtimeEdgeRef.current()) {
           chartRef.current?.timeScale().scrollToRealTime()
@@ -1067,4 +1120,6 @@ export default function TradingChart({
     </div>
   )
 }
+
+export default memo(TradingChart)
 

@@ -4,6 +4,7 @@ import { wsService } from '../api/ws'
 import { useNotificationStore } from './notificationStore'
 import { useWalletStore } from './walletStore'
 import { setSessionExpiredHandler, setTokenRefreshHandler } from '../api/client'
+import { clearAllPrivateCaches } from '../utils/cacheRegistry'
 
 interface AuthState {
   user: User | null
@@ -174,6 +175,9 @@ export const useAuthStore = create<AuthState>((set) => ({
       nextCursorId: null,
     })
     useWalletStore.getState().reset()
+
+    // Purge in-memory private SWR caches
+    clearAllPrivateCaches()
   },
 
   // Manual rehydrate helper

@@ -55,31 +55,84 @@ export default function App() {
           <Route path="/reset-password" element={<ResetPasswordPage />} />
 
           {/*
-           * Protected App Pages — shared MainLayout
+           * Application Pages — shared MainLayout
            *
-           * ProtectedRoute guards authentication. MainLayout provides the
-           * shared navbar, sidebar, and page shell. Child routes render inside <Outlet />.
+           * MainLayout provides the shared navigation sidebar, header, and shell.
+           * /trade and /markets are publicly explorable in Guest Mode without session creation.
+           * Private account and trading execution pages are strictly guarded by ProtectedRoute.
            */}
-          <Route
-            element={
-              <ProtectedRoute>
-                <MainLayout />
-              </ProtectedRoute>
-            }
-          >
-            {/* Authenticated Core Routes */}
-            <Route path="/dashboard" element={<DashboardPage />} />
+          <Route element={<MainLayout />}>
+            {/* Publicly Explorable Guest Routes */}
             <Route path="/trade" element={<TradePage />} />
             <Route path="/markets" element={<MarketsPage />} />
-            <Route path="/portfolio" element={<PortfolioPage />} />
-            <Route path="/wallet" element={<WalletPage />} />
-            <Route path="/orders" element={<OrdersPage />} />
-            <Route path="/analytics" element={<AnalyticsPage />} />
+
+            {/* Strictly Protected Authenticated Routes */}
+            <Route
+              path="/dashboard"
+              element={
+                <ProtectedRoute>
+                  <DashboardPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/portfolio"
+              element={
+                <ProtectedRoute>
+                  <PortfolioPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/wallet"
+              element={
+                <ProtectedRoute>
+                  <WalletPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/orders"
+              element={
+                <ProtectedRoute>
+                  <OrdersPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/analytics"
+              element={
+                <ProtectedRoute>
+                  <AnalyticsPage />
+                </ProtectedRoute>
+              }
+            />
 
             {/* Dedicated Account & Setting Pages */}
-            <Route path="/settings" element={<SettingsPage />} />
-            <Route path="/notifications" element={<NotificationsPage />} />
-            <Route path="/profile" element={<ProfilePage />} />
+            <Route
+              path="/settings"
+              element={
+                <ProtectedRoute>
+                  <SettingsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/notifications"
+              element={
+                <ProtectedRoute>
+                  <NotificationsPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/profile"
+              element={
+                <ProtectedRoute>
+                  <ProfilePage />
+                </ProtectedRoute>
+              }
+            />
           </Route>
 
           {/* Fallback */}

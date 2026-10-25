@@ -70,7 +70,7 @@ func (r *UserRepository) GetByIdentifier(ctx context.Context, identifier string)
 		       failed_login_attempts, locked_until, last_login_at, email_verified_at,
 		       created_at, updated_at
 		FROM users
-		WHERE LOWER(email) = LOWER($1) OR username = $1
+		WHERE LOWER(TRIM(email)) = LOWER(TRIM($1)) OR username = $1
 	`
 	var u repository.User
 	err := r.db.QueryRow(ctx, query, identifier).Scan(
@@ -99,7 +99,7 @@ func (r *UserRepository) VerifyEmail(ctx context.Context, email string, verified
 	updateQuery := `
 		UPDATE users
 		SET status = 'VERIFIED', email_verified_at = $1, updated_at = $1
-		WHERE LOWER(email) = LOWER($2) AND status = 'PENDING_VERIFICATION'
+		WHERE LOWER(TRIM(email)) = LOWER(TRIM($2)) AND status = 'PENDING_VERIFICATION'
 		RETURNING id
 	`
 	var userID string

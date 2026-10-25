@@ -33,6 +33,7 @@ package pricing
 import (
 	"fmt"
 	"math/rand"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -425,4 +426,62 @@ func resolveQtyPerLevel(mc *config.MarketConfig) decimal.Decimal {
 	default:
 		return roundToLot(decimal.RequireFromString("1.0"), mc.LotSize)
 	}
+}
+
+// ParseLevelID extracts marketID, sideLabel ("BID" or "ASK"), and 1-based levelNum from a levelID.
+// Format: "MM-<marketID>-<sideLabel>-<levelNum>" (e.g. "MM-BTC-USDT-BID-01")
+func ParseLevelID(levelID string) (marketID string, sideLabel string, levelNum int, err error) {
+	parts := strings.Split(levelID, "-")
+	if len(parts) < 4 || parts[0] != "MM" {
+		return "", "", 0, fmt.Errorf("invalid levelID %q: must start with MM and have at least 4 parts", levelID)
+	}
+	side := parts[len(parts)-2]
+	if side != "BID" && side != "ASK" {
+		return "", "", 0, fmt.Errorf("invalid side %q in levelID %q: must be BID or ASK", side, levelID)
+	}
+	numStr := parts[len(parts)-1]
+	_, err = fmt.Sscanf(numStr, "%d", &levelNum)
+	if err != nil || levelNum <= 0 {
+		return "", "", 0, fmt.Errorf("invalid level index %q in levelID %q", numStr, levelID)
+	}
+	marketID = strings.Join(parts[1:len(parts)-2], "-")
+	return marketID, side, levelNum, nil
+}
+
+// ResolveZoneForLevel maps a 1-based level index and side to its configured zone ("LOW", "MID", "HIGH").
+// Returns "" if the level does not exist in the configured ladder (e.g. levelNum > TotalLevels() or levelNum <= 0).
+func ResolveZoneForLevel(levelNum int, zones config.ZoneConfig) string {
+	if levelNum <= 0 {
+		return ""
+	}
+	if zones.TotalLevels() == 0 {
+		zones = config.DefaultZoneConfig()
+	}
+	if levelNum <= zones.Low.Count {
+		return "LOW"
+	}
+	if levelNum <= zones.Low.Count+zones.Mid.Count {
+		return "MID"
+	}
+	if levelNum <= zones.TotalLevels() {
+		return "HIGH"
+	}
+	return ""
+}
+
+// ResolveZoneForMarketConfig maps a LevelID to its configured zone using mc.
+// Returns "" if unparseable, if mc is nil, or if level is outside the configured ladder.
+func ResolveZoneForMarketConfig(levelID string, mc *config.MarketConfig) string {
+	if mc == nil {
+		return ""
+	}
+	_, sideLabel, levelNum, err := ParseLevelID(levelID)
+	if err != nil {
+		return ""
+	}
+	zones := mc.BidZones
+	if sideLabel == "ASK" {
+		zones = mc.AskZones
+	}
+	return ResolveZoneForLevel(levelNum, zones)
 }

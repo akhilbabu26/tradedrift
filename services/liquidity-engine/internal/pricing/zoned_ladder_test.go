@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"fmt"
 	"math/rand"
 	"testing"
 
@@ -738,6 +739,99 @@ func TestBTCZonedLadder_QuantityProgressionAndL1Bounds(t *testing.T) {
 		if totalAskDepth.LessThan(minTotal) || totalAskDepth.GreaterThan(maxTotal) {
 			t.Errorf("expected total ask depth in [%s, %s], got %s", minTotal, maxTotal, totalAskDepth)
 		}
+	}
+}
+
+func TestParseLevelID(t *testing.T) {
+	tests := []struct {
+		levelID     string
+		wantMarket  string
+		wantSide    string
+		wantLevel   int
+		wantErr     bool
+	}{
+		{"MM-BTC-USDT-BID-01", "BTC-USDT", "BID", 1, false},
+		{"MM-BTC-USDT-BID-12", "BTC-USDT", "BID", 12, false},
+		{"MM-ETH-USDT-ASK-07", "ETH-USDT", "ASK", 7, false},
+		{"MM-SOL-USDT-ASK-01", "SOL-USDT", "ASK", 1, false},
+		{"MM-BTC-USDT-XYZ-01", "", "", 0, true}, // invalid side
+		{"MM-BTC-01", "", "", 0, true},          // too few parts
+		{"NOTMM-BTC-USDT-BID-01", "", "", 0, true}, // not starting with MM
+		{"MM-BTC-USDT-BID-00", "", "", 0, true}, // level index 0 invalid
+		{"MM-BTC-USDT-BID--1", "", "", 0, true}, // negative level index invalid
+	}
+
+	for _, tt := range tests {
+		marketID, side, levelNum, err := ParseLevelID(tt.levelID)
+		if tt.wantErr {
+			if err == nil {
+				t.Errorf("ParseLevelID(%q) expected error, got nil", tt.levelID)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseLevelID(%q) unexpected error: %v", tt.levelID, err)
+			continue
+		}
+		if marketID != tt.wantMarket || side != tt.wantSide || levelNum != tt.wantLevel {
+			t.Errorf("ParseLevelID(%q) = (%q, %q, %d), want (%q, %q, %d)",
+				tt.levelID, marketID, side, levelNum, tt.wantMarket, tt.wantSide, tt.wantLevel)
+		}
+	}
+}
+
+func TestResolveZoneForMarketConfig(t *testing.T) {
+	mc := &config.MarketConfig{
+		MarketID: "BTC-USDT",
+		BidZones: config.ZoneConfig{
+			Low:  config.ZoneBand{Count: 7},
+			Mid:  config.ZoneBand{Count: 4},
+			High: config.ZoneBand{Count: 1},
+		},
+		AskZones: config.ZoneConfig{
+			Low:  config.ZoneBand{Count: 7},
+			Mid:  config.ZoneBand{Count: 4},
+			High: config.ZoneBand{Count: 1},
+		},
+	}
+
+	// Levels 1..7 -> LOW
+	for i := 1; i <= 7; i++ {
+		lvl := fmt.Sprintf("MM-BTC-USDT-BID-%02d", i)
+		if z := ResolveZoneForMarketConfig(lvl, mc); z != "LOW" {
+			t.Errorf("expected level %s to resolve to LOW, got %q", lvl, z)
+		}
+	}
+
+	// Levels 8..11 -> MID
+	for i := 8; i <= 11; i++ {
+		lvl := fmt.Sprintf("MM-BTC-USDT-BID-%02d", i)
+		if z := ResolveZoneForMarketConfig(lvl, mc); z != "MID" {
+			t.Errorf("expected level %s to resolve to MID, got %q", lvl, z)
+		}
+	}
+
+	// Level 12 -> HIGH
+	lvl12 := "MM-BTC-USDT-BID-12"
+	if z := ResolveZoneForMarketConfig(lvl12, mc); z != "HIGH" {
+		t.Errorf("expected level %s to resolve to HIGH, got %q", lvl12, z)
+	}
+
+	// Level 13 -> "" (outside configured ladder)
+	lvl13 := "MM-BTC-USDT-BID-13"
+	if z := ResolveZoneForMarketConfig(lvl13, mc); z != "" {
+		t.Errorf("expected level %s outside ladder to resolve to empty, got %q", lvl13, z)
+	}
+
+	// ASK side
+	lvlAsk01 := "MM-BTC-USDT-ASK-01"
+	if z := ResolveZoneForMarketConfig(lvlAsk01, mc); z != "LOW" {
+		t.Errorf("expected level %s to resolve to LOW, got %q", lvlAsk01, z)
+	}
+
+	// Nil mc
+	if z := ResolveZoneForMarketConfig(lvl12, nil); z != "" {
+		t.Errorf("expected nil mc to resolve to empty, got %q", z)
 	}
 }
 

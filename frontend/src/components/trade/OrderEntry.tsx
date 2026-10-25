@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, memo } from 'react'
 import type { OrderSide, OrderType, Market, Balance, CreateOrderRequest } from '../../types/trade'
 import OrderForm from './OrderForm'
 
@@ -12,6 +12,7 @@ interface OrderEntryProps {
   baseBalance: Balance
   submitting: boolean
   onSubmit: (req: CreateOrderRequest) => Promise<boolean>
+  initialSide?: OrderSide
 }
 
 const SIDES: { key: OrderSide; label: string }[] = [
@@ -24,7 +25,7 @@ const ORDER_TYPES: { key: OrderType; label: string }[] = [
   { key: 'MARKET', label: 'Market' },
 ]
 
-export default function OrderEntry({
+function OrderEntry({
   market,
   lastPrice,
   bestAsk,
@@ -34,9 +35,17 @@ export default function OrderEntry({
   baseBalance,
   submitting,
   onSubmit,
+  initialSide,
 }: OrderEntryProps) {
-  const [side,      setSide]      = useState<OrderSide>('BUY')
+  const [side,      setSide]      = useState<OrderSide>(initialSide || 'BUY')
   const [orderType, setOrderType] = useState<OrderType>('LIMIT')
+
+  // Sync side if external quick-action sets it
+  useEffect(() => {
+    if (initialSide) {
+      setSide(initialSide)
+    }
+  }, [initialSide])
 
   // When a price is clicked from the Order Book, automatically switch to LIMIT tab
   useEffect(() => {
@@ -52,7 +61,7 @@ export default function OrderEntry({
      * min-h-0: allows shrinking within grid cell
      * overflow-hidden: form itself scrolls internally
      */
-    <div className="h-full flex flex-col min-h-0 overflow-hidden border-l border-[#1e2530] bg-[#111318]">
+    <div className="h-full flex flex-col min-h-0 overflow-hidden lg:border-l border-[#1e2530] bg-[#111318]">
 
       {/* ── Buy / Sell tab ────────────────────────────────────────────────── */}
       <div className="flex border-b border-[#1e2530] flex-shrink-0" role="tablist" aria-label="Order side">
@@ -121,3 +130,5 @@ export default function OrderEntry({
     </div>
   )
 }
+
+export default memo(OrderEntry)

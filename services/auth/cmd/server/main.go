@@ -112,6 +112,7 @@ func main() {
 	userRepo := postgresRepo.NewUserRepository(dbPool)
 	identityRepo := postgresRepo.NewIdentityRepository(dbPool)
 	tokenRepo := postgresRepo.NewTokenRepository(dbPool)
+	outboxRepo := postgresRepo.NewOutboxRepository(dbPool)
 
 	// 7. Instantiate Domain Core Services
 	otpMgr := otp.NewManager(rdb, 5*time.Minute)
@@ -146,7 +147,12 @@ func main() {
 		15*time.Minute,  // Access Token TTL
 		7*24*time.Hour, // Refresh Token TTL
 		appLogger,
-	)
+	).WithOutboxRepository(outboxRepo)
+
+	// 7.5. Start background WalletReconciler worker
+	reconcilerCtx, reconcilerCancel := context.WithCancel(context.Background())
+	walletReconciler := service.NewWalletReconciler(outboxRepo, walletCl, appLogger, 30*time.Second)
+	go walletReconciler.Start(reconcilerCtx)
 
 	// 8. Wire platform JWT verification middleware
 	redisValidator := platformjwt.NewRedisValidator(jwtSecret, rdb, authService)
@@ -191,7 +197,9 @@ func main() {
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		<-sigChan
 
-		appLogger.Info("Stopping gRPC server gracefully...")
+		appLogger.Info("Stopping background workers and gRPC server gracefully...")
+		reconcilerCancel()
+		walletReconciler.Wait()
 		grpcServer.GracefulStop()
 		appLogger.Info("Service terminated cleanly")
 	}()

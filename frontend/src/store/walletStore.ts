@@ -49,6 +49,12 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   lastFetchedAt: 0,
 
   loadBalances: async (force = false) => {
+    // Guest protection: never call private wallet endpoints without authentication
+    if (!useAuthStore.getState().isAuthenticated) {
+      set({ balances: [], balancesByAsset: {}, loading: false, error: null })
+      return
+    }
+
     // Avoid redundant concurrent fetches if loaded in the last 200ms, unless explicitly forced
     const now = Date.now()
     if (!force && (get().loading || now - get().lastFetchedAt < 200)) {
@@ -96,6 +102,11 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   },
 
   subscribeToBalanceUpdates: () => {
+    // Guest protection: no private subscriptions for unauthenticated users
+    if (!useAuthStore.getState().isAuthenticated) {
+      return () => {}
+    }
+
     wsBalanceSubCount++
 
     if (wsBalanceSubCount === 1) {

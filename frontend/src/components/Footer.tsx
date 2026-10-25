@@ -3,7 +3,11 @@ import { ArrowRight } from 'lucide-react'
 import { TradeDriftSymbol } from './brand/TradeDriftLogo'
 import { RaisedSurface } from './common/Surface'
 
-export default function Footer() {
+interface FooterProps {
+  onLaunchSimulator?: () => void
+}
+
+export default function Footer({ onLaunchSimulator }: FooterProps) {
   return (
     <>
       {/* Bottom CTA */}
@@ -21,13 +25,24 @@ export default function Footer() {
           <p className="relative text-slate-400 text-lg mb-10">
             Join TradeDrift and simulate real exchange mechanics — completely risk free.
           </p>
-          <Link
-            to="/register"
-            className="group relative inline-flex items-center gap-3 px-10 py-4 bg-brand hover:bg-brand-dark text-black font-bold text-lg rounded-xl transition-all duration-200 glow-green hover:scale-105"
-          >
-            Launch Simulator
-            <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform" />
-          </Link>
+          {onLaunchSimulator ? (
+            <button
+              type="button"
+              onClick={onLaunchSimulator}
+              className="group relative inline-flex items-center gap-3 px-10 py-4 bg-brand hover:bg-brand-dark text-black font-bold text-lg rounded-xl transition-all duration-200 glow-green hover:scale-105 cursor-pointer"
+            >
+              Launch Simulator
+              <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform" />
+            </button>
+          ) : (
+            <Link
+              to="/register"
+              className="group relative inline-flex items-center gap-3 px-10 py-4 bg-brand hover:bg-brand-dark text-black font-bold text-lg rounded-xl transition-all duration-200 glow-green hover:scale-105"
+            >
+              Launch Simulator
+              <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform" />
+            </Link>
+          )}
         </div>
       </section>
 

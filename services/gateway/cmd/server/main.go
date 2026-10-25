@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os/signal"
 	"strconv"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	orderhandler  "tradedrift/services/gateway/internal/handler/order"
 	tradehandler  "tradedrift/services/gateway/internal/handler/trade"
 	portfoliohandler "tradedrift/services/gateway/internal/handler/portfolio"
+	topuphandler "tradedrift/services/gateway/internal/handler/topup"
 	wallethandler "tradedrift/services/gateway/internal/handler/wallet"
 	"tradedrift/services/gateway/internal/middleware"
 	"tradedrift/services/gateway/internal/ws"
@@ -67,6 +69,14 @@ func main() {
 	tradeAddr  := formatTarget(config.GetEnv("TRADE_ADDR",  "127.0.0.1:50057"))
 	portfolioAddr := formatTarget(config.GetEnv("PORTFOLIO_ADDR", "127.0.0.1:50058"))
 	notificationAddr := formatTarget(config.GetEnv("NOTIFICATION_ADDR", "127.0.0.1:50059"))
+	topupAddr := config.GetEnv("TOPUP_ADDR", "http://127.0.0.1:8084")
+	if !strings.HasPrefix(topupAddr, "http://") && !strings.HasPrefix(topupAddr, "https://") {
+		topupAddr = "http://" + topupAddr
+	}
+	topupURL, err := url.Parse(topupAddr)
+	if err != nil {
+		appLogger.Fatal("Failed to parse TOPUP_ADDR", zap.String("addr", topupAddr), zap.Error(err))
+	}
 	allowedOrigins := []string{
 		config.GetEnv("CORS_ORIGIN", "http://localhost:5173"),
 	}
@@ -127,6 +137,7 @@ func main() {
 	tradeH  := tradehandler.NewHandler(tradev1.NewTradeServiceClient(tradeConn))
 	portfolioH := portfoliohandler.NewHandler(portfoliov1.NewPortfolioServiceClient(portfolioConn))
 	notificationH := notificationhandler.NewHandler(notificationv1.NewNotificationServiceClient(notificationConn))
+	topupH := topuphandler.NewHandler(topupURL, appLogger)
 
 	// 5. Redis and WebSocket Subsystem Setup
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -231,6 +242,15 @@ func main() {
 	// Wallet — protected
 	mux.Handle("GET /api/v1/wallet/balances",         protected(http.HandlerFunc(walletH.GetBalances)))
 	mux.Handle("GET /api/v1/wallet/balances/{asset}", protected(http.HandlerFunc(walletH.GetBalance)))
+
+	// TopUp — protected (JWT validated, X-User-ID injected)
+	mux.Handle("POST /api/v1/topups",            protected(http.HandlerFunc(topupH.Proxy)))
+	mux.Handle("GET /api/v1/topups",             protected(http.HandlerFunc(topupH.Proxy)))
+	mux.Handle("GET /api/v1/topups/daily-usage", protected(http.HandlerFunc(topupH.Proxy)))
+	mux.Handle("GET /api/v1/topups/{id}",        protected(http.HandlerFunc(topupH.Proxy)))
+
+	// TopUp Webhooks — public (cryptographically verified by topup service via HMAC)
+	mux.HandleFunc("POST /api/v1/webhooks/payment/{provider}", topupH.Proxy)
 
 	// Order — protected
 	mux.Handle("POST /api/v1/orders",               protected(http.HandlerFunc(orderH.CreateOrder)))

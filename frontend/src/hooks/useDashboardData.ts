@@ -144,39 +144,100 @@ export interface UseDashboardDataReturn {
   retryChart: () => void
 }
 
+interface DashboardCacheEntry {
+  userId: string
+  data: DashboardData
+  isDemoData: boolean
+  historyCache: Partial<Record<PeriodTab, PortfolioDataPoint[]>>
+  timestamp: number
+}
+
+import { registerCacheClearHandler } from '../utils/cacheRegistry'
+
+let cachedDashboardEntry: DashboardCacheEntry | null = null
+
+interface CachedCandles {
+  candles: Candle[]
+  fetchedAt: number
+}
+let candlesCache: Record<string, CachedCandles> = {}
+
+async function getDashboardCandles(marketId: string): Promise<Candle[]> {
+  const cached = candlesCache[marketId]
+  const now = Date.now()
+  if (cached && now - cached.fetchedAt < 60_000 && cached.candles.length > 0) {
+    return cached.candles
+  }
+  try {
+    const candles = await marketApi.getCandles(marketId, '1h', 168)
+    candlesCache[marketId] = { candles, fetchedAt: now }
+    return candles
+  } catch {
+    return cached?.candles ?? []
+  }
+}
+
+export function clearDashboardCache() {
+  cachedDashboardEntry = null
+  candlesCache = {}
+}
+
+registerCacheClearHandler(clearDashboardCache)
+
 export function useDashboardData(): UseDashboardDataReturn {
-  const [data, setData]             = useState<DashboardData>(INITIAL_DASHBOARD_DATA)
-  const [loading, setLoading]       = useState(true)
+  const currentUserId = useAuthStore((s) => s.user?.userId) || ''
+  const hasValidCache = Boolean(
+    cachedDashboardEntry &&
+    cachedDashboardEntry.userId === currentUserId &&
+    currentUserId !== ''
+  )
+
+  const [data, setData]             = useState<DashboardData>(() =>
+    hasValidCache && cachedDashboardEntry ? cachedDashboardEntry.data : INITIAL_DASHBOARD_DATA
+  )
+  const [loading, setLoading]       = useState(!hasValidCache)
   const [error, setError]           = useState<string | null>(null)
-  const [isDemoData, setIsDemoData] = useState(false)
+  const [isDemoData, setIsDemoData] = useState(() =>
+    hasValidCache && cachedDashboardEntry ? cachedDashboardEntry.isDemoData : false
+  )
   const [activePeriod, setActivePeriodState] = useState<PeriodTab>('7D')
   const [isChartLoading, setIsChartLoading] = useState(false)
   const [chartError, setChartError] = useState<string | null>(null)
 
-  const historyCache = useRef<Partial<Record<PeriodTab, PortfolioDataPoint[]>>>({})
+  const historyCache = useRef<Partial<Record<PeriodTab, PortfolioDataPoint[]>>>(
+    hasValidCache && cachedDashboardEntry ? { ...cachedDashboardEntry.historyCache } : {}
+  )
   const latestTimeframeReqId = useRef(0)
 
-  const userId = useAuthStore((s) => s.user?.userId)
+  const userId = currentUserId
   const livePrices = useRef<Record<string, string>>({})
+  const lastFetchTimeRef = useRef(0)
+  const inFlightPromiseRef = useRef<Promise<void> | null>(null)
 
   const buildData = useCallback(async (): Promise<void> => {
-    setLoading(true)
-    setError(null)
+    if (inFlightPromiseRef.current) {
+      return inFlightPromiseRef.current
+    }
 
-    try {
-      // ── Step 1: Critical data — portfolio, wallet, snapshots history, live markets, and hourly candles ─
-      const candlesPromises = DASHBOARD_MARKETS.map((m) =>
-        marketApi.getCandles(m.id, '1h', 168).catch(() => [] as Candle[])
-      )
+    const task = (async () => {
+      const authUserId = useAuthStore.getState().user?.userId || ''
+      if (!cachedDashboardEntry || cachedDashboardEntry.userId !== authUserId || !authUserId) {
+        setLoading(true)
+      }
+      setError(null)
 
-      const [summaryRes, holdingsRes, balancesRes, overviewRes, historyRes, candlesList] = await Promise.all([
-        portfolioApi.getSummary(),
-        portfolioApi.getHoldings().catch(() => ({ userId: '', holdings: [] })),
-        walletApi.getAllBalances().catch(() => []),
-        marketApi.getMarketsOverview().catch(() => [] as MarketOverview[]),
-        portfolioApi.getHistory('7D').catch(() => ({ userId: '', timeframe: '7D', points: [] })),
-        Promise.all(candlesPromises),
-      ])
+      try {
+        // ── Step 1: Critical data — portfolio, wallet, snapshots history, live markets, and hourly candles (cached) ─
+        const candlesPromises = DASHBOARD_MARKETS.map((m) => getDashboardCandles(m.id))
+
+        const [summaryRes, holdingsRes, balancesRes, overviewRes, historyRes, candlesList] = await Promise.all([
+          portfolioApi.getSummary(),
+          portfolioApi.getHoldings().catch(() => ({ userId: '', holdings: [] })),
+          walletApi.getAllBalances().catch(() => []),
+          marketApi.getMarketsOverview().catch(() => [] as MarketOverview[]),
+          portfolioApi.getHistory('7D').catch(() => ({ userId: '', timeframe: '7D', points: [] })),
+          Promise.all(candlesPromises),
+        ])
 
       // Map market overview data into lookup records
       const overviewMap: Record<string, MarketOverview> = {}
@@ -411,13 +472,35 @@ export function useDashboardData(): UseDashboardDataReturn {
       setData(dashData)
       setIsDemoData(false)
       setError(null)
+
+      const authId = useAuthStore.getState().user?.userId || ''
+      if (authId) {
+        cachedDashboardEntry = {
+          userId: authId,
+          data: dashData,
+          isDemoData: false,
+          historyCache: { ...historyCache.current },
+          timestamp: Date.now(),
+        }
+      }
+      lastFetchTimeRef.current = Date.now()
     } catch (err) {
       const msg = extractApiError(err)
-      setError(msg)
-      setIsDemoData(true)
+      const authId = useAuthStore.getState().user?.userId || ''
+      if (!cachedDashboardEntry || cachedDashboardEntry.userId !== authId) {
+        setError(msg)
+        setIsDemoData(true)
+      } else {
+        console.warn('Background dashboard revalidation failed:', msg)
+      }
     } finally {
       setLoading(false)
+      inFlightPromiseRef.current = null
     }
+  })()
+
+  inFlightPromiseRef.current = task
+  return task
   }, [userId])
 
   // ── Smooth Timeframe Switching ─────────────────────────────────────────────
@@ -605,27 +688,45 @@ export function useDashboardData(): UseDashboardDataReturn {
     })
     unsubs.push(unsubStore)
 
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null
+    const debouncedBuildData = () => {
+      if (debounceTimer) clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(() => {
+        buildData()
+      }, 1500)
+    }
+
     if (userId) {
-      // User notification stream (trade fills, order updates)
+      // User notification stream (trade fills, order updates) — debounced
       const unsubNotifications = wsService.subscribe(WsChannels.userNotifications(userId), () => {
-        buildData()
+        debouncedBuildData()
       })
-      // User portfolio stream (balance & snapshot updates)
+      // User portfolio stream (balance & snapshot updates) — debounced
       const unsubPortfolio = wsService.subscribe(WsChannels.userPortfolio(userId), () => {
-        buildData()
+        debouncedBuildData()
       })
       unsubs.push(unsubNotifications, unsubPortfolio)
     }
 
-    // Auto-refresh when returning to tab or reconnecting
+    // Auto-refresh when reconnecting — debounced
     const unsubReconnect = wsService.onReconnect(() => {
-      buildData()
+      debouncedBuildData()
     })
+    // Auto-refresh when returning to tab — throttled with 20s cooldown
     const onFocus = () => {
-      buildData()
+      const now = Date.now()
+      if (now - lastFetchTimeRef.current > 20_000) {
+        buildData()
+      }
     }
     window.addEventListener('focus', onFocus)
-    unsubs.push(unsubReconnect, () => window.removeEventListener('focus', onFocus))
+    unsubs.push(
+      unsubReconnect,
+      () => {
+        if (debounceTimer) clearTimeout(debounceTimer)
+        window.removeEventListener('focus', onFocus)
+      }
+    )
 
     return () => unsubs.forEach((u) => u())
   }, [buildData, userId])

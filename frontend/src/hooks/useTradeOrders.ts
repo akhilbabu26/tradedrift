@@ -23,6 +23,14 @@ export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) 
 
   // Fetch all orders for the authenticated user across all markets with coalesced refetching
   const fetchOrders = useCallback(async () => {
+    // Guest protection: never call order API without an authenticated session
+    if (!useAuthStore.getState().isAuthenticated || !userId) {
+      setOrders([])
+      setLoading(false)
+      setError(null)
+      return
+    }
+
     if (inFlightRef.current) {
       pendingRefetchRef.current = true
       return
@@ -57,7 +65,7 @@ export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) 
         fetchOrders()
       }
     }
-  }, [])
+  }, [userId])
 
   useEffect(() => {
     setLoading(true)
@@ -94,6 +102,11 @@ export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) 
   }, [fetchOrders, onBalanceRefresh, userId])
 
   const submitOrder = async (req: CreateOrderRequest): Promise<boolean> => {
+    if (!useAuthStore.getState().isAuthenticated || !userId) {
+      toast.error('Authentication required to place orders')
+      return false
+    }
+
     setSubmitting(true)
     try {
       const newOrder = await orderApi.createOrder(req)
@@ -117,6 +130,11 @@ export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) 
   }
 
   const cancelOrder = async (orderId: string): Promise<boolean> => {
+    if (!useAuthStore.getState().isAuthenticated || !userId) {
+      toast.error('Authentication required')
+      return false
+    }
+
     setCancellingId(orderId)
     try {
       const updated = await orderApi.cancelOrder(orderId)
@@ -150,7 +168,7 @@ export function useTradeOrders(marketId: string, onBalanceRefresh?: () => void) 
   }
 
   const cancelAll = async (openOrders: Order[]): Promise<void> => {
-    if (openOrders.length === 0) return
+    if (!useAuthStore.getState().isAuthenticated || !userId || openOrders.length === 0) return
     setCancellingAll(true)
 
     try {

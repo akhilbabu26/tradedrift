@@ -1544,4 +1544,201 @@ func TestInvariant_CumulativeReferenceDrift_TriggersRebaseWithoutTickClobber(t *
 	}
 }
 
+// Test 20: Controlled rebase keeps RebaseActive=true while older CANCELLING orders without targetVer correction exist
+func TestControlledRebase_AwaitsCancellingOrdersAndQueuedCorrections(t *testing.T) {
+	marketID := "BTC-USDT"
+	rec, tracker, cfg, _, _ := newInvTestRec(t, marketID)
+	mc := &cfg.Markets[0]
+	mc.Repricing = config.RepricingConfig{
+		SmallBps: 10,
+		LargeBps: 100,
+		MaxBatch: 2,
+	}
+
+	// 1 order RESTING at v1
+	tracker.SetPending("MM-BTC-USDT-BID-01", "ord-1", "COID-1", 1, pricing.PriceLevel{
+		LevelID: "MM-BTC-USDT-BID-01", MarketID: marketID, Side: "BUY", Price: decimal.RequireFromString("98.00"), Quantity: decimal.RequireFromString("1.0"), Zone: "LOW", RefVersion: 1,
+	})
+	tracker.SetResting("MM-BTC-USDT-BID-01", "ord-1", decimal.RequireFromString("1.0"), decimal.RequireFromString("1.0"))
+
+	// 1 order in CANCELLING at v1 with NO QueuedCorrection (e.g. in-flight older cancel)
+	tracker.SetPending("MM-BTC-USDT-BID-02", "ord-2", "COID-2", 1, pricing.PriceLevel{
+		LevelID: "MM-BTC-USDT-BID-02", MarketID: marketID, Side: "BUY", Price: decimal.RequireFromString("97.00"), Quantity: decimal.RequireFromString("1.0"), Zone: "LOW", RefVersion: 1,
+	})
+	tracker.SetCancelling("MM-BTC-USDT-BID-02")
+
+	// Set initial refState with target version 2
+	refState := &reconciler.RefState{
+		LastRef:         decimal.RequireFromString("105.00"),
+		LastVersion:     2,
+		RebaseActive:    true,
+		RebaseTargetVer: 2,
+		RebaseTargetRef: decimal.RequireFromString("105.00"),
+	}
+	rec.SetRefState(marketID, refState)
+
+	// Cycle 1: Apply rebase for targetVersion 2 (reprices BID-01)
+	rec.ApplyRefMovementReprice(context.Background(), mc, decimal.RequireFromString("105.00"), 2, reconciler.ActionControlledRebase)
+
+	// Invariant: Remaining RESTING is now 0, but BID-02 is in CANCELLING with older version v1 and no targetVer replacement!
+	// RebaseActive MUST remain true!
+	state := rec.GetRefState(marketID)
+	if !state.RebaseActive {
+		t.Fatalf("expected RebaseActive=true while CANCELLING order with older version is in flight")
+	}
+
+	// Now simulate cancel confirmation of BID-02 (removed) and replacement creation of BID-01 at v2
+	tracker.Remove("MM-BTC-USDT-BID-02")
+	tracker.Remove("MM-BTC-USDT-BID-01")
+	tracker.SetPending("MM-BTC-USDT-BID-01", "new-ord-1", "COID-1-G002", 2, pricing.PriceLevel{
+		LevelID: "MM-BTC-USDT-BID-01", MarketID: marketID, Side: "BUY", Price: decimal.RequireFromString("103.00"), Quantity: decimal.RequireFromString("1.0"), Zone: "LOW", RefVersion: 2,
+	})
+	tracker.SetResting("MM-BTC-USDT-BID-01", "new-ord-1", decimal.RequireFromString("1.0"), decimal.RequireFromString("1.0"))
+
+	// Cycle 2: Apply rebase evaluation again
+	rec.ApplyRefMovementReprice(context.Background(), mc, decimal.RequireFromString("105.00"), 2, reconciler.ActionControlledRebase)
+
+	// Invariant: Now all remaining orders have RefVersion=2 and no unhandled CANCELLING orders exist -> RebaseActive MUST become false
+	state = rec.GetRefState(marketID)
+	if state.RebaseActive {
+		t.Fatalf("expected RebaseActive=false once all levels converged to targetVersion 2")
+	}
+}
+
+// Test 21: Multi-batch rebase with delayed cancellations converges across multiple cycles
+func TestControlledRebase_MultiBatchWithDelayedCancels(t *testing.T) {
+	marketID := "BTC-USDT"
+	rec, tracker, cfg, _, _ := newInvTestRec(t, marketID)
+	mc := &cfg.Markets[0]
+	mc.Repricing = config.RepricingConfig{
+		SmallBps: 10,
+		LargeBps: 100,
+		MaxBatch: 2,
+	}
+
+	// Setup 4 resting orders at v1
+	for i := 1; i <= 4; i++ {
+		lvl := fmt.Sprintf("MM-BTC-USDT-BID-%02d", i)
+		tracker.SetPending(lvl, fmt.Sprintf("ord-%d", i), fmt.Sprintf("COID-%d", i), 1, pricing.PriceLevel{
+			LevelID: lvl, MarketID: marketID, Side: "BUY", Price: decimal.NewFromInt(int64(90 + i)), Quantity: decimal.RequireFromString("1.0"), Zone: "LOW", RefVersion: 1,
+		})
+		tracker.SetResting(lvl, fmt.Sprintf("ord-%d", i), decimal.RequireFromString("1.0"), decimal.RequireFromString("1.0"))
+	}
+
+	refState := &reconciler.RefState{
+		LastRef:         decimal.RequireFromString("105.00"),
+		LastVersion:     2,
+		RebaseActive:    true,
+		RebaseTargetVer: 2,
+		RebaseTargetRef: decimal.RequireFromString("105.00"),
+	}
+	rec.SetRefState(marketID, refState)
+
+	// Batch 1: Reprices 2 orders (BID-01 and BID-02). 2 resting remain -> RebaseActive MUST be true
+	n1 := rec.ApplyRefMovementReprice(context.Background(), mc, decimal.RequireFromString("105.00"), 2, reconciler.ActionControlledRebase)
+	if n1 != 2 {
+		t.Fatalf("batch 1: expected 2 orders repriced, got %d", n1)
+	}
+	if !rec.GetRefState(marketID).RebaseActive {
+		t.Fatalf("batch 1: expected RebaseActive=true")
+	}
+
+	// Batch 2: Reprices remaining 2 resting orders (BID-03 and BID-04)
+	n2 := rec.ApplyRefMovementReprice(context.Background(), mc, decimal.RequireFromString("105.00"), 2, reconciler.ActionControlledRebase)
+	if n2 != 2 {
+		t.Fatalf("batch 2: expected 2 orders repriced, got %d", n2)
+	}
+	if rec.GetRefState(marketID).RebaseActive {
+		t.Fatalf("batch 2: expected RebaseActive=false once all 4 orders have been processed for targetVersion 2")
+	}
+}
+
+// Test 22: Restart recovery mid-rebase preserves RebaseActive until recovered orders rebase
+func TestControlledRebase_RestartRecoveryMidRebase(t *testing.T) {
+	marketID := "BTC-USDT"
+	rec, tracker, cfg, _, _ := newInvTestRec(t, marketID)
+	mc := &cfg.Markets[0]
+	mc.Repricing = config.RepricingConfig{
+		SmallBps: 10,
+		LargeBps: 100,
+		MaxBatch: 2,
+	}
+
+	// Simulate engine restart: 4 orders recovered from Order Service with RefVersion=0
+	tracker.SyncFromOrders(marketID, []order.OSOrder{
+		{
+			LevelID:       "MM-BTC-USDT-BID-01",
+			Generation:    3,
+			ClientOrderID: "MM-BTC-USDT-BID-01-G003",
+			OrderID:       "uuid-rec-1",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("90.00"),
+			OriginalQty:   decimal.RequireFromString("1.0"),
+			RemainingQty:  decimal.RequireFromString("1.0"),
+		},
+		{
+			LevelID:       "MM-BTC-USDT-BID-02",
+			Generation:    3,
+			ClientOrderID: "MM-BTC-USDT-BID-02-G003",
+			OrderID:       "uuid-rec-2",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("89.00"),
+			OriginalQty:   decimal.RequireFromString("1.0"),
+			RemainingQty:  decimal.RequireFromString("1.0"),
+		},
+		{
+			LevelID:       "MM-BTC-USDT-BID-03",
+			Generation:    3,
+			ClientOrderID: "MM-BTC-USDT-BID-03-G003",
+			OrderID:       "uuid-rec-3",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("88.00"),
+			OriginalQty:   decimal.RequireFromString("1.0"),
+			RemainingQty:  decimal.RequireFromString("1.0"),
+		},
+		{
+			LevelID:       "MM-BTC-USDT-BID-04",
+			Generation:    3,
+			ClientOrderID: "MM-BTC-USDT-BID-04-G003",
+			OrderID:       "uuid-rec-4",
+			Side:          "BUY",
+			Price:         decimal.RequireFromString("87.00"),
+			OriginalQty:   decimal.RequireFromString("1.0"),
+			RemainingQty:  decimal.RequireFromString("1.0"),
+		},
+	})
+	for i := 1; i <= 4; i++ {
+		lvl := fmt.Sprintf("MM-BTC-USDT-BID-%02d", i)
+		tracker.SetResting(lvl, fmt.Sprintf("uuid-rec-%d", i), decimal.RequireFromString("1.0"), decimal.RequireFromString("1.0"))
+	}
+
+	refState := &reconciler.RefState{
+		LastRef:         decimal.RequireFromString("105.00"),
+		LastVersion:     5,
+		RebaseActive:    true,
+		RebaseTargetVer: 5,
+		RebaseTargetRef: decimal.RequireFromString("105.00"),
+	}
+	rec.SetRefState(marketID, refState)
+
+	// Cycle 1: Reprices Batch 1 (2 orders). 2 orders remain -> RebaseActive MUST remain true
+	n1 := rec.ApplyRefMovementReprice(context.Background(), mc, decimal.RequireFromString("105.00"), 5, reconciler.ActionControlledRebase)
+	if n1 != 2 {
+		t.Fatalf("expected 2 recovered orders repriced in batch 1, got %d", n1)
+	}
+	if !rec.GetRefState(marketID).RebaseActive {
+		t.Fatalf("expected RebaseActive=true while recovered orders remain to be rebased")
+	}
+
+	// Cycle 2: Reprices Batch 2 (remaining 2 orders) -> Rebase completes
+	n2 := rec.ApplyRefMovementReprice(context.Background(), mc, decimal.RequireFromString("105.00"), 5, reconciler.ActionControlledRebase)
+	if n2 != 2 {
+		t.Fatalf("expected 2 recovered orders repriced in batch 2, got %d", n2)
+	}
+	if rec.GetRefState(marketID).RebaseActive {
+		t.Fatalf("expected RebaseActive=false once all recovered orders have been rebased")
+	}
+}
+
+
 

@@ -20,7 +20,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { portfolioApi } from '../api/portfolio'
 import { walletApi } from '../api/wallet'
-import { marketApi, type MarketOverview, type Candle } from '../api/market'
+import { marketApi, type MarketOverview } from '../api/market'
 import { orderApi, isOrderActive, type Order } from '../api/order'
 import { tradesApi } from '../api/trades'
 import { wsService, WsChannels } from '../api/ws'
@@ -156,30 +156,8 @@ import { registerCacheClearHandler } from '../utils/cacheRegistry'
 
 let cachedDashboardEntry: DashboardCacheEntry | null = null
 
-interface CachedCandles {
-  candles: Candle[]
-  fetchedAt: number
-}
-let candlesCache: Record<string, CachedCandles> = {}
-
-async function getDashboardCandles(marketId: string): Promise<Candle[]> {
-  const cached = candlesCache[marketId]
-  const now = Date.now()
-  if (cached && now - cached.fetchedAt < 60_000 && cached.candles.length > 0) {
-    return cached.candles
-  }
-  try {
-    const candles = await marketApi.getCandles(marketId, '1h', 168)
-    candlesCache[marketId] = { candles, fetchedAt: now }
-    return candles
-  } catch {
-    return cached?.candles ?? []
-  }
-}
-
 export function clearDashboardCache() {
   cachedDashboardEntry = null
-  candlesCache = {}
 }
 
 registerCacheClearHandler(clearDashboardCache)

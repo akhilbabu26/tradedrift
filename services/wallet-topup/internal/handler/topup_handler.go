@@ -75,6 +75,54 @@ func (h *TopUpHandler) HandleCreateTopUp(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusCreated, ToTopUpDTO(order))
 }
 
+// HandleVerifyCheckout handles POST /api/v1/topups/verify
+func (h *TopUpHandler) HandleVerifyCheckout(w http.ResponseWriter, r *http.Request) {
+	userID := UserIDFromContext(r.Context())
+	if userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	var reqDTO VerifyCheckoutRequestDTO
+	if err := json.NewDecoder(r.Body).Decode(&reqDTO); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json body"})
+		return
+	}
+
+	topupID, orderID, paymentID, signature := reqDTO.Normalized()
+
+	order, err := h.topupService.VerifyCheckoutPayment(r.Context(), userID, service.VerifyCheckoutRequest{
+		TopUpID:           topupID,
+		RazorpayOrderID:   orderID,
+		RazorpayPaymentID: paymentID,
+		RazorpaySignature: signature,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, domain.ErrUnauthorized):
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		case errors.Is(err, domain.ErrOrderNotFound):
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "top-up order not found"})
+		case errors.Is(err, domain.ErrInvalidSignature):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_SIGNATURE", "error": "invalid checkout signature"})
+		case errors.Is(err, domain.ErrMismatchedProviderOrder):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "MISMATCHED_ORDER_ID", "error": err.Error()})
+		case errors.Is(err, domain.ErrPaymentNotCaptured),
+			errors.Is(err, domain.ErrPaymentAmountMismatch),
+			errors.Is(err, domain.ErrPaymentCurrencyMismatch):
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "PAYMENT_VERIFICATION_FAILED", "error": err.Error()})
+		case errors.Is(err, domain.ErrOrderTerminalStatus):
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "ORDER_TERMINAL_STATUS", "error": err.Error()})
+		default:
+			h.log.Error("HandleVerifyCheckout: verification failed", zap.Error(err), zap.String("topupID", topupID))
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		}
+		return
+	}
+
+	writeJSON(w, http.StatusOK, ToTopUpDTO(order))
+}
+
 // HandleGetDailyUsage handles GET /api/v1/topups/daily-usage
 func (h *TopUpHandler) HandleGetDailyUsage(w http.ResponseWriter, r *http.Request) {
 	userID := UserIDFromContext(r.Context())

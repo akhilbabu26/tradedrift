@@ -54,7 +54,7 @@ export function useTradeMarket(initialMarketId = 'BTC-USDT') {
               .map((v) => parseFloat(v))
               .filter((v) => !isNaN(v) && isFinite(v) && v > 0)
             if (validFloats.length > 0) {
-              trends[ov.market_id] = validFloats.slice(-24)
+              trends[ov.market_id] = validFloats.slice(-30)
             }
           }
         })
@@ -64,7 +64,7 @@ export function useTradeMarket(initialMarketId = 'BTC-USDT') {
         const missing = targetList.filter((m) => !trends[m.id] || trends[m.id].length === 0)
         if (missing.length > 0) {
           const candleResults = await Promise.allSettled(
-            missing.map((m) => marketApi.getCandles(m.id, '1h', 24))
+            missing.map((m) => marketApi.getCandles(m.id, '1m', 30))
           )
           missing.forEach((m, i) => {
             const r = candleResults[i]
@@ -73,7 +73,7 @@ export function useTradeMarket(initialMarketId = 'BTC-USDT') {
                 .map((c) => parseFloat(c.close))
                 .filter((v) => !isNaN(v) && isFinite(v) && v > 0)
               if (valid.length > 0) {
-                trends[m.id] = valid.slice(-24)
+                trends[m.id] = valid.slice(-30)
               }
             }
           })

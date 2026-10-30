@@ -95,6 +95,9 @@ function handleIncomingTicker(
     let updatedTrend = currentTrend
     if (currentTrend.length === 0) {
       updatedTrend = [numPrice]
+    } else if (currentTrend.length === 1 && currentTrend[0] !== numPrice) {
+      // Transition from 1 observation to 2 points when live price moves
+      updatedTrend = [...currentTrend, numPrice]
     } else {
       const lastIdx = currentTrend.length - 1
       if (currentTrend[lastIdx] !== numPrice) {
@@ -152,7 +155,7 @@ export const useMarketStore = create<MarketState>((set, get) => ({
             .map((v) => parseFloat(v))
             .filter((v) => !isNaN(v) && isFinite(v) && v > 0)
           if (validFloats.length > 0) {
-            newTrends[ov.market_id] = validFloats.slice(-24)
+            newTrends[ov.market_id] = validFloats.slice(-30)
           }
         }
       })

@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -10,18 +13,23 @@ import (
 	platformuuid "tradedrift/platform/uuid"
 	"tradedrift/services/wallet-topup/internal/client"
 	"tradedrift/services/wallet-topup/internal/domain"
+	"tradedrift/services/wallet-topup/internal/payment"
 	"tradedrift/services/wallet-topup/internal/repository"
 )
 
 type ReconcilerWorker struct {
-	orderRepo     repository.TopUpOrderRepository
-	walletClient  *client.WalletClient
-	log           *zap.Logger
-	interval      time.Duration
-	batchSize     int
-	leaseDuration time.Duration
-	stopCh        chan struct{}
-	wg            sync.WaitGroup
+	orderRepo       repository.TopUpOrderRepository
+	walletClient    *client.WalletClient
+	log             *zap.Logger
+	interval        time.Duration
+	batchSize       int
+	leaseDuration   time.Duration
+	stopCh          chan struct{}
+	triggerCh       chan struct{}
+	txManager       repository.TransactionManager
+	paymentProvider payment.PaymentProvider
+	dailyLimitINR   int64
+	wg              sync.WaitGroup
 }
 
 func NewReconcilerWorker(
@@ -49,6 +57,22 @@ func NewReconcilerWorker(
 		batchSize:     batchSize,
 		leaseDuration: leaseDuration,
 		stopCh:        make(chan struct{}),
+		triggerCh:     make(chan struct{}, 1),
+	}
+}
+
+// SetProviderReconciler configures provider lookups to automatically unstrand stuck payments.
+func (w *ReconcilerWorker) SetProviderReconciler(txManager repository.TransactionManager, provider payment.PaymentProvider, dailyLimitINR int64) {
+	w.txManager = txManager
+	w.paymentProvider = provider
+	w.dailyLimitINR = dailyLimitINR
+}
+
+// Trigger notifies the reconciler worker to process a batch immediately without waiting for the next ticker tick.
+func (w *ReconcilerWorker) Trigger() {
+	select {
+	case w.triggerCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -58,6 +82,9 @@ func (w *ReconcilerWorker) Start(ctx context.Context) {
 		defer w.wg.Done()
 		ticker := time.NewTicker(w.interval)
 		defer ticker.Stop()
+
+		stuckTicker := time.NewTicker(30 * time.Second)
+		defer stuckTicker.Stop()
 
 		w.log.Info("ReconcilerWorker started",
 			zap.Duration("interval", w.interval),
@@ -73,6 +100,10 @@ func (w *ReconcilerWorker) Start(ctx context.Context) {
 				return
 			case <-ticker.C:
 				w.processBatch(ctx)
+			case <-w.triggerCh:
+				w.processBatch(ctx)
+			case <-stuckTicker.C:
+				w.reconcileStuckPayments(ctx)
 			}
 		}
 	}()
@@ -82,6 +113,105 @@ func (w *ReconcilerWorker) Stop() {
 	close(w.stopCh)
 	w.wg.Wait()
 	w.log.Info("ReconcilerWorker stopped")
+}
+
+// computeBackoff calculates bounded exponential backoff with jitter (2s * 2^(attempt-1), capped at 60s).
+func computeBackoff(attemptCount int) time.Duration {
+	if attemptCount <= 0 {
+		attemptCount = 1
+	}
+	baseMs := int64(2000)
+	shift := attemptCount - 1
+	if shift > 5 {
+		shift = 5 // max 2^5 * 2000ms = 64s, capped at 60s
+	}
+	backoffMs := baseMs * (1 << shift)
+	if backoffMs > 60000 {
+		backoffMs = 60000
+	}
+	// Add 0-25% jitter
+	jitter := rand.Int63n(backoffMs/4 + 1)
+	return time.Duration(backoffMs+jitter) * time.Millisecond
+}
+
+// reconcileStuckPayments checks provider server-side APIs for unconfirmed PAYMENT_PENDING orders older than 2 minutes.
+func (w *ReconcilerWorker) reconcileStuckPayments(ctx context.Context) {
+	if w.txManager == nil || w.paymentProvider == nil {
+		return
+	}
+
+	stuckOrders, err := w.orderRepo.GetPendingUnconfirmed(ctx, 2*time.Minute, 10)
+	if err != nil {
+		w.log.Warn("ReconcilerWorker: failed to query stuck unconfirmed orders", zap.Error(err))
+		return
+	}
+	if len(stuckOrders) == 0 {
+		return
+	}
+
+	for _, o := range stuckOrders {
+		if o.ProviderOrderID == nil || *o.ProviderOrderID == "" {
+			continue
+		}
+
+		payments, err := w.paymentProvider.FetchOrderPayments(ctx, *o.ProviderOrderID)
+		if err != nil {
+			w.log.Debug("ReconcilerWorker: could not fetch order payments from provider",
+				zap.String("orderID", o.ID),
+				zap.String("providerOrderID", *o.ProviderOrderID),
+				zap.Error(err),
+			)
+			continue
+		}
+
+		for _, p := range payments {
+			if (p.Status == "captured" || p.Captured) && p.AmountINR == o.INRAmount {
+				w.log.Info("ReconcilerWorker: found captured payment for stranded order, reconciling",
+					zap.String("orderID", o.ID),
+					zap.String("paymentID", p.PaymentID),
+					zap.Int64("amountINR", p.AmountINR),
+				)
+
+				captureTime := time.Now().UTC()
+				if p.CreatedAt > 0 {
+					captureTime = time.Unix(p.CreatedAt, 0).UTC()
+				}
+				paidDate := captureTime.Format("2006-01-02")
+
+				payloadBytes, _ := json.Marshal(map[string]any{
+					"source":            "reconciler_provider_sync",
+					"order_id":          o.ID,
+					"provider_order_id": *o.ProviderOrderID,
+					"payment_id":        p.PaymentID,
+					"reconciled_at":     time.Now().UTC().Format(time.RFC3339),
+				})
+
+				res, txErr := w.txManager.ProcessPaymentConfirmationTx(
+					ctx,
+					o.ID,
+					o.Provider,
+					p.PaymentID,
+					paidDate,
+					payloadBytes,
+					fmt.Sprintf("reconciler_sync_%s", p.PaymentID),
+					w.dailyLimitINR,
+				)
+				if txErr != nil {
+					w.log.Error("ReconcilerWorker: failed to confirm stranded payment",
+						zap.String("orderID", o.ID),
+						zap.Error(txErr),
+					)
+				} else if res != nil {
+					w.log.Info("ReconcilerWorker: stranded payment successfully advanced to CREDIT_PENDING",
+						zap.String("orderID", o.ID),
+						zap.Bool("alreadyProcessed", res.AlreadyProcessed),
+					)
+					w.Trigger()
+				}
+				break
+			}
+		}
+	}
 }
 
 func (w *ReconcilerWorker) processBatch(ctx context.Context) {
@@ -138,13 +268,24 @@ func (w *ReconcilerWorker) processBatch(ctx context.Context) {
 				} else if !res.Success {
 					errMsg = "wallet service returned unsuccessful status"
 				}
-				w.log.Warn("ReconcilerWorker: DepositFunds RPC failed",
+				backoff := computeBackoff(o.AttemptCount)
+				w.log.Warn("ReconcilerWorker: DepositFunds RPC failed, backing off",
 					zap.String("orderID", o.ID),
 					zap.String("userID", o.UserID),
+					zap.Int("attemptCount", o.AttemptCount),
+					zap.Duration("backoff", backoff),
 					zap.Error(err),
 				)
-				// Step 3a: Record failure with lease-fencing protection
-				recorded, recErr := w.orderRepo.RecordClaimFailure(ctx, o.ID, workerToken, errMsg)
+				if o.AttemptCount >= 10 {
+					w.log.Error("CRITICAL OPERATIONAL ALERT: TopUp order deposit failing repeatedly",
+						zap.String("orderID", o.ID),
+						zap.String("userID", o.UserID),
+						zap.Int("attemptCount", o.AttemptCount),
+						zap.String("lastError", errMsg),
+					)
+				}
+				// Step 3a: Record failure with lease-fencing protection and exponential backoff
+				recorded, recErr := w.orderRepo.RecordClaimFailure(ctx, o.ID, workerToken, errMsg, backoff)
 				if recErr != nil {
 					w.log.Error("ReconcilerWorker: failed to record claim failure", zap.Error(recErr))
 				} else if !recorded {

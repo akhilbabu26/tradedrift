@@ -274,7 +274,7 @@ func (m *MockTopUpOrderRepo) CompleteOrder(ctx context.Context, orderID, workerT
 	return false, nil
 }
 
-func (m *MockTopUpOrderRepo) RecordClaimFailure(ctx context.Context, orderID, workerToken, errMsg string) (bool, error) {
+func (m *MockTopUpOrderRepo) RecordClaimFailure(ctx context.Context, orderID, workerToken, errMsg string, backoff time.Duration) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	o, ok := m.orders[orderID]
@@ -283,11 +283,27 @@ func (m *MockTopUpOrderRepo) RecordClaimFailure(ctx context.Context, orderID, wo
 	}
 	if o.Status == domain.StatusCreditProcessing && o.ClaimToken != nil && *o.ClaimToken == workerToken {
 		o.LastError = &errMsg
-		now := time.Now().UTC()
-		o.ClaimUntil = &now
+		retryTime := time.Now().UTC().Add(backoff)
+		o.ClaimUntil = &retryTime
 		return true, nil
 	}
 	return false, nil
+}
+
+func (m *MockTopUpOrderRepo) GetPendingUnconfirmed(ctx context.Context, minAge time.Duration, limit int) ([]*domain.TopUpOrder, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	cutoff := time.Now().UTC().Add(-minAge)
+	var result []*domain.TopUpOrder
+	for _, o := range m.orders {
+		if o.Status == domain.StatusPaymentPending && o.ProviderOrderID != nil && o.CreatedAt.Before(cutoff) && o.ExpiresAt.After(time.Now().UTC()) {
+			result = append(result, o)
+			if len(result) >= limit {
+				break
+			}
+		}
+	}
+	return result, nil
 }
 
 func (m *MockTopUpOrderRepo) TransitionToCreditPending(ctx context.Context, orderID, provider, paymentID string) error {

@@ -1,6 +1,7 @@
 package kafka
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -42,6 +43,12 @@ type routeFunc func(marketID string) chan market.InputEvent
 
 // HandleOrderCommand routes and validates an incoming order command message.
 func HandleOrderCommand(msg kafkago.Message, route routeFunc) (bool, error) {
+	return HandleOrderCommandWithContext(context.Background(), msg, route)
+}
+
+// HandleOrderCommandWithContext routes and validates an incoming order command message,
+// respecting context cancellation when sending to the engine input queue.
+func HandleOrderCommandWithContext(ctx context.Context, msg kafkago.Message, route routeFunc) (bool, error) {
 	var env CommandEnvelope
 	if err := json.Unmarshal(msg.Value, &env); err != nil {
 		return false, fmt.Errorf("unmarshal CommandEnvelope: %w", err)
@@ -118,7 +125,8 @@ func HandleOrderCommand(msg kafkago.Message, route routeFunc) (bool, error) {
 			occurredAt = time.Now().UTC()
 		}
 
-		queue <- market.InputEvent{
+		select {
+		case queue <- market.InputEvent{
 			EventID: eventUUID,
 			Type:    market.EventOrderCreated,
 			OrderCreated: &market.OrderCreatedPayload{
@@ -135,8 +143,11 @@ func HandleOrderCommand(msg kafkago.Message, route routeFunc) (bool, error) {
 			Topic:     msg.Topic,
 			Partition: msg.Partition,
 			Offset:    msg.Offset,
+		}:
+			return true, nil
+		case <-ctx.Done():
+			return false, ctx.Err()
 		}
-		return true, nil
 
 	case "OrderCancelRequested":
 		var p orderCancelPayload
@@ -153,7 +164,8 @@ func HandleOrderCommand(msg kafkago.Message, route routeFunc) (bool, error) {
 			return false, fmt.Errorf("invalid user_id %q: %w", p.UserID, err)
 		}
 
-		queue <- market.InputEvent{
+		select {
+		case queue <- market.InputEvent{
 			EventID: eventUUID,
 			Type:    market.EventOrderCancel,
 			OrderCancel: &market.OrderCancelPayload{
@@ -164,8 +176,11 @@ func HandleOrderCommand(msg kafkago.Message, route routeFunc) (bool, error) {
 			Topic:     msg.Topic,
 			Partition: msg.Partition,
 			Offset:    msg.Offset,
+		}:
+			return true, nil
+		case <-ctx.Done():
+			return false, ctx.Err()
 		}
-		return true, nil
 
 	default:
 		return false, fmt.Errorf("unknown event_type %q", env.EventType)

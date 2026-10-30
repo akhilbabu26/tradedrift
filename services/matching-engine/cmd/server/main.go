@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -20,6 +21,7 @@ import (
 	"tradedrift/platform/postgres"
 	"tradedrift/services/matching-engine/internal/checkpoint"
 	intkafka "tradedrift/services/matching-engine/internal/kafka"
+	"tradedrift/services/matching-engine/internal/lease"
 	"tradedrift/services/matching-engine/internal/market"
 	"tradedrift/services/matching-engine/internal/publisher"
 	"tradedrift/services/matching-engine/internal/recovery"
@@ -55,7 +57,20 @@ func run() error {
 		return fmt.Errorf("validate market configs: %w", err)
 	}
 
-	db, err := pgxpool.New(opCtx, cfg.PostgresDSN)
+	poolCfg, err := pgxpool.ParseConfig(cfg.PostgresDSN)
+	if err != nil {
+		return fmt.Errorf("parse postgres config: %w", err)
+	}
+	// Sizing: Each partition lease checks out 1 dedicated connection for the process lifetime.
+	// We ensure MaxConns provides enough headroom for leases (1 per market) + concurrent transactions.
+	minRequired := int32(len(configs) + 25)
+	if minRequired < 30 {
+		minRequired = 30
+	}
+	poolCfg.MaxConns = minRequired
+	poolCfg.MinConns = 10
+
+	db, err := pgxpool.NewWithConfig(opCtx, poolCfg)
 	if err != nil {
 		return fmt.Errorf("postgres connect: %w", err)
 	}
@@ -65,6 +80,38 @@ func run() error {
 		return fmt.Errorf("postgres ping: %w", err)
 	}
 	log.Println("[server] postgres connected")
+
+	// STAGE 3: Acquire PostgreSQL session advisory lock lease for each partition BEFORE recovery.
+	// Guarantees single-engine ownership: only one Matching Engine instance can own and mutate a partition.
+	leaseMgr := lease.NewPGXPoolLeaseManager(db)
+	partitionLeases := make(map[int]lease.Lease)
+	for _, mc := range configs {
+		l, err := leaseMgr.AcquireLease(opCtx, mc.Partition)
+		if err != nil {
+			for _, held := range partitionLeases {
+				_ = held.Release(context.Background())
+			}
+			return fmt.Errorf("fail-closed: failed to acquire exclusive partition lease for %s (partition %d): %w",
+				mc.MarketID, mc.Partition, err)
+		}
+		partitionLeases[mc.Partition] = l
+		log.Printf("[server] acquired exclusive partition lease for %s (partition %d, lock_id=0x%X)",
+			mc.MarketID, mc.Partition, lease.PartitionLockID(mc.Partition))
+	}
+
+	defer func() {
+		relCtx, relCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer relCancel()
+		for p, l := range partitionLeases {
+			if err := l.Release(relCtx); err != nil {
+				log.Printf("[server] error releasing lease for partition %d: %v", p, err)
+			} else {
+				log.Printf("[server] cleanly released lease for partition %d", p)
+			}
+		}
+	}()
+
+
 
 	// Run database migrations on startup (Issue E & v9.9 Tables setup)
 	migrationDir := os.Getenv("ME_MIGRATIONS_DIR")
@@ -110,9 +157,33 @@ func run() error {
 		log.Printf("[server] registered market: %s", mc.MarketID)
 	}
 
+	// Monitor partition lease liveness in background.
+	// If any lease is lost (e.g. database disconnect), fail-stop immediately and halt all engines.
+	for p, l := range partitionLeases {
+		go func(part int, le lease.Lease) {
+			select {
+			case <-le.Done():
+				log.Printf("[server] FATAL: partition %d lease lost — triggering fail-stop shutdown and halting all engines", part)
+				for _, eng := range manager.All() {
+					eng.TriggerFatalHalt()
+				}
+				opCancel()
+			case <-opCtx.Done():
+			}
+		}(p, l)
+	}
+
 	var engineWg sync.WaitGroup
 	log.Println("[server] starting recovery phase...")
+
+	leaseMap := make(map[int]recovery.Lease, len(partitionLeases))
+	for p, l := range partitionLeases {
+		leaseMap[p] = l
+	}
+	leaseChecker := recovery.NewMapLeaseChecker(leaseMap)
+
 	replayer := recovery.NewReplayer(cfg.KafkaBrokers, cfg.KafkaGroupID, db, rdb, manager)
+	replayer.SetLeaseChecker(leaseChecker)
 	if err := replayer.ReplayAll(opCtx, &engineWg); err != nil {
 		return fmt.Errorf("recovery failed: %w", err)
 	}
@@ -155,7 +226,7 @@ func run() error {
 	}
 	defer pub.Close()
 
-	pubCtx, cancelPub := context.WithCancel(context.Background())
+	pubCtx, cancelPub := context.WithCancel(opCtx)
 	defer cancelPub()
 
 	var isReady atomic.Bool
@@ -164,6 +235,10 @@ func run() error {
 	// Seed initial depth snapshots from authoritative in-memory books to Redis before live intake.
 	// User Requirement #3: If seed fails, ME can continue matching but readiness remains degraded (503).
 	for _, eng := range manager.All() {
+		if eng.Mode() == market.ModeBlocked {
+			log.Printf("[server] market %s is BLOCKED — skipping initial Redis depth seed", eng.MarketID)
+			continue
+		}
 		snap := eng.GetDepth(20)
 		snap.SnapshotAt = time.Now().UTC()
 		if err := pub.SeedDepth(pubCtx, snap); err != nil {
@@ -185,7 +260,28 @@ func run() error {
 		log.Printf("[server] publisher started for market: %s", e.MarketID)
 	}
 
-	httpServer := newHTTPServer(cfg.HTTPPort, manager, &isReady, &isDegraded)
+	orderVerifier := recovery.NewPostgresOrderVerifier(db)
+	settlementVerifier := recovery.NewPostgresSettlementVerifier(db)
+	reconService := recovery.NewReconciliationService(
+		db,
+		manager,
+		leaseChecker,
+		orderVerifier,
+		settlementVerifier,
+		cfg.AdminSecret,
+	)
+
+	appEnv := strings.ToLower(os.Getenv("ENV"))
+	if appEnv == "" {
+		appEnv = strings.ToLower(os.Getenv("APP_ENV"))
+	}
+	if appEnv == "production" || os.Getenv("REQUIRE_ADMIN_SECRET") == "true" {
+		if err := reconService.ValidateDependencies(); err != nil {
+			return fmt.Errorf("reconciliation service dependency validation failed: %w", err)
+		}
+	}
+
+	httpServer := newHTTPServer(cfg.HTTPPort, manager, &isReady, &isDegraded, reconService)
 
 	go func() {
 		log.Printf("[server] health HTTP server listening on %s", cfg.HTTPPort)
@@ -200,9 +296,11 @@ func run() error {
 	}()
 
 	consumer := intkafka.NewConsumer(intkafka.Config{
-		Brokers: cfg.KafkaBrokers,
-		GroupID: cfg.KafkaGroupID,
-		DB:      db,
+		Brokers:      cfg.KafkaBrokers,
+		GroupID:      cfg.KafkaGroupID,
+		DB:           db,
+		LockAcquirer: leaseMgr,
+		Leases:       partitionLeases,
 	}, manager, coord)
 	consumer.FatalCallback = func() {
 		log.Println("[server] consumer initiated fail-stop halt due to fatal malformed command")
@@ -213,7 +311,7 @@ func run() error {
 	}
 	defer consumer.Close()
 
-	consumerCtx, cancelConsumer := context.WithCancel(context.Background())
+	consumerCtx, cancelConsumer := context.WithCancel(opCtx)
 	defer cancelConsumer()
 
 	// Consumer Start takes cancel function for fail-closed graceful shutdown (Issue #10)
@@ -222,7 +320,15 @@ func run() error {
 	}
 	log.Println("[server] kafka consumer started")
 	isReady.Store(true)
-	if isDegraded.Load() {
+	var blockedCount int
+	for _, eng := range manager.All() {
+		if eng.Mode() == market.ModeBlocked {
+			blockedCount++
+		}
+	}
+	if blockedCount > 0 {
+		log.Printf("[server] ⚠ matching engine ready in DEGRADED state (%d market(s) blocked)", blockedCount)
+	} else if isDegraded.Load() {
 		log.Println("[server] ⚠ matching engine ready in DEGRADED state (initial depth seed failed)")
 	} else {
 		log.Println("[server] ✓ all systems live — matching engine ready")
@@ -237,7 +343,11 @@ func run() error {
 
 	log.Println("[server] [shutdown phase 1/4] stopping consumer intake...")
 	cancelConsumer()
-	consumer.Close()
+	if err := consumer.Stop(10 * time.Second); err != nil {
+		log.Printf("[server] FATAL: consumer did not stop cleanly: %v", err)
+		os.Exit(1)
+	}
+	log.Println("[server] ✓ consumer stopped cleanly")
 
 	log.Println("[server] [shutdown phase 2/4] closing engine input queues...")
 	manager.CloseInputQueues()

@@ -1,10 +1,12 @@
 package recovery
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 
 	"tradedrift/services/matching-engine/internal/orderbook"
 
@@ -31,43 +33,77 @@ func (r *Replayer) loadLatestSnapshot(ctx context.Context, marketID string, chec
 	query := `
 		SELECT market_id, sequence, partition, "offset", schema_version, snapshot, checksum FROM market_snapshots
 		WHERE market_id = $1 AND "offset" <= $2
-		ORDER BY "offset" DESC, sequence DESC LIMIT 1`
+		ORDER BY "offset" DESC, sequence DESC LIMIT 10`
 
-	var dbMarketID string
-	var dbSequence int64
-	var dbPartition int
-	var dbOffset int64
-	var dbSchemaVersion int
-	var snapJSON []byte
-	var checksum []byte
-
-	err := r.db.QueryRow(ctx, query, marketID, checkpoint).Scan(
-		&dbMarketID, &dbSequence, &dbPartition, &dbOffset, &dbSchemaVersion, &snapJSON, &checksum,
-	)
+	rows, err := r.db.Query(ctx, query, marketID, checkpoint)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil, nil
+		return nil, nil, fmt.Errorf("query snapshot candidates (market=%s offset<=%d): %w", marketID, checkpoint, err)
+	}
+	defer rows.Close()
+
+	candidateCount := 0
+	var lastErr error
+
+	for rows.Next() {
+		candidateCount++
+		var dbMarketID string
+		var dbSequence int64
+		var dbPartition int
+		var dbOffset int64
+		var dbSchemaVersion int
+		var snapJSON []byte
+		var checksum []byte
+
+		if err := rows.Scan(&dbMarketID, &dbSequence, &dbPartition, &dbOffset, &dbSchemaVersion, &snapJSON, &checksum); err != nil {
+			lastErr = fmt.Errorf("scan snapshot row: %w", err)
+			log.Printf("[recovery] WARNING: skipping unreadable snapshot row candidate for market=%s: %v", marketID, err)
+			continue
 		}
-		return nil, nil, fmt.Errorf("query snapshot (market=%s offset<=%d): %w", marketID, checkpoint, err)
+
+		var snap orderbook.BookSnapshot
+		if err := json.Unmarshal(snapJSON, &snap); err != nil {
+			lastErr = fmt.Errorf("unmarshal snapshot struct: %w", err)
+			log.Printf("[recovery] WARNING: skipping corrupted JSON snapshot candidate for market=%s at offset=%d: %v", marketID, dbOffset, err)
+			continue
+		}
+
+		// Validate DB columns against snapshot payload properties to guard against row corruption
+		if dbMarketID != snap.MarketID ||
+			dbSequence != int64(snap.Sequence) ||
+			dbPartition != snap.Partition ||
+			dbOffset != snap.Offset ||
+			dbSchemaVersion != int(snap.SchemaVersion) {
+			lastErr = fmt.Errorf("snapshot metadata mismatch: DB columns (market=%s, seq=%d, partition=%d, offset=%d, version=%d) do not match JSON snapshot content (market=%s, seq=%d, partition=%d, offset=%d, version=%d)",
+				dbMarketID, dbSequence, dbPartition, dbOffset, dbSchemaVersion,
+				snap.MarketID, snap.Sequence, snap.Partition, snap.Offset, snap.SchemaVersion)
+			log.Printf("[recovery] WARNING: skipping metadata-corrupted snapshot candidate for market=%s at offset=%d: %v", marketID, dbOffset, lastErr)
+			continue
+		}
+
+		// Validate SHA-256 checksum against payload
+		calcCheck, chkErr := orderbook.Checksum(snap)
+		if chkErr != nil || !bytes.Equal(calcCheck, checksum) {
+			lastErr = fmt.Errorf("snapshot checksum validation failed (expected %x, got %x)", checksum, calcCheck)
+			log.Printf("[recovery] WARNING: skipping checksum-corrupted snapshot candidate for market=%s at offset=%d: %v", marketID, dbOffset, lastErr)
+			continue
+		}
+
+		// Successfully validated candidate
+		log.Printf("[recovery] selected valid snapshot candidate for market=%s sequence=%d offset=%d (evaluated %d candidate(s))",
+			marketID, snap.Sequence, snap.Offset, candidateCount)
+		return &snap, checksum, nil
 	}
 
-	var snap orderbook.BookSnapshot
-	if err := json.Unmarshal(snapJSON, &snap); err != nil {
-		return nil, nil, fmt.Errorf("unmarshal snapshot struct: %w", err)
+	if err := rows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("iterate snapshot rows for market %s: %w", marketID, err)
 	}
 
-	// Validate DB columns against snapshot payload properties to guard against row corruption (Issue 5)
-	if dbMarketID != snap.MarketID ||
-		dbSequence != int64(snap.Sequence) ||
-		dbPartition != snap.Partition ||
-		dbOffset != snap.Offset ||
-		dbSchemaVersion != int(snap.SchemaVersion) {
-		return nil, nil, fmt.Errorf("snapshot metadata corruption: DB columns (market=%s, seq=%d, partition=%d, offset=%d, version=%d) do not match JSON snapshot content (market=%s, seq=%d, partition=%d, offset=%d, version=%d)",
-			dbMarketID, dbSequence, dbPartition, dbOffset, dbSchemaVersion,
-			snap.MarketID, snap.Sequence, snap.Partition, snap.Offset, snap.SchemaVersion)
+	if candidateCount > 0 {
+		return nil, nil, fmt.Errorf("FATAL: all %d candidate snapshot(s) for market %s <= checkpoint %d are corrupted or unrecoverable (last error: %v); fail-closed",
+			candidateCount, marketID, checkpoint, lastErr)
 	}
 
-	return &snap, checksum, nil
+	return nil, nil, nil
 }
 
 func (r *Replayer) loadMarketSequence(ctx context.Context, marketID string) (uint64, error) {
@@ -90,10 +126,14 @@ func (r *Replayer) saveMarketSequence(ctx context.Context, marketID string, seq 
 		ON CONFLICT (market_id)
 		DO UPDATE SET
 			sequence   = EXCLUDED.sequence,
-			updated_at = NOW()`
-	_, err := r.db.Exec(ctx, query, marketID, seq)
+			updated_at = NOW()
+		WHERE market_sequences.sequence <= EXCLUDED.sequence`
+	tag, err := r.db.Exec(ctx, query, marketID, seq)
 	if err != nil {
 		return fmt.Errorf("upsert market_sequence (market=%s seq=%d): %w", marketID, seq, err)
+	}
+	if tag.String() != "" && tag.RowsAffected() == 0 {
+		return fmt.Errorf("sequence regression rejected: market %s attempted sequence %d is lower than existing sequence", marketID, seq)
 	}
 	return nil
 }

@@ -114,6 +114,35 @@ func (c *CancelConsumer) ProcessMessage(ctx context.Context, msg kafkago.Message
 		}
 
 		if ev.Status == "INVALID_REQUEST" {
+			if ev.Reason == "market_blocked" || ev.Reason == "market_reconciling" {
+				c.logger.Info("Order rejected due to non-live market; reconciling status based on filled quantity",
+					zap.String("order_id", ev.OrderID),
+					zap.String("market_id", ev.MarketID),
+					zap.String("reason", ev.Reason),
+				)
+				reconciled, err := c.repo.ReconcileAbsentOrder(ctx, ev.OrderID)
+				if err != nil {
+					return fmt.Errorf("reconcile %s market order %s: %w", ev.Reason, ev.OrderID, err)
+				}
+				if reconciled != nil && c.wallet != nil {
+					if err := c.wallet.ReleaseFunds(ctx, ev.OrderID); err != nil {
+						if wallet.IsReservationAlreadyReleased(err) {
+							_ = c.repo.MarkWalletReleaseCompletedByOrderID(ctx, ev.OrderID)
+						} else {
+							c.logger.Warn("Immediate opportunistic wallet release failed for non-live market order; delegated to durable WalletReleaseWorker",
+								zap.String("order_id", ev.OrderID),
+								zap.String("status", string(reconciled.Status)),
+								zap.String("reason", ev.Reason),
+								zap.Error(err),
+							)
+						}
+					} else {
+						_ = c.repo.MarkWalletReleaseCompletedByOrderID(ctx, ev.OrderID)
+					}
+				}
+				return nil
+			}
+
 			c.logger.Warn("Matching engine rejected event due to invalid market routing — ignoring event without DB or wallet mutation",
 				zap.String("order_id", ev.OrderID),
 				zap.String("user_id", ev.UserID),

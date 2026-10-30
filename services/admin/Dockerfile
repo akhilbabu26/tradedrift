@@ -22,7 +22,9 @@ COPY services/controlled-taker/ services/controlled-taker/
 
 WORKDIR /workspace/services/admin
 
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/admin cmd/server/main.go
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/admin cmd/server/main.go
 
 # ─── Stage 2: Minimal Runtime ──────────────────────────────────────────────────
 FROM alpine:3.20

@@ -1,11 +1,33 @@
-.git
+# Git and IDE
+.git/
 .gitignore
-.vscode
+.gitattributes
+.vscode/
+.idea/
+
+# Environment and secrets
+.env
+.env.*
+*.env
+**/.env
+**/.env.*
+**/*.env
+!.env.example
+
+# Binaries and build artifacts
 *.exe
 *.test
 *.log
+*.zip
 tmp/
 bin/
+
+# Frontend builds
 frontend/node_modules/
 frontend/dist/
-*.zip
+frontend/.next/
+frontend/coverage/
+
+# Documentation and non-runtime directories
+docs/
+monitoring/

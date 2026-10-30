@@ -40,7 +40,8 @@ type TopUpOrderRepository interface {
 	ExpireOrder(ctx context.Context, orderID string) error
 	ClaimBatchForCredit(ctx context.Context, workerToken string, batchSize int, leaseDuration time.Duration) ([]*domain.TopUpOrder, error)
 	CompleteOrder(ctx context.Context, orderID, workerToken string) (bool, error)
-	RecordClaimFailure(ctx context.Context, orderID, workerToken, errMsg string) (bool, error)
+	RecordClaimFailure(ctx context.Context, orderID, workerToken, errMsg string, backoff time.Duration) (bool, error)
+	GetPendingUnconfirmed(ctx context.Context, minAge time.Duration, limit int) ([]*domain.TopUpOrder, error)
 	TransitionToCreditPending(ctx context.Context, orderID, provider, paymentID string) error
 	TransitionToRefundRequired(ctx context.Context, orderID, provider, paymentID, reason string) error
 	ListByUserID(ctx context.Context, userID string, limit int) ([]*domain.TopUpOrder, error)

@@ -132,12 +132,16 @@ func (h *Handler) GetMarketsOverview(w http.ResponseWriter, r *http.Request) {
 	resolutionStr := r.URL.Query().Get("resolution")
 	limitStr := r.URL.Query().Get("limit")
 
-	resolution := marketv1.CandleResolution_CANDLE_RESOLUTION_1H
+	resolution := marketv1.CandleResolution_CANDLE_RESOLUTION_1M
+	var defaultLimit int32 = 30
 	if resolutionStr != "" {
 		resolution = parseResolution(resolutionStr)
+		if resolution == marketv1.CandleResolution_CANDLE_RESOLUTION_1H || resolution == marketv1.CandleResolution_CANDLE_RESOLUTION_1D {
+			defaultLimit = 168
+		}
 	}
 
-	var limit int32 = 168
+	limit := defaultLimit
 	if limitStr != "" {
 		if l, err := strconv.Atoi(limitStr); err == nil && l > 0 {
 			limit = int32(l)

@@ -3,6 +3,7 @@ package kafka_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -224,7 +225,7 @@ func (db *mockConsumerDB) QueryRow(ctx context.Context, sql string, args ...any)
 	if val, ok := db.checkpoints[key]; ok {
 		return &mockpgxRow{val: val}
 	}
-	return &mockpgxRow{err: fmt.Errorf("no row")}
+	return &mockpgxRow{err: pgx.ErrNoRows}
 }
 
 type mockOffsetTracker struct{}
@@ -492,5 +493,138 @@ func TestNewConsumer_RegistersCommitterWithCoordinator(t *testing.T) {
 		t.Fatal("expected non-nil registered committer on coordinator")
 	}
 }
+
+type errConsumerDB struct {
+	err error
+}
+
+func (db *errConsumerDB) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return &mockpgxRow{err: db.err}
+}
+
+func TestConsumer_SeekToPostgresCheckpoints_DatabaseError_FailsClosed(t *testing.T) {
+	// DB returns generic network or timeout failure (not pgx.ErrNoRows)
+	db := &errConsumerDB{
+		err: fmt.Errorf("connection refused: postgresql is down"),
+	}
+
+	manager := market.NewMarketManager()
+	tracker := &mockOffsetTracker{}
+	consumer := kafkapkg.NewConsumer(kafkapkg.Config{
+		Brokers: []string{"localhost:9092"},
+		GroupID: "test-group",
+		DB:      db,
+	}, manager, tracker)
+
+	var commitCalled bool
+	consumer.OverrideDiscoveryAndCommit(
+		func(topic string) ([]int, error) {
+			return []int{0}, nil
+		},
+		func(ctx context.Context, brokers []string, topic string, groupID string, partition int, offset int64) error {
+			commitCalled = true
+			return nil
+		},
+	)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := consumer.Start(ctx, func() {})
+	if err == nil {
+		t.Fatal("expected consumer.Start to fail closed on database query error, got nil")
+	}
+	if commitCalled {
+		t.Fatal("expected no offset commits on Kafka broker when database query failed")
+	}
+}
+
+func TestConsumer_Stop_WaitsForConsumeExit(t *testing.T) {
+	manager := market.NewMarketManager()
+	tracker := &mockOffsetTracker{}
+	consumer := kafkapkg.NewConsumer(kafkapkg.Config{
+		Brokers: []string{"localhost:9092"},
+		GroupID: "test-group",
+	}, manager, tracker)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := consumer.Start(ctx, cancel); err != nil {
+		t.Fatalf("unexpected Start error: %v", err)
+	}
+
+	// Stop must wait and exit cleanly within timeout
+	if err := consumer.Stop(2 * time.Second); err != nil {
+		t.Fatalf("consumer.Stop failed: %v", err)
+	}
+}
+
+func TestConsumer_Shutdown_DuringBlockedQueueSend(t *testing.T) {
+	manager := market.NewMarketManager()
+	engine := manager.Add(market.MarketConfig{
+		MarketID:  "BTC-USDT",
+		Partition: 0,
+	})
+
+	// Fill engine's InputQueue completely so any further send blocks
+	for len(engine.InputQueue) < cap(engine.InputQueue) {
+		engine.InputQueue <- market.InputEvent{Type: market.EventRecoveryBarrier}
+	}
+
+	consumerCtx, consumerCancel := context.WithCancel(context.Background())
+
+	msg := kafka.Message{
+		Topic:     kafkapkg.TopicOrderCommands,
+		Partition: 0,
+		Offset:    100,
+		Key:       []byte("BTC-USDT"),
+		Value: []byte(`{
+			"event_id": "00000000-0000-0000-0000-000000000001",
+			"event_type": "OrderCreated",
+			"event_version": 1,
+			"market_id": "BTC-USDT",
+			"payload": {
+				"order_id": "00000000-0000-0000-0000-000000000002",
+				"user_id": "00000000-0000-0000-0000-000000000003",
+				"side": "BUY",
+				"order_type": "LIMIT",
+				"price": "50000",
+				"quantity": "1"
+			}
+		}`),
+	}
+
+	sendDone := make(chan struct{})
+	var sendErr error
+	go func() {
+		defer close(sendDone)
+		_, sendErr = kafkapkg.HandleOrderCommandWithContext(consumerCtx, msg, func(marketID string) chan market.InputEvent {
+			return engine.InputQueue
+		})
+	}()
+
+	// Verify send is currently blocked
+	select {
+	case <-sendDone:
+		t.Fatal("expected send to block on full InputQueue")
+	case <-time.After(50 * time.Millisecond):
+		// Expected: still blocked
+	}
+
+	// Cancel context (as occurs during consumer shutdown)
+	consumerCancel()
+
+	// Blocked send must unblock immediately with context.Canceled error
+	select {
+	case <-sendDone:
+		if !errors.Is(sendErr, context.Canceled) {
+			t.Fatalf("expected context.Canceled error, got: %v", sendErr)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("blocked send did not exit upon context cancellation")
+	}
+}
+
 
 

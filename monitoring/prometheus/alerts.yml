@@ -196,4 +196,36 @@ groups:
           summary: "Liquidity Engine Quantity Invariant Violation"
           description: "An order remaining quantity exceeded its original quantity for market {{ $labels.market_id }}, indicating unexpected external state mutation."
 
+  - name: tradedrift-matching-engine-alerts
+    rules:
+      - alert: MatchingEngineServiceDown
+        expr: up{job="matching-engine"} == 0 or absent(up{job="matching-engine"}) == 1
+        for: 1m
+        labels:
+          severity: critical
+          service: matching-engine
+        annotations:
+          summary: "TradeDrift Matching Engine Service is Down"
+          description: "Prometheus cannot scrape TradeDrift Matching Engine at matching-engine:8082."
+
+      - alert: MatchingEngineDepthHeartbeatErrors
+        expr: increase(matching_engine_depth_heartbeat_errors_total[5m]) > 5
+        for: 1m
+        labels:
+          severity: warning
+          service: matching-engine
+        annotations:
+          summary: "Matching Engine Depth Heartbeat Errors Spike"
+          description: "Matching Engine is experiencing frequent Redis depth heartbeat push errors for market {{ $labels.market_id }}."
+
+      - alert: MatchingEngineDepthHeartbeatStale
+        expr: (time() - matching_engine_depth_heartbeat_last_timestamp_seconds) > 30
+        for: 1m
+        labels:
+          severity: critical
+          service: matching-engine
+        annotations:
+          summary: "Matching Engine Depth Heartbeat Stale (> 30s)"
+          description: "Matching Engine has not pushed depth heartbeats for market {{ $labels.market_id }} in over 30 seconds."
+
 

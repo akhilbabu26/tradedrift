@@ -110,7 +110,8 @@ services:
       POSTGRES_DSN: postgres://postgres:123@host.docker.internal:5432/tradedrift_topup?sslmode=disable
       WALLET_GRPC_ADDR: wallet:50052
       DAILY_LIMIT_INR: "10"
-      WEBHOOK_SECRET: topup_mock_secret_key_12345
+      WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-tradedrift_secret_12345}
+      RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:-tradedrift_secret_12345}
       PAYMENT_PROVIDER: ${PAYMENT_PROVIDER:-MOCK}
       RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:-}
       RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:-}
@@ -174,6 +175,9 @@ services:
       MM_USER_ID: "00000000-0000-0000-0000-000000000001"
       MM_REFERENCE_MAX_DEVIATION_PERCENT: "0.10"
       REFPRICE_ANCHOR_MAX_AGE: "60s"
+      BTC_PARTITION: 0
+      ETH_PARTITION: 1
+      SOL_PARTITION: 2
       LOG_LEVEL: info
     ports:
       - "50053:50053"
@@ -226,6 +230,7 @@ services:
       BTC_PARTITION: 0
       ETH_PARTITION: 1
       SOL_PARTITION: 2
+      RECONCILIATION_ADMIN_SECRET: ${RECONCILIATION_ADMIN_SECRET:-super-secret-reconciliation-admin-token-32bytes}
       LOG_LEVEL: info
     ports:
       - "8082:8082"
@@ -550,3 +555,4 @@ services:
       - "3000:3000"
     depends_on:
       - prometheus
+

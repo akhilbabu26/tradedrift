@@ -10,6 +10,8 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthgrpc "google.golang.org/grpc/health/grpc_health_v1"
 
 	marketv1 "tradedrift/platform/api/gen/market/v1"
 	"tradedrift/platform/config"
@@ -113,17 +115,22 @@ func main() {
 	consumer := marketkafka.NewConsumer(brokers, cfg.KafkaGroupID, cfg.KafkaTopic, marketSvc, appLogger)
 	go consumer.Start(ctx)
 
-	// 6. Wire gRPC Server & Handler
+	// 7. Wire gRPC Server & Handler
 	grpcHandler := handler.NewGRPCHandler(marketSvc, appLogger)
 	grpcServer := grpc.NewServer()
 	marketv1.RegisterMarketServiceServer(grpcServer, grpcHandler)
+
+	healthServer := health.NewServer()
+	healthgrpc.RegisterHealthServer(grpcServer, healthServer)
+	healthServer.SetServingStatus("", healthgrpc.HealthCheckResponse_SERVING)
+	healthServer.SetServingStatus("tradedrift.market.v1.MarketService", healthgrpc.HealthCheckResponse_SERVING)
 
 	lis, err := net.Listen("tcp", cfg.GRPCPort)
 	if err != nil {
 		appLogger.Fatal("Failed to bind gRPC listener", zap.String("port", cfg.GRPCPort), zap.Error(err))
 	}
 
-	// 7. Start gRPC Listener with Error Channel
+	// 8. Start gRPC Listener with Error Channel
 	serverErrCh := make(chan error, 1)
 	go func() {
 		appLogger.Info("Market Service gRPC listening", zap.String("port", cfg.GRPCPort))
@@ -132,7 +139,7 @@ func main() {
 		}
 	}()
 
-		// 8. Wait for shutdown signal or unexpected server failure
+	// 9. Wait for shutdown signal or unexpected server failure
 	select {
 	case <-ctx.Done():
 		appLogger.Info("Shutdown signal received, gracefully stopping Market Service...")
@@ -141,8 +148,9 @@ func main() {
 		stop() // Explicitly cancel context to stop the Kafka consumer
 	}
 
-
-	// 9. Explicit graceful shutdown lifecycle
+	// 10. Explicit graceful shutdown lifecycle
+	healthServer.SetServingStatus("", healthgrpc.HealthCheckResponse_NOT_SERVING)
+	healthServer.SetServingStatus("tradedrift.market.v1.MarketService", healthgrpc.HealthCheckResponse_NOT_SERVING)
 	grpcServer.GracefulStop()
 
 	if err := consumer.Close(); err != nil {

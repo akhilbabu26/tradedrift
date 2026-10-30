@@ -109,9 +109,11 @@ export const marketApi = {
   },
 
   // GET /api/v1/markets/overview — all markets enriched with ticker + candle data
-  getMarketsOverview: async (): Promise<MarketOverview[]> => {
-    apiLog('GET /api/v1/markets/overview')
-    const res = await client.get<{ markets: MarketOverview[] }>('/api/v1/markets/overview')
+  getMarketsOverview: async (resolution = '1m', limit = 30): Promise<MarketOverview[]> => {
+    apiLog(`GET /api/v1/markets/overview (resolution=${resolution}, limit=${limit})`)
+    const res = await client.get<{ markets: MarketOverview[] }>('/api/v1/markets/overview', {
+      params: { resolution, limit },
+    })
     return res.data?.markets || []
   },
 

@@ -33,6 +33,7 @@ echo "[kafka-init] Kafka is ready."
 create_topic() {
   NAME=$1
   PARTITIONS=$2
+  shift 2 || true
   echo "[kafka-init] Creating topic: ${NAME} (partitions=${PARTITIONS})"
   /opt/kafka/bin/kafka-topics.sh \
     --bootstrap-server "${KAFKA_ADDR}" \
@@ -40,13 +41,24 @@ create_topic() {
     --if-not-exists \
     --topic "${NAME}" \
     --partitions "${PARTITIONS}" \
-    --replication-factor 1
+    --replication-factor 1 \
+    "$@"
 }
 
 # ── Business Topics (3 partitions) ────────────────────────────────────────────
 # orders.commands      : Matching Engine consumes order placement/cancel commands
 #                        Partitioned by market (BTC=0, ETH=1, SOL=2)
-create_topic "orders.commands"          3
+#                        Configured with retention.ms=-1 so command history needed for
+#                        event-sourced matching engine replay is never prematurely deleted.
+create_topic "orders.commands"          3 --config retention.ms=-1
+
+# Ensure existing orders.commands topic also has retention.ms=-1 applied
+/opt/kafka/bin/kafka-configs.sh \
+  --bootstrap-server "${KAFKA_ADDR}" \
+  --alter \
+  --entity-type topics \
+  --entity-name "orders.commands" \
+  --add-config retention.ms=-1 > /dev/null 2>&1 || true
 
 # orders.cancelled.v1  : Order Service publishes cancel confirmations
 create_topic "orders.cancelled.v1"      3

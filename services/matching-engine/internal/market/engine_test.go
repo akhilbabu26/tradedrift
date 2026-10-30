@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -1304,6 +1306,262 @@ func TestMarketMaker_UserIDConsistency_WithCancelOwnership(t *testing.T) {
 	emptyDepth := engine.GetDepth(10)
 	if len(emptyDepth.Bids) != 0 {
 		t.Fatalf("expected 0 bid levels after cancel, got %d", len(emptyDepth.Bids))
+	}
+}
+
+func TestEngine_ModeBlocked_TradingIsolationAndTransitions(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	config := market.MarketConfig{
+		MarketID: "ETH-USDT",
+		TickSize: decimal.RequireFromString("0.01"),
+		LotSize:  decimal.RequireFromString("0.001"),
+	}
+	engine := market.NewMarketEngine(config)
+	if engine.Mode() != market.ModeRecovery {
+		t.Fatalf("expected initial mode ModeRecovery, got %v", engine.Mode())
+	}
+
+	// 1. Transition to ModeBlocked
+	blockErr := errors.New("retention gap at offset 43562")
+	engine.SetBlocked(blockErr)
+
+	if !engine.IsBlocked() {
+		t.Fatal("expected IsBlocked() to be true")
+	}
+	if engine.Mode() != market.ModeBlocked {
+		t.Fatalf("expected ModeBlocked, got %v", engine.Mode())
+	}
+	if engine.BlockedReason() != blockErr {
+		t.Fatalf("expected blocked reason %v, got %v", blockErr, engine.BlockedReason())
+	}
+
+	// Invariant: Snapshot reflects BLOCKED state and null orders
+	snap := engine.GetSnapshot()
+	if snap == nil || snap.State != "BLOCKED" {
+		t.Fatalf("expected snapshot state BLOCKED, got %v", snap)
+	}
+	if snap.Orders != nil {
+		t.Fatalf("expected nil orders in BLOCKED snapshot, got %v", snap.Orders)
+	}
+
+	// 2. Invariant: Transition from ModeBlocked to ModeLive is strictly prohibited
+	errLive := engine.SetLive()
+	if errLive == nil {
+		t.Fatal("expected SetLive() on ModeBlocked engine to fail, but it returned nil")
+	}
+	if engine.Mode() != market.ModeBlocked {
+		t.Fatalf("engine mode must remain ModeBlocked after failed SetLive(), got %v", engine.Mode())
+	}
+
+	go engine.Run(ctx)
+
+	// 3. Invariant: Order intake in ModeBlocked is rejected without book mutation
+	orderID := uuid.New()
+	userID := uuid.New()
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCreated,
+		OrderCreated: &market.OrderCreatedPayload{
+			OrderID:   orderID,
+			UserID:    userID,
+			MarketID:  "ETH-USDT",
+			Side:      orderbook.SideBuy,
+			OrderType: orderbook.OrderTypeLimit,
+			Price:     decimal.RequireFromString("2000.00"),
+			Quantity:  decimal.RequireFromString("1.500"),
+		},
+		Topic:  "orders.commands",
+		Offset: 10,
+	}
+
+	resOrder := <-engine.OutputQueue
+	if resOrder.CancelResult == nil {
+		t.Fatal("expected CancelResult for order sent to ModeBlocked engine")
+	}
+	if resOrder.CancelResult.Reason != "market_blocked" {
+		t.Errorf("expected reason 'market_blocked', got %q", resOrder.CancelResult.Reason)
+	}
+	if resOrder.CancelResult.CancelStatus != orderbook.CancelStatusInvalidRequest {
+		t.Errorf("expected CancelStatusInvalidRequest, got %q", resOrder.CancelResult.CancelStatus)
+	}
+	if len(resOrder.Fills) != 0 {
+		t.Errorf("expected 0 fills on blocked market, got %d", len(resOrder.Fills))
+	}
+
+	// Verify order was NOT inserted into the book
+	depth := engine.GetDepth(10)
+	if len(depth.Bids) != 0 || len(depth.Asks) != 0 {
+		t.Fatalf("expected empty book, got bids=%d asks=%d", len(depth.Bids), len(depth.Asks))
+	}
+	if engine.GetSequence() != 0 {
+		t.Fatalf("expected sequence 0 (unchanged), got %d", engine.GetSequence())
+	}
+
+	// 4. Invariant: Order cancel in ModeBlocked is rejected without book mutation
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCancel,
+		OrderCancel: &market.OrderCancelPayload{
+			OrderID:  orderID,
+			UserID:   userID,
+			MarketID: "ETH-USDT",
+		},
+		Topic:  "orders.commands",
+		Offset: 11,
+	}
+
+	resCancel := <-engine.OutputQueue
+	if resCancel.CancelResult == nil {
+		t.Fatal("expected CancelResult for cancel sent to ModeBlocked engine")
+	}
+	if resCancel.CancelResult.Reason != "market_blocked" {
+		t.Errorf("expected reason 'market_blocked', got %q", resCancel.CancelResult.Reason)
+	}
+	if resCancel.CancelResult.CancelStatus != orderbook.CancelStatusInvalidRequest {
+		t.Errorf("expected CancelStatusInvalidRequest, got %q", resCancel.CancelResult.CancelStatus)
+	}
+}
+
+func TestEngine_AtomicModeTransitions_ReconcilingAndFatalHaltGuards(t *testing.T) {
+	cfg := market.MarketConfig{
+		MarketID: "ETH-USDT",
+		TickSize: decimal.NewFromFloat(0.01),
+		LotSize:  decimal.NewFromFloat(0.001),
+	}
+
+	// 1. Normal transition: ModeRecovery -> ModeLive
+	e1 := market.NewMarketEngine(cfg)
+	if e1.Mode() != market.ModeRecovery {
+		t.Fatalf("expected initial ModeRecovery, got %v", e1.Mode())
+	}
+	if err := e1.SetLive(); err != nil {
+		t.Fatalf("expected SetLive to succeed from ModeRecovery, got: %v", err)
+	}
+	if e1.Mode() != market.ModeLive {
+		t.Fatalf("expected ModeLive, got %v", e1.Mode())
+	}
+	// Redundant SetLive fails
+	if err := e1.SetLive(); err == nil {
+		t.Fatal("expected redundant SetLive to fail when already ModeLive")
+	}
+
+	// 2. Fatal halt guard: cannot transition to Live if halted
+	e2 := market.NewMarketEngine(cfg)
+	e2.TriggerFatalHalt()
+	if err := e2.SetLive(); err == nil {
+		t.Fatal("expected SetLive to fail on fatally halted engine")
+	}
+	if err := e2.SetReconciling("test"); err == nil {
+		t.Fatal("expected SetReconciling to fail on fatally halted engine")
+	}
+
+	// 3. Reset workflow: ModeRecovery -> ModeReconciling -> ModeLive (via ApproveReconciliation)
+	e3 := market.NewMarketEngine(cfg)
+	if err := e3.SetReconciling("empty-book reset completed"); err != nil {
+		t.Fatalf("expected SetReconciling to succeed, got: %v", err)
+	}
+	if !e3.IsReconciling() || e3.Mode() != market.ModeReconciling {
+		t.Fatalf("expected ModeReconciling, got %v", e3.Mode())
+	}
+	snap := e3.GetSnapshot()
+	if snap == nil || snap.State != "RECONCILING" {
+		t.Fatalf("expected snapshot state RECONCILING, got %v", snap)
+	}
+
+	// SetLive directly from ModeReconciling is prohibited
+	if err := e3.SetLive(); err == nil {
+		t.Fatal("expected SetLive() from ModeReconciling to fail without ApproveReconciliation")
+	}
+
+	// ApproveReconciliation succeeds
+	if err := e3.ApproveReconciliation(); err != nil {
+		t.Fatalf("expected ApproveReconciliation to succeed, got: %v", err)
+	}
+	if e3.Mode() != market.ModeLive {
+		t.Fatalf("expected ModeLive after ApproveReconciliation, got %v", e3.Mode())
+	}
+
+	// 4. ModeBlocked is terminal
+	e4 := market.NewMarketEngine(cfg)
+	e4.SetBlocked(errors.New("fatal recovery error"))
+	if !e4.IsBlocked() {
+		t.Fatal("expected engine to be blocked")
+	}
+	if err := e4.SetLive(); err == nil {
+		t.Fatal("expected SetLive on blocked engine to fail")
+	}
+	if err := e4.SetReconciling("test"); err == nil {
+		t.Fatal("expected SetReconciling on blocked engine to fail")
+	}
+	if err := e4.ApproveReconciliation(); err == nil {
+		t.Fatal("expected ApproveReconciliation on blocked engine to fail")
+	}
+
+	// 5. Concurrent SetBlocked vs SetLive
+	for i := 0; i < 50; i++ {
+		eConcurrent := market.NewMarketEngine(cfg)
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			eConcurrent.SetBlocked(errors.New("concurrent block"))
+		}()
+		go func() {
+			defer wg.Done()
+			_ = eConcurrent.SetLive()
+		}()
+		wg.Wait()
+
+		// If it ended up blocked, SetLive must not revive it
+		if eConcurrent.IsBlocked() {
+			if err := eConcurrent.SetLive(); err == nil {
+				t.Fatal("concurrent race test: SetLive revived blocked engine")
+			}
+		}
+	}
+}
+
+func TestEngine_ModeReconciling_RejectsIncomingCommands(t *testing.T) {
+	cfg := market.MarketConfig{
+		MarketID: "ETH-USDT",
+		TickSize: decimal.NewFromFloat(0.01),
+		LotSize:  decimal.NewFromFloat(0.001),
+	}
+	engine := market.NewMarketEngine(cfg)
+	if err := engine.SetReconciling("awaiting order service reconciliation"); err != nil {
+		t.Fatalf("failed to transition to reconciling: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go engine.Run(ctx)
+
+	orderID := uuid.New()
+	userID := uuid.New()
+	engine.InputQueue <- market.InputEvent{
+		Type: market.EventOrderCreated,
+		OrderCreated: &market.OrderCreatedPayload{
+			OrderID:   orderID,
+			UserID:    userID,
+			MarketID:  "ETH-USDT",
+			Side:      orderbook.SideBuy,
+			Price:     decimal.NewFromInt(2000),
+			Quantity:  decimal.NewFromInt(1),
+			OrderType: orderbook.OrderTypeLimit,
+		},
+		Topic:  "orders.commands",
+		Offset: 10,
+	}
+
+	res := <-engine.OutputQueue
+	if res.CancelResult == nil {
+		t.Fatal("expected CancelResult for order sent to ModeReconciling engine")
+	}
+	if res.CancelResult.Reason != "market_reconciling" {
+		t.Errorf("expected reason 'market_reconciling', got %q", res.CancelResult.Reason)
+	}
+	if res.CancelResult.CancelStatus != orderbook.CancelStatusInvalidRequest {
+		t.Errorf("expected CancelStatusInvalidRequest, got %q", res.CancelResult.CancelStatus)
 	}
 }
 

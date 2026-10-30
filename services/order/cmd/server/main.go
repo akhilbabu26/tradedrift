@@ -11,6 +11,8 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthgrpc "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/reflection"
 
 	"github.com/redis/go-redis/v9"
@@ -139,12 +141,19 @@ func main() {
 	orderv1.RegisterOrderServiceServer(grpcServer, grpcHandler)
 	reflection.Register(grpcServer) // Enable gRPC Server Reflection for Postman / gRPC tools
 
+	healthServer := health.NewServer()
+	healthgrpc.RegisterHealthServer(grpcServer, healthServer)
+	healthServer.SetServingStatus("", healthgrpc.HealthCheckResponse_SERVING)
+	healthServer.SetServingStatus("tradedrift.order.v1.OrderService", healthgrpc.HealthCheckResponse_SERVING)
+
 	// 7. Graceful Shutdown Signal Trap (gRPC GracefulStop -> Background Workers Stop -> Cleanup)
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		<-sigChan
 		appLogger.Info("Shutting down Order Service gracefully...")
+		healthServer.SetServingStatus("", healthgrpc.HealthCheckResponse_NOT_SERVING)
+		healthServer.SetServingStatus("tradedrift.order.v1.OrderService", healthgrpc.HealthCheckResponse_NOT_SERVING)
 
 		// Step A: Stop accepting new RPCs & drain active requests
 		stopped := make(chan struct{})

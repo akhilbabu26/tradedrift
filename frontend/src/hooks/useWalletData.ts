@@ -367,8 +367,8 @@ export function useWalletData() {
           orderId: order.topupId,
           amountInr: order.inrAmount,
           usdtCredited: `+${order.usdtAmount || '0.00'} USDT`,
-          status: 'Completed',
-          paymentMode: 'UPI / Simulator',
+          status: order.provider === 'RAZORPAY' ? 'Pending' : 'Completed',
+          paymentMode: order.provider === 'RAZORPAY' ? 'Razorpay' : 'UPI / Simulator',
           date: `${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`,
         }
         setTopUpHistory((prev) => {
@@ -412,20 +412,55 @@ export function useWalletData() {
             theme: {
               color: '#10b981',
             },
-            handler: function () {
-              toast.success('Payment completed! Crediting USDT to wallet...')
-              // Automatically poll to reflect backend webhook receipt and wallet reconciliation
-              const pollDelays = [1200, 2500, 4500]
-              pollDelays.forEach((delay) => {
-                setTimeout(async () => {
+            handler: async function (response: any) {
+              const verifyToastId = toast.loading('Payment received. Verifying with server...')
+              try {
+                await topupApi.verifyTopUp({
+                  topupId: order.topupId,
+                  razorpayOrderId: response.razorpay_order_id,
+                  razorpayPaymentId: response.razorpay_payment_id,
+                  razorpaySignature: response.razorpay_signature,
+                })
+
+                toast.success('Payment verified! Crediting USDT to your wallet...', { id: verifyToastId })
+
+                // Update transaction in local history
+                setTopUpHistory((prev) => {
+                  const updated = prev.map((item) =>
+                    item.id === order.topupId ? { ...item, status: 'Completed' as const } : item
+                  )
                   try {
-                    await loadData()
-                    await useWalletStore.getState().invalidateBalances()
-                  } catch (e) {
-                    console.warn('Auto-refresh wallet failed:', e)
-                  }
-                }, delay)
-              })
+                    localStorage.setItem(TOPUP_STORAGE_KEY, JSON.stringify(updated))
+                  } catch { }
+                  return updated
+                })
+
+                // Refresh daily usage
+                try {
+                  const freshUsage = await topupApi.getDailyUsage()
+                  if (freshUsage) setDailyUsage(freshUsage)
+                } catch { }
+
+                // Immediate and staggered wallet refresh to reflect reconciler deposit
+                await loadData()
+                await useWalletStore.getState().invalidateBalances()
+
+                const pollDelays = [800, 1800, 3500]
+                pollDelays.forEach((delay) => {
+                  setTimeout(async () => {
+                    try {
+                      await loadData()
+                      await useWalletStore.getState().invalidateBalances()
+                    } catch (e) {
+                      console.warn('Auto-refresh wallet failed:', e)
+                    }
+                  }, delay)
+                })
+              } catch (verifyErr: any) {
+                const errMsg = extractApiError(verifyErr)
+                toast.error(`Verification error: ${errMsg}`, { id: verifyToastId })
+                console.error('Checkout verification failed:', verifyErr)
+              }
             },
             modal: {
               ondismiss: function () {

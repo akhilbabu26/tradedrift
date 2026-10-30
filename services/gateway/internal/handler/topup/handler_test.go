@@ -96,3 +96,35 @@ func TestTopUpProxy_UpstreamUnavailable(t *testing.T) {
 		t.Fatal("expected error body, got empty")
 	}
 }
+
+func TestTopUpProxy_StripsUpstreamCORSHeaders(t *testing.T) {
+	// Upstream server that emits Access-Control-Allow-Origin
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:5173")
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"usage":1}`))
+	}))
+	defer upstream.Close()
+
+	targetURL, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatalf("failed to parse upstream URL: %v", err)
+	}
+
+	logger := zap.NewNop()
+	proxyHandler := topup.NewHandler(targetURL, logger)
+
+	// Direct proxy call: verify proxy.ModifyResponse stripped the upstream CORS header
+	req := httptest.NewRequest("GET", "/api/v1/topups/daily-usage", nil)
+	rr := httptest.NewRecorder()
+	proxyHandler.Proxy(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rr.Code)
+	}
+	if origin := rr.Header().Get("Access-Control-Allow-Origin"); origin != "" {
+		t.Fatalf("expected upstream Access-Control-Allow-Origin to be stripped by proxy, got '%s'", origin)
+	}
+}
+

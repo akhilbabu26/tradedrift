@@ -12,6 +12,8 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthgrpc "google.golang.org/grpc/health/grpc_health_v1"
 
 	walletv1 "tradedrift/platform/api/gen/wallet/v1"
 	"tradedrift/platform/config"
@@ -38,10 +40,17 @@ func main() {
 	appLogger.Info("Starting Wallet Service...")
 
 	// 2. Config
-	dbDSN := config.GetEnv("WALLET_POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/tradedrift?sslmode=disable")
+	dbDSN, err := config.GetDSN("WALLET_POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/tradedrift?sslmode=disable")
+	if err != nil {
+		appLogger.Fatal("WALLET_POSTGRES_DSN configuration validation failed", zap.Error(err))
+	}
 	grpcPort := config.GetEnv("WALLET_PORT", ":50052")
 	migrationDir := config.GetEnv("WALLET_MIGRATIONS_DIR", "services/wallet/migration")
-	kafkaBrokers := parseBrokers(config.GetEnv("KAFKA_BROKERS", "localhost:9092"))
+	rawBrokers, err := config.GetAddress("KAFKA_BROKERS", "localhost:9092")
+	if err != nil {
+		appLogger.Fatal("KAFKA_BROKERS configuration validation failed", zap.Error(err))
+	}
+	kafkaBrokers := parseBrokers(rawBrokers)
 	kafkaTopicTradeSettled := config.GetEnv("KAFKA_TOPIC_TRADE_SETTLED", "trades.settled.v1")
 	kafkaTopicPortfolioUserTrades := config.GetEnv("KAFKA_TOPIC_PORTFOLIO_USER_TRADES", "portfolio.user.trades.v1")
 
@@ -88,6 +97,11 @@ func main() {
 	grpcServer := grpc.NewServer()
 	walletv1.RegisterWalletServiceServer(grpcServer, grpcHandler)
 
+	healthServer := health.NewServer()
+	healthgrpc.RegisterHealthServer(grpcServer, healthServer)
+	healthServer.SetServingStatus("", healthgrpc.HealthCheckResponse_SERVING)
+	healthServer.SetServingStatus("tradedrift.wallet.v1.WalletService", healthgrpc.HealthCheckResponse_SERVING)
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -131,6 +145,8 @@ func main() {
 	// 9. Block until shutdown signal
 	<-ctx.Done()
 	appLogger.Info("Shutdown signal received, stopping Wallet Service...")
+	healthServer.SetServingStatus("", healthgrpc.HealthCheckResponse_NOT_SERVING)
+	healthServer.SetServingStatus("tradedrift.wallet.v1.WalletService", healthgrpc.HealthCheckResponse_NOT_SERVING)
 
 	// GracefulStop finishes in-flight gRPC calls before returning.
 	grpcServer.GracefulStop()

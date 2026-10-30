@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strings"
 
 	"go.uber.org/zap"
 
@@ -35,6 +36,17 @@ func NewHandler(targetURL *url.URL, log *zap.Logger) *Handler {
 			// Strip any untrusted/spoofed X-User-ID header from incoming caller
 			req.Header.Del("X-User-ID")
 		}
+	}
+
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		// Strip any upstream CORS headers so the Gateway remains the single public CORS authority
+		// and prevents duplicate header values (e.g. Access-Control-Allow-Origin).
+		for k := range resp.Header {
+			if strings.HasPrefix(strings.ToLower(k), "access-control-") {
+				resp.Header.Del(k)
+			}
+		}
+		return nil
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {

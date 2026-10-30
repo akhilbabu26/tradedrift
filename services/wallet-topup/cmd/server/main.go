@@ -113,6 +113,8 @@ func main() {
 			50,
 			60*time.Second,
 		)
+		reconciler.SetProviderReconciler(txManager, activeProvider, cfg.DailyLimitINR)
+		topupService.SetReconciler(reconciler)
 		reconciler.Start(ctx)
 		defer reconciler.Stop()
 	}

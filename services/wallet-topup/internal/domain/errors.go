@@ -16,7 +16,11 @@ var (
 	ErrMissingIdempotency   = errors.New("X-Idempotency-Key header is required")
 	ErrUnauthorized         = errors.New("unauthorized")
 	ErrProviderMismatch     = errors.New("webhook provider does not match order provider")
-	ErrInvalidEventType     = errors.New("unsupported or non-capturing webhook event type")
+	ErrInvalidEventType      = errors.New("unsupported or non-capturing webhook event type")
 	ErrInvalidIdempotencyKey = errors.New("idempotency key must be between 1 and 100 characters")
+	ErrPaymentNotCaptured    = errors.New("payment is not in captured status")
+	ErrMismatchedProviderOrder = errors.New("submitted razorpay order ID does not match internal top-up order")
+	ErrPaymentAmountMismatch = errors.New("payment amount does not match top-up order amount")
+	ErrPaymentCurrencyMismatch = errors.New("payment currency must be INR")
 )
 

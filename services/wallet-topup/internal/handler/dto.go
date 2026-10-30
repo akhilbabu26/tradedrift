@@ -62,3 +62,36 @@ func ToDailyUsageDTO(u *domain.DailyUsageResponse) *DailyUsageResponseDTO {
 		ResetsAt:     u.ResetsAt,
 	}
 }
+
+// VerifyCheckoutRequestDTO models incoming POST /api/v1/topups/verify payload.
+// Accepts both camelCase and snake_case JSON fields.
+type VerifyCheckoutRequestDTO struct {
+	TopUpID              string `json:"topupId"`
+	TopUpIDAlt           string `json:"topup_id"`
+	RazorpayOrderID      string `json:"razorpayOrderId"`
+	RazorpayOrderIDAlt   string `json:"razorpay_order_id"`
+	RazorpayPaymentID    string `json:"razorpayPaymentId"`
+	RazorpayPaymentIDAlt string `json:"razorpay_payment_id"`
+	RazorpaySignature    string `json:"razorpaySignature"`
+	RazorpaySignatureAlt string `json:"razorpay_signature"`
+}
+
+func (r *VerifyCheckoutRequestDTO) Normalized() (topupID, orderID, paymentID, signature string) {
+	topupID = r.TopUpID
+	if topupID == "" {
+		topupID = r.TopUpIDAlt
+	}
+	orderID = r.RazorpayOrderID
+	if orderID == "" {
+		orderID = r.RazorpayOrderIDAlt
+	}
+	paymentID = r.RazorpayPaymentID
+	if paymentID == "" {
+		paymentID = r.RazorpayPaymentIDAlt
+	}
+	signature = r.RazorpaySignature
+	if signature == "" {
+		signature = r.RazorpaySignatureAlt
+	}
+	return
+}

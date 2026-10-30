@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -13,6 +16,10 @@ import (
 	"tradedrift/services/wallet-topup/internal/repository"
 )
 
+type ReconcilerTrigger interface {
+	Trigger()
+}
+
 type TopUpService struct {
 	dailyLimitRepo  repository.DailyLimitRepository
 	orderRepo       repository.TopUpOrderRepository
@@ -21,6 +28,11 @@ type TopUpService struct {
 	dailyLimitINR   int64
 	log             *zap.Logger
 	locIST          *time.Location
+	reconciler      ReconcilerTrigger
+}
+
+func (s *TopUpService) SetReconciler(r ReconcilerTrigger) {
+	s.reconciler = r
 }
 
 func NewTopUpService(
@@ -197,5 +209,165 @@ func (s *TopUpService) ListTopUps(ctx context.Context, userID string, limit int)
 		return nil, domain.ErrUnauthorized
 	}
 	return s.orderRepo.ListByUserID(ctx, userID, limit)
+}
+
+type VerifyCheckoutRequest struct {
+	TopUpID           string
+	RazorpayOrderID   string
+	RazorpayPaymentID string
+	RazorpaySignature string
+}
+
+// VerifyCheckoutPayment verifies Razorpay checkout result and confirms payment atomically.
+func (s *TopUpService) VerifyCheckoutPayment(ctx context.Context, userID string, req VerifyCheckoutRequest) (*domain.TopUpOrder, error) {
+	if userID == "" {
+		return nil, domain.ErrUnauthorized
+	}
+	if req.TopUpID == "" {
+		return nil, errors.New("topup_id is required")
+	}
+	if req.RazorpayOrderID == "" {
+		return nil, errors.New("razorpay_order_id is required")
+	}
+	if req.RazorpayPaymentID == "" {
+		return nil, errors.New("razorpay_payment_id is required")
+	}
+	if req.RazorpaySignature == "" {
+		return nil, errors.New("razorpay_signature is required")
+	}
+
+	order, err := s.orderRepo.GetByID(ctx, req.TopUpID)
+	if err != nil {
+		return nil, err
+	}
+	if order.UserID != userID {
+		return nil, domain.ErrUnauthorized
+	}
+
+	// Verify order matches provider order ID
+	if order.ProviderOrderID == nil || *order.ProviderOrderID != req.RazorpayOrderID {
+		s.log.Warn("VerifyCheckoutPayment: mismatched provider order ID",
+			zap.String("orderID", order.ID),
+			zap.Any("expectedProviderOrder", order.ProviderOrderID),
+			zap.String("submittedProviderOrder", req.RazorpayOrderID),
+		)
+		return nil, domain.ErrMismatchedProviderOrder
+	}
+
+	// Idempotent fast-path: if order has already transitioned forward with this payment ID
+	if (order.Status == domain.StatusCreditPending || order.Status == domain.StatusCreditProcessing || order.Status == domain.StatusCompleted) &&
+		order.PaymentID != nil && *order.PaymentID == req.RazorpayPaymentID {
+		s.log.Info("VerifyCheckoutPayment: order already confirmed with payment, returning fast 200 OK",
+			zap.String("orderID", order.ID),
+			zap.String("paymentID", req.RazorpayPaymentID),
+			zap.String("status", order.Status),
+		)
+		if s.reconciler != nil {
+			s.reconciler.Trigger()
+		}
+		return order, nil
+	}
+
+	// Reject if order is in a terminal non-payable status
+	if order.Status == domain.StatusFailed || order.Status == domain.StatusRefundRequired {
+		return nil, domain.ErrOrderTerminalStatus
+	}
+
+	// 1. Verify Razorpay Checkout Signature using standard Razorpay HMAC
+	if !s.paymentProvider.VerifyCheckoutSignature(req.RazorpayOrderID, req.RazorpayPaymentID, req.RazorpaySignature) {
+		s.log.Warn("VerifyCheckoutPayment: invalid checkout signature",
+			zap.String("orderID", order.ID),
+			zap.String("paymentID", req.RazorpayPaymentID),
+		)
+		return nil, domain.ErrInvalidSignature
+	}
+
+	// 2. Authoritative Server-Side Payment Status & Capture Verification
+	paymentDetails, err := s.paymentProvider.FetchPayment(ctx, req.RazorpayPaymentID)
+	if err != nil {
+		s.log.Error("VerifyCheckoutPayment: failed to fetch payment from provider API",
+			zap.String("orderID", order.ID),
+			zap.String("paymentID", req.RazorpayPaymentID),
+			zap.Error(err),
+		)
+		return nil, fmt.Errorf("failed to verify payment with provider: %w", err)
+	}
+
+	// Verify provider order ID matches
+	if paymentDetails.ProviderOrderID != "" && paymentDetails.ProviderOrderID != req.RazorpayOrderID {
+		return nil, domain.ErrMismatchedProviderOrder
+	}
+	// Verify currency
+	if paymentDetails.Currency != "" && strings.ToUpper(paymentDetails.Currency) != "INR" {
+		return nil, domain.ErrPaymentCurrencyMismatch
+	}
+	// Verify amount
+	if paymentDetails.AmountINR > 0 && paymentDetails.AmountINR != order.INRAmount {
+		s.log.Warn("VerifyCheckoutPayment: amount mismatch",
+			zap.Int64("orderAmount", order.INRAmount),
+			zap.Int64("paymentAmount", paymentDetails.AmountINR),
+		)
+		return nil, domain.ErrPaymentAmountMismatch
+	}
+	// Verify captured status
+	if !paymentDetails.Captured && paymentDetails.Status != "captured" {
+		s.log.Warn("VerifyCheckoutPayment: payment not captured",
+			zap.String("orderID", order.ID),
+			zap.String("paymentID", req.RazorpayPaymentID),
+			zap.String("status", paymentDetails.Status),
+		)
+		return nil, domain.ErrPaymentNotCaptured
+	}
+
+	// 3. Converge onto authoritative atomic transaction
+	captureTimeIST := time.Now().In(s.locIST)
+	if paymentDetails.CreatedAt > 0 {
+		captureTimeIST = time.Unix(paymentDetails.CreatedAt, 0).In(s.locIST)
+	}
+	paidDate := captureTimeIST.Format("2006-01-02")
+
+	rawPayload, _ := json.Marshal(map[string]any{
+		"source":              "checkout_verify",
+		"topup_id":            req.TopUpID,
+		"razorpay_order_id":   req.RazorpayOrderID,
+		"razorpay_payment_id": req.RazorpayPaymentID,
+		"verified_at":         time.Now().UTC().Format(time.RFC3339),
+	})
+
+	result, err := s.txManager.ProcessPaymentConfirmationTx(
+		ctx,
+		order.ID,
+		order.Provider,
+		req.RazorpayPaymentID,
+		paidDate,
+		rawPayload,
+		"checkout_verify_"+req.RazorpayPaymentID,
+		s.dailyLimitINR,
+	)
+	if err != nil {
+		s.log.Error("VerifyCheckoutPayment: atomic confirmation transaction failed",
+			zap.String("orderID", order.ID),
+			zap.Error(err),
+		)
+		return nil, err
+	}
+
+	s.log.Info("VerifyCheckoutPayment: payment confirmed successfully",
+		zap.String("orderID", order.ID),
+		zap.String("paymentID", req.RazorpayPaymentID),
+		zap.Bool("alreadyProcessed", result.AlreadyProcessed),
+	)
+
+	// Trigger reconciler for immediate crediting
+	if s.reconciler != nil {
+		s.reconciler.Trigger()
+	}
+
+	// Return latest order state
+	latestOrder, err := s.orderRepo.GetByID(ctx, order.ID)
+	if err != nil {
+		return order, nil
+	}
+	return latestOrder, nil
 }
 

@@ -127,15 +127,22 @@ func (p *Publisher) Run(ctx context.Context, engine *market.MarketEngine) {
 	p.retryMu.Unlock()
 
 	for {
-		if engine.IsFatalHalt() || atomic.LoadInt32(&p.drainFailed) != 0 {
-			log.Printf("[publisher] fatal halt: stopping publisher loop immediately for market=%s", engine.MarketID)
+		if engine.IsFatalHalt() || ctx.Err() != nil || atomic.LoadInt32(&p.drainFailed) != 0 {
+			log.Printf("[publisher] fatal halt / fenced: stopping publisher loop immediately for market=%s", engine.MarketID)
 			return
 		}
 
 		select {
 		case result, ok := <-engine.OutputQueue:
 			if !ok {
-				p.flushPendingDepthRetries(context.Background(), engine.MarketID)
+				flushCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				p.flushPendingDepthRetries(flushCtx, engine.MarketID)
+				cancel()
+				return
+			}
+			if engine.IsFatalHalt() || ctx.Err() != nil {
+				log.Printf("[publisher] fenced: dropping result on halted/fenced engine market=%s (offset=%d)",
+					engine.MarketID, result.SourcePosition.Offset)
 				return
 			}
 			if err := p.process(ctx, result); err != nil {
@@ -194,7 +201,7 @@ func (p *Publisher) Run(ctx context.Context, engine *market.MarketEngine) {
 			p.flushPendingDepthRetries(ctx, engine.MarketID)
 		case <-ctx.Done():
 			if engine.IsFatalHalt() || atomic.LoadInt32(&p.drainFailed) != 0 {
-				log.Printf("[publisher] fatal halt: skipping drain for market=%s", engine.MarketID)
+				log.Printf("[publisher] fatal halt / fenced: skipping drain for market=%s", engine.MarketID)
 				return
 			}
 			drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -218,6 +225,9 @@ func (p *Publisher) Run(ctx context.Context, engine *market.MarketEngine) {
 						return
 					}
 				default:
+					if len(engine.OutputQueue) > 0 {
+						continue
+					}
 					p.flushPendingDepthRetries(drainCtx, engine.MarketID)
 					return
 				}
@@ -240,10 +250,16 @@ func (p *Publisher) flushPendingDepthRetries(ctx context.Context, marketID strin
 		delete(p.latestDepth, marketID)
 		p.retryMu.Unlock()
 		log.Printf("[publisher] successfully flushed retried depth snapshot (market=%s seq=%d)", marketID, snap.Sequence)
+	} else {
+		log.Printf("[publisher] WARNING: shutdown depth flush incomplete (market=%s seq=%d): %v", marketID, snap.Sequence, err)
 	}
 }
 
 func (p *Publisher) process(ctx context.Context, result orderbook.MatchResult) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("fenced: publisher context cancelled: %w", ctx.Err())
+	}
+
 	// Step 1: Publish TradeExecuted for every Fill.
 	if len(result.Fills) > 0 {
 		if err := p.publishFills(ctx, result.Fills); err != nil {

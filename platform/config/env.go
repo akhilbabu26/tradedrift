@@ -116,3 +116,79 @@ func ValidateLogLevel(level string) error {
 		return fmt.Errorf("invalid LOG_LEVEL: %q (must be debug, info, warn, or error)", level)
 	}
 }
+
+// IsProduction reports whether the environment is configured as production.
+// Checks ENV and APP_ENV for "production" or "prod" (case-insensitive).
+func IsProduction() bool {
+	env := strings.ToLower(GetEnv("ENV", GetEnv("APP_ENV", "")))
+	return env == "production" || env == "prod"
+}
+
+// GetAddress retrieves a network address from an environment variable.
+// In development, it falls back to devDefault.
+// In production mode, it enforces that key is explicitly set and does not point to localhost, 127.0.0.1, or host.docker.internal.
+func GetAddress(key, devDefault string) (string, error) {
+	val := GetEnv(key, "")
+	if IsProduction() {
+		if val == "" {
+			return "", fmt.Errorf("production configuration %s is required and cannot be empty", key)
+		}
+		if strings.Contains(val, "localhost") || strings.Contains(val, "127.0.0.1") || strings.Contains(val, "host.docker.internal") {
+			return "", fmt.Errorf("production configuration %s cannot use loopback/local address %q", key, val)
+		}
+		return val, nil
+	}
+	if val == "" {
+		return devDefault, nil
+	}
+	return val, nil
+}
+
+// GetDSN retrieves a database connection DSN.
+// In development, it falls back to devDefault.
+// In production mode, it enforces that key is explicitly set and does not contain localhost or default credentials.
+func GetDSN(key, devDefault string) (string, error) {
+	val := GetEnv(key, "")
+	if IsProduction() {
+		if val == "" {
+			return "", fmt.Errorf("production database configuration %s is required", key)
+		}
+		if strings.Contains(val, "localhost") || strings.Contains(val, "127.0.0.1") || strings.Contains(val, "host.docker.internal") {
+			return "", fmt.Errorf("production database %s cannot use localhost/host.docker.internal in %q", key, val)
+		}
+		return val, nil
+	}
+	if val == "" {
+		return devDefault, nil
+	}
+	return val, nil
+}
+
+// ValidateProductionSecret verifies that a secret is set and is sufficiently strong in production.
+// In production, it rejects empty secrets, short secrets (< 32 chars), and known development placeholders.
+func ValidateProductionSecret(key, val string, forbiddenDefaults ...string) error {
+	if !IsProduction() {
+		return nil
+	}
+	if strings.TrimSpace(val) == "" {
+		return fmt.Errorf("production secret %s is required and cannot be empty", key)
+	}
+	for _, forbidden := range forbiddenDefaults {
+		if val == forbidden {
+			return fmt.Errorf("production secret %s cannot use insecure development default placeholder", key)
+		}
+	}
+	if len(val) < 32 {
+		return fmt.Errorf("production secret %s must be at least 32 characters long", key)
+	}
+	return nil
+}
+
+// AutoMigrateEnabled checks whether database migrations should run at startup.
+// Enabled by default in development. In production, setting AUTO_MIGRATE=false
+// allows running migrations in an isolated pre-deployment job rather than concurrently
+// in each application pod.
+func AutoMigrateEnabled() bool {
+	val := strings.ToLower(strings.TrimSpace(os.Getenv("AUTO_MIGRATE")))
+	return val != "false" && val != "0" && val != "no"
+}

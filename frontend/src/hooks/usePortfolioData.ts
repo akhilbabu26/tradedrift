@@ -168,7 +168,7 @@ export function usePortfolioData(): UsePortfolioDataReturn {
             .map((v) => parseFloat(v))
             .filter((v) => !isNaN(v) && isFinite(v) && v > 0)
           if (valid.length > 0) {
-            marketTrends[ov.market_id] = valid.slice(-24)
+            marketTrends[ov.market_id] = valid.slice(-30)
           }
         }
       })
@@ -480,9 +480,13 @@ export function usePortfolioData(): UsePortfolioDataReturn {
 
           let updatedSparkline = h.sparklinePoints
           if (updatedSparkline && updatedSparkline.length > 0) {
-            const lastIdx = updatedSparkline.length - 1
-            if (updatedSparkline[lastIdx] !== numPrice) {
-              updatedSparkline = [...updatedSparkline.slice(0, lastIdx), numPrice]
+            if (updatedSparkline.length === 1 && updatedSparkline[0] !== numPrice) {
+              updatedSparkline = [...updatedSparkline, numPrice]
+            } else {
+              const lastIdx = updatedSparkline.length - 1
+              if (updatedSparkline[lastIdx] !== numPrice) {
+                updatedSparkline = [...updatedSparkline.slice(0, lastIdx), numPrice]
+              }
             }
           }
 

@@ -251,22 +251,61 @@ func (r *TopUpOrderRepo) CompleteOrder(ctx context.Context, orderID, workerToken
 	return tag.RowsAffected() == 1, nil
 }
 
-// RecordClaimFailure updates the failure info and resets claim_until with lease token fencing.
-func (r *TopUpOrderRepo) RecordClaimFailure(ctx context.Context, orderID, workerToken, errMsg string) (bool, error) {
+// RecordClaimFailure updates the failure info and sets claim_until with exponential backoff and lease token fencing.
+func (r *TopUpOrderRepo) RecordClaimFailure(ctx context.Context, orderID, workerToken, errMsg string, backoff time.Duration) (bool, error) {
+	if backoff < 0 {
+		backoff = 0
+	}
 	query := `
 		UPDATE topup_orders
 		SET last_error   = $1,
-		    claim_until  = NOW(),
+		    claim_until  = NOW() + ($2 * INTERVAL '1 millisecond'),
 		    updated_at   = NOW()
-		WHERE id          = $2
+		WHERE id          = $3
 		  AND status      = 'CREDIT_PROCESSING'
-		  AND claim_token = $3;
+		  AND claim_token = $4;
 	`
-	tag, err := r.db.Exec(ctx, query, errMsg, orderID, workerToken)
+	tag, err := r.db.Exec(ctx, query, errMsg, backoff.Milliseconds(), orderID, workerToken)
 	if err != nil {
 		return false, fmt.Errorf("failed to record claim failure: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// GetPendingUnconfirmed retrieves unconfirmed PAYMENT_PENDING orders older than minAge with valid provider order IDs.
+func (r *TopUpOrderRepo) GetPendingUnconfirmed(ctx context.Context, minAge time.Duration, limit int) ([]*domain.TopUpOrder, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	cutoff := time.Now().UTC().Add(-minAge)
+	query := `
+		SELECT id, user_id, idempotency_key, inr_amount, usdt_amount, reservation_date,
+		       provider, provider_order_id, payment_id, status, claim_token,
+		       claim_until, claimed_at, attempt_count, last_error, expires_at,
+		       completed_at, created_at, updated_at
+		FROM topup_orders
+		WHERE status = 'PAYMENT_PENDING'
+		  AND provider_order_id IS NOT NULL
+		  AND created_at <= $1
+		  AND expires_at > NOW()
+		ORDER BY created_at ASC
+		LIMIT $2;
+	`
+	rows, err := r.db.Query(ctx, query, cutoff, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query pending unconfirmed orders: %w", err)
+	}
+	defer rows.Close()
+
+	var orders []*domain.TopUpOrder
+	for rows.Next() {
+		order, err := scanOrderFromRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		orders = append(orders, order)
+	}
+	return orders, nil
 }
 
 // TransitionToCreditPending moves order from PAYMENT_PENDING to CREDIT_PENDING upon successful payment.

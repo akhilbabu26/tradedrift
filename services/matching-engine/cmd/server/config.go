@@ -18,12 +18,22 @@ type appConfig struct {
 	PostgresDSN  string
 	RedisAddr    string
 	HTTPPort     string
+	AdminSecret  string
 }
 
 func loadConfig() (appConfig, error) {
 	postgresDSN := os.Getenv("POSTGRES_DSN")
 	if postgresDSN == "" {
 		return appConfig{}, fmt.Errorf("POSTGRES_DSN env var is required")
+	}
+
+	adminSecret := os.Getenv("RECONCILIATION_ADMIN_SECRET")
+	appEnv := strings.ToLower(os.Getenv("ENV"))
+	if appEnv == "" {
+		appEnv = strings.ToLower(os.Getenv("APP_ENV"))
+	}
+	if (appEnv == "production" || os.Getenv("REQUIRE_ADMIN_SECRET") == "true") && adminSecret == "" {
+		return appConfig{}, fmt.Errorf("RECONCILIATION_ADMIN_SECRET env var is required in production")
 	}
 
 	kafkaBrokers := config.GetEnv("KAFKA_BROKERS", "localhost:9092")
@@ -43,6 +53,7 @@ func loadConfig() (appConfig, error) {
 		PostgresDSN:  postgresDSN,
 		RedisAddr:    config.GetEnv("REDIS_ADDR", "localhost:6379"),
 		HTTPPort:     httpPort,
+		AdminSecret:  adminSecret,
 	}, nil
 }
 

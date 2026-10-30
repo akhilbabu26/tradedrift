@@ -15,6 +15,12 @@ import (
 
 // Run is the Event Loop goroutine — the ONLY goroutine that touches book.
 func (m *MarketEngine) Run(ctx context.Context) {
+	if !m.isRunning.CompareAndSwap(false, true) {
+		log.Printf("[market] ERROR: MarketEngine %s is already running — duplicate Run() prevented", m.MarketID)
+		return
+	}
+	defer m.isRunning.Store(false)
+
 	lastSnapshotTime := time.Now()
 	eventCountSinceLastSnapshot := 0
 
@@ -38,7 +44,16 @@ func (m *MarketEngine) Run(ctx context.Context) {
 		select {
 		case event, ok := <-m.InputQueue:
 			if !ok {
-				m.triggerFinalSnapshot()
+				if !m.isFatalHalt.Load() {
+					m.triggerFinalSnapshot()
+				}
+				close(m.OutputQueue)
+				return
+			}
+
+			// Invariant: If engine has suffered a fatal halt (e.g. lease loss), drop queued events immediately
+			if m.isFatalHalt.Load() {
+				log.Printf("[market] fatal halt / fenced: dropping queued event on halted engine market=%s (offset=%d)", m.MarketID, event.Offset)
 				close(m.OutputQueue)
 				return
 			}
@@ -119,7 +134,7 @@ func (m *MarketEngine) Run(ctx context.Context) {
 				log.Printf("[market] snapshot generated for market=%s seq=%d offset=%d", m.MarketID, snap.Sequence, snap.Offset)
 			}
 
-			if m.mode == ModeLive {
+			if m.Mode() == ModeLive {
 				m.PublishAtomicSnapshot()
 			}
 
@@ -127,13 +142,13 @@ func (m *MarketEngine) Run(ctx context.Context) {
 
 		case <-ctx.Done():
 			if m.isFatalHalt.Load() {
-				// FATAL halt path: do NOT drain. Stop immediately.
+				// FATAL halt path (e.g. lease loss or corruption): do NOT drain. Stop immediately.
 				// Book state beyond the failure boundary must not be mutated.
-				// The checkpoint will be replayed from the last durable position on restart.
-				log.Printf("[market] fatal halt: skipping drain for market=%s", m.MarketID)
+				log.Printf("[market] fatal halt / fenced: skipping drain for market=%s", m.MarketID)
 				close(m.OutputQueue)
 				return
 			}
+			// Graceful shutdown path: drain remaining events already queued in memory
 			for {
 				select {
 				case event, ok := <-m.InputQueue:
@@ -171,6 +186,9 @@ func (m *MarketEngine) Run(ctx context.Context) {
 
 					m.OutputQueue <- *res
 				default:
+					if len(m.InputQueue) > 0 {
+						continue
+					}
 					m.triggerFinalSnapshot()
 					close(m.OutputQueue)
 					return
@@ -197,8 +215,46 @@ func (m *MarketEngine) triggerFinalSnapshot() {
 }
 
 func (m *MarketEngine) applyEvent(event InputEvent) (*orderbook.MatchResult, error) {
+	currMode := m.Mode()
+	if currMode == ModeBlocked || currMode == ModeReconciling {
+		var orderID, userID uuid.UUID
+		var qty decimal.Decimal
+		if event.Type == EventOrderCreated && event.OrderCreated != nil {
+			orderID = event.OrderCreated.OrderID
+			userID = event.OrderCreated.UserID
+			qty = event.OrderCreated.Quantity
+		} else if event.Type == EventOrderCancel && event.OrderCancel != nil {
+			orderID = event.OrderCancel.OrderID
+			userID = event.OrderCancel.UserID
+		}
+		rejectReason := "market_blocked"
+		if currMode == ModeReconciling {
+			rejectReason = "market_reconciling"
+		}
+		log.Printf("[market] REJECT: market %s is %v — rejecting incoming command (order_id=%s offset=%d)",
+			m.MarketID, currMode, orderID, event.Offset)
+		return &orderbook.MatchResult{
+			CancelResult: &orderbook.CancelledOrder{
+				OrderID:           orderID,
+				UserID:            userID,
+				MarketID:          m.MarketID,
+				RemainingQuantity: qty,
+				Reason:            rejectReason,
+				CancelStatus:      orderbook.CancelStatusInvalidRequest,
+				CancelledAt:       time.Now().UTC(),
+				SourceOffset:      event.Offset,
+			},
+			DepthSnapshot: matcher.GetDepth(m.book, 20),
+			SourcePosition: orderbook.KafkaPosition{
+				Topic:     event.Topic,
+				Partition: event.Partition,
+				Offset:    event.Offset,
+			},
+		}, nil
+	}
+
 	matcherMode := matcher.ModeRecovery
-	if m.mode == ModeLive {
+	if m.Mode() == ModeLive {
 		matcherMode = matcher.ModeLive
 	}
 
@@ -251,7 +307,7 @@ func (m *MarketEngine) applyEvent(event InputEvent) (*orderbook.MatchResult, err
 
 		if m.book.OrderIndex[node.OrderID] != nil {
 			dupType := "live-duplicate"
-			if m.mode == ModeRecovery {
+			if m.Mode() == ModeRecovery {
 				dupType = "replay-duplicate"
 			}
 			log.Printf("[market] [%s] duplicate order_id detected (market=%s order_id=%s) — skipping without state mutation",

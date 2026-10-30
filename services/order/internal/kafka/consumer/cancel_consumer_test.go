@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -369,3 +370,265 @@ func TestCancelConsumer_AlreadyAbsent_Filled_ReleaseFails_IdempotentOnRedelivery
 		t.Fatalf("expected idempotency preserved on redelivery")
 	}
 }
+
+func TestCancelConsumer_MarketBlocked_ReconcilesAndReleasesFunds(t *testing.T) {
+	repo := &mockOrderRepo{
+		reconcileStatus: repository.StatusCancelled,
+	}
+	wallet := &mockWalletClient{}
+	logger := zap.NewNop()
+
+	c := consumer.NewCancelConsumer([]string{"localhost:9092"}, "test-group", "orders.cancelled.v1", repo, wallet, logger)
+
+	orderID := uuid.New().String()
+	event := consumer.OrderCancelledEvent{
+		EventID:   uuid.New().String(),
+		OrderID:   orderID,
+		UserID:    uuid.New().String(),
+		MarketID:  "ETH-USDT",
+		Status:    "ALREADY_ABSENT",
+		Reason:    "market_blocked",
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+
+	msg := kafkago.Message{Topic: "orders.cancelled.v1", Value: payload}
+	if err := c.ProcessMessage(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Invariant: ReconcileAbsentOrder called, order transitioned to CANCELLED, wallet released
+	if len(repo.reconciledOrders) != 1 || repo.reconciledOrders[0] != orderID {
+		t.Fatalf("expected 1 call to ReconcileAbsentOrder with orderID=%s, got %v", orderID, repo.reconciledOrders)
+	}
+	if len(wallet.releasedOrders) != 1 || wallet.releasedOrders[0] != orderID {
+		t.Fatalf("expected 1 call to ReleaseFunds with orderID=%s, got %v", orderID, wallet.releasedOrders)
+	}
+	if len(repo.completedReleases) != 1 || repo.completedReleases[0] != orderID {
+		t.Fatalf("expected 1 call to MarkWalletReleaseCompletedByOrderID with orderID=%s, got %v", orderID, repo.completedReleases)
+	}
+}
+
+func TestCancelConsumer_MarketBlocked_InvalidRequestFallback_ReconcilesAndReleasesFunds(t *testing.T) {
+	repo := &mockOrderRepo{
+		reconcileStatus: repository.StatusCancelled,
+	}
+	wallet := &mockWalletClient{}
+	logger := zap.NewNop()
+
+	c := consumer.NewCancelConsumer([]string{"localhost:9092"}, "test-group", "orders.cancelled.v1", repo, wallet, logger)
+
+	orderID := uuid.New().String()
+	event := consumer.OrderCancelledEvent{
+		EventID:   uuid.New().String(),
+		OrderID:   orderID,
+		UserID:    uuid.New().String(),
+		MarketID:  "ETH-USDT",
+		Status:    "INVALID_REQUEST",
+		Reason:    "market_blocked",
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+
+	msg := kafkago.Message{Topic: "orders.cancelled.v1", Value: payload}
+	if err := c.ProcessMessage(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Invariant: ReconcileAbsentOrder called even on INVALID_REQUEST when reason is market_blocked
+	if len(repo.reconciledOrders) != 1 || repo.reconciledOrders[0] != orderID {
+		t.Fatalf("expected 1 call to ReconcileAbsentOrder with orderID=%s, got %v", orderID, repo.reconciledOrders)
+	}
+	if len(wallet.releasedOrders) != 1 || wallet.releasedOrders[0] != orderID {
+		t.Fatalf("expected 1 call to ReleaseFunds with orderID=%s, got %v", orderID, wallet.releasedOrders)
+	}
+}
+
+func TestCancelConsumer_MarketReconciling_InvalidRequestFallback_ReconcilesAndReleasesFunds(t *testing.T) {
+	repo := &mockOrderRepo{
+		reconcileStatus: repository.StatusCancelled,
+	}
+	wallet := &mockWalletClient{}
+	logger := zap.NewNop()
+
+	c := consumer.NewCancelConsumer([]string{"localhost:9092"}, "test-group", "orders.cancelled.v1", repo, wallet, logger)
+
+	orderID := uuid.New().String()
+	event := consumer.OrderCancelledEvent{
+		EventID:   uuid.New().String(),
+		OrderID:   orderID,
+		UserID:    uuid.New().String(),
+		MarketID:  "ETH-USDT",
+		Status:    "INVALID_REQUEST",
+		Reason:    "market_reconciling",
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+
+	msg := kafkago.Message{Topic: "orders.cancelled.v1", Value: payload}
+	if err := c.ProcessMessage(context.Background(), msg); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Invariant: ReconcileAbsentOrder called on INVALID_REQUEST when reason is market_reconciling
+	if len(repo.reconciledOrders) != 1 || repo.reconciledOrders[0] != orderID {
+		t.Fatalf("expected 1 call to ReconcileAbsentOrder with orderID=%s, got %v", orderID, repo.reconciledOrders)
+	}
+	if len(wallet.releasedOrders) != 1 || wallet.releasedOrders[0] != orderID {
+		t.Fatalf("expected 1 call to ReleaseFunds with orderID=%s, got %v", orderID, wallet.releasedOrders)
+	}
+	if len(repo.completedReleases) != 1 || repo.completedReleases[0] != orderID {
+		t.Fatalf("expected 1 call to MarkWalletReleaseCompletedByOrderID with orderID=%s, got %v", orderID, repo.completedReleases)
+	}
+}
+
+func TestCancelConsumer_MarketBlocked_DuplicateDelivery_Idempotent(t *testing.T) {
+	repo := &mockOrderRepo{
+		reconcileStatus: repository.StatusCancelled,
+	}
+	wallet := &mockWalletClient{}
+	logger := zap.NewNop()
+
+	c := consumer.NewCancelConsumer([]string{"localhost:9092"}, "test-group", "orders.cancelled.v1", repo, wallet, logger)
+
+	orderID := uuid.New().String()
+	event := consumer.OrderCancelledEvent{
+		EventID:   uuid.New().String(),
+		OrderID:   orderID,
+		UserID:    uuid.New().String(),
+		MarketID:  "ETH-USDT",
+		Status:    "ALREADY_ABSENT",
+		Reason:    "market_blocked",
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+
+	msg := kafkago.Message{Topic: "orders.cancelled.v1", Value: payload}
+
+	// First delivery
+	if err := c.ProcessMessage(context.Background(), msg); err != nil {
+		t.Fatalf("first delivery error: %v", err)
+	}
+
+	// Second delivery (redelivery / duplicate)
+	if err := c.ProcessMessage(context.Background(), msg); err != nil {
+		t.Fatalf("second delivery error: %v", err)
+	}
+
+	// Invariant: Idempotent no-op on duplicate delivery. No duplicate reconciliation, no duplicate wallet release.
+	if len(repo.reconciledOrders) != 1 {
+		t.Fatalf("expected exactly 1 call to ReconcileAbsentOrder due to idempotency, got %d", len(repo.reconciledOrders))
+	}
+	if len(wallet.releasedOrders) != 1 {
+		t.Fatalf("expected exactly 1 call to ReleaseFunds due to idempotency, got %d", len(wallet.releasedOrders))
+	}
+}
+
+func TestCancelConsumer_MMOrder_NoReservation_ReconcilesAndCompletesCleanly(t *testing.T) {
+	repo := &mockOrderRepo{
+		reconcileStatus: repository.StatusCancelled,
+	}
+	// Simulate Wallet Service returning "reservation not found" because MM accounts bypass reservations
+	walletClient := &mockWalletClient{
+		releaseErr: fmt.Errorf("reservation not found for order 01a12601-a895-703e-81e1-66756a9ebe90"),
+	}
+	logger := zap.NewNop()
+
+	c := consumer.NewCancelConsumer([]string{"localhost:9092"}, "test-group", "orders.cancelled.v1", repo, walletClient, logger)
+
+	orderID := "01a12601-a895-703e-81e1-66756a9ebe90"
+	event := consumer.OrderCancelledEvent{
+		EventID:   uuid.New().String(),
+		OrderID:   orderID,
+		UserID:    "00000000-0000-0000-0000-000000000001", // MM-001
+		MarketID:  "ETH-USDT",
+		Status:    "ALREADY_ABSENT",
+		Reason:    "market_blocked",
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+
+	msg := kafkago.Message{Topic: "orders.cancelled.v1", Value: payload}
+	if err := c.ProcessMessage(context.Background(), msg); err != nil {
+		t.Fatalf("process message error: %v", err)
+	}
+
+	// Invariant 1: Order reconciled to CANCELLED in Order Service
+	if len(repo.reconciledOrders) != 1 || repo.reconciledOrders[0] != orderID {
+		t.Fatalf("expected order %s to be reconciled, got %v", orderID, repo.reconciledOrders)
+	}
+
+	// Invariant 2: Wallet release was attempted
+	if len(walletClient.releasedOrders) != 1 || walletClient.releasedOrders[0] != orderID {
+		t.Fatalf("expected release attempt for order %s, got %v", orderID, walletClient.releasedOrders)
+	}
+
+	// Invariant 3: Because MM has no reservation, "reservation not found" is recognized as idempotent success
+	// and marked completed in order DB, avoiding stuck pending retries or ledger corruption
+	if len(repo.completedReleases) != 1 || repo.completedReleases[0] != orderID {
+		t.Fatalf("expected release to be marked completed for MM order, got %v", repo.completedReleases)
+	}
+}
+
+func TestCancelConsumer_PartiallyFilledOrder_PreservesFillsAndReconciles(t *testing.T) {
+	repo := &mockOrderRepo{
+		reconcileStatus: repository.StatusCancelled,
+	}
+	walletClient := &mockWalletClient{}
+	logger := zap.NewNop()
+
+	c := consumer.NewCancelConsumer([]string{"localhost:9092"}, "test-group", "orders.cancelled.v1", repo, walletClient, logger)
+
+	orderID := "01a12642-a9d7-738a-81da-bcf8d74bed27"
+	event := consumer.OrderCancelledEvent{
+		EventID:   uuid.New().String(),
+		OrderID:   orderID,
+		UserID:    "00000000-0000-0000-0000-000000000001",
+		MarketID:  "ETH-USDT",
+		Status:    "ALREADY_ABSENT",
+		Reason:    "market_blocked",
+		Timestamp: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+
+	msg := kafkago.Message{Topic: "orders.cancelled.v1", Value: payload}
+	if err := c.ProcessMessage(context.Background(), msg); err != nil {
+		t.Fatalf("process message error: %v", err)
+	}
+
+	// Invariant: Reconciled order transitions to CANCELLED, preserving filled quantity
+	if len(repo.reconciledOrders) != 1 || repo.reconciledOrders[0] != orderID {
+		t.Fatalf("expected order %s to be reconciled, got %v", orderID, repo.reconciledOrders)
+	}
+	if len(walletClient.releasedOrders) != 1 || walletClient.releasedOrders[0] != orderID {
+		t.Fatalf("expected release attempt for order %s, got %v", orderID, walletClient.releasedOrders)
+	}
+	if len(repo.completedReleases) != 1 || repo.completedReleases[0] != orderID {
+		t.Fatalf("expected release marked completed, got %v", repo.completedReleases)
+	}
+}
+

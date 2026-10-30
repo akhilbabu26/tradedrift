@@ -98,6 +98,38 @@ func TestHandler_GetMarketsOverview(t *testing.T) {
 	}
 }
 
+func TestHandler_GetMarketsOverview_Defaults(t *testing.T) {
+	var capturedResolution marketv1.CandleResolution
+	var capturedLimit int32
+
+	client := &mockMarketClient{
+		getMarketsOverviewFunc: func(ctx context.Context, in *marketv1.GetMarketsOverviewRequest, opts ...grpc.CallOption) (*marketv1.GetMarketsOverviewResponse, error) {
+			capturedResolution = in.Resolution
+			capturedLimit = in.Limit
+			return &marketv1.GetMarketsOverviewResponse{
+				Markets: []*marketv1.MarketOverviewItem{},
+			}, nil
+		},
+	}
+
+	handler := markethandler.NewHandler(client)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/markets/overview", nil)
+	rec := httptest.NewRecorder()
+
+	handler.GetMarketsOverview(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", rec.Code)
+	}
+	if capturedResolution != marketv1.CandleResolution_CANDLE_RESOLUTION_1M {
+		t.Errorf("expected default CANDLE_RESOLUTION_1M, got %v", capturedResolution)
+	}
+	if capturedLimit != 30 {
+		t.Errorf("expected default limit 30, got %d", capturedLimit)
+	}
+}
+
 func TestHandler_GetCandles_4H(t *testing.T) {
 	var capturedResolution marketv1.CandleResolution
 

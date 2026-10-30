@@ -3,6 +3,7 @@ package checkpoint_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -420,4 +421,230 @@ func TestCoordinator_PostgresSuccess_KafkaCommitFailure_Durability(t *testing.T)
 		t.Fatalf("expected Kafka group commit at offset 103, got %+v", workingCommitter.committedOffsets)
 	}
 }
+
+type snapshotRecordingDB struct {
+	txExecutedQueries []string
+	txCommitted       bool
+}
+
+func (s *snapshotRecordingDB) Exec(_ context.Context, query string, _ ...any) (pgconn.CommandTag, error) {
+	s.txExecutedQueries = append(s.txExecutedQueries, query)
+	return pgconn.CommandTag{}, nil
+}
+
+type snapshotRecordingTx struct {
+	db *snapshotRecordingDB
+}
+
+func (t *snapshotRecordingTx) Exec(_ context.Context, query string, _ ...any) (pgconn.CommandTag, error) {
+	t.db.txExecutedQueries = append(t.db.txExecutedQueries, query)
+	return pgconn.CommandTag{}, nil
+}
+
+func (t *snapshotRecordingTx) Commit(_ context.Context) error {
+	t.db.txCommitted = true
+	return nil
+}
+
+func (t *snapshotRecordingTx) Rollback(_ context.Context) error {
+	return nil
+}
+
+func (s *snapshotRecordingDB) Begin(_ context.Context) (checkpoint.Tx, error) {
+	return &snapshotRecordingTx{db: s}, nil
+}
+
+// TestCoordinator_SnapshotPersistedWhenOffsetAlreadyCommitted verifies the critical shutdown invariant:
+// When an event arrives carrying an explicit Snapshot at offset <= lastCommitted (e.g. final shutdown
+// snapshot generated at lastAppliedOffset), the snapshot and sequence MUST be durably persisted to PostgreSQL.
+func TestCoordinator_SnapshotPersistedWhenOffsetAlreadyCommitted(t *testing.T) {
+	db := &snapshotRecordingDB{}
+	coord := checkpoint.NewCoordinator(db)
+	ctx := context.Background()
+	topic := intkafka.TopicOrderCommands
+	const partition = 1
+
+	// Initialize baseline to offset 50 (already committed)
+	coord.InitBaseline(topic, partition, 50)
+
+	// Verify current committed offset is 50
+	committed, ok := coord.GetCommittedOffset(topic, partition)
+	if !ok || committed != 50 {
+		t.Fatalf("expected committed offset 50, got %d", committed)
+	}
+
+	// Create a final shutdown snapshot at offset 50 (offset <= lastCommitted)
+	snap := &orderbook.BookSnapshot{
+		MarketID:      "ETH-USDT",
+		Sequence:      28691,
+		Partition:     partition,
+		Offset:        50,
+		SchemaVersion: orderbook.CurrentSchemaVersion,
+	}
+
+	ev := checkpoint.CompletedEvent{
+		Pos: orderbook.KafkaPosition{
+			Topic:     topic,
+			Partition: partition,
+			Offset:    50,
+		},
+		MarketID: "ETH-USDT",
+		Sequence: 28691,
+		Snapshot: snap,
+	}
+
+	// MarkDoneWithSequence with snapshot at offset 50
+	err := coord.MarkDoneWithSequence(ctx, ev)
+	if err != nil {
+		t.Fatalf("unexpected error from MarkDoneWithSequence: %v", err)
+	}
+
+	// Invariant 1: Transaction must have been committed
+	if !db.txCommitted {
+		t.Fatalf("expected database transaction to be committed for shutdown snapshot, but it was not")
+	}
+
+	// Invariant 2: Both sequence and snapshot queries must have been executed
+	hasSeqInsert := false
+	hasSnapInsert := false
+	for _, q := range db.txExecutedQueries {
+		if strings.Contains(q, "market_sequences") {
+			hasSeqInsert = true
+		}
+		if strings.Contains(q, "market_snapshots") {
+			hasSnapInsert = true
+		}
+	}
+
+	if !hasSeqInsert {
+		t.Errorf("expected market_sequences INSERT query to be executed, queries were: %+v", db.txExecutedQueries)
+	}
+	if !hasSnapInsert {
+		t.Errorf("expected market_snapshots INSERT query to be executed, queries were: %+v", db.txExecutedQueries)
+	}
+
+	// Invariant 3: Checkpoint offset remains 50 (does not retreat or leap)
+	committed, _ = coord.GetCommittedOffset(topic, partition)
+	if committed != 50 {
+		t.Errorf("expected committed offset to remain 50, got %d", committed)
+	}
+}
+
+type conflictDB struct {
+	txCommitted   bool
+	txRolledBack  bool
+	zeroOnSeq     bool
+	zeroOnSnap    bool
+}
+
+type conflictTx struct {
+	db *conflictDB
+}
+
+func (c *conflictTx) Exec(ctx context.Context, query string, args ...any) (pgconn.CommandTag, error) {
+	if c.db.zeroOnSeq && strings.Contains(query, "market_sequences") {
+		return pgconn.NewCommandTag("UPDATE 0"), nil
+	}
+	if c.db.zeroOnSnap && strings.Contains(query, "market_snapshots") {
+		return pgconn.NewCommandTag("UPDATE 0"), nil
+	}
+	return pgconn.NewCommandTag("INSERT 0 1"), nil
+}
+
+func (c *conflictTx) Commit(ctx context.Context) error {
+	c.db.txCommitted = true
+	return nil
+}
+
+func (c *conflictTx) Rollback(ctx context.Context) error {
+	c.db.txRolledBack = true
+	return nil
+}
+
+func (c *conflictDB) Begin(ctx context.Context) (checkpoint.Tx, error) {
+	return &conflictTx{db: c}, nil
+}
+
+func (c *conflictDB) Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error) {
+	return pgconn.NewCommandTag("INSERT 0 1"), nil
+}
+
+func TestCoordinator_SnapshotConsistency_ConflictRejected(t *testing.T) {
+	db := &conflictDB{zeroOnSnap: true}
+	coord := checkpoint.NewCoordinator(db)
+	ctx := context.Background()
+
+	topic := "orders.commands"
+	partition := 1
+	coord.Track(orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 10})
+
+	snap := &orderbook.BookSnapshot{
+		MarketID:      "ETH-USDT",
+		Sequence:      100,
+		Partition:     1,
+		Offset:        10,
+		SchemaVersion: 1,
+	}
+
+	ev := checkpoint.CompletedEvent{
+		Pos: orderbook.KafkaPosition{
+			Topic:     topic,
+			Partition: partition,
+			Offset:    10,
+		},
+		MarketID: "ETH-USDT",
+		Sequence: 100,
+		Snapshot: snap,
+	}
+
+	err := coord.MarkDoneWithSequence(ctx, ev)
+	if err == nil {
+		t.Fatal("expected conflict error when snapshot upsert updates 0 rows due to conflict, got nil")
+	}
+	if !strings.Contains(err.Error(), "snapshot consistency conflict rejected") {
+		t.Errorf("expected snapshot consistency conflict error, got: %v", err)
+	}
+	if db.txCommitted {
+		t.Fatal("expected transaction NOT to be committed on conflict")
+	}
+	if !db.txRolledBack {
+		t.Fatal("expected transaction to be rolled back on conflict")
+	}
+}
+
+func TestCoordinator_SequenceMonotonicity_RegressionRejected(t *testing.T) {
+	db := &conflictDB{zeroOnSeq: true}
+	coord := checkpoint.NewCoordinator(db)
+	ctx := context.Background()
+
+	topic := "orders.commands"
+	partition := 0
+	coord.Track(orderbook.KafkaPosition{Topic: topic, Partition: partition, Offset: 10})
+
+	ev := checkpoint.CompletedEvent{
+		Pos: orderbook.KafkaPosition{
+			Topic:     topic,
+			Partition: partition,
+			Offset:    10,
+		},
+		MarketID: "BTC-USDT",
+		Sequence: 50,
+	}
+
+	err := coord.MarkDoneWithSequence(ctx, ev)
+	if err == nil {
+		t.Fatal("expected regression error when sequence upsert updates 0 rows due to lower sequence, got nil")
+	}
+	if !strings.Contains(err.Error(), "sequence regression rejected") {
+		t.Errorf("expected sequence regression error, got: %v", err)
+	}
+	if db.txCommitted {
+		t.Fatal("expected transaction NOT to be committed on sequence regression")
+	}
+	if !db.txRolledBack {
+		t.Fatal("expected transaction to be rolled back on sequence regression")
+	}
+}
+
+
 

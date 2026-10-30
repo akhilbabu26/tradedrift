@@ -99,4 +99,17 @@ export const topupApi = {
     const res = await topupClient.get<{ topups: TopUpOrder[] }>('/api/v1/topups')
     return res.data?.topups || []
   },
+
+  // POST /api/v1/topups/verify — verify Razorpay checkout payment & confirm topup
+  verifyTopUp: async (data: VerifyTopUpRequest): Promise<TopUpOrder> => {
+    const res = await topupClient.post<TopUpOrder>('/api/v1/topups/verify', data)
+    return res.data
+  },
+}
+
+export interface VerifyTopUpRequest {
+  topupId: string
+  razorpayOrderId: string
+  razorpayPaymentId: string
+  razorpaySignature: string
 }

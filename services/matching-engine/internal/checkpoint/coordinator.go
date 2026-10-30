@@ -131,6 +131,10 @@ func (c *Coordinator) MarkDone(ctx context.Context, pos orderbook.KafkaPosition)
 
 // MarkDoneWithSequence performs atomic updates for checkpoint, sequence, and optional snapshot.
 func (c *Coordinator) MarkDoneWithSequence(ctx context.Context, event CompletedEvent) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("fenced: checkpoint context cancelled: %w", ctx.Err())
+	}
+
 	pt := c.getTracker(event.Pos.Topic, event.Pos.Partition)
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
@@ -141,9 +145,16 @@ func (c *Coordinator) MarkDoneWithSequence(ctx context.Context, event CompletedE
 		pt.hasCommitted = true
 	}
 
-	// If this offset is already <= lastCommitted, ignore it (idempotent duplicate)
+	// If this offset is already <= lastCommitted, it cannot advance the Kafka checkpoint watermark.
+	// However, if it carries an explicit Snapshot (e.g. final shutdown snapshot), the snapshot and sequence
+	// must be atomically persisted to PostgreSQL.
 	if event.Pos.Offset <= pt.lastCommitted {
 		delete(pt.inFlight, event.Pos.Offset)
+		if event.Snapshot != nil && c.db != nil {
+			if err := c.persistSnapshotOnly(ctx, event); err != nil {
+				return fmt.Errorf("persist snapshot only at offset=%d: %w", event.Pos.Offset, err)
+			}
+		}
 		return nil
 	}
 
@@ -186,13 +197,27 @@ func (c *Coordinator) MarkDoneWithSequence(ctx context.Context, event CompletedE
 					ON CONFLICT (market_id)
 					DO UPDATE SET
 						sequence   = EXCLUDED.sequence,
-						updated_at = NOW()`
-				if _, err := tx.Exec(ctx, seqQuery, ev.MarketID, ev.Sequence); err != nil {
+						updated_at = NOW()
+					WHERE market_sequences.sequence <= EXCLUDED.sequence`
+				tag, err := tx.Exec(ctx, seqQuery, ev.MarketID, ev.Sequence)
+				if err != nil {
 					return fmt.Errorf("persist market sequence for %s: %w", ev.MarketID, err)
+				}
+				if tag.String() != "" && tag.RowsAffected() == 0 {
+					return fmt.Errorf("sequence regression rejected: attempted to update market %s sequence to %d, but existing sequence is higher", ev.MarketID, ev.Sequence)
 				}
 			}
 
 			if ev.Snapshot != nil {
+				checksum := ev.Checksum
+				if len(checksum) == 0 {
+					var err error
+					checksum, err = orderbook.Checksum(*ev.Snapshot)
+					if err != nil {
+						return fmt.Errorf("calculate snapshot checksum: %w", err)
+					}
+				}
+
 				const snapQuery = `
 					INSERT INTO market_snapshots (market_id, sequence, partition, "offset", schema_version, snapshot, checksum, created_at)
 					VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
@@ -203,13 +228,19 @@ func (c *Coordinator) MarkDoneWithSequence(ctx context.Context, event CompletedE
 						schema_version = EXCLUDED.schema_version,
 						snapshot       = EXCLUDED.snapshot,
 						checksum       = EXCLUDED.checksum,
-						created_at     = NOW()`
+						created_at     = NOW()
+					WHERE market_snapshots.checksum = EXCLUDED.checksum
+					  AND market_snapshots."offset" <= EXCLUDED."offset"`
 				snapJSON, err := json.Marshal(ev.Snapshot)
 				if err != nil {
 					return fmt.Errorf("marshal snapshot struct: %w", err)
 				}
-				if _, err := tx.Exec(ctx, snapQuery, ev.MarketID, ev.Sequence, ev.Pos.Partition, ev.Pos.Offset, ev.Snapshot.SchemaVersion, snapJSON, ev.Checksum); err != nil {
+				tag, err := tx.Exec(ctx, snapQuery, ev.MarketID, ev.Sequence, ev.Pos.Partition, ev.Pos.Offset, ev.Snapshot.SchemaVersion, snapJSON, checksum)
+				if err != nil {
 					return fmt.Errorf("persist snapshot for %s: %w", ev.MarketID, err)
+				}
+				if tag.String() != "" && tag.RowsAffected() == 0 {
+					return fmt.Errorf("snapshot consistency conflict rejected for market %s sequence %d (conflicting checksum or offset regression)", ev.MarketID, ev.Sequence)
 				}
 			}
 		}
@@ -255,6 +286,70 @@ func (c *Coordinator) MarkDoneWithSequence(ctx context.Context, event CompletedE
 	}
 
 	return nil
+}
+
+func (c *Coordinator) persistSnapshotOnly(ctx context.Context, ev CompletedEvent) error {
+	tx, err := c.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if ev.MarketID != "" {
+		const seqQuery = `
+			INSERT INTO market_sequences (market_id, sequence, updated_at)
+			VALUES ($1, $2, NOW())
+			ON CONFLICT (market_id)
+			DO UPDATE SET
+				sequence   = EXCLUDED.sequence,
+				updated_at = NOW()
+			WHERE market_sequences.sequence <= EXCLUDED.sequence`
+		tag, err := tx.Exec(ctx, seqQuery, ev.MarketID, ev.Sequence)
+		if err != nil {
+			return fmt.Errorf("persist market sequence for %s: %w", ev.MarketID, err)
+		}
+		if tag.String() != "" && tag.RowsAffected() == 0 {
+			return fmt.Errorf("sequence regression rejected: attempted to update market %s sequence to %d, but existing sequence is higher", ev.MarketID, ev.Sequence)
+		}
+	}
+
+	if ev.Snapshot != nil {
+		checksum := ev.Checksum
+		if len(checksum) == 0 {
+			var err error
+			checksum, err = orderbook.Checksum(*ev.Snapshot)
+			if err != nil {
+				return fmt.Errorf("calculate snapshot checksum: %w", err)
+			}
+		}
+
+		const snapQuery = `
+			INSERT INTO market_snapshots (market_id, sequence, partition, "offset", schema_version, snapshot, checksum, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+			ON CONFLICT (market_id, sequence)
+			DO UPDATE SET
+				partition      = EXCLUDED.partition,
+				"offset"       = EXCLUDED."offset",
+				schema_version = EXCLUDED.schema_version,
+				snapshot       = EXCLUDED.snapshot,
+				checksum       = EXCLUDED.checksum,
+				created_at     = NOW()
+			WHERE market_snapshots.checksum = EXCLUDED.checksum
+			  AND market_snapshots."offset" <= EXCLUDED."offset"`
+		snapJSON, err := json.Marshal(ev.Snapshot)
+		if err != nil {
+			return fmt.Errorf("marshal snapshot struct: %w", err)
+		}
+		tag, err := tx.Exec(ctx, snapQuery, ev.MarketID, ev.Sequence, ev.Pos.Partition, ev.Pos.Offset, ev.Snapshot.SchemaVersion, snapJSON, checksum)
+		if err != nil {
+			return fmt.Errorf("persist snapshot for %s: %w", ev.MarketID, err)
+		}
+		if tag.String() != "" && tag.RowsAffected() == 0 {
+			return fmt.Errorf("snapshot consistency conflict rejected for market %s sequence %d (conflicting checksum or offset regression)", ev.MarketID, ev.Sequence)
+		}
+	}
+
+	return tx.Commit(ctx)
 }
 
 // GetCommittedOffset returns the currently committed contiguous offset for testing/observability.

@@ -61,15 +61,54 @@ func main() {
 	appLogger.Info("Starting API Gateway...")
 
 	// 2. Config
-	httpPort   := config.GetEnv("GATEWAY_PORT", ":8080")
-	authAddr   := formatTarget(config.GetEnv("AUTH_ADDR",    "127.0.0.1:50051"))
-	walletAddr := formatTarget(config.GetEnv("WALLET_ADDR", "127.0.0.1:50052"))
-	orderAddr  := formatTarget(config.GetEnv("ORDER_ADDR",  "127.0.0.1:50053"))
-	marketAddr := formatTarget(config.GetEnv("MARKET_ADDR", "127.0.0.1:50054"))
-	tradeAddr  := formatTarget(config.GetEnv("TRADE_ADDR",  "127.0.0.1:50057"))
-	portfolioAddr := formatTarget(config.GetEnv("PORTFOLIO_ADDR", "127.0.0.1:50058"))
-	notificationAddr := formatTarget(config.GetEnv("NOTIFICATION_ADDR", "127.0.0.1:50059"))
-	topupAddr := config.GetEnv("TOPUP_ADDR", "http://127.0.0.1:8084")
+	httpPort := config.GetEnv("GATEWAY_PORT", ":8080")
+
+	rawAuthAddr, err := config.GetAddress("AUTH_ADDR", "127.0.0.1:50051")
+	if err != nil {
+		appLogger.Fatal("Configuration validation failed for AUTH_ADDR", zap.Error(err))
+	}
+	authAddr := formatTarget(rawAuthAddr)
+
+	rawWalletAddr, err := config.GetAddress("WALLET_ADDR", "127.0.0.1:50052")
+	if err != nil {
+		appLogger.Fatal("Configuration validation failed for WALLET_ADDR", zap.Error(err))
+	}
+	walletAddr := formatTarget(rawWalletAddr)
+
+	rawOrderAddr, err := config.GetAddress("ORDER_ADDR", "127.0.0.1:50053")
+	if err != nil {
+		appLogger.Fatal("Configuration validation failed for ORDER_ADDR", zap.Error(err))
+	}
+	orderAddr := formatTarget(rawOrderAddr)
+
+	rawMarketAddr, err := config.GetAddress("MARKET_ADDR", "127.0.0.1:50054")
+	if err != nil {
+		appLogger.Fatal("Configuration validation failed for MARKET_ADDR", zap.Error(err))
+	}
+	marketAddr := formatTarget(rawMarketAddr)
+
+	rawTradeAddr, err := config.GetAddress("TRADE_ADDR", "127.0.0.1:50057")
+	if err != nil {
+		appLogger.Fatal("Configuration validation failed for TRADE_ADDR", zap.Error(err))
+	}
+	tradeAddr := formatTarget(rawTradeAddr)
+
+	rawPortfolioAddr, err := config.GetAddress("PORTFOLIO_ADDR", "127.0.0.1:50058")
+	if err != nil {
+		appLogger.Fatal("Configuration validation failed for PORTFOLIO_ADDR", zap.Error(err))
+	}
+	portfolioAddr := formatTarget(rawPortfolioAddr)
+
+	rawNotificationAddr, err := config.GetAddress("NOTIFICATION_ADDR", "127.0.0.1:50059")
+	if err != nil {
+		appLogger.Fatal("Configuration validation failed for NOTIFICATION_ADDR", zap.Error(err))
+	}
+	notificationAddr := formatTarget(rawNotificationAddr)
+
+	topupAddr, err := config.GetAddress("TOPUP_ADDR", "http://127.0.0.1:8084")
+	if err != nil {
+		appLogger.Fatal("Configuration validation failed for TOPUP_ADDR", zap.Error(err))
+	}
 	if !strings.HasPrefix(topupAddr, "http://") && !strings.HasPrefix(topupAddr, "https://") {
 		topupAddr = "http://" + topupAddr
 	}
@@ -84,6 +123,9 @@ func main() {
 	jwtSecretStr, err := config.GetEnvOrError("JWT_SECRET")
 	if err != nil {
 		appLogger.Fatal("JWT_SECRET is required", zap.Error(err))
+	}
+	if err := config.ValidateProductionSecret("JWT_SECRET", jwtSecretStr, "super-secret-jwt-key-tradedrift-dev-32bytes"); err != nil {
+		appLogger.Fatal("JWT_SECRET validation failed for production", zap.Error(err))
 	}
 
 	// 3. Connect to gRPC Microservices
@@ -216,6 +258,30 @@ func main() {
 	// 6. Router
 	mux := http.NewServeMux()
 
+	// Ingress Health & Readiness Probes (AWS ALB / ECS / Kubernetes)
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"alive"}`))
+	})
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"alive"}`))
+	})
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		pingCtx, pingCancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer pingCancel()
+		if err := redisClient.Ping(pingCtx).Err(); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"status":"not_ready","error":"redis unavailable"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ready"}`))
+	})
+
 	// WebSocket Gateway — RFC 6455
 	mux.HandleFunc("GET /ws", wsH.ServeWS)
 
@@ -245,6 +311,7 @@ func main() {
 
 	// TopUp — protected (JWT validated, X-User-ID injected)
 	mux.Handle("POST /api/v1/topups",            protected(http.HandlerFunc(topupH.Proxy)))
+	mux.Handle("POST /api/v1/topups/verify",     protected(http.HandlerFunc(topupH.Proxy)))
 	mux.Handle("GET /api/v1/topups",             protected(http.HandlerFunc(topupH.Proxy)))
 	mux.Handle("GET /api/v1/topups/daily-usage", protected(http.HandlerFunc(topupH.Proxy)))
 	mux.Handle("GET /api/v1/topups/{id}",        protected(http.HandlerFunc(topupH.Proxy)))

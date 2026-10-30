@@ -4,6 +4,8 @@ import (
 	"os"
 	"strconv"
 	"time"
+
+	platformconfig "tradedrift/platform/config"
 )
 
 type Config struct {
@@ -26,14 +28,14 @@ func Load() *Config {
 		port = "8084"
 	}
 
-	postgresDSN := os.Getenv("POSTGRES_DSN")
-	if postgresDSN == "" {
-		postgresDSN = "postgres://postgres:postgres@localhost:5432/tradedrift_topup?sslmode=disable"
+	postgresDSN, err := platformconfig.GetDSN("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/tradedrift_topup?sslmode=disable")
+	if err != nil {
+		panic(err)
 	}
 
-	walletGRPCAddr := os.Getenv("WALLET_GRPC_ADDR")
-	if walletGRPCAddr == "" {
-		walletGRPCAddr = "localhost:50052"
+	walletGRPCAddr, err := platformconfig.GetAddress("WALLET_GRPC_ADDR", "localhost:50052")
+	if err != nil {
+		panic(err)
 	}
 
 	dailyLimit := int64(10)
@@ -51,9 +53,6 @@ func Load() *Config {
 	rzpKeyID := os.Getenv("RAZORPAY_KEY_ID")
 	rzpKeySecret := os.Getenv("RAZORPAY_KEY_SECRET")
 	rzpWebhookSecret := os.Getenv("RAZORPAY_WEBHOOK_SECRET")
-	if rzpWebhookSecret == "" {
-		rzpWebhookSecret = webhookSecret
-	}
 
 	paymentProvider := os.Getenv("PAYMENT_PROVIDER")
 	if paymentProvider == "" {
@@ -61,6 +60,24 @@ func Load() *Config {
 			paymentProvider = "RAZORPAY"
 		} else {
 			paymentProvider = "MOCK"
+		}
+	}
+
+	// Environment mode validation: in production, fail closed if credentials/secrets are missing or mock
+	if platformconfig.IsProduction() {
+		if paymentProvider != "RAZORPAY" {
+			panic("FATAL: In production mode, PAYMENT_PROVIDER must be configured to RAZORPAY")
+		}
+		if rzpKeyID == "" || rzpKeySecret == "" {
+			panic("FATAL: In production mode, valid RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are strictly required")
+		}
+		if rzpWebhookSecret == "" || rzpWebhookSecret == "topup_mock_secret_key_12345" {
+			panic("FATAL: In production mode, a secure non-default RAZORPAY_WEBHOOK_SECRET is strictly required")
+		}
+	} else {
+		// In development/test, if RAZORPAY_WEBHOOK_SECRET is unset, fall back to webhookSecret
+		if rzpWebhookSecret == "" {
+			rzpWebhookSecret = webhookSecret
 		}
 	}
 

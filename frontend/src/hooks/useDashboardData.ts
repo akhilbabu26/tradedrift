@@ -227,16 +227,13 @@ export function useDashboardData(): UseDashboardDataReturn {
       setError(null)
 
       try {
-        // ── Step 1: Critical data — portfolio, wallet, snapshots history, live markets, and hourly candles (cached) ─
-        const candlesPromises = DASHBOARD_MARKETS.map((m) => getDashboardCandles(m.id))
-
-        const [summaryRes, holdingsRes, balancesRes, overviewRes, historyRes, candlesList] = await Promise.all([
+        // ── Step 1: Critical data — portfolio, wallet, snapshots history, and live markets overview ─
+        const [summaryRes, holdingsRes, balancesRes, overviewRes, historyRes] = await Promise.all([
           portfolioApi.getSummary(),
           portfolioApi.getHoldings().catch(() => ({ userId: '', holdings: [] })),
           walletApi.getAllBalances().catch(() => []),
           marketApi.getMarketsOverview().catch(() => [] as MarketOverview[]),
           portfolioApi.getHistory('7D').catch(() => ({ userId: '', timeframe: '7D', points: [] })),
-          Promise.all(candlesPromises),
         ])
 
       // Map market overview data into lookup records
@@ -322,29 +319,18 @@ export function useDashboardData(): UseDashboardDataReturn {
         }
       })
 
-      // ── Market Pulse rows with authentic trend coverage ───────────────────
-      const marketRows: MarketRow[] = DASHBOARD_MARKETS.map((m, idx) => {
+      // ── Market Pulse rows with authentic shared overview trend ───────────────────
+      const marketRows: MarketRow[] = DASHBOARD_MARKETS.map((m) => {
         const ov = overviewMap[m.id]
         const price = livePrices.current[m.asset] || ov?.last_price || '--'
         const changeStr = livePrices.current[`${m.asset}_change`] || ov?.price_change_24h_percent || '0'
 
-        // Evaluate genuine coverage using timestamp span from 1h candles
-        const candles = candlesList[idx] || []
-        const candleCloses = candles.length > 0 ? candles.map((c) => c.close) : (ov?.trend || [])
-        const startCandle = candles[0]
-        const endCandle = candles[candles.length - 1]
-
-        const coverage = evaluateTrendCoverage(
-          candleCloses.length,
-          startCandle?.start_time,
-          endCandle?.start_time
-        )
-
-        // Draw sparkline with genuine available candle observations
-        const sparklinePoints = candleCloses.length > 0
-          ? candleCloses.map((c) => parseFloat(String(c))).filter((v) => !isNaN(v) && isFinite(v) && v > 0)
+        // Draw sparkline with genuine available candle observations from overview
+        const sparklinePoints = (ov?.trend && ov.trend.length > 0)
+          ? ov.trend.map((c) => parseFloat(String(c))).filter((v) => !isNaN(v) && isFinite(v) && v > 0)
           : []
 
+        const coverage = evaluateTrendCoverage(sparklinePoints.length)
         const quoteVolNum = ov?.quote_volume_24h ? parseFloat(ov.quote_volume_24h) : 0
 
         return {
@@ -618,9 +604,13 @@ export function useDashboardData(): UseDashboardDataReturn {
           const numPrice = parseFloat(price || '0')
           let updatedSparkline = row.sparklinePoints
           if (updatedSparkline && updatedSparkline.length > 0 && numPrice > 0) {
-            const lastIdx = updatedSparkline.length - 1
-            if (updatedSparkline[lastIdx] !== numPrice) {
-              updatedSparkline = [...updatedSparkline.slice(0, lastIdx), numPrice]
+            if (updatedSparkline.length === 1 && updatedSparkline[0] !== numPrice) {
+              updatedSparkline = [...updatedSparkline, numPrice]
+            } else {
+              const lastIdx = updatedSparkline.length - 1
+              if (updatedSparkline[lastIdx] !== numPrice) {
+                updatedSparkline = [...updatedSparkline.slice(0, lastIdx), numPrice]
+              }
             }
           }
           return {

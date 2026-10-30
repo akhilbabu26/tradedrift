@@ -39,7 +39,7 @@ WORKDIR /app
 COPY --from=builder /wallet-topup-server ./wallet-topup-server
 
 # Copy migration files so the service can run them at startup
-COPY services/admin/            ./services/admin/
+
 COPY services/wallet-topup/migrations/ ./migrations/
 
 EXPOSE 8084

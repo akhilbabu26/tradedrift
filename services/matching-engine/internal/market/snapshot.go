@@ -23,10 +23,10 @@ type MMOrderSummary struct {
 
 type MarketSnapshot struct {
 	MarketID   string           `json:"market_id"`
-	State      string           `json:"state"`       // "LIVE" | "RECOVERING"
+	State      string           `json:"state"`       // "LIVE" | "RECOVERING" | "BLOCKED"
 	Sequence   uint64           `json:"sequence"`    // Monotonically increasing sequence
 	SnapshotAt time.Time        `json:"snapshot_at"` // Coherent point-in-time timestamp
-	Orders     []MMOrderSummary `json:"orders"`      // null when RECOVERING; [] when empty; list when resting
+	Orders     []MMOrderSummary `json:"orders"`      // null when RECOVERING/BLOCKED; [] when empty; list when resting
 }
 
 func parseMMClientOrderID(coid string) (levelID string, gen uint64) {
@@ -53,12 +53,17 @@ func (m *MarketEngine) GetSnapshot() *MarketSnapshot {
 // PublishAtomicSnapshot builds an immutable snapshot from the current book state and stores it atomically.
 // Safe to call from the single-threaded event loop or before Run().
 func (m *MarketEngine) PublishAtomicSnapshot() {
+	currMode := m.Mode()
 	state := "RECOVERING"
-	if m.mode == ModeLive {
+	if currMode == ModeLive {
 		state = "LIVE"
+	} else if currMode == ModeBlocked {
+		state = "BLOCKED"
+	} else if currMode == ModeReconciling {
+		state = "RECONCILING"
 	}
 
-	if m.mode != ModeLive {
+	if currMode != ModeLive {
 		m.snapshot.Store(&MarketSnapshot{
 			MarketID:   m.MarketID,
 			State:      state,

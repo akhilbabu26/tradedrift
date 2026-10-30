@@ -13,6 +13,8 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/health"
+	healthgrpc "google.golang.org/grpc/health/grpc_health_v1"
 
 	authv1 "tradedrift/platform/api/gen/auth/v1"
 	walletv1 "tradedrift/platform/api/gen/wallet/v1"
@@ -57,8 +59,14 @@ func main() {
 	appLogger.Info("Starting Authentication Service...")
 
 	// 2. Load configurations using platform config
-	dbDSN := config.GetEnv("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/tradedrift?sslmode=disable")
-	redisAddr := config.GetEnv("REDIS_ADDR", "localhost:6379")
+	dbDSN, err := config.GetDSN("POSTGRES_DSN", "postgres://postgres:postgres@localhost:5432/tradedrift?sslmode=disable")
+	if err != nil {
+		appLogger.Fatal("POSTGRES_DSN configuration validation failed", zap.Error(err))
+	}
+	redisAddr, err := config.GetAddress("REDIS_ADDR", "localhost:6379")
+	if err != nil {
+		appLogger.Fatal("REDIS_ADDR configuration validation failed", zap.Error(err))
+	}
 	redisSentinelMaster := config.GetEnv("REDIS_SENTINEL_MASTER", "")
 	grpcPort := config.GetEnv("PORT", ":50051")
 	migrationDir := config.GetEnv("MIGRATIONS_DIR", "services/auth/migrations")
@@ -74,6 +82,9 @@ func main() {
 	jwtSecretStr, err := config.GetEnvOrError("JWT_SECRET")
 	if err != nil {
 		appLogger.Fatal("Configuration validation failed", zap.Error(err))
+	}
+	if err := config.ValidateProductionSecret("JWT_SECRET", jwtSecretStr, "super-secret-jwt-key-tradedrift-dev-32bytes"); err != nil {
+		appLogger.Fatal("JWT_SECRET validation failed for production", zap.Error(err))
 	}
 	jwtSecret := []byte(jwtSecretStr)
 
@@ -174,6 +185,10 @@ func main() {
 		"/tradedrift.auth.v1.AuthService/SuspendUser":            true,
 		"/tradedrift.auth.v1.AuthService/UnsuspendUser":          true,
 		"/tradedrift.auth.v1.AuthService/ListSuspendedUsers":     true,
+
+		// Standard gRPC Health Checking Protocol (AWS ALB / Kubernetes probes)
+		"/grpc.health.v1.Health/Check": true,
+		"/grpc.health.v1.Health/Watch": true,
 	}
 
 	authInterceptor := platformgrpc.UnaryAuthInterceptor(redisValidator, publicMethods)
@@ -191,6 +206,12 @@ func main() {
 	grpcHandler := handler.NewGRPCHandler(authService, appLogger)
 	authv1.RegisterAuthServiceServer(grpcServer, grpcHandler)
 
+	// Register standard gRPC health check service
+	healthServer := health.NewServer()
+	healthgrpc.RegisterHealthServer(grpcServer, healthServer)
+	healthServer.SetServingStatus("", healthgrpc.HealthCheckResponse_SERVING)
+	healthServer.SetServingStatus("tradedrift.auth.v1.AuthService", healthgrpc.HealthCheckResponse_SERVING)
+
 	// 10. Handle Graceful Shutdown
 	go func() {
 		sigChan := make(chan os.Signal, 1)
@@ -198,6 +219,8 @@ func main() {
 		<-sigChan
 
 		appLogger.Info("Stopping background workers and gRPC server gracefully...")
+		healthServer.SetServingStatus("", healthgrpc.HealthCheckResponse_NOT_SERVING)
+		healthServer.SetServingStatus("tradedrift.auth.v1.AuthService", healthgrpc.HealthCheckResponse_NOT_SERVING)
 		reconcilerCancel()
 		walletReconciler.Wait()
 		grpcServer.GracefulStop()

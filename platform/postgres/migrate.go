@@ -91,3 +91,17 @@ func MigrationStatus(dsn string, migrationsDir string) error {
 
 	return nil
 }
+
+// VerifyConnection opens a connection to the PostgreSQL database and pings it.
+func VerifyConnection(dsn string) error {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return fmt.Errorf("failed to open sql connection: %w", err)
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		return fmt.Errorf("failed to ping postgres database: %w", err)
+	}
+	return nil
+}

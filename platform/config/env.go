@@ -8,8 +8,8 @@ import (
 	"time"
 )
 
-// LoadEnv reads one or more .env files and populates unset environment variables.
-// Existing environment variables (e.g. from Docker) are preserved and never overwritten.
+// LoadEnv reads one or more .env files and populates unset or empty environment variables.
+// Existing non-empty environment variables (e.g. from Docker) are preserved and never overwritten.
 // It silently ignores missing files.
 func LoadEnv(filenames ...string) {
 	if len(filenames) == 0 {
@@ -34,7 +34,8 @@ func LoadEnv(filenames ...string) {
 					val = val[1 : len(val)-1]
 				}
 				if key != "" {
-					if _, exists := os.LookupEnv(key); !exists {
+					existing, exists := os.LookupEnv(key)
+					if !exists || strings.TrimSpace(existing) == "" {
 						_ = os.Setenv(key, val)
 					}
 				}
@@ -118,10 +119,12 @@ func ValidateLogLevel(level string) error {
 }
 
 // IsProduction reports whether the environment is configured as production.
-// Checks ENV and APP_ENV for "production" or "prod" (case-insensitive).
+// Checks ENV and APP_ENV for "production" or "prod" (case-insensitive, trimmed).
+// Fails safe: if either variable indicates production, production restrictions apply.
 func IsProduction() bool {
-	env := strings.ToLower(GetEnv("ENV", GetEnv("APP_ENV", "")))
-	return env == "production" || env == "prod"
+	env := strings.ToLower(GetEnv("ENV", ""))
+	appEnv := strings.ToLower(GetEnv("APP_ENV", ""))
+	return env == "production" || env == "prod" || appEnv == "production" || appEnv == "prod"
 }
 
 // GetAddress retrieves a network address from an environment variable.

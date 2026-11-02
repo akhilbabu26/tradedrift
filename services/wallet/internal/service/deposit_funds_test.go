@@ -115,11 +115,10 @@ func TestDepositFunds_InputValidation(t *testing.T) {
 }
 
 func TestDepositFunds_RejectsUninitializedWallet(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -135,11 +134,10 @@ func TestDepositFunds_RejectsUninitializedWallet(t *testing.T) {
 }
 
 func TestDepositFunds_AssetValidation(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -164,11 +162,10 @@ func TestDepositFunds_AssetValidation(t *testing.T) {
 }
 
 func TestDepositFunds_WalletScopedIdempotency(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())

@@ -2,6 +2,7 @@ package publisher_test
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -13,53 +14,52 @@ import (
 	"tradedrift/services/wallet/internal/publisher"
 	"tradedrift/services/wallet/internal/repository"
 	"tradedrift/services/wallet/internal/repository/postgres"
+	"tradedrift/services/wallet/internal/testhelper"
 )
 
-func getPublisherTestPool(t *testing.T) (*pgxpool.Pool, func()) {
-	dsn := os.Getenv("WALLET_TEST_DSN")
-	if dsn == "" {
-		dsn = "postgres://postgres:123@localhost:5432/tradedrift_wallet?sslmode=disable"
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	pool, err := pgxpool.New(ctx, dsn)
+func TestMain(m *testing.M) {
+	unlock, err := testhelper.AcquireTestLock()
 	if err != nil {
-		t.Skipf("Skipping postgres integration tests: cannot connect to %s: %v", dsn, err)
-		return nil, nil
+		fmt.Fprintf(os.Stderr, "FATAL: wallet publisher test lock setup failed: %v\n", err)
+		os.Exit(1)
 	}
+	code := m.Run()
+	unlock()
+	os.Exit(code)
+}
 
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("Skipping postgres integration tests: ping failed to %s: %v", dsn, err)
-		return nil, nil
-	}
-
-	cleanup := func() {
-		pool.Close()
-	}
-
-	return pool, cleanup
+func getPublisherTestPool(t *testing.T) *pgxpool.Pool {
+	return testhelper.GetTestPool(t)
 }
 
 func TestPublisher_TransientKafkaErrorReleasesClaim(t *testing.T) {
-	pool, cleanup := getPublisherTestPool(t)
+	pool := getPublisherTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	outboxRepo := postgres.NewOutboxRepository(pool)
 
-	// Clean outbox table to prevent cross-package test interference
-	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
+	eventID, err := platformuuid.New()
+	if err != nil {
+		t.Fatalf("failed to generate event id: %v", err)
+	}
+	aggregateID, err := platformuuid.New()
+	if err != nil {
+		t.Fatalf("failed to generate aggregate id: %v", err)
+	}
 
-	eventID, _ := platformuuid.New()
-	aggregateID, _ := platformuuid.New()
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE id = $1", eventID); err != nil {
+			t.Errorf("cleanup event %s failed: %v", eventID, err)
+		}
+	})
 
 	// Insert test outbox event
-	err := outboxRepo.Insert(ctx, &repository.OutboxEvent{
+	err = outboxRepo.Insert(ctx, &repository.OutboxEvent{
 		ID:           eventID,
 		AggregateID:  aggregateID,
 		EventType:    "TradeSettled",
@@ -111,26 +111,42 @@ func TestPublisher_TransientKafkaErrorReleasesClaim(t *testing.T) {
 }
 
 func TestPublisher_StopsAfterTransientFailure(t *testing.T) {
-	pool, cleanup := getPublisherTestPool(t)
+	pool := getPublisherTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	outboxRepo := postgres.NewOutboxRepository(pool)
 
-	// Clean outbox table to prevent cross-package test interference
-	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
-
 	now := time.Now().UTC()
-	eventID1, _ := platformuuid.New()
-	eventID2, _ := platformuuid.New()
-	aggID1, _ := platformuuid.New()
-	aggID2, _ := platformuuid.New()
+	eventID1, err := platformuuid.New()
+	if err != nil {
+		t.Fatalf("failed to generate event id 1: %v", err)
+	}
+	eventID2, err := platformuuid.New()
+	if err != nil {
+		t.Fatalf("failed to generate event id 2: %v", err)
+	}
+	aggID1, err := platformuuid.New()
+	if err != nil {
+		t.Fatalf("failed to generate aggregate id 1: %v", err)
+	}
+	aggID2, err := platformuuid.New()
+	if err != nil {
+		t.Fatalf("failed to generate aggregate id 2: %v", err)
+	}
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE id IN ($1, $2)", eventID1, eventID2); err != nil {
+			t.Errorf("cleanup events %s, %s failed: %v", eventID1, eventID2, err)
+		}
+	})
 
 	// Insert Event 1 and Event 2 for the same user partition key
-	err := outboxRepo.Insert(ctx, &repository.OutboxEvent{
+	err = outboxRepo.Insert(ctx, &repository.OutboxEvent{
 		ID:           eventID1,
 		AggregateID:  aggID1,
 		EventType:    "TradeSettled",

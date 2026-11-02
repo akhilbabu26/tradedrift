@@ -15,11 +15,10 @@ import (
 )
 
 func TestReserveFunds_IdempotentReturn(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -86,11 +85,10 @@ func TestReserveFunds_IdempotentReturn(t *testing.T) {
 }
 
 func TestReserveFunds_ConcurrentSameOrderID(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -186,11 +184,10 @@ func TestReserveFunds_ConcurrentSameOrderID(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestReserveFunds_RejectsConflictingIdentity(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -236,11 +233,10 @@ func TestReserveFunds_RejectsConflictingIdentity(t *testing.T) {
 }
 
 func TestReserveFunds_RejectsReleasedReuse(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -283,11 +279,10 @@ func TestReserveFunds_RejectsReleasedReuse(t *testing.T) {
 }
 
 func TestReserveFunds_RejectsConsumedReuse(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -325,11 +320,10 @@ func TestReserveFunds_RejectsConsumedReuse(t *testing.T) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestReserveFunds_RejectsNegativeAmount(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	svc := service.NewService(pool, zap.NewNop())
 	ctx := context.Background()
@@ -345,11 +339,10 @@ func TestReserveFunds_RejectsNegativeAmount(t *testing.T) {
 }
 
 func TestReserveFunds_RejectsZeroAmount(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	svc := service.NewService(pool, zap.NewNop())
 	ctx := context.Background()
@@ -365,11 +358,10 @@ func TestReserveFunds_RejectsZeroAmount(t *testing.T) {
 }
 
 func TestReserveFunds_RejectsExcessAssetPrecision(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -396,11 +388,10 @@ func TestReserveFunds_RejectsExcessAssetPrecision(t *testing.T) {
 }
 
 func TestReserveFunds_AcceptsTrailingZerosWithinAssetPrecision(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())

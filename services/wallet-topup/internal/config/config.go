@@ -63,16 +63,26 @@ func Load() *Config {
 		}
 	}
 
-	// Environment mode validation: in production, fail closed if credentials/secrets are missing or mock
+	// Environment mode validation:
 	if platformconfig.IsProduction() {
-		if paymentProvider != "RAZORPAY" {
-			panic("FATAL: In production mode, PAYMENT_PROVIDER must be configured to RAZORPAY")
-		}
-		if rzpKeyID == "" || rzpKeySecret == "" {
-			panic("FATAL: In production mode, valid RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are strictly required")
-		}
-		if rzpWebhookSecret == "" || rzpWebhookSecret == "topup_mock_secret_key_12345" {
-			panic("FATAL: In production mode, a secure non-default RAZORPAY_WEBHOOK_SECRET is strictly required")
+		switch paymentProvider {
+		case "RAZORPAY":
+			if rzpKeyID == "" || rzpKeySecret == "" {
+				panic("FATAL: In production mode with RAZORPAY, valid RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are strictly required")
+			}
+			if rzpWebhookSecret == "" || rzpWebhookSecret == "topup_mock_secret_key_12345" {
+				panic("FATAL: In production mode with RAZORPAY, a secure non-default RAZORPAY_WEBHOOK_SECRET is strictly required")
+			}
+		case "MOCK":
+			// In production demo/simulator mode, mock payments are allowed, but must not use the insecure dev fallback secret
+			if webhookSecret == "topup_mock_secret_key_12345" {
+				panic("FATAL: In production mode with MOCK provider, a secure non-default WEBHOOK_SECRET is strictly required")
+			}
+			if rzpWebhookSecret == "" {
+				rzpWebhookSecret = webhookSecret
+			}
+		default:
+			panic("FATAL: Invalid PAYMENT_PROVIDER: must be RAZORPAY or MOCK")
 		}
 	} else {
 		// In development/test, if RAZORPAY_WEBHOOK_SECRET is unset, fall back to webhookSecret

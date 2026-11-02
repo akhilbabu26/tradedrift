@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,35 +17,21 @@ import (
 	platformuuid "tradedrift/platform/uuid"
 	"tradedrift/services/wallet/internal/repository"
 	"tradedrift/services/wallet/internal/service"
+	"tradedrift/services/wallet/internal/testhelper"
 )
 
-func getWalletServiceTestPool(t *testing.T) (*pgxpool.Pool, func()) {
-	dsn := os.Getenv("WALLET_TEST_DSN")
-	if dsn == "" {
-		dsn = "postgres://postgres:123@localhost:5432/tradedrift_wallet?sslmode=disable"
-	}
+var testSeqCounter atomic.Uint64
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+func init() {
+	testSeqCounter.Store(uint64(time.Now().UnixNano() / 1e6))
+}
 
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Skipf("Skipping postgres integration tests: cannot connect to %s: %v", dsn, err)
-		return nil, nil
-	}
+func nextTestSequence() uint64 {
+	return testSeqCounter.Add(1)
+}
 
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("Skipping postgres integration tests: ping failed to %s: %v", dsn, err)
-		return nil, nil
-	}
-
-	_, _ = pool.Exec(ctx, "DELETE FROM settled_trades")
-
-	cleanup := func() {
-		pool.Close()
-	}
-
-	return pool, cleanup
+func getWalletServiceTestPool(t *testing.T) *pgxpool.Pool {
+	return testhelper.GetTestPool(t)
 }
 
 // setupTestWalletsAndReservation creates:
@@ -61,8 +46,6 @@ func setupTestWalletsAndReservation(
 	buyerID, sellerID, buyOrderID, sellerOrderID string,
 	sellerReservedBTC, buyerReservedUSDT string,
 ) {
-	_, _ = pool.Exec(ctx, "DELETE FROM settled_trades")
-
 	// 1. Buyer BTC wallet
 	buyerBTCWalletID, _ := platformuuid.New()
 	_, err := pool.Exec(ctx, `
@@ -131,11 +114,10 @@ func setupTestWalletsAndReservation(
 }
 
 func TestSettleTrade_TransfersBothAssets(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -145,6 +127,17 @@ func TestSettleTrade_TransfersBothAssets(t *testing.T) {
 	buyOrderID, _ := platformuuid.New()
 	sellerOrderID, _ := platformuuid.New()
 	tradeID, _ := platformuuid.New()
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE aggregate_id = $1", tradeID); err != nil {
+			t.Errorf("cleanup outbox failed: %v", err)
+		}
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM settled_trades WHERE trade_id = $1", tradeID); err != nil {
+			t.Errorf("cleanup settled_trades failed: %v", err)
+		}
+	})
 
 	setupTestWalletsAndReservation(t, ctx, pool, buyerID, sellerID, buyOrderID, sellerOrderID, "1.0000000000", "50000.0000000000")
 
@@ -161,7 +154,7 @@ func TestSettleTrade_TransfersBothAssets(t *testing.T) {
 		QuoteAmount:   "50000.0000000000",
 		Price:         "50000.0000000000",
 		Quantity:      "1.0000000000",
-		Sequence:      1,
+		Sequence:      nextTestSequence(),
 		ExecutedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
@@ -235,11 +228,10 @@ func TestSettleTrade_TransfersBothAssets(t *testing.T) {
 }
 
 func TestSettleTrade_CreatesThreeOutboxEvents(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -249,6 +241,17 @@ func TestSettleTrade_CreatesThreeOutboxEvents(t *testing.T) {
 	buyOrderID, _ := platformuuid.New()
 	sellerOrderID, _ := platformuuid.New()
 	tradeID, _ := platformuuid.New()
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE aggregate_id = $1", tradeID); err != nil {
+			t.Errorf("cleanup outbox failed: %v", err)
+		}
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM settled_trades WHERE trade_id = $1", tradeID); err != nil {
+			t.Errorf("cleanup settled_trades failed: %v", err)
+		}
+	})
 
 	setupTestWalletsAndReservation(t, ctx, pool, buyerID, sellerID, buyOrderID, sellerOrderID, "1.0000000000", "50000.0000000000")
 
@@ -265,7 +268,7 @@ func TestSettleTrade_CreatesThreeOutboxEvents(t *testing.T) {
 		QuoteAmount:   "50000.0000000000",
 		Price:         "50000.0000000000",
 		Quantity:      "1.0000000000",
-		Sequence:      1,
+		Sequence:      nextTestSequence(),
 		ExecutedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
@@ -325,11 +328,10 @@ func TestSettleTrade_CreatesThreeOutboxEvents(t *testing.T) {
 }
 
 func TestSettleTrade_AtomicRollbackOnBuyerCreditFailure(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -361,7 +363,7 @@ func TestSettleTrade_AtomicRollbackOnBuyerCreditFailure(t *testing.T) {
 		QuoteAmount:   "50000.0000000000",
 		Price:         "50000.0000000000",
 		Quantity:      "1.0000000000",
-		Sequence:      1,
+		Sequence:      nextTestSequence(),
 		ExecutedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
@@ -415,11 +417,10 @@ func TestSettleTrade_AtomicRollbackOnBuyerCreditFailure(t *testing.T) {
 }
 
 func TestSettleTrade_ConcurrentPartialFills(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -468,6 +469,17 @@ func TestSettleTrade_ConcurrentPartialFills(t *testing.T) {
 	trade1ID, _ := platformuuid.New()
 	trade2ID, _ := platformuuid.New()
 
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE aggregate_id IN ($1, $2)", trade1ID, trade2ID); err != nil {
+			t.Errorf("cleanup outbox failed: %v", err)
+		}
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM settled_trades WHERE trade_id IN ($1, $2)", trade1ID, trade2ID); err != nil {
+			t.Errorf("cleanup settled_trades failed: %v", err)
+		}
+	})
+
 	// Both concurrent trades attempt to settle 0.6 BTC against the 1.0 BTC seller reservation
 	// Exactly one must succeed and the second must fail with ErrInsufficientReservation
 	req1 := service.TradeSettlementRequest{
@@ -483,7 +495,7 @@ func TestSettleTrade_ConcurrentPartialFills(t *testing.T) {
 		QuoteAmount:   "30000.0000000000",
 		Price:         "50000.0000000000",
 		Quantity:      "0.6000000000",
-		Sequence:      1,
+		Sequence:      nextTestSequence(),
 		ExecutedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
@@ -500,7 +512,7 @@ func TestSettleTrade_ConcurrentPartialFills(t *testing.T) {
 		QuoteAmount:   "30000.0000000000",
 		Price:         "50000.0000000000",
 		Quantity:      "0.6000000000",
-		Sequence:      2,
+		Sequence:      nextTestSequence(),
 		ExecutedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
@@ -547,11 +559,10 @@ func TestSettleTrade_ConcurrentPartialFills(t *testing.T) {
 }
 
 func TestSettleTrade_ConcurrentSameTradeID(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -561,6 +572,17 @@ func TestSettleTrade_ConcurrentSameTradeID(t *testing.T) {
 	buyOrderID, _ := platformuuid.New()
 	sellerOrderID, _ := platformuuid.New()
 	sharedTradeID, _ := platformuuid.New()
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE aggregate_id = $1", sharedTradeID); err != nil {
+			t.Errorf("cleanup outbox failed: %v", err)
+		}
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM settled_trades WHERE trade_id = $1", sharedTradeID); err != nil {
+			t.Errorf("cleanup settled_trades failed: %v", err)
+		}
+	})
 
 	setupTestWalletsAndReservation(t, ctx, pool, buyerID, sellerID, buyOrderID, sellerOrderID, "1.0000000000", "50000.0000000000")
 
@@ -577,7 +599,7 @@ func TestSettleTrade_ConcurrentSameTradeID(t *testing.T) {
 		QuoteAmount:   "50000.0000000000",
 		Price:         "50000.0000000000",
 		Quantity:      "1.0000000000",
-		Sequence:      1,
+		Sequence:      nextTestSequence(),
 		ExecutedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
@@ -657,11 +679,10 @@ func TestSettleTrade_ConcurrentSameTradeID(t *testing.T) {
 }
 
 func TestSettleTrade_AtomicRollbackOnOutboxFailure(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -675,12 +696,13 @@ func TestSettleTrade_AtomicRollbackOnOutboxFailure(t *testing.T) {
 	setupTestWalletsAndReservation(t, ctx, pool, buyerID, sellerID, buyOrderID, sellerOrderID, "1.0000000000", "50000.0000000000")
 
 	// Create a temporary PostgreSQL trigger that fails ONLY on the 3rd outbox event (PortfolioUserTrade with role=SELL)
+	// scoped strictly to this test's tradeID to guarantee zero interference with concurrent tests.
 	// This simulates a failure occurring after balances debited/credited, ledger written, TradeSettled inserted, and BUY leg inserted.
 	_, err := pool.Exec(ctx, `
 		CREATE OR REPLACE FUNCTION test_fail_outbox_seller_leg()
 		RETURNS TRIGGER AS $$
 		BEGIN
-			IF NEW.event_type = 'PortfolioUserTrade' AND (NEW.payload->>'role') = 'SELL' THEN
+			IF NEW.aggregate_id = '`+tradeID+`' AND NEW.event_type = 'PortfolioUserTrade' AND (NEW.payload->>'role') = 'SELL' THEN
 				RAISE EXCEPTION 'simulated outbox insertion failure on seller leg';
 			END IF;
 			RETURN NEW;
@@ -696,12 +718,14 @@ func TestSettleTrade_AtomicRollbackOnOutboxFailure(t *testing.T) {
 		t.Fatalf("failed to create test failure trigger: %v", err)
 	}
 
-	defer func() {
-		pool.Exec(context.Background(), `
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_, _ = pool.Exec(cleanupCtx, `
 			DROP TRIGGER IF EXISTS trg_test_fail_outbox ON outbox;
 			DROP FUNCTION IF EXISTS test_fail_outbox_seller_leg();
 		`)
-	}()
+	})
 
 	req := service.TradeSettlementRequest{
 		TradeID:       tradeID,
@@ -716,7 +740,7 @@ func TestSettleTrade_AtomicRollbackOnOutboxFailure(t *testing.T) {
 		QuoteAmount:   "50000.0000000000",
 		Price:         "50000.0000000000",
 		Quantity:      "1.0000000000",
-		Sequence:      1,
+		Sequence:      nextTestSequence(),
 		ExecutedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
@@ -787,11 +811,10 @@ func TestSettleTrade_AtomicRollbackOnOutboxFailure(t *testing.T) {
 // where QuoteAmount does not match Price × Quantity, before touching any database state.
 // This is the critical financial boundary guard: a caller cannot under/over-pay the seller.
 func TestSettleTrade_RejectsQuoteAmountMismatch(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -818,7 +841,7 @@ func TestSettleTrade_RejectsQuoteAmountMismatch(t *testing.T) {
 		QuoteAmount:   "49000.0000000000", // ❌ Wrong: should be 50000
 		Price:         "50000.0000000000",
 		Quantity:      "1.0000000000",
-		Sequence:      1,
+		Sequence:      nextTestSequence(),
 		ExecutedAt:    time.Now().UTC().Format(time.RFC3339Nano),
 	}
 
@@ -855,11 +878,10 @@ func TestSettleTrade_RejectsQuoteAmountMismatch(t *testing.T) {
 // TestSettleTrade_RejectsNonDecimalAmount verifies that SettleTrade rejects requests with
 // non-parsable decimal values ("abc", "1e5", ".", " 1 ") before any DB mutation.
 func TestSettleTrade_RejectsNonDecimalAmount(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -917,11 +939,10 @@ func TestSettleTrade_RejectsNonDecimalAmount(t *testing.T) {
 // TestSettleTrade_RejectsExcessiveDecimalScale verifies that amounts with more than 10 decimal places
 // are rejected before any DB mutation, matching DECIMAL(30,10) column precision.
 func TestSettleTrade_RejectsExcessiveDecimalScale(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -967,11 +988,10 @@ func TestSettleTrade_RejectsExcessiveDecimalScale(t *testing.T) {
 // With deterministic locking, both transactions acquire the wallet locks in the same id-sorted order,
 // so one waits for the other instead of deadlocking.
 func TestSettleTrade_ConcurrentCrossedWallets(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -988,6 +1008,17 @@ func TestSettleTrade_ConcurrentCrossedWallets(t *testing.T) {
 	buyOrderID2, _ := platformuuid.New()
 	sellerOrderID2, _ := platformuuid.New()
 	tradeID2, _ := platformuuid.New()
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE aggregate_id IN ($1, $2)", tradeID1, tradeID2); err != nil {
+			t.Errorf("cleanup outbox failed: %v", err)
+		}
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM settled_trades WHERE trade_id IN ($1, $2)", tradeID1, tradeID2); err != nil {
+			t.Errorf("cleanup settled_trades failed: %v", err)
+		}
+	})
 
 	// Setup wallets with enough reserved balance for both trades.
 	// Seller has 1.0 BTC reserved (0.5 for each trade), buyer has 100000 USDT reserved.
@@ -1030,7 +1061,7 @@ func TestSettleTrade_ConcurrentCrossedWallets(t *testing.T) {
 		MarketID: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 		BaseAmount: "0.5000000000", QuoteAmount: "25000.0000000000",
 		Price: "50000.0000000000", Quantity: "0.5000000000",
-		Sequence: 1, ExecutedAt: now,
+		Sequence: nextTestSequence(), ExecutedAt: now,
 	}
 	req2 := service.TradeSettlementRequest{
 		TradeID: tradeID2, BuyerUserID: buyerID, SellerUserID: sellerID,
@@ -1038,7 +1069,7 @@ func TestSettleTrade_ConcurrentCrossedWallets(t *testing.T) {
 		MarketID: "BTC-USDT", BaseAsset: "BTC", QuoteAsset: "USDT",
 		BaseAmount: "0.5000000000", QuoteAmount: "25000.0000000000",
 		Price: "50000.0000000000", Quantity: "0.5000000000",
-		Sequence: 2, ExecutedAt: now,
+		Sequence: nextTestSequence(), ExecutedAt: now,
 	}
 
 	var wg sync.WaitGroup
@@ -1077,11 +1108,10 @@ func TestSettleTrade_ConcurrentCrossedWallets(t *testing.T) {
 }
 
 func TestSettleTrade_RejectsConflictingTradeIDMetadata(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -1092,8 +1122,20 @@ func TestSettleTrade_RejectsConflictingTradeIDMetadata(t *testing.T) {
 	sellerOrderID, _ := platformuuid.New()
 	tradeID, _ := platformuuid.New()
 
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE aggregate_id = $1", tradeID); err != nil {
+			t.Errorf("cleanup outbox failed: %v", err)
+		}
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM settled_trades WHERE trade_id = $1", tradeID); err != nil {
+			t.Errorf("cleanup settled_trades failed: %v", err)
+		}
+	})
+
 	setupTestWalletsAndReservation(t, ctx, pool, buyerID, sellerID, buyOrderID, sellerOrderID, "1.0000000000", "50000.0000000000")
 
+	seq := nextTestSequence()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	req := service.TradeSettlementRequest{
 		TradeID:       tradeID,
@@ -1108,7 +1150,7 @@ func TestSettleTrade_RejectsConflictingTradeIDMetadata(t *testing.T) {
 		QuoteAmount:   "25000.0000000000",
 		Price:         "50000.0000000000",
 		Quantity:      "0.5000000000",
-		Sequence:      1,
+		Sequence:      seq,
 		ExecutedAt:    now,
 	}
 
@@ -1136,7 +1178,7 @@ func TestSettleTrade_RejectsConflictingTradeIDMetadata(t *testing.T) {
 
 	// Replay with different Sequence MUST also fail with ErrSettlementConflict
 	conflictingSeqReq := req
-	conflictingSeqReq.Sequence = 999
+	conflictingSeqReq.Sequence = seq + 999
 	err = svc.SettleTrade(ctx, conflictingSeqReq)
 	if err == nil {
 		t.Fatalf("expected ErrSettlementConflict for mismatched Sequence, got nil")

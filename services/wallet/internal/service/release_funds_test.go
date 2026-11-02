@@ -14,11 +14,10 @@ import (
 )
 
 func TestReleaseFunds_IdempotentOnAlreadyReleased(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -94,11 +93,10 @@ func TestReleaseFunds_IdempotentOnAlreadyReleased(t *testing.T) {
 }
 
 func TestReleaseFunds_Concurrent(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -186,11 +184,10 @@ func TestReleaseFunds_Concurrent(t *testing.T) {
 }
 
 func TestReleaseFunds_PartiallyConsumedReturnsRemaining(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())
@@ -239,11 +236,10 @@ func TestReleaseFunds_PartiallyConsumedReturnsRemaining(t *testing.T) {
 }
 
 func TestReleaseFunds_ZeroRemainingNoOp(t *testing.T) {
-	pool, cleanup := getWalletServiceTestPool(t)
+	pool := getWalletServiceTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	svc := service.NewService(pool, zap.NewNop())

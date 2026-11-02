@@ -59,6 +59,11 @@ func NewHandler(targetURL *url.URL, log *zap.Logger) *Handler {
 	return &Handler{proxy: proxy}
 }
 
+// SetTransport sets a custom RoundTripper for the reverse proxy (useful for testing and mTLS).
+func (h *Handler) SetTransport(rt http.RoundTripper) {
+	h.proxy.Transport = rt
+}
+
 // Proxy forwards the HTTP request to the wallet-topup service.
 func (h *Handler) Proxy(w http.ResponseWriter, r *http.Request) {
 	h.proxy.ServeHTTP(w, r)

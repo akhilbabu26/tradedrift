@@ -33,6 +33,7 @@ func TestTopUpProxy_InjectsAndSanitizesXUserID(t *testing.T) {
 
 	logger := zap.NewNop()
 	proxyHandler := topup.NewHandler(targetURL, logger)
+	proxyHandler.SetTransport(upstream.Client().Transport)
 
 	t.Run("authenticated request overwrites any spoofed X-User-ID", func(t *testing.T) {
 		req := httptest.NewRequest("POST", "/api/v1/topups", nil)
@@ -114,6 +115,7 @@ func TestTopUpProxy_StripsUpstreamCORSHeaders(t *testing.T) {
 
 	logger := zap.NewNop()
 	proxyHandler := topup.NewHandler(targetURL, logger)
+	proxyHandler.SetTransport(upstream.Client().Transport)
 
 	// Direct proxy call: verify proxy.ModifyResponse stripped the upstream CORS header
 	req := httptest.NewRequest("GET", "/api/v1/topups/daily-usage", nil)

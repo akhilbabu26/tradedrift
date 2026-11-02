@@ -2,7 +2,6 @@ package postgres_test
 
 import (
 	"context"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -10,54 +9,23 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	platformuuid "tradedrift/platform/uuid"
-	platformpg "tradedrift/platform/postgres"
 	"tradedrift/services/wallet/internal/repository"
 	"tradedrift/services/wallet/internal/repository/postgres"
+	"tradedrift/services/wallet/internal/testhelper"
 )
 
-func getWalletTestPool(t *testing.T) (*pgxpool.Pool, func()) {
-	dsn := os.Getenv("WALLET_TEST_DSN")
-	if dsn == "" {
-		dsn = "postgres://postgres:123@localhost:5432/tradedrift_wallet?sslmode=disable"
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil {
-		t.Skipf("Skipping postgres integration tests: cannot connect to %s: %v", dsn, err)
-		return nil, nil
-	}
-
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("Skipping postgres integration tests: ping failed to %s: %v", dsn, err)
-		return nil, nil
-	}
-
-	if err := platformpg.RunMigrations(dsn, "../../../migration"); err != nil {
-		t.Logf("Migration run note: %v", err)
-	}
-
-	cleanup := func() {
-		pool.Close()
-	}
-
-	return pool, cleanup
+func getWalletTestPool(t *testing.T) *pgxpool.Pool {
+	return testhelper.GetTestPool(t)
 }
 
 func TestOutbox_ClaimIsolation(t *testing.T) {
-	pool, cleanup := getWalletTestPool(t)
+	pool := getWalletTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	repo := postgres.NewOutboxRepository(pool)
-
-	// Clean outbox table to ensure deterministic test isolation
-	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
 
 	testAggregateID, _ := platformuuid.New()
 
@@ -79,6 +47,13 @@ func TestOutbox_ClaimIsolation(t *testing.T) {
 		}
 	}
 
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE id = ANY($1)", eventIDs); err != nil {
+			t.Errorf("cleanup eventIDs failed: %v", err)
+		}
+	})
 
 	// Concurrently claim using 2 workers requesting 3 events each
 	var wg sync.WaitGroup
@@ -139,21 +114,24 @@ func TestOutbox_ClaimIsolation(t *testing.T) {
 }
 
 func TestOutbox_LeaseTimeoutRecovery(t *testing.T) {
-	pool, cleanup := getWalletTestPool(t)
+	pool := getWalletTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	repo := postgres.NewOutboxRepository(pool)
 
-	// Clean outbox table to ensure deterministic test isolation
-	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
-
 	eventID, _ := platformuuid.New()
-
 	leaseAggregateID, _ := platformuuid.New()
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE id = $1", eventID); err != nil {
+			t.Errorf("cleanup event %s failed: %v", eventID, err)
+		}
+	})
 
 	// Insert an event directly into 'PROCESSING' with claimed_at set to 3 minutes in the past
 	twoMinAgo := time.Now().UTC().Add(-3 * time.Minute)
@@ -164,7 +142,6 @@ func TestOutbox_LeaseTimeoutRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to insert simulated expired lease event: %v", err)
 	}
-
 
 	// FetchPending should reclaim this event because claimed_at < NOW() - 1 minute
 	events, err := repo.FetchPending(ctx, 10)
@@ -197,28 +174,40 @@ func TestOutbox_LeaseTimeoutRecovery(t *testing.T) {
 }
 
 func TestOutbox_DeterministicClaimOrdering(t *testing.T) {
-	pool, cleanup := getWalletTestPool(t)
+	pool := getWalletTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	repo := postgres.NewOutboxRepository(pool)
 
-	// Clean outbox table to ensure deterministic test isolation
-	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
-
-	fixedTime := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	// Insert 5 events with identical created_at but different IDs
-	ids := []string{
-		"00000000-0000-0000-0000-000000000005",
-		"00000000-0000-0000-0000-000000000002",
-		"00000000-0000-0000-0000-000000000004",
-		"00000000-0000-0000-0000-000000000001",
-		"00000000-0000-0000-0000-000000000003",
+	// Generate unique, deterministically sortable UUIDs for this test run.
+	// Using a unique base prefix guarantees no primary key collisions across runs,
+	// while the fixed suffix guarantees deterministic ascending ordering.
+	baseUUID, err := platformuuid.New()
+	if err != nil {
+		t.Fatalf("failed to generate base uuid: %v", err)
 	}
+	prefix := baseUUID[:32]
+	id1 := prefix + "0001"
+	id2 := prefix + "0002"
+	id3 := prefix + "0003"
+	id4 := prefix + "0004"
+	id5 := prefix + "0005"
 
+	ids := []string{id5, id2, id4, id1, id3}
+	expectedOrder := []string{id1, id2, id3, id4, id5}
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE id = ANY($1)", ids); err != nil {
+			t.Errorf("cleanup ids failed: %v", err)
+		}
+	})
+
+	fixedTime := time.Now().UTC()
 	for _, id := range ids {
 		_, err := pool.Exec(ctx, `
 			INSERT INTO outbox (id, aggregate_id, event_type, payload, partition_key, status, created_at)
@@ -234,20 +223,23 @@ func TestOutbox_DeterministicClaimOrdering(t *testing.T) {
 		t.Fatalf("FetchPending failed: %v", err)
 	}
 
-	if len(events) != 5 {
-		t.Fatalf("expected 5 events, got %d", len(events))
+	// Filter claimed events to those inserted by this test
+	var matchedEvents []*repository.OutboxEvent
+	for _, ev := range events {
+		for _, id := range ids {
+			if ev.ID == id {
+				matchedEvents = append(matchedEvents, ev)
+				break
+			}
+		}
+	}
+
+	if len(matchedEvents) != 5 {
+		t.Fatalf("expected 5 test events to be claimed, got %d (total events: %d)", len(matchedEvents), len(events))
 	}
 
 	// Must be returned strictly in ascending ID order (id ASC)
-	expectedOrder := []string{
-		"00000000-0000-0000-0000-000000000001",
-		"00000000-0000-0000-0000-000000000002",
-		"00000000-0000-0000-0000-000000000003",
-		"00000000-0000-0000-0000-000000000004",
-		"00000000-0000-0000-0000-000000000005",
-	}
-
-	for i, ev := range events {
+	for i, ev := range matchedEvents {
 		if ev.ID != expectedOrder[i] {
 			t.Fatalf("expected event at index %d to be %s, got %s", i, expectedOrder[i], ev.ID)
 		}
@@ -255,19 +247,23 @@ func TestOutbox_DeterministicClaimOrdering(t *testing.T) {
 }
 
 func TestMarkPublished_OnlyProcessesClaimedRow(t *testing.T) {
-	pool, cleanup := getWalletTestPool(t)
+	pool := getWalletTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	repo := postgres.NewOutboxRepository(pool)
 
-	// Clean outbox table to ensure deterministic test isolation
-	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
-
 	eventID, _ := platformuuid.New()
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE id = $1", eventID); err != nil {
+			t.Errorf("cleanup event %s failed: %v", eventID, err)
+		}
+	})
 
 	// 1. Insert in PENDING state
 	_, err := pool.Exec(ctx, `
@@ -286,12 +282,23 @@ func TestMarkPublished_OnlyProcessesClaimedRow(t *testing.T) {
 
 	// 3. Claim the event into PROCESSING via FetchPending
 	claimed, err := repo.FetchPending(ctx, 10)
-	if err != nil || len(claimed) == 0 {
+	if err != nil {
 		t.Fatalf("failed to claim event: %v", err)
 	}
 
+	var testEvent *repository.OutboxEvent
+	for _, c := range claimed {
+		if c.ID == eventID {
+			testEvent = c
+			break
+		}
+	}
+	if testEvent == nil {
+		t.Fatalf("event %s was not claimed in batch: %+v", eventID, claimed)
+	}
+
 	// 4. MarkPublished must now SUCCEED
-	err = repo.MarkPublished(ctx, eventID, claimed[0].ClaimToken)
+	err = repo.MarkPublished(ctx, eventID, testEvent.ClaimToken)
 	if err != nil {
 		t.Fatalf("expected MarkPublished to succeed on PROCESSING event, got %v", err)
 	}
@@ -306,27 +313,31 @@ func TestMarkPublished_OnlyProcessesClaimedRow(t *testing.T) {
 	}
 
 	// 6. Calling MarkPublished again must FAIL (already PROCESSED, not PROCESSING)
-	err = repo.MarkPublished(ctx, eventID, claimed[0].ClaimToken)
+	err = repo.MarkPublished(ctx, eventID, testEvent.ClaimToken)
 	if err == nil {
 		t.Fatalf("expected duplicate MarkPublished to fail, but succeeded")
 	}
 }
 
 func TestReleaseClaim_ResetsToPending(t *testing.T) {
-	pool, cleanup := getWalletTestPool(t)
+	pool := getWalletTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	repo := postgres.NewOutboxRepository(pool)
 
-	// Clean outbox table to ensure deterministic test isolation
-	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
-
 	eventID1, _ := platformuuid.New()
 	eventID2, _ := platformuuid.New()
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE id IN ($1, $2)", eventID1, eventID2); err != nil {
+			t.Errorf("cleanup events failed: %v", err)
+		}
+	})
 
 	for _, id := range []string{eventID1, eventID2} {
 		_, err := pool.Exec(ctx, `
@@ -338,14 +349,25 @@ func TestReleaseClaim_ResetsToPending(t *testing.T) {
 		}
 	}
 
-	// Claim both events
+	// Claim events
 	claimed, err := repo.FetchPending(ctx, 10)
-	if err != nil || len(claimed) < 2 {
+	if err != nil {
 		t.Fatalf("failed to claim events: %v", err)
 	}
 
+	var token string
+	for _, c := range claimed {
+		if c.ID == eventID1 || c.ID == eventID2 {
+			token = c.ClaimToken
+			break
+		}
+	}
+	if token == "" {
+		t.Fatalf("test events were not claimed in batch: %+v", claimed)
+	}
+
 	// Release claims
-	if err := repo.ReleaseClaims(ctx, []string{eventID1, eventID2}, claimed[0].ClaimToken); err != nil {
+	if err := repo.ReleaseClaims(ctx, []string{eventID1, eventID2}, token); err != nil {
 		t.Fatalf("ReleaseClaims failed: %v", err)
 	}
 
@@ -369,18 +391,24 @@ func TestReleaseClaim_ResetsToPending(t *testing.T) {
 }
 
 func TestMarkFailed_FencedByClaimToken(t *testing.T) {
-	pool, cleanup := getWalletTestPool(t)
+	pool := getWalletTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	repo := postgres.NewOutboxRepository(pool)
 
-	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
-
 	eventID, _ := platformuuid.New()
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE id = $1", eventID); err != nil {
+			t.Errorf("cleanup event failed: %v", err)
+		}
+	})
+
 	_, err := pool.Exec(ctx, `
 		INSERT INTO outbox (id, aggregate_id, event_type, payload, partition_key, status, created_at)
 		VALUES ($1, $1, 'TradeSettled', '{}', 'user-fenced-fail-test', 'PENDING', NOW())
@@ -389,14 +417,22 @@ func TestMarkFailed_FencedByClaimToken(t *testing.T) {
 		t.Fatalf("failed to insert test event: %v", err)
 	}
 
-	claimed, err := repo.FetchPending(ctx, 1)
-	if err != nil || len(claimed) != 1 {
+	claimed, err := repo.FetchPending(ctx, 10)
+	if err != nil {
 		t.Fatalf("failed to claim event: %v", err)
 	}
-	if claimed[0].ClaimToken == "" {
-		t.Fatalf("expected claim token on claimed event")
+
+	var testEvent *repository.OutboxEvent
+	for _, c := range claimed {
+		if c.ID == eventID {
+			testEvent = c
+			break
+		}
 	}
-	workerToken := claimed[0].ClaimToken
+	if testEvent == nil || testEvent.ClaimToken == "" {
+		t.Fatalf("expected claim token on claimed event: %+v", testEvent)
+	}
+	workerToken := testEvent.ClaimToken
 
 	wrongToken, _ := platformuuid.New()
 	// 1. Worker with wrong token attempts MarkFailed -> must be fenced out
@@ -432,18 +468,24 @@ func TestMarkFailed_FencedByClaimToken(t *testing.T) {
 }
 
 func TestReleaseClaims_FencedByClaimToken(t *testing.T) {
-	pool, cleanup := getWalletTestPool(t)
+	pool := getWalletTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	repo := postgres.NewOutboxRepository(pool)
 
-	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
-
 	eventID, _ := platformuuid.New()
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE id = $1", eventID); err != nil {
+			t.Errorf("cleanup event failed: %v", err)
+		}
+	})
+
 	_, err := pool.Exec(ctx, `
 		INSERT INTO outbox (id, aggregate_id, event_type, payload, partition_key, status, created_at)
 		VALUES ($1, $1, 'TradeSettled', '{}', 'user-fenced-release-test', 'PENDING', NOW())
@@ -452,14 +494,22 @@ func TestReleaseClaims_FencedByClaimToken(t *testing.T) {
 		t.Fatalf("failed to insert test event: %v", err)
 	}
 
-	claimed, err := repo.FetchPending(ctx, 1)
-	if err != nil || len(claimed) != 1 {
+	claimed, err := repo.FetchPending(ctx, 10)
+	if err != nil {
 		t.Fatalf("failed to claim event: %v", err)
 	}
-	if claimed[0].ClaimToken == "" {
-		t.Fatalf("expected claim token on claimed event")
+
+	var testEvent *repository.OutboxEvent
+	for _, c := range claimed {
+		if c.ID == eventID {
+			testEvent = c
+			break
+		}
 	}
-	workerToken := claimed[0].ClaimToken
+	if testEvent == nil || testEvent.ClaimToken == "" {
+		t.Fatalf("expected claim token on claimed event: %+v", testEvent)
+	}
+	workerToken := testEvent.ClaimToken
 
 	// 1. Worker with wrong token attempts ReleaseClaims -> row must NOT be released
 	wrongToken2, _ := platformuuid.New()
@@ -494,18 +544,24 @@ func TestReleaseClaims_FencedByClaimToken(t *testing.T) {
 }
 
 func TestMarkPublished_FencedByClaimToken(t *testing.T) {
-	pool, cleanup := getWalletTestPool(t)
+	pool := getWalletTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	repo := postgres.NewOutboxRepository(pool)
 
-	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
-
 	eventID, _ := platformuuid.New()
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE id = $1", eventID); err != nil {
+			t.Errorf("cleanup event failed: %v", err)
+		}
+	})
+
 	_, err := pool.Exec(ctx, `
 		INSERT INTO outbox (id, aggregate_id, event_type, payload, partition_key, status, created_at)
 		VALUES ($1, $1, 'TradeSettled', '{}', 'user-fenced-pub-test', 'PENDING', NOW())
@@ -514,11 +570,22 @@ func TestMarkPublished_FencedByClaimToken(t *testing.T) {
 		t.Fatalf("failed to insert test event: %v", err)
 	}
 
-	claimed, err := repo.FetchPending(ctx, 1)
-	if err != nil || len(claimed) != 1 {
+	claimed, err := repo.FetchPending(ctx, 10)
+	if err != nil {
 		t.Fatalf("failed to claim event: %v", err)
 	}
-	workerToken := claimed[0].ClaimToken
+
+	var testEvent *repository.OutboxEvent
+	for _, c := range claimed {
+		if c.ID == eventID {
+			testEvent = c
+			break
+		}
+	}
+	if testEvent == nil || testEvent.ClaimToken == "" {
+		t.Fatalf("expected claim token on claimed event: %+v", testEvent)
+	}
+	workerToken := testEvent.ClaimToken
 	wrongToken, _ := platformuuid.New()
 
 	// 1. Worker with wrong token attempts MarkPublished -> must be fenced out
@@ -554,19 +621,25 @@ func TestMarkPublished_FencedByClaimToken(t *testing.T) {
 }
 
 func TestOutboxRepository_ConfigurableLease(t *testing.T) {
-	pool, cleanup := getWalletTestPool(t)
+	pool := getWalletTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	// Short lease: 50ms
 	repo := postgres.NewOutboxRepository(pool, 50*time.Millisecond)
 
-	_, _ = pool.Exec(ctx, "DELETE FROM outbox")
-
 	eventID, _ := platformuuid.New()
+
+	t.Cleanup(func() {
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if _, err := pool.Exec(cleanupCtx, "DELETE FROM outbox WHERE id = $1", eventID); err != nil {
+			t.Errorf("cleanup event failed: %v", err)
+		}
+	})
+
 	_, err := pool.Exec(ctx, `
 		INSERT INTO outbox (id, aggregate_id, event_type, payload, partition_key, status, created_at)
 		VALUES ($1, $1, 'TradeSettled', '{}', 'user-lease-test', 'PENDING', NOW())
@@ -576,30 +649,54 @@ func TestOutboxRepository_ConfigurableLease(t *testing.T) {
 	}
 
 	// Worker 1 claims
-	claimed1, err := repo.FetchPending(ctx, 1)
-	if err != nil || len(claimed1) != 1 {
+	claimed1, err := repo.FetchPending(ctx, 10)
+	if err != nil {
 		t.Fatalf("failed to claim event: %v", err)
 	}
-	worker1Token := claimed1[0].ClaimToken
 
-	// Immediate fetch should find 0 events (it's within the 50ms lease)
-	claimedImmediate, err := repo.FetchPending(ctx, 1)
+	var testEvent1 *repository.OutboxEvent
+	for _, c := range claimed1 {
+		if c.ID == eventID {
+			testEvent1 = c
+			break
+		}
+	}
+	if testEvent1 == nil {
+		t.Fatalf("expected to claim test event %s, got: %+v", eventID, claimed1)
+	}
+	worker1Token := testEvent1.ClaimToken
+
+	// Immediate fetch should not find eventID (it's within active lease)
+	claimedImmediate, err := repo.FetchPending(ctx, 10)
 	if err != nil {
 		t.Fatalf("unexpected error on immediate fetch: %v", err)
 	}
-	if len(claimedImmediate) != 0 {
-		t.Fatalf("expected 0 events within active lease, got %d", len(claimedImmediate))
+	for _, c := range claimedImmediate {
+		if c.ID == eventID {
+			t.Fatalf("expected event %s to not be claimed within active lease", eventID)
+		}
 	}
 
 	// Wait 60ms for lease to expire
 	time.Sleep(60 * time.Millisecond)
 
 	// Worker 2 should reclaim the event due to expired lease
-	claimed2, err := repo.FetchPending(ctx, 1)
-	if err != nil || len(claimed2) != 1 {
-		t.Fatalf("expected Worker 2 to reclaim expired event, got %d events, err: %v", len(claimed2), err)
+	claimed2, err := repo.FetchPending(ctx, 10)
+	if err != nil {
+		t.Fatalf("reclaim error: %v", err)
 	}
-	worker2Token := claimed2[0].ClaimToken
+
+	var testEvent2 *repository.OutboxEvent
+	for _, c := range claimed2 {
+		if c.ID == eventID {
+			testEvent2 = c
+			break
+		}
+	}
+	if testEvent2 == nil {
+		t.Fatalf("expected Worker 2 to reclaim expired event %s, got %+v", eventID, claimed2)
+	}
+	worker2Token := testEvent2.ClaimToken
 	if worker2Token == worker1Token {
 		t.Fatalf("expected new claim token for reclaimed event")
 	}
@@ -616,5 +713,3 @@ func TestOutboxRepository_ConfigurableLease(t *testing.T) {
 		t.Fatalf("expected Worker 2 to succeed, got %v", err)
 	}
 }
-
-

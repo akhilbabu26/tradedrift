@@ -13,11 +13,10 @@ import (
 )
 
 func TestWalletRepository_DebitReserved_BalanceGuard(t *testing.T) {
-	pool, cleanup := getWalletTestPool(t)
+	pool := getWalletTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	repo := postgres.NewWalletRepository(pool)
@@ -59,11 +58,10 @@ func TestWalletRepository_DebitReserved_BalanceGuard(t *testing.T) {
 }
 
 func TestWalletRepository_MoveFromReserved_BalanceGuard(t *testing.T) {
-	pool, cleanup := getWalletTestPool(t)
+	pool := getWalletTestPool(t)
 	if pool == nil {
 		return
 	}
-	defer cleanup()
 
 	ctx := context.Background()
 	repo := postgres.NewWalletRepository(pool)
